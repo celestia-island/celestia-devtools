@@ -29,14 +29,29 @@ Homepage = "https://github.com/celestia-island/celestia-devtools"
 Repository = "https://github.com/celestia-island/celestia-devtools"
 
 [project.scripts]
-celestia-devtools = "celestia_devtools.cli:main"
-cargo-cache-guard = "celestia_devtools.cache_guard:main"
-format-markdown = "celestia_devtools.format_markdown:main"
-celestia-prefetch = "celestia_devtools.prefetch:main"
-check-cross-deps = "celestia_devtools.check_cross_deps:main"
+celestia-devtools = "celestia_devtools.core.cli:main"
+cargo-cache-guard = "celestia_devtools.build.cache_guard:main"
+format-markdown = "celestia_devtools.doc.markdown:main"
+celestia-prefetch = "celestia_devtools.build.prefetch:main"
+check-cross-deps = "celestia_devtools.build.cross_deps:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/celestia_devtools"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/celestia_devtools/common.just" = "celestia_devtools/common.just"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

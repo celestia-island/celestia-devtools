@@ -40,7 +40,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import time  # noqa: F401 — kept for parity/future use
 from datetime import datetime, timezone
 from pathlib import Path

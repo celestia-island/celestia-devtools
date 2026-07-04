@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 from pathlib import Path
 
 from celestia_devtools import __version__
@@ -35,7 +34,7 @@ def common_just_path() -> Path:
     except Exception:
         import celestia_devtools
 
-        return Path(celelestia_devtools.__file__).resolve().parent / "common.just"
+        return Path(celestia_devtools.__file__).resolve().parent / "common.just"
 
 
 def _read_version(text: str) -> str | None:
@@ -115,14 +114,14 @@ def _check_justfile_import(name: str) -> None:
     justfile = Path.cwd() / "justfile"
     import_line = f'import "./{name}"'
     if not justfile.is_file():
-        logger.info(f"no justfile found — create one starting with:")
+        logger.info("no justfile found — create one starting with:")
         print(f"\n    {import_line}\n")
         return
     content = justfile.read_text(errors="replace")
     if import_line in content:
         logger.info(f"justfile already imports {name}")
     else:
-        logger.info(f"add this line near the top of your justfile:")
+        logger.info("add this line near the top of your justfile:")
         print(f"\n    {import_line}\n")
 
 
