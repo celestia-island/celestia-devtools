@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "celestia-devtools"
+version = "0.1.0"
+description = "Shared build/devtool scripts for the celestia-island ecosystem"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "langyo", email = "langyo.china@gmail.com" }]
+keywords = ["cargo", "devtools", "build-tools", "celestia-island"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/celestia-island/celestia-devtools"
+Repository = "https://github.com/celestia-island/celestia-devtools"
+
+[project.scripts]
+celestia-devtools = "celestia_devtools.cli:main"
+cargo-cache-guard = "celestia_devtools.cache_guard:main"
+format-markdown = "celestia_devtools.format_markdown:main"
+celestia-prefetch = "celestia_devtools.prefetch:main"
+check-cross-deps = "celestia_devtools.check_cross_deps:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/celestia_devtools"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/celestia_devtools/common.just" = "celestia_devtools/common.just"
