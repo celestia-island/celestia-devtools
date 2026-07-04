@@ -29,7 +29,7 @@ import shutil
 import subprocess
 import sys
 
-from celestia_devtools import logger
+from celestia_devtools.core import logger
 
 # ── Mirror auto-detection ─────────────────────────────────────────────────────
 

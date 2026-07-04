@@ -27,9 +27,9 @@
 
 ## 소개
 
-`celestia-devtools`는 Celestia 생태계를 위한 공유 빌드 및 개발 도구 스크립트를 모은 Python 툴킷입니다. `arona/scripts/`에서 추출되어 개발 도구를 개별 crate로부터 분리하며, `entelecheia`, `shittim-chest`, `evernight` 등의 저장소에서 justfile을 통해 사용됩니다.
+`celestia-devtools`는 Celestia 생태계를 위한 공유 빌드 및 개발 도구 스크립트를 모은 Python 툴킷입니다. 개발 도구를 개별 crate로부터 분리하며, `entelecheia`, `shittim-chest`, `evernight` 등의 저장소에서 justfile을 통해 사용됩니다.
 
-cargo 캐시 관리(`cache-guard`), Markdown 포맷팅(`format-markdown`), 오프라인 빌드용 의존성 사전 준비(`prefetch`), 교차 컴파일 선행 조건 검사(`check-cross-deps`), crate 위치 탐색(`locate`)을 제공합니다.
+cargo 캐시 관리(`cache-guard`), Markdown 포맷팅(`format-markdown`), 오프라인 빌드용 의존성 사전 준비(`prefetch`), 교차 컴파일 선행 조건 검사(`check-cross-deps`), 범용 형제 crate 위치 탐색(`locate`)을 제공합니다.
 
 > 여전히 개발 중이며, 명령과 recipe는 향후 변경될 수 있습니다.
 

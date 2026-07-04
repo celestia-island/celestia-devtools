@@ -19,7 +19,8 @@ import re
 import sys
 from pathlib import Path
 
-from celestia_devtools import __version__, logger
+from celestia_devtools import __version__
+from celestia_devtools.core import logger
 
 LINK_NAME = "celestia-devtools.just"
 _VERSION_RE = re.compile(r"^#\s*Version:\s*(\S+)", re.MULTILINE)

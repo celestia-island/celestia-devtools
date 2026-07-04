@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from celestia_devtools import logger as _logger
+from celestia_devtools.core import logger as _logger
 
 _GIT_DEP_HINT = (
     "note: cargo fetch resolves [patch] git deps too. For path-patched sibling "

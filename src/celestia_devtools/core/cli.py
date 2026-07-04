@@ -27,12 +27,12 @@ from importlib import import_module
 from typing import Sequence
 
 COMMANDS: dict[str, str] = {
-    "cache-guard": "celestia_devtools.cache_guard",
-    "format-markdown": "celestia_devtools.format_markdown",
-    "prefetch": "celestia_devtools.prefetch",
-    "check-cross-deps": "celestia_devtools.check_cross_deps",
-    "locate": "celestia_devtools.locate",
-    "init": "celestia_devtools.init_repo",
+    "cache-guard": "celestia_devtools.build.cache_guard",
+    "format-markdown": "celestia_devtools.doc.markdown",
+    "prefetch": "celestia_devtools.build.prefetch",
+    "check-cross-deps": "celestia_devtools.build.cross_deps",
+    "locate": "celestia_devtools.repo.locate",
+    "init": "celestia_devtools.repo.init",
 }
 
 
@@ -56,7 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if cmd == "include-path":
-        from celestia_devtools.init_repo import common_just_path
+        from celestia_devtools.repo.init import common_just_path
 
         print(common_just_path())
         return 0

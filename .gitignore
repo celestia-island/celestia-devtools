@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+!/src/celestia_devtools/build/
 dist/
 *.egg-info/
 *.egg

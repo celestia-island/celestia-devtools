@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from celestia_devtools import logger as _logger
+from celestia_devtools.core import logger as _logger
 
 GIB = 1024 ** 3
 

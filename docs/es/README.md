@@ -27,9 +27,9 @@
 
 ## Introducción
 
-`celestia-devtools` es un conjunto de herramientas Python de scripts de build y herramientas de desarrollo compartidas para el ecosistema Celestia. Extraído de `arona/scripts/`, desacopla las herramientas de desarrollo de los crates individuales y es consumido por `entelecheia`, `shittim-chest`, `evernight` y otros repositorios mediante justfile.
+`celestia-devtools` es un conjunto de herramientas Python de scripts de build y herramientas de desarrollo compartidas para el ecosistema Celestia. Desacopla las herramientas de desarrollo de los crates individuales y es consumido por `entelecheia`, `shittim-chest`, `evernight` y otros repositorios mediante justfile.
 
-Proporciona gestión de caché de cargo (`cache-guard`), formateo de Markdown (`format-markdown`), preconfiguración de dependencias para builds sin conexión (`prefetch`), comprobación de requisitos de cross-compilación (`check-cross-deps`) y utilidades de localización de crates (`locate`).
+Proporciona gestión de caché de cargo (`cache-guard`), formateo de Markdown (`format-markdown`), preconfiguración de dependencias para builds sin conexión (`prefetch`), comprobación de requisitos de cross-compilación (`check-cross-deps`) y utilidades genéricas de localización de crates hermanos (`locate`).
 
 > Aún en desarrollo; los comandos y recetas pueden cambiar en el futuro.
 

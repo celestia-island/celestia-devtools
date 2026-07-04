@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Locate celestia-island crate checkouts (cargo path/git-patched sources).
+"""Locate celestia-island crate checkouts.
 
-The same resolution algorithm that every repo used to ship as its own copy of
-``scripts/_arona_devtools.py``. Now lives here as the single source of truth.
+Resolves the local checkout of any sibling crate in the org's dev layout
+(env var → cargo ``[patch]`` → sibling dir → recursive scan → git clone).
 
 Resolution priority (cheap first, so the common case never walks the tree):
 
-    1. ``$env_var`` (e.g. ``$ARONA_ROOT``)
+    1. ``$<CRATE>_ROOT`` (e.g. ``$ARONA_ROOT``, ``$ENTELECHEIA_ROOT``)
     2. a ``crate = { path = ".." }`` under any ``[patch.*]`` in
        ``~/.cargo/config.toml`` or the caller repo's top-level ``Cargo.toml``
     3. a sibling ``../<crate>`` checkout (the org dev layout)
@@ -15,14 +15,10 @@ Resolution priority (cheap first, so the common case never walks the tree):
        30+ GiB ``target/`` doesn't stall every invocation
     5. shallow ``git clone`` into ``<repo_root>/target/<crate>-shared``
 
-``marker`` is a path relative to the crate root whose presence confirms a
-valid checkout.
-
 Usage::
 
-    celestia-devtools locate                      # find arona, print path
-    celestia-devtools locate --crate entelecheia  # find another crate
-    celestia-devtools locate --crate arona --env ARONA_ROOT
+    celestia-devtools locate --crate arona
+    celestia-devtools locate --crate entelecheia --env ENTELECHEIA_ROOT
 """
 
 from __future__ import annotations
@@ -34,19 +30,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Well-known crates in the celestia-island ecosystem.
-KNOWN_CRATES: dict[str, dict[str, str]] = {
-    "arona": {
-        "env_var": "ARONA_ROOT",
-        "git_url": "https://github.com/celestia-island/arona.git",
-        "marker": str(Path("scripts") / "cargo_cache_guard.py"),
-    },
-    "entelecheia": {
-        "env_var": "ENTELECHEIA_ROOT",
-        "git_url": "https://github.com/celestia-island/entelecheia.git",
-        "marker": "Cargo.toml",
-    },
-}
+ORG_GIT_BASE = "https://github.com/celestia-island"
+DEFAULT_MARKER = "Cargo.toml"
 
 # Last-resort clone destination lives INSIDE cargo's own ``target/`` dir
 # (already gitignored everywhere), so no separate scratch dir or ignore rule
@@ -56,6 +41,15 @@ TARGET_DIR = os.environ.get("CELESTIA_DEV_TARGET_DIR", "target")
 
 def _stderr(level: str, msg: str) -> None:
     print(f"[locate] {level}: {msg}", file=sys.stderr)
+
+
+def _crate_info(crate: str, env_var: str | None, git_url: str | None):
+    """Derive (env_var, git_url, marker) for *crate* by convention."""
+    return (
+        env_var or f"{crate.upper()}_ROOT",
+        git_url or f"{ORG_GIT_BASE}/{crate}.git",
+        Path(DEFAULT_MARKER),
+    )
 
 
 def find_patched_crate(
@@ -140,14 +134,13 @@ def find_patched_crate(
     return None
 
 
-def find_arona(*, repo_root: Path | None = None) -> Path | None:
-    """Convenience wrapper to locate the arona crate."""
-    info = KNOWN_CRATES["arona"]
-    return find_patched_crate(
-        "arona", info["env_var"], info["git_url"],
-        Path(info["marker"]),
-        repo_root=repo_root,
-    )
+def find_crate(
+    crate: str, *, repo_root: Path | None = None,
+    env_var: str | None = None, git_url: str | None = None,
+) -> Path | None:
+    """Locate a celestia-island crate checkout by name."""
+    ev, gu, marker = _crate_info(crate, env_var, git_url)
+    return find_patched_crate(crate, ev, gu, marker, repo_root=repo_root)
 
 
 def main() -> int:
@@ -155,12 +148,12 @@ def main() -> int:
         description="Locate a celestia-island crate checkout"
     )
     parser.add_argument(
-        "--crate", default="arona",
-        help="crate name to locate (default: arona)",
+        "--crate", required=True,
+        help="crate name to locate",
     )
     parser.add_argument(
         "--env", default=None,
-        help="env var name to check first (default: derived from crate name)",
+        help="env var name to check first (default: <CRATE>_ROOT)",
     )
     parser.add_argument(
         "--repo-root", default=None,
@@ -168,23 +161,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    crate = args.crate
-    info = KNOWN_CRATES.get(crate)
-    if info:
-        env_var = args.env or info["env_var"]
-        git_url = info["git_url"]
-        marker = Path(info["marker"])
-    else:
-        env_var = args.env or f"{crate.upper()}_ROOT"
-        git_url = f"https://github.com/celestia-island/{crate}.git"
-        marker = Path("Cargo.toml")
-
+    env_var, git_url, marker = _crate_info(args.crate, args.env, None)
     repo_root = Path(args.repo_root) if args.repo_root else None
     found = find_patched_crate(
-        crate, env_var, git_url, marker, repo_root=repo_root,
+        args.crate, env_var, git_url, marker, repo_root=repo_root,
     )
     if found is None:
-        _stderr("error", f"could not locate {crate}; set {env_var}")
+        _stderr("error", f"could not locate {args.crate}; set {env_var}")
         return 127
     print(found)
     return 0

@@ -3,18 +3,26 @@
 
 This script is stdlib-only so it can run as part of `just fmt`.
 It fixes the repository's recurring Markdown problems, especially TOML
-frontmatter fenced by `+++` and common markdownlint issues.
+frontmatter fenced by ``+++`` and common markdownlint issues.
+
+Language-aware checks (code-fence inference, i18n duplicate-paragraph
+detection, tab linting, markdownlint bridge) live in :mod:`celestia_devtools.doc.linter`.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
+
+from celestia_devtools.doc.linter import (
+    check_duplicate_paragraphs,
+    check_tabs,
+    infer_fence_language,
+    maybe_run_markdownlint,
+)
 
 
 EXCLUDED_DIRS = {
@@ -93,43 +101,6 @@ def normalize_ordered_marker(line: str) -> str:
         return line
     indent, rest = match.groups()
     return f"{indent}1. {rest}"
-
-
-def infer_fence_language(block_lines: Sequence[str]) -> str:
-    content = "\n".join(block_lines).strip()
-    if not content:
-        return "text"
-
-    first = next((line.strip() for line in block_lines if line.strip()), "")
-    upper = first.upper()
-
-    if any(first.startswith(prefix) for prefix in (
-        "graph ",
-        "flowchart ",
-        "sequenceDiagram",
-        "classDiagram",
-        "stateDiagram",
-        "erDiagram",
-        "journey",
-        "gantt",
-        "pie ",
-    )):
-        return "mermaid"
-    if upper.startswith(("SELECT ", "INSERT ", "UPDATE ", "DELETE ", "CREATE ", "ALTER ", "DROP ", "WITH ")):
-        return "sql"
-    if first.startswith(("def ", "async def ", "class ", "import ", "from ")) or "raise " in content:
-        return "python"
-    if first.startswith(("type ", "interface ", "const ", "let ", "export ")) or "=>" in content:
-        return "typescript"
-    if first.startswith(("[", "name =", "description =", "agent =", "namespace =")) and "=" in content:
-        return "toml"
-    if first.startswith(("$ ", "cargo ", "just ", "docker ", "git ", "python ", "python3 ", "npm ", "pnpm ", "yarn ", "cp ", "mv ", "rm ", "export ")):
-        return "bash"
-    if any(char in content for char in "┌┐└┘├┤┬┴│─↓↑→←●○✓!"):
-        return "text"
-    if "{" in content and "}" in content and ":" in content:
-        return "json"
-    return "text"
 
 
 def ensure_blank_line(output: List[str]) -> None:
@@ -373,141 +344,6 @@ def process_file(file_path: Path, check_only: bool) -> bool:
     return True
 
 
-# ── Lint checks (warnings, not auto-fixes) ─────────────────────────────
-
-KNOWN_LANG_CODES = {
-    "en", "es", "fr", "ja", "ko", "ru", "zhs", "zht",
-    "de", "pt", "ar", "zh", "zh-CN",
-}
-
-
-def _safe_read(path: Path) -> str | None:
-    """Read file text, returning None for broken symlinks or read errors."""
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, UnicodeDecodeError):
-        return None
-
-
-def check_tabs(paths: list[Path]) -> list[str]:
-    """Warn about tab characters in markdown files."""
-    warnings: list[str] = []
-    for path in paths:
-        text = _safe_read(path)
-        if text is None:
-            continue
-        for lineno, line in enumerate(text.splitlines(), 1):
-            if "\t" in line:
-                warnings.append(
-                    f"  {path}:{lineno} contains tab character(s) — replace with spaces "
-                    f"(tabs break Mermaid diagram rendering)"
-                )
-    return warnings
-
-
-def _extract_paragraphs(content: str, min_len: int = 80) -> list[str]:
-    """Extract normal paragraphs longer than min_len (skipping code fences)."""
-    lines = content.replace("\r\n", "\n").split("\n")
-    paragraphs: list[str] = []
-    current: list[str] = []
-    in_fence = False
-    for line in lines:
-        if line.strip().startswith(("```", "~~~")):
-            in_fence = not in_fence
-            if current:
-                text = "\n".join(current).strip()
-                if len(text) >= min_len:
-                    paragraphs.append(text)
-                current = []
-            continue
-        if in_fence:
-            continue
-        if line.strip():
-            current.append(line.rstrip())
-        else:
-            if current:
-                text = "\n".join(current).strip()
-                if len(text) >= min_len:
-                    paragraphs.append(text)
-                current = []
-    if current:
-        text = "\n".join(current).strip()
-        if len(text) >= min_len:
-            paragraphs.append(text)
-    return paragraphs
-
-
-def check_duplicate_paragraphs(paths: list[Path], root: Path) -> list[str]:
-    """Warn about identical large paragraphs across language variants.
-
-    Detects the common mistake of copying an English/Chinese document to
-    another language directory and forgetting to translate it.
-    """
-    groups: dict[str, list[tuple[str, Path]]] = {}
-
-    for path in paths:
-        try:
-            rel = path.relative_to(root)
-        except ValueError:
-            rel = path
-        parts = rel.parts
-        lang = None
-        logical_parts: list[str] = []
-        for i, part in enumerate(parts):
-            if part in KNOWN_LANG_CODES and i < 3:
-                lang = part
-                logical_parts = list(parts[i + 1:])
-                break
-        if lang is None:
-            continue
-        logical = "/".join(logical_parts)
-        groups.setdefault(logical, []).append((lang, path))
-
-    warnings: list[str] = []
-    for logical, files in groups.items():
-        if len(files) < 2:
-            continue
-        para_to_langs: dict[str, list[str]] = {}
-        for lang, path in files:
-            content = _safe_read(path)
-            if content is None:
-                continue
-            for para in _extract_paragraphs(content):
-                para_to_langs.setdefault(para, []).append(lang)
-
-        for para, langs in para_to_langs.items():
-            unique_langs = set(langs)
-            if len(unique_langs) >= 2:
-                preview = para[:100].replace("\n", " ")
-                if len(para) > 100:
-                    preview += "…"
-                warnings.append(
-                    f"  {logical}: {len(para)}-char paragraph identical in {', '.join(sorted(unique_langs))}"
-                )
-                warnings.append(f"    \"{preview}\"")
-
-    return warnings
-
-
-def maybe_run_markdownlint(target: Path, check_only: bool) -> None:
-    binary = shutil.which("markdownlint-cli2")
-    if not binary:
-        return
-    command = [binary]
-    if not check_only:
-        command.append("--fix")
-    command.extend([str(target / "**/*.md") if target.is_dir()
-                   else str(target), "#target", "#node_modules"])
-    subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Format Markdown files and run lint checks")
@@ -539,6 +375,9 @@ def main() -> int:
         for path in changed:
             print(f"Formatted: {path}")
         print(f"\nFormatted {len(changed)} file(s)")
+
+    if args.use_markdownlint:
+        maybe_run_markdownlint(target, args.check)
 
     # ── Lint: tab characters ──
     tab_warnings = check_tabs(paths)

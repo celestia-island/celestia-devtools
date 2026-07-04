@@ -27,9 +27,9 @@
 
 ## 簡介
 
-`celestia-devtools` 是一套面向 Celestia 生態的共享構建與開發工具 Python 工具集。它從 `arona/scripts/` 中抽取而來，將開發工具與各個 crate 解耦，並透過 justfile 被 `entelecheia`、`shittim-chest`、`evernight` 等倉庫複用。
+`celestia-devtools` 是一套面向 Celestia 生態的共享構建與開發工具 Python 工具集。將開發工具與各個 crate 解耦，並透過 justfile 被 `entelecheia`、`shittim-chest`、`evernight` 等倉庫複用。
 
-它提供 cargo 快取管理（`cache-guard`）、Markdown 格式化（`format-markdown`）、離線建置相依性預取（`prefetch`）、交叉編譯前置檢查（`check-cross-deps`）以及 crate 定位工具（`locate`）。
+它提供 cargo 快取管理（`cache-guard`）、Markdown 格式化（`format-markdown`）、離線建置相依性預取（`prefetch`）、交叉編譯前置檢查（`check-cross-deps`）以及通用同級 crate 定位工具（`locate`）。
 
 > 目前仍在開發中，指令與 recipe 未來可能發生變化。
 

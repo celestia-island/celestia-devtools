@@ -27,7 +27,7 @@ _devtools := if which("celestia-devtools") != "" { "celestia-devtools" } else { 
 ensure:
     @command -v celestia-devtools >/dev/null 2>&1 || \
         {{python_cmd}} -c "import celestia_devtools" 2>/dev/null || \
-        pip3 install "${CELESTIA_DEVTOOLS_INSTALL:-git+https://github.com/celestia-island/celestial-devtools.git}"
+        pip3 install "${CELESTIA_DEVTOOLS_INSTALL:-git+https://github.com/celestia-island/celestia-devtools.git}"
 
 # ── Build helper ──────────────────────────────────────────────────────────────
 
@@ -93,5 +93,5 @@ cross-check target='aarch64-unknown-linux-gnu' features='full':
 # ── Crate location ────────────────────────────────────────────────────────────
 
 # Locate a celestia-island crate checkout (env → cargo [patch] → sibling → clone).
-locate crate='arona':
+locate crate:
     {{ _devtools }} locate --crate {{crate}}

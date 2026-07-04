@@ -29,9 +29,9 @@
 
 ## مقدمة
 
-`celestia-devtools` هي مجموعة أدوات Python مشتركة لبرامج البناء وأدوات التطوير داخل منظومة Celestia. استُخرجت من `arona/scripts/`، وتفصل أدوات التطوير عن crate الفردية، وتُستخدم عبر justfile من قبل `entelecheia` و`shittim-chest` و`evernight` ومستودعات أخرى.
+`celestia-devtools` هي مجموعة أدوات Python مشتركة لبرامج البناء وأدوات التطوير داخل منظومة Celestia. وتفصل أدوات التطوير عن crate الفردية، وتُستخدم عبر justfile من قبل `entelecheia` و`shittim-chest` و`evernight` ومستودعات أخرى.
 
-توفر إدارة ذاكرة cargo المؤقتة (`cache-guard`)، وتنسيق Markdown (`format-markdown`)، وتجهيز الاعتماديّات مسبقًا لبناءات دون اتصال (`prefetch`)، والتحقق من متطلبات الترجمة المتقاطعة (`check-cross-deps`)، وأدوات تحديد مواقع crate (`locate`).
+توفر إدارة ذاكرة cargo المؤقتة (`cache-guard`)، وتنسيق Markdown (`format-markdown`)، وتجهيز الاعتماديّات مسبقًا لبناءات دون اتصال (`prefetch`)، والتحقق من متطلبات الترجمة المتقاطعة (`check-cross-deps`)، وأدوات عامة لتحديد مواقع crate الشقيقة (`locate`).
 
 > لا تزال قيد التطوير؛ قد تتغير الأوامر والوصفات مستقبلًا.
 
