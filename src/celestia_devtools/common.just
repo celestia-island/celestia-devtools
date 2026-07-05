@@ -95,3 +95,27 @@ cross-check target='aarch64-unknown-linux-gnu' features='full':
 # Locate a celestia-island crate checkout (env → cargo [patch] → sibling → clone).
 locate crate:
     {{ _devtools }} locate --crate {{crate}}
+
+# ── WSL2 dev environment ──────────────────────────────────────────────────────
+#
+# The celestia ecosystem shares ONE persistent WSL2 distro (default
+# "celestia-dev") provisioned with rust + just + docker, so the global cargo
+# registry cache is reused across aris / kei / entelecheia / shittim-chest
+# instead of re-fetching every dependency per repo. Same model as Docker
+# Desktop's managed WSL2 backend.
+#
+#   just wsl-ensure              create/verify (idempotent — safe to re-run)
+#   just wsl-ensure --reset      destroy + recreate (clears ALL caches)
+#   just wsl-ensure --no-docker  skip docker (use Docker Desktop integration)
+#   just wsl-ensure --force      re-provision even if distro already exists
+wsl-ensure *ARGS='':
+    {{ _devtools }} wsl-ensure {{ARGS}}
+
+# Run a command inside the celestia-dev distro (cwd = this repo's root).
+# Example: just wsl-run cargo build --release
+wsl-run *CMD='echo "usage: just wsl-run <command>"':
+    wsl -d celestia-dev --cd "{{ justfile_directory() }}" -- bash -lc "{{ CMD }}"
+
+# Drop into an interactive shell in the distro at the repo root.
+wsl-shell:
+    wsl -d celestia-dev --cd "{{ justfile_directory() }}"
