@@ -51,6 +51,8 @@ DEFAULT_ROOTFS_URL = (
 # Build-time packages installed via apt before rust/docker. libssl-dev covers
 # the most common native dep (openssl); pkg-config + curl are universally
 # needed. ca-certificates ensures HTTPS for rustup / get.docker.com.
+# nodejs + npm back the shared PGlite facility (env/pglite.py) — entelecheia
+# and shittim-chest both use it for temporary embedded-Postgres instances.
 APT_PACKAGES = [
     "build-essential",
     "pkg-config",
@@ -58,6 +60,8 @@ APT_PACKAGES = [
     "curl",
     "ca-certificates",
     "git",
+    "nodejs",
+    "npm",
 ]
 
 
@@ -95,27 +99,9 @@ def _vhd_dir(distro: str) -> Path:
 
 # ── WSL invocation helpers ────────────────────────────────────────────
 
-
-def _decode_wsl_output(data: bytes) -> str:
-    """wsl.exe on Windows emits UTF-16LE (often WITHOUT a BOM), unlike virtually
-    every other CLI. Detect UTF-16LE heuristically: if every odd byte is 0x00
-    (ASCII range chars padded to 16-bit), it's UTF-16LE. Fall back to UTF-8."""
-    if not data:
-        return ""
-    # Strip a BOM if present, then check the UTF-16LE heuristic.
-    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return data.decode("utf-16-le", errors="replace").lstrip("\ufeff")
-    # Heuristic: sample up to 64 bytes; if a strong majority of odd-offset
-    # bytes are NUL, treat as UTF-16LE. This catches wsl.exe's BOM-less output.
-    sample = data[:128]
-    if len(sample) >= 4:
-        odd_zeros = sum(1 for i in range(1, len(sample), 2) if sample[i] == 0)
-        if odd_zeros / (len(sample) // 2) > 0.7:
-            return data.decode("utf-16-le", errors="replace")
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("utf-8", errors="replace")
+# Reuse the battle-tested decoder from the shared host module instead of
+# maintaining a second heuristic here.
+from celestia_devtools.env.host import decode_wsl_output as _decode_wsl_output  # noqa: E402
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:

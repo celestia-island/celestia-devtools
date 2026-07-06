@@ -119,3 +119,29 @@ wsl-run *CMD='echo "usage: just wsl-run <command>"':
 # Drop into an interactive shell in the distro at the repo root.
 wsl-shell:
     wsl -d celestia-dev --cd "{{ justfile_directory() }}"
+
+# ── Environment preflight ────────────────────────────────────────────────────
+#
+# Verify required dev tools are present BEFORE a facility (pglite, build,
+# cross-compile, …) actually needs them, so the user gets one actionable
+# hint ("missing node → run just wsl-ensure") instead of a stack trace.
+#
+#   just preflight                 check ALL known tools
+#   just preflight node npm        check only node + npm
+#   just preflight -- --quiet      exit code only (for scripts)
+preflight *REQS='':
+    {{ _devtools }} preflight {{REQS}}
+
+# ── Shared temporary PGlite ──────────────────────────────────────────────────
+#
+# Spawn a real embedded Postgres (PGlite WASM + pgvector) over the PG wire
+# protocol, shared between entelecheia and shittim-chest for tests / mock
+# backends. Zero Docker / system-postgres; data is in-memory unless --persist.
+#
+#   just pglite start              spawn, print DATABASE_URL (auto free port)
+#   just pglite start --port 5433  pin a port
+#   just pglite start --persist ./pgdata   keep data across restarts
+#   just pglite stop               stop the recorded instance
+#   just pglite status             is one running? prints JSON
+pglite *ARGS='':
+    {{ _devtools }} pglite {{ARGS}}

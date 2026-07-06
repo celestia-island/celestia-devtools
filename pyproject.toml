@@ -34,7 +34,9 @@ cargo-cache-guard = "celestia_devtools.build.cache_guard:main"
 format-markdown = "celestia_devtools.doc.markdown:main"
 celestia-prefetch = "celestia_devtools.build.prefetch:main"
 check-cross-deps = "celestia_devtools.build.cross_deps:main"
+celestia-preflight = "celestia_devtools.env.preflight:main"
 celestia-wsl-ensure = "celestia_devtools.env.wsl:main"
+celestia-pglite = "celestia_devtools.env.pglite:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.4"]

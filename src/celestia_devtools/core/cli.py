@@ -11,7 +11,9 @@ Commands::
     format-markdown   Format and lint Markdown files
     prefetch          Pre-stage cargo + node dependencies for offline builds
     check-cross-deps  Check/install cross-compilation prerequisites (zigbuild)
+    preflight         Check that required dev tools are present (node/rust/...)
     wsl-ensure        Ensure a shared WSL2 dev distro exists (rust/just/docker)
+    pglite            Start/stop a shared temporary PGlite server (pgvector)
     locate            Locate a celestia-island crate checkout
     init              Symlink common.just into a repo for justfile import
     include-path      Print the path to the bundled common.just
@@ -32,7 +34,9 @@ COMMANDS: dict[str, str] = {
     "format-markdown": "celestia_devtools.doc.markdown",
     "prefetch": "celestia_devtools.build.prefetch",
     "check-cross-deps": "celestia_devtools.build.cross_deps",
+    "preflight": "celestia_devtools.env.preflight",
     "wsl-ensure": "celestia_devtools.env.wsl",
+    "pglite": "celestia_devtools.env.pglite",
     "locate": "celestia_devtools.repo.locate",
     "init": "celestia_devtools.repo.init",
 }
