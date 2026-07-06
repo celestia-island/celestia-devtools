@@ -47,11 +47,14 @@ from pathlib import Path
 from celestia_devtools.core import logger as _logger
 from celestia_devtools.env.preflight import require as _require_tools
 
-# Node packages — pinned so the embedded Postgres version is reproducible.
-# pglite-pgvector gives us the `vector` extension (CREATE EXTENSION vector).
-PGlite_PKG = "@electric-sql/pglite@^0.3"
-SOCKET_PKG = "@electric-sql/pglite-socket@^0.0"
-PGVECTOR_PKG = "@electric-sql/pglite-pgvector@^0.3"
+# Node packages — (name, version range) so scoped names (@electric-sql/…)
+# don't get mangled by naive split("@"). pglite-pgvector gives the `vector`
+# extension. Versions verified against npm (2026-07).
+PACKAGES = [
+    ("@electric-sql/pglite", "^0.5"),
+    ("@electric-sql/pglite-socket", "^0.2"),
+    ("@electric-sql/pglite-pgvector", "^0.0.5"),
+]
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 0  # 0 = let the OS pick a free port (reported back via stdout)
@@ -92,12 +95,25 @@ def _sidecar_path() -> Path:
 # Python↔Node contract to a single line of stdout.
 
 LAUNCHER_JS = r"""
-import { PGlite } from "@electric-sql/pglite";
-import { vector } from "@electric-sql/pglite-pgvector";
-import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+// pglite-socket uses `new CustomEvent(...)` in its listening/error dispatch,
+// which is a global in Node 20+ but absent in Node 18 (Ubuntu 24.04's apt
+// nodejs). Polyfill it BEFORE importing pglite-socket. ESM `import` is
+// hoisted, so we can't polyfill then import statically — use dynamic
+// import() after installing the shim.
+if (typeof globalThis.CustomEvent === "undefined") {
+  globalThis.CustomEvent = class CustomEvent extends Event {
+    constructor(type, opts = {}) {
+      super(type, opts);
+      this.detail = opts.detail;
+    }
+  };
+}
+
+const { PGlite } = await import("@electric-sql/pglite");
+const { vector } = await import("@electric-sql/pglite-pgvector");
+const { PGLiteSocketServer } = await import("@electric-sql/pglite-socket");
 
 const host = process.env.PGLITE_HOST || "127.0.0.1";
-// Port 0 → OS picks a free one; the server's `listening` event reports it.
 const wantPort = parseInt(process.env.PGLITE_PORT || "0", 10);
 const dataDir = process.env.PGLITE_DATA_DIR || "memory://";
 
@@ -107,8 +123,11 @@ const db = await PGlite.create({
 });
 await db.exec("CREATE EXTENSION IF NOT EXISTS vector;");
 
+// PGLiteSocketServer.start() resolves once the underlying net server is
+// listening (it awaits the 'listening' event internally), so we don't wire
+// our own event listener. The actual bound port comes from the inner server.
 const server = new PGLiteSocketServer({ db, port: wantPort, host });
-await new Promise((resolve) => server.on("listening", resolve));
+await server.start();
 const actualPort = server.server?.address?.()?.port ?? wantPort;
 // Single machine-parseable readiness line. postgres user/pw are irrelevant
 // to PGlite's wire server but the URL must carry them for standard clients.
@@ -126,29 +145,26 @@ process.on("SIGTERM", shutdown);
 
 def _ensure_node_packages() -> bool:
     """Install the PGlite npm packages into the shared node dir if absent.
-    Idempotent — skips when package.json already lists them."""
+    Idempotent — skips when package.json already lists all required packages."""
     nd = _node_dir()
     pkg_json = nd / "package.json"
+    required_names = {name for name, _ in PACKAGES}
     need_install = True
     if pkg_json.exists():
         try:
             deps = json.loads(pkg_json.read_text()).get("dependencies", {})
-            if all(p.split("@")[0] in {k.split("@")[0] for k in deps} for p in
-                   [PGlite_PKG, SOCKET_PKG, PGVECTOR_PKG]):
+            if required_names <= set(deps):
                 need_install = False
         except Exception:
             pass
     if need_install:
         _log("info", f"installing PGlite npm packages into {nd} ...")
+        deps = {name: ver for name, ver in PACKAGES}
         pkg_json.write_text(json.dumps({
             "name": "celestia-pglite-host",
             "private": True,
             "type": "module",
-            "dependencies": {
-                PGlite_PKG.split("@")[0]: PGlite_PKG.split("@", 1)[1],
-                SOCKET_PKG.split("@")[0]: SOCKET_PKG.split("@", 1)[1],
-                PGVECTOR_PKG.split("@")[0]: PGVECTOR_PKG.split("@", 1)[1],
-            },
+            "dependencies": deps,
         }, indent=2))
         r = subprocess.run(["npm", "install", "--prefix", str(nd)],
                            capture_output=True, text=True)

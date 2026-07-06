@@ -197,6 +197,46 @@ def _enable_systemd(distro: str) -> None:
     _log("info", "wsl.conf written (systemd enabled); will take effect after restart")
 
 
+def _ensure_mirrored_networking() -> None:
+    """Configure %UserProfile%\\.wslconfig with networkingMode=mirrored so the
+    distro shares the host's network stack (no NAT isolation). Lets a service
+    bound inside the distro (e.g. PGlite on 127.0.0.1:PORT) be reachable from
+    Windows host code, and vice-versa — essential for the dev loop where the
+    Tauri client (Windows) talks to a backend (WSL2) on localhost.
+
+    Idempotent: merges the [wsl2] networkingMode key without clobbering other
+    settings the user may have. Only runs on Windows."""
+    if not _is_windows():
+        return
+    home = Path(os.path.expanduser("~"))
+    wslconfig = home / ".wslconfig"
+    desired = "networkingMode=mirrored"
+
+    existing = ""
+    if wslconfig.exists():
+        try:
+            existing = wslconfig.read_text()
+        except OSError:
+            pass
+
+    if desired in existing:
+        return  # already set — nothing to do
+
+    # Append or merge into [wsl2]. If there's no [wsl2] section, add one.
+    if "[wsl2]" in existing:
+        # Insert the key right after the [wsl2] header (first occurrence).
+        idx = existing.index("[wsl2]") + len("[wsl2]")
+        updated = existing[:idx] + f"\n{desired}" + existing[idx:]
+    else:
+        sep = "\n\n" if existing.strip() and not existing.endswith("\n\n") else ""
+        updated = (existing.rstrip("\n") + sep + "[wsl2]\n" + desired + "\n")
+    try:
+        wslconfig.write_text(updated)
+        _log("info", f"set {desired} in {wslconfig} (host<->distro port sharing; restart WSL to apply)")
+    except OSError as e:
+        _log("warn", f"could not write .wslconfig: {e}")
+
+
 def _provision_apt(distro: str) -> bool:
     """Install build essentials non-interactively."""
     _log("info", "installing apt packages (build-essential, pkg-config, libssl-dev, ...) ...")
@@ -343,7 +383,8 @@ def ensure(
 
     # Enable systemd before provisioning so docker's service can run.
     _enable_systemd(distro)
-    _log("info", "restarting distro to activate systemd ...")
+    _ensure_mirrored_networking()
+    _log("info", "restarting distro to activate systemd + mirrored networking ...")
     _run(["wsl", "--terminate", distro])
 
     if not _provision(distro, want_docker):
