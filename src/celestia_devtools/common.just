@@ -5,7 +5,7 @@
 # to parse the justfile, only to run the recipes.
 #
 # Refresh with:  celestia-devtools init --force
-# Version: 0.2.0
+# Version: 0.3.0
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import` line in your justfile to customize it.
@@ -110,6 +110,20 @@ clean-incremental:
 # Does NOT touch Rust or JS — compose with cargo fmt / pnpm lint yourself.
 fmt-markdown *ARGS='':
     {{ _devtools }} format-markdown . {{ARGS}}
+
+# ── Commit message lint ──────────────────────────────────────────────────────
+
+# Validate a commit message against the org gitmoji convention.
+# Pass the commit-msg file path (git passes $1 to the hook).
+commit-msg-lint FILE:
+    {{ _devtools }} commit-msg-lint check {{ FILE }}
+
+# Install (or refresh) the org commit-msg hook into .git/hooks/.
+# Normally triggered automatically by `celestia-devtools init`; call this
+# directly to reinstall after a force-override or to install into a fresh
+# checkout where init has already vendored the justfile.
+commit-msg-hook-install *ARGS='':
+    {{ _devtools }} hook install {{ ARGS }}
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 

@@ -1,0 +1,37 @@
+name: Commit Message Lint
+
+on:
+  workflow_call: {}
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  lint:
+    name: Lint commit messages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install celestia-devtools
+        run: pip install git+https://github.com/celestia-island/celestia-devtools.git@master
+
+      - name: Lint all commits in the PR
+        if: github.base_ref != ''
+        run: |
+          git log --format='%s' "origin/${{ github.base_ref }}..HEAD" | \
+          celestia-devtools commit-msg-lint check --stdin-subjects
+
+      # On push to master (no base_ref), lint the last commit
+      - name: Lint push to master
+        if: github.base_ref == '' && github.event_name == 'push'
+        run: |
+          git log -1 --format='%s' | \
+          celestia-devtools commit-msg-lint check --stdin-subjects

@@ -7,9 +7,10 @@ it to git; every clone gets it for free.
 
 Usage::
 
-    celestia-devtools init             # copy (or refresh if drifted)
+    celestia-devtools init             # copy (or refresh if drifted) + install hooks
     celestia-devtools init --force     # overwrite even if identical
     celestia-devtools init --check     # CI gate: exit 1 if drifted
+    celestia-devtools init --no-hooks  # skip automatic commit-msg hook install
 """
 
 from __future__ import annotations
@@ -57,6 +58,10 @@ def main() -> int:
     parser.add_argument(
         "--name", default=LINK_NAME,
         help=f"output filename (default: {LINK_NAME})",
+    )
+    parser.add_argument(
+        "--no-hooks", action="store_true",
+        help="skip automatic commit-msg hook install",
     )
     args = parser.parse_args()
 
@@ -106,6 +111,22 @@ def main() -> int:
     logger.ok(f"vendored {args.name} (v{__version__}) — commit this file to git")
 
     _check_justfile_import(args.name)
+
+    # ── Auto-install commit-msg hook ────────────────────────────────
+    if not args.no_hooks:
+        from celestia_devtools.vcs.hook import install_hook
+
+        hooks_dir = Path.cwd() / ".git" / "hooks"
+        if not hooks_dir.is_dir():
+            logger.info("not a git repository — skipping hook install")
+        else:
+            hook_path = hooks_dir / "commit-msg"
+            try:
+                install_hook(hook_path, devtools_bin=None, force=args.force)
+                logger.ok(f"installed commit-msg hook → {hook_path}")
+            except SystemExit:
+                logger.warn("hook install skipped (use --force to overwrite, --no-hooks to suppress)")
+
     return 0
 
 

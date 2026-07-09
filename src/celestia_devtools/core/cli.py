@@ -19,6 +19,8 @@ Commands::
     locate            Locate a celestia-island crate checkout
     init              Symlink common.just into a repo for justfile import
     include-path      Print the path to the bundled common.just
+    commit-msg-lint   Validate commit messages against the org gitmoji convention
+    hook              Manage the celestia-devtools commit-msg hook lifecycle
 
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
@@ -43,6 +45,8 @@ COMMANDS: dict[str, str] = {
     "serve": "celestia_devtools.env.serve",
     "locate": "celestia_devtools.repo.locate",
     "init": "celestia_devtools.repo.init",
+    "commit-msg-lint": "celestia_devtools.vcs.commit_msg",
+    "hook": "celestia_devtools.vcs.hook",
 }
 
 

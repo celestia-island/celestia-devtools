@@ -48,6 +48,8 @@ celestia-devtools format-markdown .    # format + lint Markdown files
 celestia-devtools prefetch .           # pre-stage deps for offline builds
 celestia-devtools check-cross-deps     # check cross-compilation prerequisites
 celestia-devtools locate               # locate a celestia-island crate checkout
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # lint a commit message
+celestia-devtools hook install         # install the org commit-msg hook
 ```
 
 ## justfile integration
