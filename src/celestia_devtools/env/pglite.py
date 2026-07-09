@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -140,6 +139,17 @@ const shutdown = async () => {
 };
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+// Guard against unhandled socket errors (e.g. ECONNRESET when a client
+// drops the connection abruptly). Without this, the Node process crashes
+// on the first client disconnect, taking the whole DB down with it.
+process.on("uncaughtException", (err) => {
+  if (err && (err.code === "ECONNRESET" || err.code === "EPIPE" || err.code === "ECONNABORTED")) {
+    // A client socket was reset — this is normal under aggressive connection
+    // pooling (sqlx opens/closes connections rapidly). Just log and continue.
+    return;
+  }
+  console.error("uncaughtException:", err);
+});
 """
 
 
@@ -167,7 +177,8 @@ def _ensure_node_packages() -> bool:
             "dependencies": deps,
         }, indent=2))
         r = subprocess.run(["npm", "install", "--prefix", str(nd)],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True,
+                           shell=os.name == "nt")
         if r.returncode != 0:
             _log("error", f"npm install failed:\n{r.stdout}\n{r.stderr}")
             return False
@@ -246,13 +257,20 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
     # capture the READY line; stderr inherited for visibility.
     log_path = _data_dir() / "pglite.log"
     log_f = log_path.open("w")
-    proc = subprocess.Popen(
-        ["node", str(launcher)],
-        cwd=str(_node_dir()), env=env,
-        stdout=subprocess.PIPE, stderr=log_f,
-        # New session on Unix so it survives the parent shell exiting.
-        start_new_session=True,
-    )
+    # On Windows, shell=True is needed to find node/npm from PATH.
+    # On Unix, start_new_session detaches from the parent.
+    popen_kwargs = {
+        "cwd": str(_node_dir()),
+        "env": env,
+        "stdout": subprocess.PIPE,
+        "stderr": log_f,
+    }
+    if os.name == "nt":
+        popen_kwargs["shell"] = True
+        proc = subprocess.Popen(f'node "{launcher}"', **popen_kwargs)
+    else:
+        popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(["node", str(launcher)], **popen_kwargs)
 
     # Wait up to 30s for the READY line.
     url = None

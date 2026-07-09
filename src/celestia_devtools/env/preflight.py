@@ -26,7 +26,7 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 from celestia_devtools.core import logger as _logger

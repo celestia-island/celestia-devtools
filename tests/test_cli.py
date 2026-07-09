@@ -10,8 +10,15 @@ from celestia_devtools.core.cli import COMMANDS, main
 
 class TestCommandRegistry:
     def test_all_commands_registered(self):
-        expected = {"cache-guard", "format-markdown", "prefetch",
-                    "check-cross-deps", "locate", "init"}
+        # The full set of commands the dispatcher knows about. Update this set
+        # whenever a command is added or removed in core/cli.py — keeping it an
+        # explicit literal (rather than set(COMMANDS)) guards against accidental
+        # removals of a command that downstream justfiles depend on.
+        expected = {
+            "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
+            "npm-dist", "preflight", "wsl-ensure", "pglite", "serve",
+            "locate", "init",
+        }
         assert set(COMMANDS.keys()) == expected
 
     @pytest.mark.parametrize("cmd,module_path", list(COMMANDS.items()))

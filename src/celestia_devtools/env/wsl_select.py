@@ -16,8 +16,6 @@ Usage::
 """
 from __future__ import annotations
 
-import json
-import sys
 
 from celestia_devtools.core import logger
 from celestia_devtools.env import host
@@ -84,9 +82,11 @@ echo "---end---"
     for line in text.splitlines():
         s = line.strip()
         if s == "---docker-info---":
-            phase = "docker"; continue
+            phase = "docker"
+            continue
         if s == "---podman-info---":
-            phase = "podman"; continue
+            phase = "podman"
+            continue
         if s == "---end---":
             break
         if phase == "tools" and s.startswith("tool:") and "=" in s:
