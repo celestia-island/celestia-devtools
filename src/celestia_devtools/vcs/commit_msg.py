@@ -37,6 +37,7 @@ from typing import List
 GITMOJI_WHITELIST: frozenset[str] = frozenset([
     "\U0001f3a8",    # ðŸŽ¨ :art:
     "\u26a1\ufe0f",  # âš¡ï¸ :zap:
+    "⚡",        # ⚡ :zap (without variation selector)
     "\U0001f525",    # ðŸ”¥ :fire:
     "\U0001f41b",    # ðŸ› :bug:
     "\U0001f691",    # ðŸš‘ :ambulance:
@@ -48,6 +49,7 @@ GITMOJI_WHITELIST: frozenset[str] = frozenset([
     "\u2705",        # âœ… :white_check_mark:
     "\U0001f512",    # ðŸ”’ :lock:
     "\U0001f516",    # ðŸ”– :bookmark:
+    "🔗",    # 🔗 :link (org: symlink/copilot)
     "\U0001f6a8",    # ðŸš¨ :rotating_light:
     "\U0001f6a7",    # ðŸš§ :construction:
     "\U0001f49a",    # ðŸ’š :green_heart:
@@ -108,6 +110,7 @@ GITMOJI_WHITELIST: frozenset[str] = frozenset([
     "\U0001f4b8",    # ðŸ’¸ :money_with_wings:
     "\U0001f9f5",    # ðŸ§µ :thread:
     "\U0001f9ba",    # ðŸ¦º :safety_vest:
+    "📜",    # 📜 :scroll (org: license)
 ])
 
 # ── Regexes (compiled once) ──────────────────────────────────────────────────

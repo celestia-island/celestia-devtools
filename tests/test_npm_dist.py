@@ -25,11 +25,14 @@ _HAS_NODE = pytest.mark.skipif(
 
 
 class TestPlatforms:
-    def test_canonical_matrix_has_three_targets(self):
+    def test_canonical_matrix_has_six_targets(self):
         targets = {p.rust_target for p in PLATFORMS}
         assert targets == {
             "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
             "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
             "x86_64-pc-windows-msvc",
         }
 
@@ -183,7 +186,7 @@ class TestStaging:
 
     def test_incremental_assembly_grows_root_deps(self, tmp_path, fake_binary, monkeypatch):
         out = tmp_path / "dist"
-        targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+        targets = [p.rust_target for p in PLATFORMS]
         for t in targets:
             monkeypatch.setattr(sys, "argv", [
                 "npm-dist", "--name", "demo", "--version", "0.4.2",
@@ -196,7 +199,7 @@ class TestStaging:
         assert set(root_pkg["optionalDependencies"]) == {
             "@celestia-island/demo" + p.npm_suffix for p in PLATFORMS
         }
-        # three subpackage dirs present
+        # one subpackage dir per platform
         sub_dirs = sorted(p.name for p in out.iterdir() if p.is_dir())
         assert sub_dirs == sorted("demo" + p.npm_suffix for p in PLATFORMS)
 

@@ -34,6 +34,10 @@ class Platform:
     node_os: str
     #: ``process.arch`` value Node reports on this CPU (``x64``/``arm64``).
     node_cpu: str
+    #: Whether this is a musl (statically linked) variant. Node cannot
+    #: distinguish glibc vs musl, so the install shim falls back to the musl
+    #: package only when the glibc one is absent or the user opts in via env.
+    musl: bool = False
 
     @property
     def subpackage_suffix(self) -> str:
@@ -42,6 +46,15 @@ class Platform:
 
 
 #: The canonical publishable matrix. Order matters only for stable test output.
+#:
+#: The matrix covers the platforms a typical npm user runs on in 2026:
+#:
+#: - **linux-x64 / linux-arm64** — the two server CPU classes (x86_64 cloud +
+#:   AWS Graviton / Ampere ARM).
+#: - **linux-x64-musl** — Alpine and distroless containers (statically linked).
+#: - **darwin-arm64** — Apple Silicon Macs (M1–M4).
+#: - **darwin-x64** — Intel Macs (Rosetta cannot run arm64 binaries on x64).
+#: - **win32-x64** — Windows on Intel/AMD.
 PLATFORMS: tuple[Platform, ...] = (
     Platform(
         rust_target="x86_64-unknown-linux-gnu",
@@ -50,10 +63,32 @@ PLATFORMS: tuple[Platform, ...] = (
         node_cpu="x64",
     ),
     Platform(
+        rust_target="aarch64-unknown-linux-gnu",
+        npm_suffix="-linux-arm64",
+        node_os="linux",
+        node_cpu="arm64",
+    ),
+    Platform(
+        rust_target="x86_64-unknown-linux-musl",
+        npm_suffix="-linux-x64-musl",
+        node_os="linux",
+        node_cpu="x64",
+        # Alpine/musl is still linux-x64 from Node's perspective; the suffix
+        # distinguishes the dynamically-vs-statically linked variants so a user
+        # on musl can opt in explicitly, while glibc users get the default.
+        musl=True,
+    ),
+    Platform(
         rust_target="aarch64-apple-darwin",
         npm_suffix="-darwin-arm64",
         node_os="darwin",
         node_cpu="arm64",
+    ),
+    Platform(
+        rust_target="x86_64-apple-darwin",
+        npm_suffix="-darwin-x64",
+        node_os="darwin",
+        node_cpu="x64",
     ),
     Platform(
         rust_target="x86_64-pc-windows-msvc",
