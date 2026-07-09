@@ -2,9 +2,12 @@
 # This justfile self-hosts: it imports its own common.just to demonstrate
 # the pattern that consumer repos follow.
 
-import "./src/celestia_devtools/common.just"
-
 set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]
+set unstable
+set lists
+
+import "./src/celestia_devtools/common.just"
 
 default:
     @just --list

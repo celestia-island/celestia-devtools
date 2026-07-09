@@ -34,6 +34,18 @@ COMMIT_MSG_FILE="$1"
 if [ -n "${CELESTIA_COMMIT_MSG_SKIP:-}" ]; then
     exit 0
 fi
+
+# ── master guard: reject direct merges ───────────────────────────────────────
+# Master only accepts squash commits.  Detect a live merge by the presence of
+# MERGE_HEAD and bail if we are on the master branch.
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || BRANCH=""
+if [ "$BRANCH" = "master" ] && git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    echo "error: master does not accept direct merges." >&2
+    echo "  Use 'git merge --squash <branch>' then commit the squashed result." >&2
+    exit 1
+fi
+
+# ── commit-message format lint ───────────────────────────────────────────────
 DEVTOOLS="@DEVTOOLS_BIN@"
 DEVTOOLS_BASE="${DEVTOOLS%% *}"
 if [ -n "$DEVTOOLS_BASE" ] && command -v "$DEVTOOLS_BASE" >/dev/null 2>&1; then
