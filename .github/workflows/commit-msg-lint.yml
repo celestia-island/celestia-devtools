@@ -26,12 +26,25 @@ jobs:
       - name: Lint all commits in the PR
         if: github.base_ref != ''
         run: |
-          git log --format='%s' "origin/${{ github.base_ref }}..HEAD" | \
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          RANGE="${BASE_SHA}..${HEAD_SHA}"
+          echo "Linting commits in range: $RANGE"
+          git log --format='%s' "$RANGE" | \
           celestia-devtools commit-msg-lint check --stdin-subjects
 
-      # On push to master (no base_ref), lint the last commit
-      - name: Lint push to master
+      # On push (no base_ref), lint all new commits in the push range.
+      - name: Lint all new commits on push
         if: github.base_ref == '' && github.event_name == 'push'
         run: |
-          git log -1 --format='%s' | \
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.event.after }}"
+          # github.event.before is all-zeros for the first push to a branch.
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$AFTER"
+          else
+            RANGE="${BEFORE}..${AFTER}"
+          fi
+          echo "Linting commits in range: $RANGE"
+          git log --format='%s' "$RANGE" | \
           celestia-devtools commit-msg-lint check --stdin-subjects
