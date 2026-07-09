@@ -121,7 +121,7 @@ _CONVENTIONAL_PREFIX_RE = re.compile(
 
 # Leading bare version number or filler phrases (after gitmoji and space).
 _VERSION_OR_FILLER_START_RE = re.compile(
-    r"^(?:v?\d+[.\d]+|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)",
+    r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)",
     re.IGNORECASE,
 )
 

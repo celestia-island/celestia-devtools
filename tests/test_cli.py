@@ -18,6 +18,7 @@ class TestCommandRegistry:
             "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
             "npm-dist", "preflight", "wsl-ensure", "pglite", "serve",
             "locate", "init",
+            "commit-msg-lint", "hook",
         }
         assert set(COMMANDS.keys()) == expected
 
