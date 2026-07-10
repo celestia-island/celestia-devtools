@@ -145,6 +145,17 @@ cross-check target='aarch64-unknown-linux-gnu' features='full':
 locate crate:
     {{ _devtools }} locate --crate {{crate}}
 
+# Auto-register all local celestia-island repos as cargo [patch] entries in
+# ~/.cargo/config.toml. Scans the sibling directory for git repos whose origin
+# points at celestia-island, discovers their workspace member crates, and writes
+# [patch] sections so cargo resolves every celestia crate to its local checkout.
+#
+#   just register-patches              scan + write
+#   just register-patches --dry-run    preview only
+#   just register-patches --repo hikari,lagrange   limit to specific repos
+register-patches *ARGS='':
+    {{ _devtools }} register-patches {{ARGS}}
+
 # ── WSL2 dev environment ──────────────────────────────────────────────────────
 #
 # The celestia ecosystem shares ONE persistent WSL2 distro (default
