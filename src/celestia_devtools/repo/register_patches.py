@@ -267,8 +267,14 @@ def generate_patch_sections(
 ) -> str:
     """Generate the ``[patch]`` TOML sections for all discovered repos.
 
-    Crates whose name is in *crates_io_names* go into ``[patch.crates-io]``;
-    the rest go into ``[patch."<git-url>"]`` per repo.
+    Every crate is registered in **both** ``[patch.crates-io]`` and its
+    repo's ``[patch."<git-url>"]`` section. Cargo silently ignores patch
+    entries that don't match any dependency in the crate graph, so
+    dual-registering is harmless and ensures the patch works whether a
+    crate is consumed as a version dep (crates.io) or a git dep.
+
+    The *crates_io_names* parameter is kept for API compatibility but no
+    longer affects the output — all crates go into both sections.
     """
     lines: list[str] = []
     lines.append("")
@@ -283,21 +289,18 @@ def generate_patch_sections(
     )
     lines.append("")
 
-    # Group crates: crates.io vs per-repo git patches.
-    crates_io_crates: list[CrateInfo] = []
+    all_crates: list[CrateInfo] = []
     per_repo: dict[str, list[CrateInfo]] = {}
 
     for repo in repos:
         for crate in repo.crates:
-            if crate.name in crates_io_names:
-                crates_io_crates.append(crate)
-            else:
-                per_repo.setdefault(repo.name, []).append(crate)
+            all_crates.append(crate)
+            per_repo.setdefault(repo.name, []).append(crate)
 
-    # Emit [patch.crates-io] section.
-    if crates_io_crates:
+    # Emit [patch.crates-io] section with ALL crates.
+    if all_crates:
         lines.append("[patch.crates-io]")
-        for crate in sorted(crates_io_crates, key=lambda c: c.name):
+        for crate in sorted(all_crates, key=lambda c: c.name):
             lines.append(
                 f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}'
             )
