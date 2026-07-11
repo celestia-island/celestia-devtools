@@ -3,7 +3,6 @@
 ALL dev-unique commits after the youngest shared-tree fork point.
 """
 import subprocess
-import sys
 import os
 from pathlib import Path
 
@@ -39,10 +38,9 @@ def fix_dev(repo_path: str, mb: str, old_dev_sha: str) -> bool:
         "log", old_dev_sha, "--format=%H %T", "--no-merges", "--reverse"
     ).split("\n")
 
-    fork_dev_idx = -1
     fork_master_sha = None
     commits = []
-    for i, line in enumerate(old_dev_commits):
+    for line in old_dev_commits:
         if not line.strip():
             continue
         sha, tree = line.split()
@@ -65,7 +63,7 @@ def fix_dev(repo_path: str, mb: str, old_dev_sha: str) -> bool:
     fork_dev_sha = commits[dev_unique_start - 1][0] if dev_unique_start > 0 else commits[0][0]
 
     if not dev_unique:
-        print(f"    no dev-unique commits after fork — resetting dev to master")
+        print("    no dev-unique commits after fork — resetting dev to master")
         git("checkout", "-q", "--force", mb)
         git("branch", "-f", "dev", mb)
         return True
@@ -86,7 +84,7 @@ def fix_dev(repo_path: str, mb: str, old_dev_sha: str) -> bool:
     except subprocess.CalledProcessError:
         subprocess.run(["git", "rebase", "--abort"], capture_output=True)
         subprocess.run(["git", "checkout", "-q", "--force", mb], capture_output=True)
-        print(f"    ⚠️ rebase conflict")
+        print("    ⚠️ rebase conflict")
         return False
 
     git("branch", "-f", "dev", "HEAD")
