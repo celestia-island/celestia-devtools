@@ -52,13 +52,37 @@ celestia-devtools locate               # поиск checkout'а crate'а celesti
 
 ## Интеграция с justfile
 
-Выполните `celestia-devtools init` в репозитории, чтобы добавить `common.just` как фиксируемый `celestia-devtools.just`, затем один раз импортируйте его в начале вашего justfile:
+Общие рецепты находятся в `common.just` и **по требованию** помещаются в gitignore-каталог `.just/` каждого репозитория — они никогда не коммитятся, поэтому не расходятся и не дублируются между репозиториями (копия на каждый репозиторий в стиле `gradlew` упразднена).
+
+Выполните `celestia-devtools init` в репозитории. Он помещает `.just/celestia-devtools.just`, добавляет `/.just/` в `.gitignore`, устанавливает хук commit-msg и выводит строку импорта. Добавьте ближе к началу вашего justfile:
 
 ```just
-import "./celestia-devtools.just"
+set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]   # Git Bash; обязательно на Windows
+set unstable
+set lists
+
+import? "./.just/celestia-devtools.just"   # `?` = опционально: парсится до размещения
 ```
 
-При новом checkout'е `just ensure` устанавливает пакет, а рецепты `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check` и `locate` становятся доступны. Все рецепты можно переопределять — полный список см. во включённом файле.
+Затем добавьте рецепт `fetch`, чтобы любой мог (пере)разместить общий файл:
+
+```just
+[script('bash')]
+fetch URL='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=.just/celestia-devtools.just; mkdir -p .just
+    if command -v celestia-devtools >/dev/null 2>&1; then cp "$(celestia-devtools include-path)" "$out"
+    else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
+```
+
+`import?` (опциональный импорт) позволяет свежему checkout'у разобрать justfile до размещения, поэтому ваши собственные рецепты всегда работают. Выполните `just fetch` (или `celestia-devtools init`), чтобы разместить общие рецепты — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch` и т. д. Все рецепты можно переопределять — переопределите любой после строки `import?`.
+
+**Замечание для Windows:** если `bash` разрешается в WSL (`just windows-shell-check` сообщает о перехвате), добавьте `usr/bin` Git'а в начало PATH:
+```powershell
+[Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+```
 
 ## Лицензия
 

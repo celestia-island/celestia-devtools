@@ -1,24 +1,31 @@
-# celestia-devtools common.just — vendored build recipes.
+# celestia-devtools common.just — shared build/devtool recipes.
 #
-# This file is COPIED into your repo by `celestia-devtools init`.
-# Commit it to git so every clone gets it — no package install needed
-# to parse the justfile, only to run the recipes.
+# This file is NOT committed to your repo. It is staged on demand into .just/
+# (gitignored) by `just fetch` in your justfile, then pulled in via an optional
+# import: `import? "./.just/celestia-devtools.just"`. The `?` lets a fresh clone
+# parse the justfile before fetch, so your own recipes always work.
 #
-# Refresh with:  celestia-devtools init --force
+# Stage or refresh it with:  just fetch
 # Version: 0.3.0
 #
 # All recipes and variables are overridable — redefine anything after the
-# `import` line in your justfile to customize it.
+# `import?` line in your justfile to customize it.
 #
 # This file is intentionally free of `set` directives (shell, windows-shell,
 # unstable) so it composes cleanly with each repo's own header.
 #
-# Windows note: `set windows-shell` only governs linewise recipes. Shebang
-# recipes bypass it and force `just` to call `cygpath` (which Git for Windows
-# keeps off PATH), so they die with "could not find cygpath executable". To
-# avoid that, the multi-line recipes below use the `[script('bash')]` attribute
-# (stable since just 1.32.0), which resolves the interpreter via PATH and never
-# calls cygpath. The `windows-shell-check` recipe below verifies bash is on PATH.
+# Windows note: the importing justfile MUST set `set windows-shell := ["bash.exe", "-c"]`
+# and `set shell := ["bash", "-c"]`. Linewise recipes run through windows-shell;
+# multi-line recipes below use the `[script('bash')]` attribute (stable since
+# just 1.32.0), which resolves `bash` via PATH and never calls cygpath.
+#
+# WSL caveat: if `C:\Windows\System32` precedes Git on PATH, `bash`/`bash.exe`
+# resolves to the WSL launcher (`C:\Windows\System32\bash.exe`) instead of Git
+# Bash. That breaks every recipe (WSL bash can't see the Windows temp path just
+# writes [script] bodies to, and inline env-var syntax fails). The
+# `windows-shell-check` recipe below detects this and prints a precise fix. To
+# avoid it permanently, prepend Git's usr/bin to PATH:
+#   [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 
 # ── Tool resolution ───────────────────────────────────────────────────────────
 
@@ -42,26 +49,19 @@ ensure:
         {{python_cmd}} -c "import celestia_devtools" 2>/dev/null || \
         pip3 install "${CELESTIA_DEVTOOLS_INSTALL:-git+https://github.com/celestia-island/celestia-devtools.git}"
 
-# Fail fast on Windows if the importing justfile forgot `set windows-shell`.
-# On Windows, `just` resolves recipe shebangs through `cygpath` when no
-# windows-shell is set, and Git for Windows does not put `cygpath` on PATH — so
-# every shebang recipe then dies with a cryptic "could not find cygpath
-# executable" error. This recipe surfaces the real cause up front. No-op on
-# non-Windows hosts.
-[script('bash')]
+# Fail fast on Windows if the importing justfile forgot `set windows-shell`,
+# OR if `bash` is shadowed by the WSL launcher (C:\Windows\System32\bash.exe).
+#
+# This recipe is LINewise (not [script]) on purpose: a [script('bash')] body is
+# written to a Windows temp path that WSL bash cannot see, so under WSL
+# shadowing the check itself would crash with "No such file or directory"
+# before it could report the problem. Linewise recipes run via windows-shell
+# (`bash.exe -c "<line>"`), which WSL bash can still execute, so the check
+# survives and can diagnose the hijack. No-op on non-Windows hosts.
 windows-shell-check:
-    set -euo pipefail
-    if [ "{{os_family()}}" != "windows" ]; then
-      echo "windows-shell-check: non-Windows host, nothing to check."
-      exit 0
-    fi
-    if ! command -v bash.exe >/dev/null 2>&1; then
-      echo "windows-shell-check: bash.exe not on PATH." >&2
-      echo "  Install Git for Windows, or add its usr/bin to PATH." >&2
-      exit 1
-    fi
-    echo "windows-shell-check: bash.exe found. Ensure the importing justfile sets:"
-    echo "  set windows-shell := [\"bash.exe\", \"-c\"]"
+    @if [ "{{os_family()}}" != "windows" ]; then echo "windows-shell-check: non-Windows host, OK."; exit 0; fi
+    @_u="$(uname -o 2>/dev/null || echo unknown)"; if [ "$_u" = "GNU/Linux" ] || [ -z "${MSYSTEM:-}" ]; then echo "windows-shell-check: HIJACK — 'bash' resolves to WSL ($_u), not Git Bash." >&2; echo "  Every recipe using bash syntax or [script('bash')] will fail." >&2; echo "  FIX (PowerShell, one-time, then restart terminal):" >&2; echo "    [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + \$env:PATH,'User')" >&2; exit 1; fi
+    @echo "windows-shell-check: OK — Git Bash detected."
 
 # ── Build helper ──────────────────────────────────────────────────────────────
 

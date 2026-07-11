@@ -52,13 +52,37 @@ celestia-devtools locate               # localizar un checkout de crate de celes
 
 ## Integración con justfile
 
-Ejecuta `celestia-devtools init` en un repositorio para incorporar `common.just` como un `celestia-devtools.just` versionado y luego impórtalo una vez al inicio de tu justfile:
+Las recetas compartidas viven en `common.just` y se **ubican bajo demanda** en el directorio `.just/` (gitignored) de cada repositorio — nunca se commitan, por lo que nunca se desincronizan ni se duplican entre repositorios (se elimina la copia por repositorio estilo `gradlew`).
+
+Ejecuta `celestia-devtools init` en un repositorio. Ubica `.just/celestia-devtools.just`, añade `/.just/` a `.gitignore`, instala el hook commit-msg e imprime la línea de import. Añade cerca del inicio de tu justfile:
 
 ```just
-import "./celestia-devtools.just"
+set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]   # Git Bash; obligatorio en Windows
+set unstable
+set lists
+
+import? "./.just/celestia-devtools.just"   # `?` = opcional: se analiza antes de la ubicación
 ```
 
-En un checkout nuevo, `just ensure` prepara el paquete y recetas como `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check` y `locate` quedan disponibles. Todas las recetas se pueden sobrescribir — consulta el archivo incorporado para la lista completa.
+Luego añade una receta `fetch` para que cualquiera pueda (re)ubicar el archivo compartido:
+
+```just
+[script('bash')]
+fetch URL='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=.just/celestia-devtools.just; mkdir -p .just
+    if command -v celestia-devtools >/dev/null 2>&1; then cp "$(celestia-devtools include-path)" "$out"
+    else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
+```
+
+`import?` (import opcional) permite que un checkout nuevo analice la justfile antes de la ubicación, de modo que tus propias recetas siempre funcionen. Ejecuta `just fetch` (o `celestia-devtools init`) para ubicar las recetas compartidas — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, etc. Todas las recetas se pueden sobrescribir — redefine cualquiera tras la línea `import?`.
+
+**Nota para Windows:** si `bash` resuelve a WSL (`just windows-shell-check` reporta un secuestro), antepone el `usr/bin` de Git al PATH:
+```powershell
+[Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+```
 
 ## Licencia
 

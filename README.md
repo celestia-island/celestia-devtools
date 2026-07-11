@@ -54,13 +54,38 @@ celestia-devtools hook install         # install the org commit-msg hook
 
 ## justfile integration
 
-Run `celestia-devtools init` in a repo to vendor `common.just` as a committed `celestia-devtools.just`, then import it once near the top of your justfile:
+The shared recipes live in `common.just` and are **staged on demand** into each repo's gitignored `.just/` directory — never committed, so they never drift or duplicate across repos (no `gradlew`-style per-repo copy).
+
+Run `celestia-devtools init` in a repo. It stages `.just/celestia-devtools.just`, adds `/.just/` to `.gitignore`, installs the commit-msg hook, and prints the import line. Add near the top of your justfile:
 
 ```just
-import "./celestia-devtools.just"
+set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]   # Git Bash; required on Windows
+set unstable
+set lists
+
+import? "./.just/celestia-devtools.just"   # `?` = optional: parses before staging
 ```
 
-On a fresh checkout, `just ensure` bootstraps the package and recipes such as `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, and `locate` become available. All recipes are overridable — see the vendored file for the full list.
+Then add a `fetch` recipe so anyone can (re)stage the shared file:
+
+```just
+[script('bash')]
+fetch URL='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=.just/celestia-devtools.just; mkdir -p .just
+    if command -v celestia-devtools >/dev/null 2>&1; then cp "$(celestia-devtools include-path)" "$out"
+    else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
+```
+
+`import?` (optional import) lets a fresh clone parse the justfile before staging, so your own recipes always work. Run `just fetch` (or `celestia-devtools init`) to stage the shared recipes — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, etc. All recipes are overridable — redefine any after the `import?` line.
+
+**Windows note:** if `bash` resolves to WSL (`just windows-shell-check` reports a hijack), prepend Git's `usr/bin` to PATH:
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+```
 
 ## License
 
