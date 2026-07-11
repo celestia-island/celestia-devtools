@@ -1,38 +1,34 @@
 #!/usr/bin/env python3
 """Auto-register local celestia-island checkouts as cargo ``[patch]`` entries.
 
-Scans the sibling directory (the standard celestia dev layout) for git
-repositories whose ``origin`` remote points at ``celestia-island/*.git``.
-For each repo, parses its workspace ``Cargo.toml`` to discover member
-crates (name + relative path), then writes/updates ``[patch]`` sections
-in ``~/.cargo/config.toml`` so that every celestia-island crate resolves
-to its local working copy.
+**On-demand mode (default, ``--per-repo``):** runs ``cargo metadata`` in the
+current repo to discover which celestia-island crates it ACTUALLY depends on
+(git/source deps), then writes ONLY those patches into the repo's own
+``.cargo/config.toml``. This avoids the ``was not used in the crate graph``
+warning storm that the legacy global mode caused by registering every crate
+in every repo.
+
+**Legacy global mode (``--global``):** the old behaviour — scan all sibling
+repos, register ALL of their crates into ``~/.cargo/config.toml``. Kept for
+back-compat but discouraged; use per-repo instead.
 
 Two kinds of patch sections are emitted:
 
 * ``[patch."https://github.com/celestia-island/<repo>.git"]`` — for crates
-  that other repos depend on as a **git dependency** (the typical case for
-  internal-only crates like ``arona``, ``hikari-*``, ``tairitsu-*``).
-* ``[patch.crates-io]`` — for crates that are **published to crates.io**
-  and consumed via a version dependency (e.g. ``aoba``, ``libnoa``).
-
-A crate is considered "published" if it has ``publish = true`` or no
-``publish`` field *and* a non-empty ``[package] description`` in its
-manifest (heuristic — the user can override with ``--crates-io``).
+  consumed as a git dependency.
+* ``[patch.crates-io]`` — for crates published to crates.io.
 
 Usage::
 
-    celestia-devtools register-patches
-    celestia-devtools register-patches --scan-dir /path/to/celestia
+    celestia-devtools register-patches              # per-repo (on-demand)
+    celestia-devtools register-patches --global     # legacy global mode
     celestia-devtools register-patches --dry-run
-    celestia-devtools register-patches --crates-io aoba,libnoa
-    celestia-devtools register-patches --repo lagrange,hikari
+    celestia-devtools register-patches --scan-dir /path/to/celestia
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import subprocess
 import sys
@@ -41,6 +37,9 @@ from typing import NamedTuple
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
 CARGO_CONFIG = Path.home() / ".cargo" / "config.toml"
+
+# Per-repo config: only patches the deps this repo actually uses.
+PER_REPO_CONFIG = Path.cwd() / ".cargo" / "config.toml"
 
 # Crates known to be published to crates.io and consumed via version deps.
 # Extended by the --crates-io flag. The defaults cover the current set.
@@ -256,6 +255,112 @@ def parse_workspace_crates(
 # ── config.toml generation ────────────────────────────────────────────────
 
 
+def discover_actual_celestia_deps() -> dict[str, str]:
+    """Run ``cargo metadata`` in cwd and return the celestia-island git deps.
+
+    Returns a ``{crate_name: source_url}`` dict where source_url is the
+    canonical ``https://github.com/celestia-island/<repo>.git`` form (the
+    ``?branch=dev`` query is stripped, since [patch] matches on the base URL).
+
+    Only deps whose source contains ``celestia-island`` are returned — these
+    are the ones that genuinely need a [patch] entry. Path deps and
+    crates.io deps don't need patching.
+    """
+    import json
+    try:
+        r = subprocess.run(
+            ["cargo", "metadata", "--format-version", "1"],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            return {}
+        data = json.loads(r.stdout)
+    except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
+        return {}
+
+    deps: dict[str, str] = {}
+    for pkg in data.get("packages", []):
+        for dep in pkg.get("dependencies", []):
+            src = dep.get("source") or ""
+            if "celestia-island" not in src:
+                continue
+            # Normalize: strip git+ prefix and ?branch= query → base URL.
+            # git+https://github.com/celestia-island/arona.git?branch=dev
+            # → https://github.com/celestia-island/arona.git
+            url = src
+            if url.startswith("git+"):
+                url = url[4:]
+            url = url.split("?")[0]
+            deps[dep["name"]] = url
+    return deps
+
+
+def generate_per_repo_patches(
+    actual_deps: dict[str, str],
+    repos: list[RepoInfo],
+    crates_io_names: set[str],
+) -> str:
+    """Generate [patch] sections for ONLY the deps this repo actually uses.
+
+    Filters the discovered sibling crates down to those in *actual_deps*,
+    then emits a ``[patch."<url>"]`` section per distinct git URL. This is
+    the on-demand mode that avoids the ``was not used in the crate graph``
+    warning storm.
+    """
+    # Build a lookup: crate_name → CrateInfo (from scanned sibling repos).
+    crate_index: dict[str, CrateInfo] = {}
+    for repo in repos:
+        for crate in repo.crates:
+            crate_index[crate.name] = crate
+
+    # Match actual deps to local crate paths, grouped by git URL.
+    # patches: {git_url: [(crate_name, local_path), ...]}
+    patches: dict[str, list[tuple[str, Path]]] = {}
+    crates_io_patches: list[tuple[str, Path]] = []
+    missing: list[str] = []
+
+    for dep_name, git_url in sorted(actual_deps.items()):
+        crate = crate_index.get(dep_name)
+        if crate is None:
+            missing.append(dep_name)
+            continue
+        if dep_name in crates_io_names or git_url == "crates-io":
+            crates_io_patches.append((dep_name, crate.path))
+        else:
+            patches.setdefault(git_url, []).append((dep_name, crate.path))
+
+    if missing:
+        print(
+            f"[register-patches] {len(missing)} dep(s) have no local checkout "
+            f"(will stay as git dep): {', '.join(sorted(missing))}",
+            file=sys.stderr,
+        )
+
+    if not patches and not crates_io_patches:
+        return ""  # No patches needed — repo uses only path/crates.io deps.
+
+    lines: list[str] = []
+    lines.append("")
+    lines.append("# ── celestia-devtools on-demand patches ───────────────────────────")
+    lines.append("# Generated by `celestia-devtools register-patches` (per-repo mode).")
+    lines.append("# Only patches deps this repo ACTUALLY uses — no crate-graph warnings.")
+    lines.append("")
+
+    if crates_io_patches:
+        lines.append("[patch.crates-io]")
+        for name, path in sorted(crates_io_patches):
+            lines.append(f'{name} = {{ path = "{_path_to_toml(path)}" }}')
+        lines.append("")
+
+    for git_url in sorted(patches):
+        lines.append(f'[patch."{git_url}"]')
+        for name, path in sorted(patches[git_url]):
+            lines.append(f'{name} = {{ path = "{_path_to_toml(path)}" }}')
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _path_to_toml(p: Path) -> str:
     """Convert a path to a TOML-safe string with forward slashes."""
     return str(p).replace("\\", "/")
@@ -433,6 +538,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Auto-register celestia-island repos as cargo [patch] entries",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--per-repo", action="store_true", default=True,
+        help="on-demand mode (DEFAULT): patch only deps this repo uses, "
+             "write to .cargo/config.toml",
+    )
+    mode.add_argument(
+        "--global", dest="global_mode", action="store_true",
+        help="legacy mode: register ALL sibling crates into ~/.cargo/config.toml",
+    )
     parser.add_argument(
         "--scan-dir", default=None,
         help="directory to scan for repos (default: parent of this repo)",
@@ -448,11 +563,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--repo", default=None,
-        help="comma-separated repo names to include (default: all discovered)",
+        help="(global mode only) comma-separated repo names to include",
     )
     parser.add_argument(
-        "--config", default=str(CARGO_CONFIG),
-        help=f"cargo config path (default: {CARGO_CONFIG})",
+        "--config", default=None,
+        help="cargo config path (default: per-repo → .cargo/config.toml; "
+             "global → ~/.cargo/config.toml)",
     )
     args = parser.parse_args()
 
@@ -460,42 +576,61 @@ def main() -> int:
     if args.scan_dir:
         scan_dir = Path(args.scan_dir)
     else:
-        # Default: the parent of the celestia dev layout. We find it by
-        # looking for the common ancestor of sibling repos — but the
-        # simplest heuristic is the parent of the current working dir.
         scan_dir = Path.cwd().parent
 
     print(f"[register-patches] scanning {scan_dir} …")
     repos = scan_celestia_repos(scan_dir)
-
     if not repos:
         print("[register-patches] no celestia-island repos found", file=sys.stderr)
         return 1
-
-    # Filter by --repo if specified.
-    if args.repo:
-        wanted = {r.strip() for r in args.repo.split(",") if r.strip()}
-        repos = [r for r in repos if r.name in wanted]
 
     crates_io_names = {
         n.strip() for n in args.crates_io.split(",") if n.strip()
     }
 
-    # Report what was found.
-    total_crates = sum(len(r.crates) for r in repos)
-    print(f"[register-patches] found {len(repos)} repo(s), {total_crates} crate(s):")
-    for repo in sorted(repos, key=lambda r: r.name):
-        print(f"  {repo.name}:")
-        for crate in repo.crates:
-            target = "crates-io" if crate.name in crates_io_names else "git-patch"
-            print(f"    {crate.name} → {target}")
+    # ── per-repo (on-demand) mode ──────────────────────────────
+    if not args.global_mode:
+        print("[register-patches] per-repo mode: analyzing actual dependencies …")
+        actual_deps = discover_actual_celestia_deps()
+        print(
+            f"[register-patches] {len(actual_deps)} celestia-island git dep(s) "
+            f"found in dependency graph"
+        )
+        for name, url in sorted(actual_deps.items()):
+            print(f"  {name} → {url}")
 
-    # Generate and merge.
+        new_sections = generate_per_repo_patches(actual_deps, repos, crates_io_names)
+        config_path = Path(args.config) if args.config else PER_REPO_CONFIG
+
+        if not new_sections:
+            # No patches needed — but still clean any stale managed section.
+            print(f"[register-patches] no patches needed → ensuring {config_path} is clean")
+            if config_path.is_file():
+                changed = update_cargo_config("", config_path, dry_run=args.dry_run)
+                if not changed:
+                    print("[register-patches] config already clean")
+            else:
+                print("[register-patches] no config file, nothing to do")
+            return 0
+
+        print(f"[register-patches] writing patches to {config_path}")
+        changed = update_cargo_config(new_sections, config_path, dry_run=args.dry_run)
+        if not changed:
+            print("[register-patches] config already up to date")
+        return 0
+
+    # ── legacy global mode ─────────────────────────────────────
+    print("[register-patches] GLOBAL MODE (legacy — consider --per-repo)")
+    if args.repo:
+        wanted = {r.strip() for r in args.repo.split(",") if r.strip()}
+        repos = [r for r in repos if r.name in wanted]
+
+    total_crates = sum(len(r.crates) for r in repos)
+    print(f"[register-patches] found {len(repos)} repo(s), {total_crates} crate(s)")
+
     new_sections = generate_patch_sections(repos, crates_io_names)
-    config_path = Path(args.config)
-    changed = update_cargo_config(
-        new_sections, config_path, dry_run=args.dry_run,
-    )
+    config_path = Path(args.config) if args.config else CARGO_CONFIG
+    changed = update_cargo_config(new_sections, config_path, dry_run=args.dry_run)
     if not changed:
         print("[register-patches] config already up to date")
     return 0
