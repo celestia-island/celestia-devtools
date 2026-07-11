@@ -180,9 +180,19 @@ malkuth_bin := if env("MALKUTH_BIN", "") != "" {
     "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
 }
 
+# Always-valid sibling-repo fallback path (used when malkuth_bin resolves to a
+# bare name that isn't actually on the script's PATH at runtime).
+malkuth_bin_rel := "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
+
 [script]
 dev-watch *ARGS:
-    set -euo pipefail
+    set -eu
+    # Ensure MSYS /usr/bin is on PATH (just spawns bash.exe without /etc/profile,
+    # so /usr/bin may be absent — breaks uname/cargo/etc.). Bash builtin only.
+    case ":$PATH:" in
+      *":/usr/bin:"*) ;;
+      *) PATH="/usr/bin:$PATH" ;;
+    esac
     # Split args at `--`: everything before = watch paths, after = command.
     watch_paths=()
     cmd=()
@@ -203,17 +213,13 @@ dev-watch *ARGS:
       echo "  e.g.  just dev-watch src -- cargo run" >&2
       exit 1
     fi
-    # Resolve malkuth binary — try the static path, then locate.
+    # Resolve malkuth: prefer {{malkuth_bin}} (just-resolved), verify with bash
+    # builtins only (no uname/which), fall back to sibling-repo release path.
     malkuth="{{malkuth_bin}}"
     if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
-      malkuth_path=$( {{python_cmd}} -m celestia_devtools locate --crate malkuth 2>/dev/null || true )
-      if [ -n "$malkuth_path" ]; then
-        suffix="target/release/malkuth"
-        case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) suffix="target/release/malkuth.exe" ;; esac
-        malkuth="$malkuth_path/$suffix"
-      fi
+      malkuth="{{ malkuth_bin_rel }}"
     fi
-    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
+    if [ ! -f "$malkuth" ]; then
       echo "[dev-watch] malkuth not found." >&2
       echo "[dev-watch] Build it: cd ../malkuth && cargo build --release --features cli" >&2
       echo "[dev-watch] Or set: export MALKUTH_BIN=/path/to/malkuth" >&2
