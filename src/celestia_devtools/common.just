@@ -147,16 +147,25 @@ locate crate:
 
 # ── File-watch dev server (malkuth) ──────────────────────────────────────────
 #
-# Wraps any command with malkuth's file-watching + auto-restart supervisor.
-# malkuth (celestia-island/malkuth) uses notify v8 for recursive directory
-# watching with 400 ms debounce, and kill+respawn on each change.
+# malkuth (celestia-island/malkuth) wraps any command with file-watching +
+# auto-restart: notify v8 recursive watch, 400 ms debounce, kill+respawn.
 #
-#   just dev-watch src -- cargo run
-#   just dev-watch src docs -- lagrange dev --src docs --port 3000
-#   just dev-watch packages -- cargo run --features full
+# RECOMMENDED PATTERN: do NOT call `just dev-watch` from your repo's `dev`
+# recipe — that forks a child `just` process which breaks under WSL PATH
+# shadowing (the child `just` isn't on WSL bash's PATH). Instead, make your
+# `dev` a self-contained [script] that calls malkuth directly:
 #
-# The first N positional args (before `--`) are watch paths. Everything after
-# `--` is the command to supervise.
+#   [script]
+#   dev:
+#       #!/usr/bin/env bash
+#       set -euo pipefail
+#       malkuth="{{malkuth_bin}}"
+#       # ... (resolve malkuth as shown in the dev-watch body below) ...
+#       exec "$malkuth" --watch src --watch docs --drain-secs 2 -- cargo run
+#
+# The `dev-watch` recipe below is kept as a reference implementation and for
+# ad-hoc use from the command line, but repos should inline it into their own
+# `dev` [script] recipe.
 #
 # Override the malkuth binary location with $MALKUTH_BIN or $MALKUTH_ROOT.
 
