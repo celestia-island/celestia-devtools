@@ -144,6 +144,80 @@ cross-check target='aarch64-unknown-linux-gnu' features='full':
 locate crate:
     {{ _devtools }} locate --crate {{crate}}
 
+# ── File-watch dev server (malkuth) ──────────────────────────────────────────
+#
+# Wraps any command with malkuth's file-watching + auto-restart supervisor.
+# malkuth (celestia-island/malkuth) uses notify v8 for recursive directory
+# watching with 400 ms debounce, and kill+respawn on each change.
+#
+#   just dev-watch src -- cargo run
+#   just dev-watch src docs -- lagrange dev --src docs --port 3000
+#   just dev-watch packages -- cargo run --features full
+#
+# The first N positional args (before `--`) are watch paths. Everything after
+# `--` is the command to supervise.
+#
+# Override the malkuth binary location with $MALKUTH_BIN or $MALKUTH_ROOT.
+
+# Resolve the malkuth binary path (env → PATH → sibling layout).
+malkuth_bin := if env("MALKUTH_BIN", "") != "" {
+    env("MALKUTH_BIN", "")
+} else if env("MALKUTH_ROOT", "") != "" {
+    env("MALKUTH_ROOT", "") + if os_family() == "windows" { "/target/release/malkuth.exe" } else { "/target/release/malkuth" }
+} else if which("malkuth") != "" {
+    "malkuth"
+} else {
+    "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
+}
+
+[script('bash')]
+dev-watch *ARGS:
+    set -euo pipefail
+    # Split args at `--`: everything before = watch paths, after = command.
+    watch_paths=()
+    cmd=()
+    found_sep=0
+    for arg in {{ARGS}}; do
+      if [ "$arg" = "--" ]; then
+        found_sep=1
+        continue
+      fi
+      if [ "$found_sep" = "1" ]; then
+        cmd+=("$arg")
+      else
+        watch_paths+=("$arg")
+      fi
+    done
+    if [ "${#cmd[@]}" -eq 0 ]; then
+      echo "usage: just dev-watch <watch-paths...> -- <command...>" >&2
+      echo "  e.g.  just dev-watch src -- cargo run" >&2
+      exit 1
+    fi
+    # Resolve malkuth binary — try the static path, then locate.
+    malkuth="{{malkuth_bin}}"
+    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
+      malkuth_path=$( {{python_cmd}} -m celestia_devtools locate --crate malkuth 2>/dev/null || true )
+      if [ -n "$malkuth_path" ]; then
+        suffix="target/release/malkuth"
+        case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) suffix="target/release/malkuth.exe" ;; esac
+        malkuth="$malkuth_path/$suffix"
+      fi
+    fi
+    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
+      echo "[dev-watch] malkuth not found." >&2
+      echo "[dev-watch] Build it: cd ../malkuth && cargo build --release --features cli" >&2
+      echo "[dev-watch] Or set: export MALKUTH_BIN=/path/to/malkuth" >&2
+      exit 1
+    fi
+    # Build --watch flags.
+    watch_flags=()
+    for p in "${watch_paths[@]}"; do
+      watch_flags+=(--watch "$p")
+    done
+    echo "[dev-watch] supervising: ${cmd[*]}"
+    echo "[dev-watch] watching: ${watch_paths[*]}"
+    exec "$malkuth" "${watch_flags[@]}" --drain-secs 2 -- "${cmd[@]}"
+
 # Auto-register all local celestia-island repos as cargo [patch] entries in
 # ~/.cargo/config.toml. Scans the sibling directory for git repos whose origin
 # points at celestia-island, discovers their workspace member crates, and writes
