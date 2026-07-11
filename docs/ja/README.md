@@ -80,6 +80,7 @@ fetch URL='':
 `import?`（オプション import）により、stage 前の新規チェックアウトでも justfile を解析でき、自身の recipe は常に動作します。`just fetch`（または `celestia-devtools init`）を実行して共有 recipe を stage してください——`cache-guard`、`fmt-markdown`、`prefetch`、`cross-check`、`locate`、`pglite`、`wsl-ensure`、`dev-watch` など。すべての recipe は上書き可能です——`import?` 行の後に再定義してください。
 
 **Windows の注意：** `bash` が WSL に解決される場合（`just windows-shell-check` が乗っ取りを報告）、Git の `usr/bin` を PATH の先頭に追加します：
+
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```

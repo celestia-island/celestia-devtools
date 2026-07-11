@@ -80,6 +80,7 @@ fetch URL='':
 `import?` (import optionnel) permet à un nouveau checkout d'analyser la justfile avant la mise en place, de sorte que vos propres recettes fonctionnent toujours. Exécutez `just fetch` (ou `celestia-devtools init`) pour mettre en place les recettes partagées — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, etc. Toutes les recettes sont surchargeables — redéfinissez-les après la ligne `import?`.
 
 **Note Windows :** si `bash` pointe vers WSL (`just windows-shell-check` signale un détournement), ajoutez le `usr/bin` de Git en tête du PATH :
+
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```

@@ -80,6 +80,7 @@ fetch URL='':
 `import?` (опциональный импорт) позволяет свежему checkout'у разобрать justfile до размещения, поэтому ваши собственные рецепты всегда работают. Выполните `just fetch` (или `celestia-devtools init`), чтобы разместить общие рецепты — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch` и т. д. Все рецепты можно переопределять — переопределите любой после строки `import?`.
 
 **Замечание для Windows:** если `bash` разрешается в WSL (`just windows-shell-check` сообщает о перехвате), добавьте `usr/bin` Git'а в начало PATH:
+
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```

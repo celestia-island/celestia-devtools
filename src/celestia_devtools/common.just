@@ -16,15 +16,16 @@
 #
 # Windows note: the importing justfile MUST set `set windows-shell := ["bash.exe", "-c"]`
 # and `set shell := ["bash", "-c"]`. Linewise recipes run through windows-shell;
-# multi-line recipes below use the `[script('bash')]` attribute (stable since
-# just 1.32.0), which resolves `bash` via PATH and never calls cygpath.
+# multi-line recipes below use the empty `[script]` attribute (stable since
+# just 1.32.0), whose interpreter comes from `set script-interpreter` — supplied
+# by the staged `.just/git-bash-interop.just` (run `celestia-devtools init`).
 #
-# WSL caveat: if `C:\Windows\System32` precedes Git on PATH, `bash`/`bash.exe`
-# resolves to the WSL launcher (`C:\Windows\System32\bash.exe`) instead of Git
-# Bash. That breaks every recipe (WSL bash can't see the Windows temp path just
-# writes [script] bodies to, and inline env-var syntax fails). The
-# `windows-shell-check` recipe below detects this and prints a precise fix. To
-# avoid it permanently, prepend Git's usr/bin to PATH:
+# WSL caveat: an explicit `[script('bash')]` would resolve `bash` via PATH, and
+# if `C:\Windows\System32` precedes Git, that hits the WSL launcher — which can't
+# see the Windows temp path just writes [script] bodies to. So these recipes use
+# empty `[script]` instead, letting the interop file pin them to the resolved Git
+# Bash absolute path. `celestia-devtools init` stages that file automatically.
+# The `windows-shell-check` recipe below still detects a residual hijack.
 #   [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 
 # ── Tool resolution ───────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ ensure:
 # Fail fast on Windows if the importing justfile forgot `set windows-shell`,
 # OR if `bash` is shadowed by the WSL launcher (C:\Windows\System32\bash.exe).
 #
-# This recipe is LINewise (not [script]) on purpose: a [script('bash')] body is
+# This recipe is LINewise (not [script]) on purpose: a [script] body is
 # written to a Windows temp path that WSL bash cannot see, so under WSL
 # shadowing the check itself would crash with "No such file or directory"
 # before it could report the problem. Linewise recipes run via windows-shell
@@ -60,7 +61,7 @@ ensure:
 # survives and can diagnose the hijack. No-op on non-Windows hosts.
 windows-shell-check:
     @if [ "{{os_family()}}" != "windows" ]; then echo "windows-shell-check: non-Windows host, OK."; exit 0; fi
-    @_u="$(uname -o 2>/dev/null || echo unknown)"; if [ "$_u" = "GNU/Linux" ] || [ -z "${MSYSTEM:-}" ]; then echo "windows-shell-check: HIJACK — 'bash' resolves to WSL ($_u), not Git Bash." >&2; echo "  Every recipe using bash syntax or [script('bash')] will fail." >&2; echo "  FIX (PowerShell, one-time, then restart terminal):" >&2; echo "    [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + \$env:PATH,'User')" >&2; exit 1; fi
+    @_u="$(uname -o 2>/dev/null || echo unknown)"; if [ "$_u" = "GNU/Linux" ] || [ -z "${MSYSTEM:-}" ]; then echo "windows-shell-check: HIJACK — 'bash' resolves to WSL ($_u), not Git Bash." >&2; echo "  Every recipe using bash syntax or [script] will fail." >&2; echo "  FIX (PowerShell, one-time, then restart terminal):" >&2; echo "    [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + \$env:PATH,'User')" >&2; exit 1; fi
     @echo "windows-shell-check: OK — Git Bash detected."
 
 # ── Build helper ──────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ windows-shell-check:
 # Flags (consumed from *FLAGS):
 #   --dev    use the dev command instead of release
 #   --clean  cargo clean before building
-[script('bash')]
+[script]
 _build always_pre dcmd rcmd *FLAGS='':
     set -euo pipefail
     profile=release
@@ -170,7 +171,7 @@ malkuth_bin := if env("MALKUTH_BIN", "") != "" {
     "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
 }
 
-[script('bash')]
+[script]
 dev-watch *ARGS:
     set -euo pipefail
     # Split args at `--`: everything before = watch paths, after = command.
@@ -295,7 +296,7 @@ pglite *ARGS='':
 # Per-platform subpackages are staged from CI (one matrix job per target),
 # then a final job reassembles the root. Actual `npm publish` runs in CI; this
 # recipe only stages + `npm pack --dry-run` so you can inspect the tarball.
-[script('bash')]
+[script]
 npm-dist name version='' binary='' target='':
     set -euo pipefail
     # Assemble the npm-dist CLI args. just params are not bash vars, so we test
@@ -315,7 +316,7 @@ npm-dist name version='' binary='' target='':
 # Publish the staged packages to npm (requires NPM_TOKEN in the environment).
 # Intended for CI; prompts interactively for the OTP if 2FA is on.
 # Override the tag with NPM_DIST_TAG (default: latest).
-[script('bash')]
+[script]
 npm-release *PKGS='':
     set -euo pipefail
     cd dist

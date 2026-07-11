@@ -80,6 +80,7 @@ fetch URL='':
 `import?`（選用匯入）讓全新檢出的倉庫在 stage 前也能解析 justfile，你自己的 recipe 始終可用。執行 `just fetch`（或 `celestia-devtools init`）來 stage 共享 recipe——`cache-guard`、`fmt-markdown`、`prefetch`、`cross-check`、`locate`、`pglite`、`wsl-ensure`、`dev-watch` 等。所有 recipe 皆可覆寫——在 `import?` 行之後重新定義即可。
 
 **Windows 注意：** 若 `bash` 被解析到 WSL（`just windows-shell-check` 報告劫持），請將 Git 的 `usr/bin` 前置到 PATH：
+
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```

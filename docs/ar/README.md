@@ -82,6 +82,7 @@ fetch URL='':
 يتيح `import?` (الاستيراد الاختياري) للنسخة الجديدة تحليل ملف justfile قبل التجهيز، لذا فإن وصفاتك الخاصة تعمل دائمًا. شغّل `just fetch` (أو `celestia-devtools init`) لتجهيز الوصفات المشتركة — `cache-guard` و`fmt-markdown` و`prefetch` و`cross-check` و`locate` و`pglite` و`wsl-ensure` و`dev-watch` وغيرها. جميع الوصفات قابلة لإعادة التعريف — أعد تعريف أي منها بعد سطر `import?`.
 
 **ملاحظة لـ Windows:** إذا كان `bash` يحلّ إلى WSL (`just windows-shell-check` يُبلغ عن اختطاف)، فألحق `usr/bin` الخاص بـ Git بمقدمة PATH:
+
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
