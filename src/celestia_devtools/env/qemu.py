@@ -81,6 +81,15 @@ def check_qemu() -> list[QemuProbe]:
     return results
 
 
+def _is_wsl() -> bool:
+    """Check if running inside WSL2."""
+    try:
+        with open("/proc/version", "r") as f:
+            return "microsoft" in f.read().lower()
+    except Exception:
+        return False
+
+
 def _install_linux(archs: list[str]) -> bool:
     """Install QEMU on Linux (try apt, then conda)."""
     # Try apt with sudo (passwordless or cached sudo)
@@ -113,6 +122,20 @@ def _install_linux(archs: list[str]) -> bool:
             return True
     except Exception:
         pass
+
+    # Try celestia-dev WSL distro (root by default, no password needed)
+    if platform.system() == "Windows" or _is_wsl():
+        try:
+            result = subprocess.run(
+                ["wsl", "-d", "celestia-dev", "--",
+                 "apt-get", "install", "-y"] + missing,
+                capture_output=True, text=True, timeout=120
+            )
+            if result.returncode == 0:
+                log.info(f"Installed via celestia-dev WSL: {', '.join(missing)}")
+                return True
+        except Exception:
+            pass
 
     # Try conda
     conda = shutil.which("conda")

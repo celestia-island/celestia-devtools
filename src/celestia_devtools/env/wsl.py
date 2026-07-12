@@ -62,6 +62,15 @@ APT_PACKAGES = [
     "git",
     "nodejs",
     "npm",
+    # QEMU for cross-architecture testing (kei x86_64/riscv64/aarch64)
+    "qemu-system-arm",
+    "qemu-system-x86",
+    "qemu-system-misc",
+    "qemu-user-static",
+    "gdb-multiarch",
+    # Cross-compilers for kei/aris musl builds
+    "gcc-aarch64-linux-gnu",
+    "libc6-dev-arm64-cross",
 ]
 
 
