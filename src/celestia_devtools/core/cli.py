@@ -42,6 +42,7 @@ COMMANDS: dict[str, str] = {
     "npm-dist": "celestia_devtools.npm.dist",
     "preflight": "celestia_devtools.env.preflight",
     "wsl-ensure": "celestia_devtools.env.wsl",
+    "qemu-ensure": "celestia_devtools.env.qemu",
     "pglite": "celestia_devtools.env.pglite",
     "serve": "celestia_devtools.env.serve",
     "locate": "celestia_devtools.repo.locate",

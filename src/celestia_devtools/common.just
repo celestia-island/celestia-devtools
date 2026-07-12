@@ -269,6 +269,18 @@ wsl-run *CMD='echo "usage: just wsl-run <command>"':
 wsl-shell:
     wsl -d celestia-dev --cd "{{ justfile_directory() }}"
 
+# ── QEMU cross-architecture testing ──────────────────────────────────────────
+#
+# Ensure QEMU system emulators are installed for multi-arch testing
+# (aarch64, x86_64, riscv64). Cross-platform: detects Windows QEMU, Linux
+# apt/conda, macOS Homebrew — no root password required when possible.
+#
+#   just qemu-ensure              check/install all archs
+#   just qemu-ensure --check      report status only (no install)
+#   just qemu-ensure aarch64      ensure only aarch64
+qemu-ensure *ARGS='':
+    {{ _devtools }} qemu-ensure {{ARGS}}
+
 # ── Environment preflight ────────────────────────────────────────────────────
 #
 # Verify required dev tools are present BEFORE a facility (pglite, build,
