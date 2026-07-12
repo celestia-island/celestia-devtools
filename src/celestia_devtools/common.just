@@ -1,24 +1,32 @@
-# celestia-devtools common.just — vendored build recipes.
+# celestia-devtools common.just — shared build/devtool recipes.
 #
-# This file is COPIED into your repo by `celestia-devtools init`.
-# Commit it to git so every clone gets it — no package install needed
-# to parse the justfile, only to run the recipes.
+# This file is NOT committed to your repo. It is staged on demand into .just/
+# (gitignored) by `just fetch` in your justfile, then pulled in via an optional
+# import: `import? "./.just/celestia-devtools.just"`. The `?` lets a fresh clone
+# parse the justfile before fetch, so your own recipes always work.
 #
-# Refresh with:  celestia-devtools init --force
+# Stage or refresh it with:  just fetch
 # Version: 0.3.0
 #
 # All recipes and variables are overridable — redefine anything after the
-# `import` line in your justfile to customize it.
+# `import?` line in your justfile to customize it.
 #
 # This file is intentionally free of `set` directives (shell, windows-shell,
 # unstable) so it composes cleanly with each repo's own header.
 #
-# Windows note: `set windows-shell` only governs linewise recipes. Shebang
-# recipes bypass it and force `just` to call `cygpath` (which Git for Windows
-# keeps off PATH), so they die with "could not find cygpath executable". To
-# avoid that, the multi-line recipes below use the `[script('bash')]` attribute
-# (stable since just 1.32.0), which resolves the interpreter via PATH and never
-# calls cygpath. The `windows-shell-check` recipe below verifies bash is on PATH.
+# Windows note: the importing justfile MUST set `set windows-shell := ["bash.exe", "-c"]`
+# and `set shell := ["bash", "-c"]`. Linewise recipes run through windows-shell;
+# multi-line recipes below use the empty `[script]` attribute (stable since
+# just 1.32.0), whose interpreter comes from `set script-interpreter` — supplied
+# by the staged `.just/git-bash-interop.just` (run `celestia-devtools init`).
+#
+# WSL caveat: an explicit `[script('bash')]` would resolve `bash` via PATH, and
+# if `C:\Windows\System32` precedes Git, that hits the WSL launcher — which can't
+# see the Windows temp path just writes [script] bodies to. So these recipes use
+# empty `[script]` instead, letting the interop file pin them to the resolved Git
+# Bash absolute path. `celestia-devtools init` stages that file automatically.
+# The `windows-shell-check` recipe below still detects a residual hijack.
+#   [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 
 # ── Tool resolution ───────────────────────────────────────────────────────────
 
@@ -42,26 +50,19 @@ ensure:
         {{python_cmd}} -c "import celestia_devtools" 2>/dev/null || \
         pip3 install "${CELESTIA_DEVTOOLS_INSTALL:-git+https://github.com/celestia-island/celestia-devtools.git}"
 
-# Fail fast on Windows if the importing justfile forgot `set windows-shell`.
-# On Windows, `just` resolves recipe shebangs through `cygpath` when no
-# windows-shell is set, and Git for Windows does not put `cygpath` on PATH — so
-# every shebang recipe then dies with a cryptic "could not find cygpath
-# executable" error. This recipe surfaces the real cause up front. No-op on
-# non-Windows hosts.
-[script('bash')]
+# Fail fast on Windows if the importing justfile forgot `set windows-shell`,
+# OR if `bash` is shadowed by the WSL launcher (C:\Windows\System32\bash.exe).
+#
+# This recipe is LINewise (not [script]) on purpose: a [script] body is
+# written to a Windows temp path that WSL bash cannot see, so under WSL
+# shadowing the check itself would crash with "No such file or directory"
+# before it could report the problem. Linewise recipes run via windows-shell
+# (`bash.exe -c "<line>"`), which WSL bash can still execute, so the check
+# survives and can diagnose the hijack. No-op on non-Windows hosts.
 windows-shell-check:
-    set -euo pipefail
-    if [ "{{os_family()}}" != "windows" ]; then
-      echo "windows-shell-check: non-Windows host, nothing to check."
-      exit 0
-    fi
-    if ! command -v bash.exe >/dev/null 2>&1; then
-      echo "windows-shell-check: bash.exe not on PATH." >&2
-      echo "  Install Git for Windows, or add its usr/bin to PATH." >&2
-      exit 1
-    fi
-    echo "windows-shell-check: bash.exe found. Ensure the importing justfile sets:"
-    echo "  set windows-shell := [\"bash.exe\", \"-c\"]"
+    @if [ "{{os_family()}}" != "windows" ]; then echo "windows-shell-check: non-Windows host, OK."; exit 0; fi
+    @_u="$(uname -o 2>/dev/null || echo unknown)"; if [ "$_u" = "GNU/Linux" ] || [ -z "${MSYSTEM:-}" ]; then echo "windows-shell-check: HIJACK — 'bash' resolves to WSL ($_u), not Git Bash." >&2; echo "  Every recipe using bash syntax or [script] will fail." >&2; echo "  FIX (PowerShell, one-time, then restart terminal):" >&2; echo "    [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + \$env:PATH,'User')" >&2; exit 1; fi
+    @echo "windows-shell-check: OK — Git Bash detected."
 
 # ── Build helper ──────────────────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ windows-shell-check:
 # Flags (consumed from *FLAGS):
 #   --dev    use the dev command instead of release
 #   --clean  cargo clean before building
-[script('bash')]
+[script]
 _build always_pre dcmd rcmd *FLAGS='':
     set -euo pipefail
     profile=release
@@ -144,6 +145,95 @@ cross-check target='aarch64-unknown-linux-gnu' features='full':
 locate crate:
     {{ _devtools }} locate --crate {{crate}}
 
+# ── File-watch dev server (malkuth) ──────────────────────────────────────────
+#
+# malkuth (celestia-island/malkuth) wraps any command with file-watching +
+# auto-restart: notify v8 recursive watch, 400 ms debounce, kill+respawn.
+#
+# RECOMMENDED PATTERN: do NOT call `just dev-watch` from your repo's `dev`
+# recipe — that forks a child `just` process which breaks under WSL PATH
+# shadowing (the child `just` isn't on WSL bash's PATH). Instead, make your
+# `dev` a self-contained [script] that calls malkuth directly:
+#
+#   [script]
+#   dev:
+#       #!/usr/bin/env bash
+#       set -euo pipefail
+#       malkuth="{{malkuth_bin}}"
+#       # ... (resolve malkuth as shown in the dev-watch body below) ...
+#       exec "$malkuth" --watch src --watch docs --drain-secs 2 -- cargo run
+#
+# The `dev-watch` recipe below is kept as a reference implementation and for
+# ad-hoc use from the command line, but repos should inline it into their own
+# `dev` [script] recipe.
+#
+# Override the malkuth binary location with $MALKUTH_BIN or $MALKUTH_ROOT.
+
+# Resolve the malkuth binary path (env → PATH → sibling layout).
+malkuth_bin := if env("MALKUTH_BIN", "") != "" {
+    env("MALKUTH_BIN", "")
+} else if env("MALKUTH_ROOT", "") != "" {
+    env("MALKUTH_ROOT", "") + if os_family() == "windows" { "/target/release/malkuth.exe" } else { "/target/release/malkuth" }
+} else if which("malkuth") != "" {
+    "malkuth"
+} else {
+    "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
+}
+
+# Always-valid sibling-repo fallback path (used when malkuth_bin resolves to a
+# bare name that isn't actually on the script's PATH at runtime).
+malkuth_bin_rel := "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
+
+[script]
+dev-watch *ARGS:
+    set -eu
+    # Ensure MSYS /usr/bin is on PATH (just spawns bash.exe without /etc/profile,
+    # so /usr/bin may be absent — breaks uname/cargo/etc.). Bash builtin only.
+    case ":$PATH:" in
+      *":/usr/bin:"*) ;;
+      *) PATH="/usr/bin:$PATH" ;;
+    esac
+    # Split args at `--`: everything before = watch paths, after = command.
+    watch_paths=()
+    cmd=()
+    found_sep=0
+    for arg in {{ARGS}}; do
+      if [ "$arg" = "--" ]; then
+        found_sep=1
+        continue
+      fi
+      if [ "$found_sep" = "1" ]; then
+        cmd+=("$arg")
+      else
+        watch_paths+=("$arg")
+      fi
+    done
+    if [ "${#cmd[@]}" -eq 0 ]; then
+      echo "usage: just dev-watch <watch-paths...> -- <command...>" >&2
+      echo "  e.g.  just dev-watch src -- cargo run" >&2
+      exit 1
+    fi
+    # Resolve malkuth: prefer {{malkuth_bin}} (just-resolved), verify with bash
+    # builtins only (no uname/which), fall back to sibling-repo release path.
+    malkuth="{{malkuth_bin}}"
+    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
+      malkuth="{{ malkuth_bin_rel }}"
+    fi
+    if [ ! -f "$malkuth" ]; then
+      echo "[dev-watch] malkuth not found." >&2
+      echo "[dev-watch] Build it: cd ../malkuth && cargo build --release --features cli" >&2
+      echo "[dev-watch] Or set: export MALKUTH_BIN=/path/to/malkuth" >&2
+      exit 1
+    fi
+    # Build --watch flags.
+    watch_flags=()
+    for p in "${watch_paths[@]}"; do
+      watch_flags+=(--watch "$p")
+    done
+    echo "[dev-watch] supervising: ${cmd[*]}"
+    echo "[dev-watch] watching: ${watch_paths[*]}"
+    exec "$malkuth" "${watch_flags[@]}" --drain-secs 2 -- "${cmd[@]}"
+
 # Auto-register all local celestia-island repos as cargo [patch] entries in
 # ~/.cargo/config.toml. Scans the sibling directory for git repos whose origin
 # points at celestia-island, discovers their workspace member crates, and writes
@@ -178,6 +268,18 @@ wsl-run *CMD='echo "usage: just wsl-run <command>"':
 # Drop into an interactive shell in the distro at the repo root.
 wsl-shell:
     wsl -d celestia-dev --cd "{{ justfile_directory() }}"
+
+# ── QEMU cross-architecture testing ──────────────────────────────────────────
+#
+# Ensure QEMU system emulators are installed for multi-arch testing
+# (aarch64, x86_64, riscv64). Cross-platform: detects Windows QEMU, Linux
+# apt/conda, macOS Homebrew — no root password required when possible.
+#
+#   just qemu-ensure              check/install all archs
+#   just qemu-ensure --check      report status only (no install)
+#   just qemu-ensure aarch64      ensure only aarch64
+qemu-ensure *ARGS='':
+    {{ _devtools }} qemu-ensure {{ARGS}}
 
 # ── Environment preflight ────────────────────────────────────────────────────
 #
@@ -221,7 +323,7 @@ pglite *ARGS='':
 # Per-platform subpackages are staged from CI (one matrix job per target),
 # then a final job reassembles the root. Actual `npm publish` runs in CI; this
 # recipe only stages + `npm pack --dry-run` so you can inspect the tarball.
-[script('bash')]
+[script]
 npm-dist name version='' binary='' target='':
     set -euo pipefail
     # Assemble the npm-dist CLI args. just params are not bash vars, so we test
@@ -241,7 +343,7 @@ npm-dist name version='' binary='' target='':
 # Publish the staged packages to npm (requires NPM_TOKEN in the environment).
 # Intended for CI; prompts interactively for the OTP if 2FA is on.
 # Override the tag with NPM_DIST_TAG (default: latest).
-[script('bash')]
+[script]
 npm-release *PKGS='':
     set -euo pipefail
     cd dist

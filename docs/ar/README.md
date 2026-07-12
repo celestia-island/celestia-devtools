@@ -54,13 +54,38 @@ celestia-devtools locate               # تحديد موقع نسخة crate من
 
 ## التكامل مع justfile
 
-شغّل `celestia-devtools init` داخل مستودع لإضافة `common.just` كملف `celestia-devtools.just` مُتابَع، ثم استورده مرة واحدة قرب أعلى ملف justfile لديك:
+تتواجد الوصفات المشتركة في `common.just` وتُجهَّز **عند الطلب** داخل دليل `.just/` المتجاهَل من git في كل مستودع — لا تُلتزَم أبدًا، وبالتالي لا تنحرف ولا تتكرر بين المستودعات (ألغينا نموذج النسخ لكل مستودع على غرار `gradlew`).
+
+شغّل `celestia-devtools init` داخل مستودع. سيُجهِّز `.just/celestia-devtools.just`، ويضيف `/.just/` إلى `.gitignore`، ويثبّت خطّاف commit-msg، ويطبع سطر الاستيراد. أضف قرب أعلى ملف justfile لديك:
 
 ```just
-import "./celestia-devtools.just"
+set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]   # Git Bash؛ مطلوب على Windows
+set unstable
+set lists
+
+import? "./.just/celestia-devtools.just"   # `?` = اختياري: يُحلَّل قبل التجهيز
 ```
 
-عند نسخة جديدة، يقوم `just ensure` بتثبيت الحزمة، وتصبح الوصفات مثل `cache-guard` و`fmt-markdown` و`prefetch` و`cross-check` و`locate` متاحة. يمكن إعادة تعريف جميع الوصفات — راجع الملف المُضمَّن للقائمة الكاملة.
+ثم أضف وصفة `fetch` ليتمكن أي شخص من (إعادة) تجهيز الملف المشترك:
+
+```just
+[script('bash')]
+fetch URL='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=.just/celestia-devtools.just; mkdir -p .just
+    if command -v celestia-devtools >/dev/null 2>&1; then cp "$(celestia-devtools include-path)" "$out"
+    else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
+```
+
+يتيح `import?` (الاستيراد الاختياري) للنسخة الجديدة تحليل ملف justfile قبل التجهيز، لذا فإن وصفاتك الخاصة تعمل دائمًا. شغّل `just fetch` (أو `celestia-devtools init`) لتجهيز الوصفات المشتركة — `cache-guard` و`fmt-markdown` و`prefetch` و`cross-check` و`locate` و`pglite` و`wsl-ensure` و`dev-watch` وغيرها. جميع الوصفات قابلة لإعادة التعريف — أعد تعريف أي منها بعد سطر `import?`.
+
+**ملاحظة لـ Windows:** إذا كان `bash` يحلّ إلى WSL (`just windows-shell-check` يُبلغ عن اختطاف)، فألحق `usr/bin` الخاص بـ Git بمقدمة PATH:
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+```
 
 ## الترخيص
 

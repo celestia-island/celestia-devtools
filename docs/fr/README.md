@@ -52,13 +52,38 @@ celestia-devtools locate               # localiser un checkout de crate celestia
 
 ## Intégration justfile
 
-Exécutez `celestia-devtools init` dans un dépôt pour intégrer `common.just` sous la forme d'un `celestia-devtools.just` versionné, puis importez-le une fois en haut de votre justfile :
+Les recettes partagées vivent dans `common.just` et sont **mises en place à la demande** dans le répertoire `.just/` ignoré par git de chaque dépôt — jamais commitées, donc elles ne dérivent ni ne se dupliquent entre dépôts (fini la copie par dépôt façon `gradlew`).
+
+Exécutez `celestia-devtools init` dans un dépôt. Il met en place `.just/celestia-devtools.just`, ajoute `/.just/` à `.gitignore`, installe le hook commit-msg et affiche la ligne d'import. Ajoutez près du haut de votre justfile :
 
 ```just
-import "./celestia-devtools.just"
+set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]   # Git Bash ; requis sur Windows
+set unstable
+set lists
+
+import? "./.just/celestia-devtools.just"   # `?` = optionnel : parsable avant la mise en place
 ```
 
-Sur un nouveau checkout, `just ensure` amorce le paquet et des recettes telles que `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check` et `locate` deviennent disponibles. Toutes les recettes sont surchargeables — consultez le fichier intégré pour la liste complète.
+Ajoutez ensuite une recette `fetch` afin que chacun puisse (re)mettre en place le fichier partagé :
+
+```just
+[script('bash')]
+fetch URL='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=.just/celestia-devtools.just; mkdir -p .just
+    if command -v celestia-devtools >/dev/null 2>&1; then cp "$(celestia-devtools include-path)" "$out"
+    else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
+```
+
+`import?` (import optionnel) permet à un nouveau checkout d'analyser la justfile avant la mise en place, de sorte que vos propres recettes fonctionnent toujours. Exécutez `just fetch` (ou `celestia-devtools init`) pour mettre en place les recettes partagées — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, etc. Toutes les recettes sont surchargeables — redéfinissez-les après la ligne `import?`.
+
+**Note Windows :** si `bash` pointe vers WSL (`just windows-shell-check` signale un détournement), ajoutez le `usr/bin` de Git en tête du PATH :
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+```
 
 ## Licence
 

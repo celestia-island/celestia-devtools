@@ -4,6 +4,9 @@
 
 set shell := ["bash", "-c"]
 set windows-shell := ["bash.exe", "-c"]
+# common.just's script recipes are empty [script] (no explicit interpreter);
+# pin them to bash here (consumer repos get this from .just/git-bash-interop.just).
+set script-interpreter := ["bash", "-eu"]
 set unstable
 set lists
 
