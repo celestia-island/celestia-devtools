@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.3.0
+# Version: 0.4.0
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -125,6 +125,34 @@ commit-msg-lint FILE:
 commit-msg-hook-install *ARGS='':
     {{ _devtools }} hook install {{ ARGS }}
 
+# ── Upstream fork sync ───────────────────────────────────────────────────────
+#
+# For repos that track an upstream (kei ← asterinas, aris ← servo, …). Fetches
+# the latest upstream commits so a human can then merge or rebase deliberately
+# — this recipe never auto-merges.
+#
+# Prereqs: an `upstream` git remote. If absent it is added from $UPSTREAM_URL
+# (set it in your .env or shell); otherwise the recipe errors with guidance.
+
+upstream-sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! git remote get-url upstream >/dev/null 2>&1; then
+        if [ -z "${UPSTREAM_URL:-}" ]; then
+            echo "error: no 'upstream' remote and UPSTREAM_URL is unset." >&2
+            echo "  Add one with:  git remote add upstream <url>" >&2
+            echo "  or set UPSTREAM_URL in your .env and re-run." >&2
+            exit 1
+        fi
+        echo "[upstream-sync] adding 'upstream' -> ${UPSTREAM_URL}"
+        git remote add upstream "${UPSTREAM_URL}"
+    fi
+    echo "[upstream-sync] fetching upstream…"
+    git fetch upstream
+    echo "[upstream-sync] fetched. Inspect with:"
+    echo "  git log --oneline HEAD..upstream/<branch>"
+    echo "  then merge or rebase as you see fit."
+
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
 # Pre-stage all deps for offline builds (cargo fetch + pnpm/npm/yarn install).
@@ -143,6 +171,14 @@ cross-check target='aarch64-unknown-linux-gnu' features='full':
 
 # Locate a celestia-island crate checkout (env → cargo [patch] → sibling → clone).
 locate crate:
+    {{ _devtools }} locate --crate {{crate}}
+
+# Print the local path of a sibling repo, honouring $<NAME>_ROOT or $<NAME>_REPO
+# (the kei/aris convention, e.g. $ARIS_REPO) before falling back to a sibling
+# checkout. Exits non-zero if the repo cannot be found, so it is safe to use as
+#   ARIS := `just link-sibling aris`
+# in your own recipes.
+link-sibling crate:
     {{ _devtools }} locate --crate {{crate}}
 
 # ── File-watch dev server (malkuth) ──────────────────────────────────────────

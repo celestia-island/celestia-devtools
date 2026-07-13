@@ -6,7 +6,8 @@ Resolves the local checkout of any sibling crate in the org's dev layout
 
 Resolution priority (cheap first, so the common case never walks the tree):
 
-    1. ``$<CRATE>_ROOT`` (e.g. ``$ARONA_ROOT``, ``$ENTELECHEIA_ROOT``)
+    1. ``$<CRATE>_ROOT`` or ``$<CRATE>_REPO``
+       (e.g. ``$ARONA_ROOT``, ``$ARIS_REPO``)
     2. a ``crate = { path = ".." }`` under any ``[patch.*]`` in
        ``~/.cargo/config.toml`` or the caller repo's top-level ``Cargo.toml``
     3. a sibling ``../<crate>`` checkout (the org dev layout)
@@ -71,11 +72,13 @@ def find_patched_crate(
     def _ok(cand: Path) -> bool:
         return bool(cand and (cand / marker).exists())
 
-    # 1. explicit override
-    if env := os.environ.get(env_var):
-        c = Path(env).expanduser()
-        if _ok(c):
-            return c.resolve()
+    # 1. explicit override — honour both <CRATE>_ROOT and <CRATE>_REPO
+    #    (the latter is the convention kei/aris use, e.g. $ARIS_REPO).
+    for var in (env_var, f"{crate.upper()}_REPO"):
+        if env := os.environ.get(var):
+            c = Path(env).expanduser()
+            if _ok(c):
+                return c.resolve()
 
     pat = re.compile(
         rf'\b{re.escape(crate)}\s*=\s*\{{\s*[^}}]*\bpath\s*=\s*"([^"]+)"', re.S,
