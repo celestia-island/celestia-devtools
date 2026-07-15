@@ -603,14 +603,30 @@ def main() -> int:
         config_path = Path(args.config) if args.config else PER_REPO_CONFIG
 
         if not new_sections:
-            # No patches needed — but still clean any stale managed section.
-            print(f"[register-patches] no patches needed → ensuring {config_path} is clean")
-            if config_path.is_file():
-                changed = update_cargo_config("", config_path, dry_run=args.dry_run)
-                if not changed:
-                    print("[register-patches] config already clean")
+            # Both cases mean we couldn't discover actual deps:
+            #   1. cargo metadata failed (network issue / no cache)
+            #   2. Repo genuinely has no celestia-island git deps
+            # In either case, do NOT strip existing patches — the user
+            # likely ran into case 1 and their existing patches are correct.
+            # Pass --force-clean to explicitly remove all patches.
+            if actual_deps:
+                # Case 2: real analysis found 0 deps → safe to clean.
+                print(f"[register-patches] no patches needed → ensuring {config_path} is clean")
+                if config_path.is_file():
+                    changed = update_cargo_config("", config_path, dry_run=args.dry_run)
+                    if not changed:
+                        print("[register-patches] config already clean")
             else:
-                print("[register-patches] no config file, nothing to do")
+                # Case 1: cargo metadata returned nothing — warn, keep existing.
+                print(
+                    "[register-patches] WARNING: cargo metadata returned 0 deps — "
+                    "this usually means the network is unavailable or the lockfile "
+                    "is stale. Existing patches have been left untouched. Run "
+                    "`cargo update` with network, then re-run register-patches.",
+                    file=sys.stderr,
+                )
+                if config_path.is_file():
+                    print(f"[register-patches] kept existing {config_path}")
             return 0
 
         print(f"[register-patches] writing patches to {config_path}")

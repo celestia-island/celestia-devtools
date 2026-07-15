@@ -281,6 +281,61 @@ dev-watch *ARGS:
 register-patches *ARGS='':
     {{ _devtools }} register-patches {{ARGS}}
 
+# ── Git worktree management ───────────────────────────────────────────────────
+#
+# Linked working trees that share one .git directory. Each worktree is an
+# independent checkout at ../<repo>-<name> with its own branch, index, and
+# files — but shares objects/refs with the main repo. Rationale:
+#
+# 1. Different PRs need different Cargo.toml [patch] entries (A→B#feature vs
+#    A→B#master), and you cannot express that in a single working directory.
+# 2. In a monorepo-with-many-sibling-repos setup (celestia-island), each
+#    worktree gets its own topological patch graph.
+# 3. No rebuild storms: switching a worktree is `cd`, not `git checkout`.
+#
+# Recipes:
+#   just worktree-create pr-42 dev     checkout ../repo-pr-42 from dev
+#   just worktree-list                  list all worktrees for this repo
+#   just worktree-remove pr-42          delete worktree + prune stale refs
+
+# Create a new worktree at ../<repo>-<name> from <base> (branch or commit).
+# After creation registers cargo patches for the new directory.
+worktree-create name base='dev':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=$(basename "$(git rev-parse --show-toplevel)")
+    target="../${repo}-${name}"
+    if [ -d "$target" ]; then
+      echo "worktree already exists: $target"
+      exit 0
+    fi
+    # Ensure the base branch exists locally (fetch if only on remote).
+    git rev-parse --verify "refs/heads/${base}" >/dev/null 2>&1 || \
+      git rev-parse --verify "refs/remotes/origin/${base}" >/dev/null 2>&1 || \
+      { echo "branch '${base}' not found locally or on origin"; exit 1; }
+    echo "creating worktree ${target} from ${base}"
+    git worktree add -b "${name}" "${target}" "origin/${base}" 2>/dev/null || \
+      git worktree add "${target}" "${base}"
+    echo "worktree ready: ${target}"
+
+# List all worktrees for this repo.
+worktree-list:
+    git worktree list
+
+# Remove a worktree and prune its metadata.
+worktree-remove name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo=$(basename "$(git rev-parse --show-toplevel)")
+    target="../${repo}-${name}"
+    if [ ! -d "$target" ]; then
+      echo "worktree not found: $target"
+      exit 1
+    fi
+    git worktree remove "$target" --force
+    git worktree prune
+    echo "removed worktree: $target"
+
 # ── WSL2 dev environment ──────────────────────────────────────────────────────
 #
 # The celestia ecosystem shares ONE persistent WSL2 distro (default
