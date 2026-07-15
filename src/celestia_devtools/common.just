@@ -270,14 +270,14 @@ dev-watch *ARGS:
     echo "[dev-watch] watching: ${watch_paths[*]}"
     exec "$malkuth" "${watch_flags[@]}" --drain-secs 2 -- "${cmd[@]}"
 
-# Auto-register all local celestia-island repos as cargo [patch] entries in
-# ~/.cargo/config.toml. Scans the sibling directory for git repos whose origin
-# points at celestia-island, discovers their workspace member crates, and writes
-# [patch] sections so cargo resolves every celestia crate to its local checkout.
+# Auto-register celestia-island git deps as cargo [patch] entries in
+# .cargo/config.toml. Runs `cargo metadata` to discover which celestia crates
+# the current repo ACTUALLY depends on, then patches only those to their local
+# checkouts. Scan directory: --scan-dir > $CELESTIA_ROOT > parent of cwd.
 #
-#   just register-patches              scan + write
-#   just register-patches --dry-run    preview only
-#   just register-patches --repo hikari,lagrange   limit to specific repos
+#   just register-patches                        scan + write
+#   just register-patches --dry-run              preview only
+#   just register-patches --scan-dir ../celestia pin scan directory
 register-patches *ARGS='':
     {{ _devtools }} register-patches {{ARGS}}
 

@@ -26,7 +26,9 @@ M src/celestia_devtools/repo/register_patches.py
 
 ## 4. 近期进展
 
-- `✨ register-patches` Python 实现已落地（per-repo 模式 + legacy global 模式）
+- `✨ register-patches` Python 实现已落地（仅保留 per-repo 模式，移除 legacy global 模式）
+- `♻️ register-patches` 扫描目录解析改进：`--scan-dir` > `CELESTIA_ROOT` 环境变量 > 父目录
+- `♻️ register-patches` 移除 `--global` / `--per-repo` / `--repo` 参数及死代码
 - `✨ upstream-sync` 和 `sibling-repo linking` 已加
 - 当前 session：修复 `register-patches` bug（cargo metadata 0 deps 时误删 patch）
 
