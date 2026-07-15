@@ -3,7 +3,11 @@
 
 Runs ``cargo metadata`` in the current repo to discover which celestia-island
 crates it ACTUALLY depends on (git/source deps), then writes ONLY those patches
-into the repo's own ``.cargo/config.toml``.
+into ``~/.cargo/config.toml`` (the user-level cargo config).
+
+Machine-specific absolute paths are kept in the user-level config, safely
+outside any git repository. The project-level ``.cargo/config.toml`` is
+never modified by this tool.
 
 If ``cargo metadata`` fails (no network / stale lockfile), the tool falls back
 to registering ALL discovered sibling crates — so it always produces a working
@@ -40,7 +44,11 @@ from typing import NamedTuple
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
 
-PER_REPO_CONFIG = Path.cwd() / ".cargo" / "config.toml"
+# Write machine-specific [patch] entries to the user-level cargo config
+# (~/.cargo/config.toml), NOT the project-level .cargo/config.toml.
+# The project file is git-tracked and contains shared settings (net, target,
+# env); absolute local paths must never be committed there.
+USER_CARGO_CONFIG = Path.home() / ".cargo" / "config.toml"
 
 # Crates known to be published to crates.io and consumed via version deps.
 # Extended by the --crates-io flag. The defaults cover the current set.
@@ -492,7 +500,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--config", default=None,
-        help="cargo config path (default: .cargo/config.toml in cwd)",
+        help="cargo config path (default: ~/.cargo/config.toml)",
     )
     args = parser.parse_args()
 
@@ -518,7 +526,7 @@ def main() -> int:
         print(f"  {name} -> {url}")
 
     new_sections = generate_per_repo_patches(actual_deps, repos, crates_io_names)
-    config_path = Path(args.config) if args.config else PER_REPO_CONFIG
+    config_path = Path(args.config) if args.config else USER_CARGO_CONFIG
 
     if not new_sections:
         if actual_deps:

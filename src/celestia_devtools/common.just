@@ -271,7 +271,7 @@ dev-watch *ARGS:
     exec "$malkuth" "${watch_flags[@]}" --drain-secs 2 -- "${cmd[@]}"
 
 # Auto-register celestia-island git deps as cargo [patch] entries in
-# .cargo/config.toml. Runs `cargo metadata` to discover which celestia crates
+# ~/.cargo/config.toml. Runs `cargo metadata` to discover which celestia crates
 # the current repo ACTUALLY depends on, then patches only those to their local
 # checkouts. Scan directory: --scan-dir > $CELESTIA_ROOT > parent of cwd.
 #
