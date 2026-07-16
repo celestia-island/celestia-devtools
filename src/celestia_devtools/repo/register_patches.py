@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """Auto-register local celestia-island checkouts as cargo ``[patch]`` entries.
 
-**On-demand mode (default, ``--per-repo``):** runs ``cargo metadata`` in the
-current repo to discover which celestia-island crates it ACTUALLY depends on
-(git/source deps), then writes ONLY those patches into the repo's own
-``.cargo/config.toml``. This avoids the ``was not used in the crate graph``
-warning storm that the legacy global mode caused by registering every crate
-in every repo.
+Runs ``cargo metadata`` in the current repo to discover which celestia-island
+crates it ACTUALLY depends on (git/source deps), then writes ONLY those patches
+into ``~/.cargo/config.toml`` (the user-level cargo config).
 
-**Legacy global mode (``--global``):** the old behaviour — scan all sibling
-repos, register ALL of their crates into ``~/.cargo/config.toml``. Kept for
-back-compat but discouraged; use per-repo instead.
+Machine-specific absolute paths are kept in the user-level config, safely
+outside any git repository. The project-level ``.cargo/config.toml`` is
+never modified by this tool.
+
+If ``cargo metadata`` fails (no network / stale lockfile), the tool falls back
+to registering ALL discovered sibling crates — so it always produces a working
+configuration, with or without network access.
+
+The scan directory for sibling repos is resolved in this order:
+
+1. ``--scan-dir`` CLI argument (explicit)
+2. ``CELESTIA_ROOT`` environment variable
+3. The parent directory of the current working directory (fallback)
 
 Two kinds of patch sections are emitted:
 
@@ -20,15 +27,15 @@ Two kinds of patch sections are emitted:
 
 Usage::
 
-    celestia-devtools register-patches              # per-repo (on-demand)
-    celestia-devtools register-patches --global     # legacy global mode
-    celestia-devtools register-patches --dry-run
+    celestia-devtools register-patches
     celestia-devtools register-patches --scan-dir /path/to/celestia
+    celestia-devtools register-patches --dry-run
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -36,10 +43,12 @@ from pathlib import Path
 from typing import NamedTuple
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
-CARGO_CONFIG = Path.home() / ".cargo" / "config.toml"
 
-# Per-repo config: only patches the deps this repo actually uses.
-PER_REPO_CONFIG = Path.cwd() / ".cargo" / "config.toml"
+# Write machine-specific [patch] entries to the user-level cargo config
+# (~/.cargo/config.toml), NOT the project-level .cargo/config.toml.
+# The project file is git-tracked and contains shared settings (net, target,
+# env); absolute local paths must never be committed there.
+USER_CARGO_CONFIG = Path.home() / ".cargo" / "config.toml"
 
 # Crates known to be published to crates.io and consumed via version deps.
 # Extended by the --crates-io flag. The defaults cover the current set.
@@ -129,8 +138,6 @@ def scan_celestia_repos(scan_dir: Path) -> list[RepoInfo]:
 
 def _extract_package_name(manifest_text: str) -> str | None:
     """Extract the ``[package] name`` field from a Cargo.toml manifest."""
-    # Simple regex — we don't want to pull in a full TOML parser dependency.
-    # Match `name = "..."` within the [package] section.
     m = re.search(
         r'^\[package\]\s*(.*?)(?=\n\[|\Z)',
         manifest_text, re.S | re.M,
@@ -140,29 +147,6 @@ def _extract_package_name(manifest_text: str) -> str | None:
     pkg_section = m.group(1)
     nm = re.search(r'^name\s*=\s*"([^"]+)"', pkg_section, re.M)
     return nm.group(1) if nm else None
-
-
-def _is_published(manifest_text: str) -> bool:
-    """Heuristic: is this crate likely published to crates.io?
-
-    A crate is considered published if:
-    * ``publish = true`` explicitly, OR
-    * no ``publish`` field AND has a non-empty ``description``.
-    Crates with ``publish = false`` are definitely not published.
-    """
-    m = re.search(
-        r'^\[package\]\s*(.*?)(?=\n\[|\Z)',
-        manifest_text, re.S | re.M,
-    )
-    if not m:
-        return False
-    pkg = m.group(1)
-    pub_match = re.search(r'^publish\s*=\s*(true|false)', pkg, re.M)
-    if pub_match:
-        return pub_match.group(1) == "true"
-    # No publish field: check for description (heuristic for published crates).
-    desc_match = re.search(r'^description\s*=\s*"([^"]+)"', pkg, re.M)
-    return bool(desc_match and desc_match.group(1).strip())
 
 
 def parse_workspace_crates(
@@ -191,12 +175,6 @@ def parse_workspace_crates(
         return crates
 
     # Case 2: workspace manifest — parse members list.
-    # Handle both inline arrays and multiline arrays:
-    #   members = ["a", "b"]
-    #   members = [
-    #       "packages/a",
-    #       "packages/b",
-    #   ]
     ws_match = re.search(
         r'^\[workspace\]\s*(.*?)(?=\n\[|\Z)',
         text, re.S | re.M,
@@ -212,9 +190,7 @@ def parse_workspace_crates(
     if not members_match:
         return crates
 
-    # Extract quoted paths from the members array.
     member_paths = re.findall(r'"([^"]+)"', members_match.group(1))
-    # Also check members.exclude — those should NOT be registered.
     exclude_match = re.search(
         r'exclude\s*=\s*\[(.*?)\]',
         ws_section, re.S,
@@ -223,15 +199,11 @@ def parse_workspace_crates(
     if exclude_match:
         excluded = set(re.findall(r'"([^"]+)"', exclude_match.group(1)))
 
-    # Directories that contain example/test/benchmark crates — these are
-    # not library crates other repos depend on, and registering them as
-    # patches can cause version conflicts in the dependency graph.
     _SKIP_DIRS = {"examples", "tests", "benches", "fuzz", "e2e"}
 
     for mp in member_paths:
         if mp in excluded:
             continue
-        # Skip member paths under examples/, tests/, etc.
         parts = mp.replace("\\", "/").split("/")
         if any(p in _SKIP_DIRS for p in parts):
             continue
@@ -242,7 +214,6 @@ def parse_workspace_crates(
         mtext = manifest.read_text(encoding="utf-8", errors="ignore")
         name = _extract_package_name(mtext)
         if name:
-            # Skip crates whose name ends with -e2e (end-to-end test crates).
             if name.endswith("-e2e"):
                 continue
             crates.append(CrateInfo(
@@ -258,24 +229,36 @@ def parse_workspace_crates(
 def discover_actual_celestia_deps() -> dict[str, str]:
     """Run ``cargo metadata`` in cwd and return the celestia-island git deps.
 
+    Tries ``--offline`` first (uses local cache only — no network), then falls
+    back to a network-enabled run. This ensures the tool works correctly
+    whether or not the network is available.
+
     Returns a ``{crate_name: source_url}`` dict where source_url is the
     canonical ``https://github.com/celestia-island/<repo>.git`` form (the
     ``?branch=dev`` query is stripped, since [patch] matches on the base URL).
 
-    Only deps whose source contains ``celestia-island`` are returned — these
-    are the ones that genuinely need a [patch] entry. Path deps and
-    crates.io deps don't need patching.
+    Only deps whose source contains ``celestia-island`` are returned.
     """
     import json
-    try:
-        r = subprocess.run(
-            ["cargo", "metadata", "--format-version", "1"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if r.returncode != 0:
-            return {}
-        data = json.loads(r.stdout)
-    except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
+
+    def _run_metadata(offline: bool) -> dict[str, str] | None:
+        cmd = ["cargo", "metadata", "--format-version", "1"]
+        if offline:
+            cmd.append("--offline")
+        try:
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode != 0:
+                return None
+            return json.loads(r.stdout)
+        except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
+            return None
+
+    data = _run_metadata(offline=True)
+    if data is None:
+        data = _run_metadata(offline=False)
+    if data is None:
         return {}
 
     deps: dict[str, str] = {}
@@ -284,9 +267,6 @@ def discover_actual_celestia_deps() -> dict[str, str]:
             src = dep.get("source") or ""
             if "celestia-island" not in src:
                 continue
-            # Normalize: strip git+ prefix and ?branch= query → base URL.
-            # git+https://github.com/celestia-island/arona.git?branch=dev
-            # → https://github.com/celestia-island/arona.git
             url = src
             if url.startswith("git+"):
                 url = url[4:]
@@ -303,18 +283,13 @@ def generate_per_repo_patches(
     """Generate [patch] sections for ONLY the deps this repo actually uses.
 
     Filters the discovered sibling crates down to those in *actual_deps*,
-    then emits a ``[patch."<url>"]`` section per distinct git URL. This is
-    the on-demand mode that avoids the ``was not used in the crate graph``
-    warning storm.
+    then emits a ``[patch."<url>"]`` section per distinct git URL.
     """
-    # Build a lookup: crate_name → CrateInfo (from scanned sibling repos).
     crate_index: dict[str, CrateInfo] = {}
     for repo in repos:
         for crate in repo.crates:
             crate_index[crate.name] = crate
 
-    # Match actual deps to local crate paths, grouped by git URL.
-    # patches: {git_url: [(crate_name, local_path), ...]}
     patches: dict[str, list[tuple[str, Path]]] = {}
     crates_io_patches: list[tuple[str, Path]] = []
     missing: list[str] = []
@@ -337,13 +312,13 @@ def generate_per_repo_patches(
         )
 
     if not patches and not crates_io_patches:
-        return ""  # No patches needed — repo uses only path/crates.io deps.
+        return ""
 
     lines: list[str] = []
     lines.append("")
-    lines.append("# ── celestia-devtools on-demand patches ───────────────────────────")
-    lines.append("# Generated by `celestia-devtools register-patches` (per-repo mode).")
-    lines.append("# Only patches deps this repo ACTUALLY uses — no crate-graph warnings.")
+    lines.append("# ── celestia-devtools auto-registered patches ──────────────────────")
+    lines.append("# Generated by `celestia-devtools register-patches`.")
+    lines.append("# Only patches deps this repo ACTUALLY uses.")
     lines.append("")
 
     if crates_io_patches:
@@ -366,61 +341,24 @@ def _path_to_toml(p: Path) -> str:
     return str(p).replace("\\", "/")
 
 
-def generate_patch_sections(
-    repos: list[RepoInfo],
-    crates_io_names: set[str],
-) -> str:
-    """Generate the ``[patch]`` TOML sections for all discovered repos.
+def generate_fallback_patches(repos: list[RepoInfo]) -> str:
+    """Generate [patch] entries for ALL discovered repos (no filtering).
 
-    Every crate is registered in **both** ``[patch.crates-io]`` and its
-    repo's ``[patch."<git-url>"]`` section. Cargo silently ignores patch
-    entries that don't match any dependency in the crate graph, so
-    dual-registering is harmless and ensures the patch works whether a
-    crate is consumed as a version dep (crates.io) or a git dep.
-
-    The *crates_io_names* parameter is kept for API compatibility but no
-    longer affects the output — all crates go into both sections.
+    Used when ``cargo metadata`` fails (no network / stale lockfile) and we
+    cannot determine which deps the current repo actually uses. Registers
+    every discovered crate under its repo's ``[patch."<url>"]`` section.
     """
     lines: list[str] = []
     lines.append("")
-    lines.append(
-        "# ── celestia-devtools auto-registered patches ──────────────────────"
-    )
-    lines.append(
-        "# Generated by `celestia-devtools register-patches`. Do not edit"
-    )
-    lines.append(
-        "# manually — re-run the command after cloning new repos."
-    )
+    lines.append("# ── celestia-devtools fallback patches ────────────────────────────")
+    lines.append("# Generated by `celestia-devtools register-patches` (fallback mode).")
+    lines.append("# `cargo metadata` was unavailable — ALL sibling crates are registered.")
     lines.append("")
 
-    all_crates: list[CrateInfo] = []
-    per_repo: dict[str, list[CrateInfo]] = {}
-
-    for repo in repos:
-        for crate in repo.crates:
-            all_crates.append(crate)
-            per_repo.setdefault(repo.name, []).append(crate)
-
-    # Emit [patch.crates-io] section with ALL crates.
-    if all_crates:
-        lines.append("[patch.crates-io]")
-        for crate in sorted(all_crates, key=lambda c: c.name):
-            lines.append(
-                f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}'
-            )
-        lines.append("")
-
-    # Emit [patch."<git-url>"] sections.
     for repo in sorted(repos, key=lambda r: r.name):
-        repo_crates = per_repo.get(repo.name, [])
-        if not repo_crates:
-            continue
-        lines.append(f'[patch."{ORG_GIT_BASE}/{repo.name}.git"]')
-        for crate in sorted(repo_crates, key=lambda c: c.name):
-            lines.append(
-                f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}'
-            )
+        lines.append(f'[patch."{repo.git_url}"]')
+        for crate in sorted(repo.crates, key=lambda c: c.name):
+            lines.append(f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}')
         lines.append("")
 
     return "\n".join(lines)
@@ -430,56 +368,50 @@ def generate_patch_sections(
 
 
 def _strip_all_patch_sections(text: str) -> str:
-    """Remove every ``[patch.*]`` section from *text*.
-
-    A patch section starts at a line like ``[patch.crates-io]`` or
-    ``[patch."https://..."]`` and extends until the next top-level
-    ``[section]`` header (``[foo]``, not ``[[foo]]`` which is an array
-    table) or EOF. Consecutive comment lines immediately preceding a
-    patch section header are also stripped (they document the patch
-    block).
-    """
+    """Remove every ``[patch.*]`` section from *text*."""
     lines = text.split("\n")
-    # First pass: identify line indices that belong to patch sections.
     in_patch = False
     skip_lines: set[int] = set()
-    pending_comments: list[int] = []  # indices of comment lines
+    pending_comments: list[int] = []
 
     for i, line in enumerate(lines):
         stripped = line.strip()
 
-        # Detect start of a patch section.
         if re.match(r'^\[patch\b', stripped):
             in_patch = True
-            skip_lines.update(pending_comments)  # strip doc comments above
+            skip_lines.update(pending_comments)
             pending_comments = []
             skip_lines.add(i)
             continue
 
         if in_patch:
-            # A new non-patch top-level section header ends the patch block.
             if stripped.startswith("[") and not stripped.startswith("[["):
                 in_patch = False
                 pending_comments = []
-                # Don't skip this line — it's the next section.
             else:
                 skip_lines.add(i)
-                # Trailing blank lines after the last patch entry are part
-                # of the section and will be skipped.
                 continue
 
-        # Track comment lines that might document an upcoming patch section.
         if stripped.startswith("#"):
             pending_comments.append(i)
         elif stripped == "":
-            # Blank line breaks the comment-run — they're standalone comments.
             pending_comments = []
         else:
             pending_comments = []
 
-    # Second pass: keep lines not in skip_lines.
     result = [line for i, line in enumerate(lines) if i not in skip_lines]
-    # Collapse multiple consecutive blank lines into one.
+    # Second pass: remove orphaned celestia-devtools comment blocks left
+    # behind after their [patch.*] sections were stripped.
+    _STRIP_MARKERS = (
+        "# ── celestia-devtools",
+        "# Generated by `celestia-devtools",
+        "# Only patches deps this repo",
+        "# `cargo metadata` was unavailable",
+    )
+    result = [
+        line for line in result
+        if not any(line.strip().startswith(m) for m in _STRIP_MARKERS)
+    ]
     cleaned: list[str] = []
     prev_blank = False
     for line in result:
@@ -493,25 +425,20 @@ def _strip_all_patch_sections(text: str) -> str:
 
 def update_cargo_config(
     new_sections: str,
-    config_path: Path = CARGO_CONFIG,
+    config_path: Path,
     *,
     dry_run: bool = False,
 ) -> bool:
     """Replace all ``[patch]`` sections in the cargo config with *new_sections*.
 
-    This first strips every existing ``[patch.*]`` section (whether
-    auto-managed or hand-written) to avoid duplicate section headers, then
-    appends the freshly generated managed block. Returns ``True`` if the
-    file was (or would be) modified.
+    Returns ``True`` if the file was (or would be) modified.
     """
     existing = ""
     if config_path.is_file():
         existing = config_path.read_text(encoding="utf-8", errors="ignore")
 
-    # Remove all existing [patch.*] sections.
     stripped = _strip_all_patch_sections(existing)
 
-    # Append the new managed block.
     new_text = stripped.rstrip() + "\n" + new_sections
 
     if new_text.rstrip() == existing.rstrip():
@@ -531,6 +458,25 @@ def update_cargo_config(
     return True
 
 
+# ── scan directory resolution ─────────────────────────────────────────────
+
+
+def _resolve_scan_dir(explicit: str | None) -> Path:
+    """Resolve the scan directory.
+
+    Priority:
+    1. *explicit* (``--scan-dir`` CLI argument)
+    2. ``CELESTIA_ROOT`` environment variable
+    3. Parent of the current working directory
+    """
+    if explicit:
+        return Path(explicit)
+    env_root = os.environ.get("CELESTIA_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path.cwd().parent
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
@@ -538,19 +484,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Auto-register celestia-island repos as cargo [patch] entries",
     )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--per-repo", action="store_true", default=True,
-        help="on-demand mode (DEFAULT): patch only deps this repo uses, "
-             "write to .cargo/config.toml",
-    )
-    mode.add_argument(
-        "--global", dest="global_mode", action="store_true",
-        help="legacy mode: register ALL sibling crates into ~/.cargo/config.toml",
-    )
     parser.add_argument(
         "--scan-dir", default=None,
-        help="directory to scan for repos (default: parent of this repo)",
+        help="directory to scan for sibling repos "
+             "(env: CELESTIA_ROOT; default: parent of cwd)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -562,21 +499,12 @@ def main() -> int:
              f"(default: {','.join(sorted(DEFAULT_CRATES_IO))})",
     )
     parser.add_argument(
-        "--repo", default=None,
-        help="(global mode only) comma-separated repo names to include",
-    )
-    parser.add_argument(
         "--config", default=None,
-        help="cargo config path (default: per-repo → .cargo/config.toml; "
-             "global → ~/.cargo/config.toml)",
+        help="cargo config path (default: ~/.cargo/config.toml)",
     )
     args = parser.parse_args()
 
-    # Determine scan directory.
-    if args.scan_dir:
-        scan_dir = Path(args.scan_dir)
-    else:
-        scan_dir = Path.cwd().parent
+    scan_dir = _resolve_scan_dir(args.scan_dir)
 
     print(f"[register-patches] scanning {scan_dir} …")
     repos = scan_celestia_repos(scan_dir)
@@ -588,64 +516,38 @@ def main() -> int:
         n.strip() for n in args.crates_io.split(",") if n.strip()
     }
 
-    # ── per-repo (on-demand) mode ──────────────────────────────
-    if not args.global_mode:
-        print("[register-patches] per-repo mode: analyzing actual dependencies …")
-        actual_deps = discover_actual_celestia_deps()
-        print(
-            f"[register-patches] {len(actual_deps)} celestia-island git dep(s) "
-            f"found in dependency graph"
-        )
-        for name, url in sorted(actual_deps.items()):
-            print(f"  {name} → {url}")
+    print("[register-patches] analyzing actual dependencies …")
+    actual_deps = discover_actual_celestia_deps()
+    print(
+        f"[register-patches] {len(actual_deps)} celestia-island git dep(s) "
+        f"found in dependency graph"
+    )
+    for name, url in sorted(actual_deps.items()):
+        print(f"  {name} -> {url}")
 
-        new_sections = generate_per_repo_patches(actual_deps, repos, crates_io_names)
-        config_path = Path(args.config) if args.config else PER_REPO_CONFIG
+    new_sections = generate_per_repo_patches(actual_deps, repos, crates_io_names)
+    config_path = Path(args.config) if args.config else USER_CARGO_CONFIG
 
-        if not new_sections:
-            # Both cases mean we couldn't discover actual deps:
-            #   1. cargo metadata failed (network issue / no cache)
-            #   2. Repo genuinely has no celestia-island git deps
-            # In either case, do NOT strip existing patches — the user
-            # likely ran into case 1 and their existing patches are correct.
-            # Pass --force-clean to explicitly remove all patches.
-            if actual_deps:
-                # Case 2: real analysis found 0 deps → safe to clean.
-                print(f"[register-patches] no patches needed → ensuring {config_path} is clean")
-                if config_path.is_file():
-                    changed = update_cargo_config("", config_path, dry_run=args.dry_run)
-                    if not changed:
-                        print("[register-patches] config already clean")
-            else:
-                # Case 1: cargo metadata returned nothing — warn, keep existing.
-                print(
-                    "[register-patches] WARNING: cargo metadata returned 0 deps — "
-                    "this usually means the network is unavailable or the lockfile "
-                    "is stale. Existing patches have been left untouched. Run "
-                    "`cargo update` with network, then re-run register-patches.",
-                    file=sys.stderr,
-                )
-                if config_path.is_file():
-                    print(f"[register-patches] kept existing {config_path}")
+    if not new_sections:
+        if actual_deps:
+            print(f"[register-patches] no patches needed -> ensuring {config_path} is clean")
+            if config_path.is_file():
+                changed = update_cargo_config("", config_path, dry_run=args.dry_run)
+                if not changed:
+                    print("[register-patches] config already clean")
             return 0
 
-        print(f"[register-patches] writing patches to {config_path}")
-        changed = update_cargo_config(new_sections, config_path, dry_run=args.dry_run)
-        if not changed:
-            print("[register-patches] config already up to date")
-        return 0
+        print(
+            "[register-patches] cargo metadata unavailable "
+            "(network down or stale lockfile) -> falling back to full scan",
+            file=sys.stderr,
+        )
+        new_sections = generate_fallback_patches(repos)
 
-    # ── legacy global mode ─────────────────────────────────────
-    print("[register-patches] GLOBAL MODE (legacy — consider --per-repo)")
-    if args.repo:
-        wanted = {r.strip() for r in args.repo.split(",") if r.strip()}
-        repos = [r for r in repos if r.name in wanted]
+        if not new_sections:
+            return 0
 
-    total_crates = sum(len(r.crates) for r in repos)
-    print(f"[register-patches] found {len(repos)} repo(s), {total_crates} crate(s)")
-
-    new_sections = generate_patch_sections(repos, crates_io_names)
-    config_path = Path(args.config) if args.config else CARGO_CONFIG
+    print(f"[register-patches] writing patches to {config_path}")
     changed = update_cargo_config(new_sections, config_path, dry_run=args.dry_run)
     if not changed:
         print("[register-patches] config already up to date")
