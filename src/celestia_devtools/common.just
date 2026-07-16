@@ -446,3 +446,90 @@ npm-release *PKGS='':
         npm publish "$pkg" --access public --tag "$tag"
       done
     fi
+
+# ── Vite frontend build — no dev server, no HMR, no overlay noise ─────────────
+#
+# celestia frontends (shittim-chest, hikari, tairitsu, …) use vite build +
+# a plain static file server. No vite dev, no HMR WebSocket, no error overlay.
+# Rebuilds are triggered by malkuth (or any file watcher) — the watcher owns
+# the terminal output, so build logs stay clean and under our control.
+#
+# Recipes:
+#   just vite-build               one-shot production build (vite build)
+#   just vite-build --mode mock    build with VITE_MODE=mock (env passthrough)
+#   just vite-serve                serve dist/ on port 5173 with python http.server
+#   just vite-serve --port 3000    serve on a custom port
+#   just vite-dev                  build → serve → watch src/ for rebuilds (malkuth)
+
+# One-shot build. Pass extra flags or env vars after `--`.
+#   just vite-build
+#   just vite-build -- --mode mock
+[script]
+vite-build *ARGS='':
+    set -euo pipefail
+    flags=()
+    for a in {{ARGS}}; do flags+=("$a"); done
+    pnpm vite build "${flags[@]}"
+
+# Serve the built dist/ output. Uses python3 http.server (zero JS deps, no npm).
+# Override the port with: just vite-serve --port 8080
+[script]
+vite-serve *ARGS='':
+    set -euo pipefail
+    port=5173
+    for a in {{ARGS}}; do
+      case "$a" in
+        --port) port="$2"; shift 2 ;;
+        --port=*) port="${a#--port=}" ;;
+      esac
+    done
+    dist_dir=dist
+    if [ ! -d "$dist_dir" ]; then
+      dist_dir=../../dist/webui
+    fi
+    echo "[vite-serve] serving $dist_dir on http://localhost:$port"
+    cd "$dist_dir"
+    python3 -m http.server "$port"
+
+# Full dev loop: build once, serve, then watch for changes with malkuth.
+# On file change in src/, re-runs vite build. The static server stays alive
+# and picks up the rebuilt dist/ automatically.
+#
+#   just vite-dev                default (port 5173)
+#   just vite-dev --port 8080    custom port
+[script]
+vite-dev *ARGS='':
+    set -euo pipefail
+    port=5173
+    for a in {{ARGS}}; do
+      case "$a" in
+        --port) port="$2"; shift 2 ;;
+        --port=*) port="${a#--port=}" ;;
+      esac
+    done
+    dist_dir=dist
+    if [ ! -d "$dist_dir" ]; then
+      dist_dir=../../dist/webui
+    fi
+    echo "[vite-dev] building frontend..."
+    pnpm vite build
+    echo "[vite-dev] starting static server on port $port"
+
+    # Start python http.server in background
+    (cd "$dist_dir" && python3 -m http.server "$port") &
+    server_pid=$!
+    trap "kill $server_pid 2>/dev/null || true" EXIT
+    sleep 1
+
+    echo "[vite-dev] watching src/ for changes (malkuth)..."
+    malkuth="{{malkuth_bin}}"
+    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
+      malkuth="{{ malkuth_bin_rel }}"
+    fi
+    if [ ! -f "$malkuth" ]; then
+      echo "[vite-dev] malkuth not found — install: cd ../malkuth && cargo build --release --features cli"
+      echo "[vite-dev] falling back to one-shot build; restart manually to pick up changes."
+      wait "$server_pid"
+    else
+      exec "$malkuth" --watch src --drain-secs 2 -- pnpm vite build
+    fi
