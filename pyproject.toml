@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "celestia-devtools"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -39,6 +39,7 @@ celestia-preflight = "celestia_devtools.env.preflight:main"
 celestia-wsl-ensure = "celestia_devtools.env.wsl:main"
 celestia-pglite = "celestia_devtools.env.pglite:main"
 commit-msg-lint = "celestia_devtools.vcs.commit_msg:main"
+publish-crates = "celestia_devtools.publish.crates:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.4"]
