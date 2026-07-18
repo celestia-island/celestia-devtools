@@ -20,6 +20,10 @@ inputs:
     description: Rust toolchain
     required: false
     default: stable
+  exclude:
+    description: Space-separated list of package names to skip
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -41,4 +45,5 @@ runs:
         python -m celestia_devtools.publish.crates
         ${{ inputs.dry-run == 'true' && '--dry-run' || '' }}
         --max-wait ${{ inputs.max-wait-per-crate }}
+        ${{ inputs.exclude != '' && format('--exclude {0}', inputs.exclude) || '' }}
       working-directory: ${{ inputs.working-directory }}

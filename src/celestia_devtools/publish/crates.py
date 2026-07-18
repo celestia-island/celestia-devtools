@@ -168,18 +168,29 @@ def _topological_order(packages: Dict[str, dict]) -> List[str]:
     return order
 
 
-def publish_all(dry_run: bool = False, max_wait_seconds: int = 120) -> int:
+def publish_all(dry_run: bool = False, max_wait_seconds: int = 120, exclude: list = None) -> int:
+    if exclude is None:
+        exclude = []
+    exclude_set = set(exclude)
     metadata = _cargo_metadata()
     workspace_root = Path(metadata["workspace_root"])
     packages: Dict[str, dict] = {}
 
     for pkg in metadata["packages"]:
         name = pkg["name"]
+        if name in exclude_set:
+            continue
         version = pkg["version"]
         manifest_path = Path(pkg["manifest_path"])
         if not manifest_path.is_relative_to(workspace_root):
             continue
-        if pkg.get("publish") is False:
+        # cargo metadata returns [] for publish = false, null for publish = true
+        publish_registries = pkg.get("publish")
+        if publish_registries is not None and len(publish_registries) == 0:
+            continue
+        # Also skip examples/ subdirectory packages
+        rel = manifest_path.relative_to(workspace_root)
+        if str(rel).startswith("examples/"):
             continue
         packages[name] = {"version": version, "dependencies": {}}
         for dep in pkg.get("dependencies", []):
@@ -229,6 +240,12 @@ def main() -> int:
         description="Publish workspace crates to crates.io with smart error handling."
     )
     parser.add_argument(
+        "--exclude",
+        nargs="*",
+        default=[],
+        help="Package names to skip.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print what would be done without actually publishing.",
@@ -240,7 +257,7 @@ def main() -> int:
         help="Max seconds to wait per crate for crates.io indexing (default: 120).",
     )
     args = parser.parse_args()
-    return publish_all(dry_run=args.dry_run, max_wait_seconds=args.max_wait)
+    return publish_all(dry_run=args.dry_run, max_wait_seconds=args.max_wait, exclude=args.exclude)
 
 
 if __name__ == "__main__":
