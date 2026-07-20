@@ -99,17 +99,15 @@ fetch URL='':
 
 After `pip install celestia-devtools`, run `celestia-devtools init` in your repo. This installs a `commit-msg` hook that rejects bad messages at `git commit` time.
 
-For PR merge protection, use the transparent proxy:
+For PR merge protection, add a shell function to `~/.bashrc`:
 
 ```bash
-# Add to ~/.bashrc (interactive shells only)
-ghm() { celestia-devtools pr-merge "$@"; }
-
-# Then merge with:
-ghm --squash --subject "🐛 Fix the bug." --repo owner/repo
+gh() { celestia-devtools gh "$@"; }
 ```
 
-Or use the proxy directly (works in both interactive and non-interactive shells):
+After `source ~/.bashrc`, `gh pr merge` validates the subject before forwarding to the real `gh` binary. All other commands (`gh pr list`, `gh issue`, `gh repo`, etc.) pass through untouched. The real binary at `/usr/bin/gh` is never modified.
+
+For CI or non-interactive shells (where `.bashrc` is not sourced), use the proxy directly:
 
 ```bash
 celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
