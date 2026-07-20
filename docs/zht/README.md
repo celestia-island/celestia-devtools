@@ -48,6 +48,8 @@ celestia-devtools format-markdown .    # 格式化並檢查 Markdown 檔案
 celestia-devtools prefetch .           # 為離線建置預取相依套件
 celestia-devtools check-cross-deps     # 檢查交叉編譯前置條件
 celestia-devtools locate               # 定位 celestia-island crate 檢出路徑
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # 檢查提交訊息
+celestia-devtools hook install         # 安裝組織的 commit-msg 掛鉤
 ```
 
 ## justfile 整合
@@ -84,6 +86,56 @@ fetch URL='':
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## 提交訊息治理
+
+`celestia-devtools` 強制遵循組織的 gitmoji 規範——每個提交和 PR 合併必須以 gitmoji 開頭，使用英文大寫，並以句號（`.`）結尾。完整規則集請參見 `celestia-devtools commit-msg-lint check --help`。
+
+### 為什麼？
+
+`gh pr merge --squash --subject "..."` 繞過了所有校驗——你輸入的主題直接成為合併提交。沒有把關，糟糕的訊息就會溜進去。
+
+### 本地防護（推薦）
+
+`pip install celestia-devtools` 之後，在你的倉庫中執行 `celestia-devtools init`。這會安裝一個 `commit-msg` 掛鉤，在 `git commit` 時拒絕不合格的提交訊息。
+
+對於 PR 合併防護，向 `~/.bashrc` 加入一個 shell 函數：
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+執行 `source ~/.bashrc` 後，`gh pr merge` 會在轉發到真正的 `gh` 二進位檔案之前校驗主題。所有其他指令（`gh pr list`、`gh issue`、`gh repo` 等）直接透傳。`/usr/bin/gh` 的實際二進位檔案不會被修改。
+
+對於 CI 或非互動式 shell（不會載入 `.bashrc`），直接使用代理：
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### CI 防護（可選，需主動啟用）
+
+透過 GitHub Actions 加入自動 PR 校驗：
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+這會產生 `.github/workflows/commit-msg-lint.yml`。提交並推送它。
+
+要強制執行，在預設分支上啟用分支保護：GitHub Settings → Branches → "Require status checks to pass before merging" → 選擇 `lint-commits / Lint commit messages`。
+
+> **注意：** 私有倉庫需要 GitHub Team（$4/月）才能使用分支保護。公開倉庫免費。
+
+### 所有指令
+
+| 指令 | 用途 |
+|---------|---------|
+| `celestia-devtools init` | 部署 justfile + 安裝 commit-msg 掛鉤 |
+| `celestia-devtools init --with-workflows` | 同時產生 CI 工作流程（需主動啟用） |
+| `celestia-devtools commit-msg-lint check --subject "..."` | 校驗訊息字串 |
+| `celestia-devtools pr-merge --subject "..." --squash` | 校驗後合併（獨立使用） |
+| `celestia-devtools gh pr merge --subject "..."` | 透明 gh 代理 |
 
 ## 授權條款
 
