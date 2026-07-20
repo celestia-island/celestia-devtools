@@ -18,7 +18,7 @@ class TestCommandRegistry:
             "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
             "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite",
             "serve", "locate", "register-patches", "init",
-            "commit-msg-lint", "hook", "pr-merge", "publish-crates",
+            "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
         }
         assert set(COMMANDS.keys()) == expected
 
