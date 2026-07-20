@@ -24,20 +24,27 @@ import sys
 from pathlib import Path
 
 _REAL_GH: str = ""
+_ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
 
 _GUESSES = [
-    "/usr/bin/gh",
-    "/usr/local/bin/gh",
-    "/opt/homebrew/bin/gh",
-    "/home/linuxbrew/.linuxbrew/bin/gh",
-    str(Path.home() / ".local" / "bin" / "gh"),
+    "/usr/bin/gh",          # apt default
+    "/usr/local/bin/gh",     # manual install / brew
+    "/opt/homebrew/bin/gh",  # macOS brew
+    "/home/linuxbrew/.linuxbrew/bin/gh",  # brew on Linux
 ]
 
 
 def _find_gh() -> str:
+    if os.environ.get(_ENV_SKIP):
+        return "gh"
+
     found = shutil.which("gh")
     if found:
-        return found
+        canonical = os.path.realpath(found)
+        myself = os.path.realpath(sys.argv[0]) if sys.argv[0] else ""
+        if canonical != myself:
+            return found
+
     for guess in _GUESSES:
         if os.access(guess, os.X_OK):
             return guess
@@ -95,7 +102,9 @@ def main() -> int:
                 return 1
 
     # Pass through to real gh
-    result = subprocess.run([_real_gh()] + argv)
+    env = os.environ.copy()
+    env[_ENV_SKIP] = "1"
+    result = subprocess.run([_real_gh()] + argv, env=env)
     return result.returncode
 
 
