@@ -20,6 +20,7 @@ Usage::
     celestia-devtools init --force     # overwrite even if identical
     celestia-devtools init --check     # CI gate: exit 1 if drifted or ungitignored
     celestia-devtools init --no-hooks  # skip automatic commit-msg hook install
+    celestia-devtools init --with-workflows  # also generate CI commit-msg lint workflow
 """
 
 from __future__ import annotations
@@ -125,6 +126,10 @@ def main() -> int:
         "--no-hooks", action="store_true",
         help="skip automatic commit-msg hook install",
     )
+    parser.add_argument(
+        "--with-workflows", action="store_true",
+        help="also generate GitHub Actions commit-lint workflow",
+    )
     args = parser.parse_args()
 
     src = common_just_path()
@@ -224,8 +229,39 @@ def main() -> int:
             except SystemExit:
                 logger.warn("hook install skipped (use --force to overwrite, --no-hooks to suppress)")
 
+    # ── Opt-in: GitHub Actions commit-lint workflow ───────────────
+    if args.with_workflows:
+        _ensure_workflows(Path.cwd(), force=args.force)
+
     return 0
 
+
+WORKFLOW_COMMIT_LINT = """\
+name: Commit Message Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  lint-commits:
+    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
+"""
+
+
+def _ensure_workflows(repo_root: Path, *, force: bool = False) -> None:
+    workflows_dir = repo_root / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    target = workflows_dir / "commit-msg-lint.yml"
+
+    if target.exists() and not force:
+        logger.info("commit-msg-lint workflow already exists — skipping (use --force to regenerate)")
+        return
+
+    target.write_text(WORKFLOW_COMMIT_LINT, encoding="utf-8")
+    logger.ok(f"generated commit-msg lint workflow → {target}")
 
 def _check_justfile_import(name: str) -> None:
     """Print a hint if the repo's justfile doesn't import the staged files."""

@@ -87,6 +87,56 @@ fetch URL='':
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
 
+## Commit Message Governance
+
+`celestia-devtools` enforces the org gitmoji convention — every commit and PR merge must start with a gitmoji, use uppercase English, and end with a period (`.`). See `celestia-devtools commit-msg-lint check --help` for the full rule set.
+
+### Why?
+
+`gh pr merge --squash --subject "..."` bypasses ALL validation — the subject you type becomes the merge commit directly. Without a gate, bad messages slip through.
+
+### Local protection (recommended)
+
+After `pip install celestia-devtools`, run `celestia-devtools init` in your repo. This installs a `commit-msg` hook that rejects bad messages at `git commit` time.
+
+For PR merge protection, add a shell function to `~/.bashrc`:
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+After `source ~/.bashrc`, `gh pr merge` validates the subject before forwarding to the real `gh` binary. All other commands (`gh pr list`, `gh issue`, `gh repo`, etc.) pass through untouched. The real binary at `/usr/bin/gh` is never modified.
+
+For CI or non-interactive shells (where `.bashrc` is not sourced), use the proxy directly:
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### CI protection (optional, opt-in)
+
+To add automatic PR validation via GitHub Actions:
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+This generates `.github/workflows/commit-msg-lint.yml`. Commit and push it.
+
+For enforcement, enable branch protection on your default branch via GitHub Settings → Branches → "Require status checks to pass before merging" → choose `lint-commits / Lint commit messages`.
+
+> **Note:** private repos need GitHub Team ($4/mo) for branch protection. Public repos get it free.
+
+### All commands
+
+| Command | Purpose |
+|---------|---------|
+| `celestia-devtools init` | Stage justfiles + install commit-msg hook |
+| `celestia-devtools init --with-workflows` | Also generate CI workflow (opt-in) |
+| `celestia-devtools commit-msg-lint check --subject "..."` | Validate a message string |
+| `celestia-devtools pr-merge --subject "..." --squash` | Validate then merge (standalone) |
+| `celestia-devtools gh pr merge --subject "..."` | Transparent gh proxy |
+
 ## License
 
 Licensed under the [Synthetic Source License (SySL), Version 1.0](./LICENSE).
