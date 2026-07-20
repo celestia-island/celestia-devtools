@@ -21,7 +21,6 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 _REAL_GH: str = ""
 _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
