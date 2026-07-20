@@ -146,7 +146,7 @@ def _topological_order(packages: Dict[str, dict]) -> List[str]:
     in_degree: Dict[str, int] = {n: 0 for n in packages}
     adj: Dict[str, Set[str]] = {n: set() for n in packages}
     for name, meta in packages.items():
-        for dep, dep_meta in meta.get("dependencies", {}).items():
+        for dep, _dep_meta in meta.get("dependencies", {}).items():
             if dep in packages:
                 in_degree[name] += 1
                 adj[dep].add(name)
@@ -225,7 +225,7 @@ def publish_all(dry_run: bool = False, max_wait_seconds: int = 120, exclude: lis
             failed.append(name)
             # Don't fail immediately — continue with remaining packages
             # that don't depend on the failed one.
-            print(f"  [warn] continuing with remaining packages...", file=sys.stderr)
+            print("  [warn] continuing with remaining packages...", file=sys.stderr)
 
     if failed:
         print(f"\nFailed to publish: {', '.join(failed)}", file=sys.stderr)
