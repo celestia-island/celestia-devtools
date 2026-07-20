@@ -22,7 +22,7 @@ Commands::
     include-path      Print the path to the bundled common.just
     commit-msg-lint   Validate commit messages against the org gitmoji convention
     hook              Manage the celestia-devtools commit-msg hook lifecycle
-    publish-crates    Publish workspace crates to crates.io with smart error handling
+    pr-merge          Validate subject and merge via gh pr merge.
 
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
@@ -51,6 +51,7 @@ COMMANDS: dict[str, str] = {
     "init": "celestia_devtools.repo.init",
     "commit-msg-lint": "celestia_devtools.vcs.commit_msg",
     "hook": "celestia_devtools.vcs.hook",
+    "pr-merge": "celestia_devtools.vcs.pr_merge",
     "publish-crates": "celestia_devtools.publish.crates",
 }
 
