@@ -110,14 +110,6 @@ def main() -> int:
         description="Vendor celestia-devtools justfile recipes into a repo"
     )
     parser.add_argument(
-        "--no-hooks", action="store_true",
-        help="skip automatic commit-msg hook install",
-    )
-    parser.add_argument(
-        "--no-workflows", action="store_true",
-        help="skip automatic GitHub Actions workflow generation",
-    )
-    parser.add_argument(
         "--force", action="store_true",
         help="overwrite even if the existing copy is identical",
     )
@@ -128,6 +120,10 @@ def main() -> int:
     parser.add_argument(
         "--name", default=LINK_NAME,
         help=f"output filename inside {DEST_DIR}/ (default: {LINK_NAME})",
+    )
+    parser.add_argument(
+        "--no-hooks", action="store_true",
+        help="skip automatic commit-msg hook install",
     )
     args = parser.parse_args()
 
@@ -228,37 +224,7 @@ def main() -> int:
             except SystemExit:
                 logger.warn("hook install skipped (use --force to overwrite, --no-hooks to suppress)")
 
-    # ── Auto-generate GitHub Actions workflows ─────────────────────
-    if not args.no_workflows:
-        _ensure_workflows(Path.cwd(), force=args.force)
-
     return 0
-
-
-WORKFLOW_COMMIT_LINT = """\
-name: Commit Message Lint
-
-on:
-  pull_request:
-    types: [opened, edited, reopened, synchronize]
-
-jobs:
-  lint-commits:
-    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
-"""
-
-
-def _ensure_workflows(repo_root: Path, *, force: bool = False) -> None:
-    workflows_dir = repo_root / ".github" / "workflows"
-    workflows_dir.mkdir(parents=True, exist_ok=True)
-    target = workflows_dir / "commit-msg-lint.yml"
-
-    if target.exists() and not force:
-        logger.info("commit-msg-lint workflow already exists — skipping")
-        return
-
-    target.write_text(WORKFLOW_COMMIT_LINT, encoding="utf-8")
-    logger.ok(f"generated commit-msg lint workflow → {target}")
 
 
 def _check_justfile_import(name: str) -> None:
