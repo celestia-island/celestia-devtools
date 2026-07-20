@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Tests for hook lifecycle management (``celestia_devtools.vcs.hook``)."""
 
-import os
 import tempfile
 from pathlib import Path
 

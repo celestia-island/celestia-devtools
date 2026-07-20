@@ -427,3 +427,7 @@ def blank() -> None:
 
 def rule() -> None:
     _default.rule()
+
+
+def get_logger(_name: str) -> Logger:
+    return _default

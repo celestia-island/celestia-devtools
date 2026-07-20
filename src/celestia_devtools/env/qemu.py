@@ -15,11 +15,9 @@ Usage:
 
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -147,15 +145,15 @@ def _install_linux(archs: list[str]) -> bool:
                 capture_output=True, text=True, timeout=120
             )
             if result.returncode == 0:
-                log.info(f"Installed via conda")
+                log.info("Installed via conda")
                 return True
         except Exception:
             pass
 
     # Fallback: suggest manual install
-    log.warning(f"Cannot install QEMU automatically. Please run:")
+    log.warning("Cannot install QEMU automatically. Please run:")
     log.warning(f"  sudo apt-get install {' '.join(missing)}")
-    log.warning(f"Or use conda: conda install -c conda-forge qemu")
+    log.warning("Or use conda: conda install -c conda-forge qemu")
     return False
 
 
@@ -260,3 +258,24 @@ def ensure(archs: list[str] | None = None) -> bool:
         return all(p.found for p in probes if p.arch in archs)
 
     return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Entry point for `celestia-devtools qemu-ensure`."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Install or verify QEMU emulators")
+    parser.add_argument("--arch", nargs="+", default=["x86_64", "aarch64"],
+                        choices=["x86_64", "aarch64", "arm", "riscv64"],
+                        help="QEMU architectures to ensure")
+    parser.add_argument("--check", action="store_true",
+                        help="Only check, don't install")
+    args = parser.parse_args(argv)
+    if args.check:
+        probes = check_qemu()
+        for p in probes:
+            log.info(f"  {p.arch}: {'OK' if p.found else 'MISSING'}")
+        ok = all(p.found for p in probes if p.arch in args.arch)
+        return 0 if ok else 1
+    else:
+        ok = ensure(args.arch)
+        return 0 if ok else 1
