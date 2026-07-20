@@ -48,6 +48,8 @@ celestia-devtools format-markdown .    # Markdown ファイルのフォーマッ
 celestia-devtools prefetch .           # オフラインビルド用に依存関係を事前取得
 celestia-devtools check-cross-deps     # クロスコンパイルの前提条件を確認
 celestia-devtools locate               # celestia-island crate のチェックアウトを特定
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # コミットメッセージを検査
+celestia-devtools hook install         # 組織の commit-msg フックをインストール
 ```
 
 ## justfile 連携
@@ -84,6 +86,56 @@ fetch URL='':
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## コミットメッセージガバナンス
+
+`celestia-devtools` は組織の gitmoji 規約を強制します——すべてのコミットと PR マージは gitmoji で始まり、英大文字を使用し、ピリオド（`.`）で終わる必要があります。完全なルールセットは `celestia-devtools commit-msg-lint check --help` を参照してください。
+
+### なぜ必要か？
+
+`gh pr merge --squash --subject "..."` はすべての検証をバイパスします——入力した subject がそのままマージコミットになります。ゲートがないと、不適切なメッセージがすり抜けてしまいます。
+
+### ローカル保護（推奨）
+
+`pip install celestia-devtools` の後、リポジトリで `celestia-devtools init` を実行します。これにより、`git commit` 時に不適切なメッセージを拒否する `commit-msg` フックがインストールされます。
+
+PR マージ保護のために、`~/.bashrc` にシェル関数を追加します：
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+`source ~/.bashrc` の後、`gh pr merge` は実際の `gh` バイナリに転送する前に subject を検証します。その他のコマンド（`gh pr list`、`gh issue`、`gh repo` など）はそのまま通過します。`/usr/bin/gh` の実際のバイナリは決して変更されません。
+
+CI や非インタラクティブシェル（`.bashrc` が読み込まれない環境）では、プロキシを直接使用します：
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### CI 保護（オプション、オプトイン）
+
+GitHub Actions による自動 PR 検証を追加するには：
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+これにより `.github/workflows/commit-msg-lint.yml` が生成されます。コミットしてプッシュしてください。
+
+強制するには、デフォルトブランチでブランチ保護を有効にします：GitHub Settings → Branches → "Require status checks to pass before merging" → `lint-commits / Lint commit messages` を選択します。
+
+> **注意：** プライベートリポジトリでブランチ保護を使用するには GitHub Team（$4/月）が必要です。パブリックリポジトリは無料です。
+
+### すべてのコマンド
+
+| コマンド | 目的 |
+|---------|---------|
+| `celestia-devtools init` | justfile のステージング + commit-msg フックのインストール |
+| `celestia-devtools init --with-workflows` | CI ワークフローも生成（オプトイン） |
+| `celestia-devtools commit-msg-lint check --subject "..."` | メッセージ文字列の検証 |
+| `celestia-devtools pr-merge --subject "..." --squash` | 検証後にマージ（スタンドアロン） |
+| `celestia-devtools gh pr merge --subject "..."` | 透過的 gh プロキシ |
 
 ## ライセンス
 

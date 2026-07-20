@@ -48,6 +48,8 @@ celestia-devtools format-markdown .    # Markdown 파일 포맷 및 린트
 celestia-devtools prefetch .           # 오프라인 빌드를 위한 의존성 사전 준비
 celestia-devtools check-cross-deps     # 교차 컴파일 선행 조건 확인
 celestia-devtools locate               # celestia-island crate 체크아웃 위치 탐색
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # 커밋 메시지 검사
+celestia-devtools hook install         # 조직 commit-msg 훅 설치
 ```
 
 ## justfile 연동
@@ -84,6 +86,56 @@ fetch URL='':
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## 커밋 메시지 거버넌스
+
+`celestia-devtools`는 조직의 gitmoji 규칙을 강제합니다——모든 커밋과 PR 병합은 gitmoji로 시작하고, 영문 대문자를 사용하며, 마침표(`.`)로 끝나야 합니다. 전체 규칙은 `celestia-devtools commit-msg-lint check --help`를 참조하세요.
+
+### 왜 필요한가요?
+
+`gh pr merge --squash --subject "..."` 는 모든 검증을 우회합니다——입력한 subject가 그대로 병합 커밋이 됩니다. 게이트가 없으면 잘못된 메시지가 그대로 통과됩니다.
+
+### 로컬 보호 (권장)
+
+`pip install celestia-devtools` 후, 저장소에서 `celestia-devtools init`을 실행하세요. `git commit` 시 잘못된 메시지를 거부하는 `commit-msg` 훅이 설치됩니다.
+
+PR 병합 보호를 위해 `~/.bashrc`에 셸 함수를 추가하세요:
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+`source ~/.bashrc` 후, `gh pr merge`는 실제 `gh` 바이너리로 전달하기 전에 subject를 검증합니다. 다른 모든 명령(`gh pr list`, `gh issue`, `gh repo` 등)은 그대로 통과됩니다. `/usr/bin/gh`의 실제 바이너리는 절대 수정되지 않습니다.
+
+CI 또는 비대화형 셸(`.bashrc`가 로드되지 않는 환경)에서는 프록시를 직접 사용하세요:
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### CI 보호 (선택 사항, 옵트인)
+
+GitHub Actions를 통해 자동 PR 검증을 추가하려면:
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+`.github/workflows/commit-msg-lint.yml`이 생성됩니다. 커밋하고 푸시하세요.
+
+강제하려면 기본 브랜치에서 브랜치 보호를 활성화하세요: GitHub Settings → Branches → "Require status checks to pass before merging" → `lint-commits / Lint commit messages`를 선택합니다.
+
+> **참고:** 비공개 저장소에서 브랜치 보호를 사용하려면 GitHub Team($4/월)이 필요합니다. 공개 저장소는 무료입니다.
+
+### 모든 명령
+
+| 명령 | 목적 |
+|---------|---------|
+| `celestia-devtools init` | justfile 스테이징 + commit-msg 훅 설치 |
+| `celestia-devtools init --with-workflows` | CI 워크플로도 생성 (옵트인) |
+| `celestia-devtools commit-msg-lint check --subject "..."` | 메시지 문자열 검증 |
+| `celestia-devtools pr-merge --subject "..." --squash` | 검증 후 병합 (독립 실행형) |
+| `celestia-devtools gh pr merge --subject "..."` | 투명 gh 프록시 |
 
 ## 라이선스
 

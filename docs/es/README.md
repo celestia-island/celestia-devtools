@@ -48,6 +48,8 @@ celestia-devtools format-markdown .    # formatear y revisar archivos Markdown
 celestia-devtools prefetch .           # preconfigurar dependencias para builds sin conexión
 celestia-devtools check-cross-deps     # comprobar requisitos de cross-compilación
 celestia-devtools locate               # localizar un checkout de crate de celestia-island
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # revisar un mensaje de commit
+celestia-devtools hook install         # instalar el hook commit-msg de la organización
 ```
 
 ## Integración con justfile
@@ -84,6 +86,56 @@ fetch URL='':
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## Gobernanza de mensajes de commit
+
+`celestia-devtools` aplica la convención gitmoji de la organización — cada commit y fusión de PR debe comenzar con un gitmoji, usar inglés en mayúsculas y terminar con un punto (`.`). Consulta `celestia-devtools commit-msg-lint check --help` para el conjunto completo de reglas.
+
+### ¿Por qué?
+
+`gh pr merge --squash --subject "..."` omite TODA validación — el asunto que escribes se convierte directamente en el commit de fusión. Sin un control, los mensajes incorrectos se cuelan.
+
+### Protección local (recomendada)
+
+Después de `pip install celestia-devtools`, ejecuta `celestia-devtools init` en tu repositorio. Esto instala un hook `commit-msg` que rechaza mensajes incorrectos al hacer `git commit`.
+
+Para la protección de fusión de PR, añade una función shell a `~/.bashrc`:
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+Después de `source ~/.bashrc`, `gh pr merge` valida el asunto antes de reenviarlo al binario `gh` real. Todos los demás comandos (`gh pr list`, `gh issue`, `gh repo`, etc.) pasan sin modificaciones. El binario real en `/usr/bin/gh` nunca se modifica.
+
+Para CI o shells no interactivos (donde `.bashrc` no se carga), usa el proxy directamente:
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### Protección CI (opcional, opt-in)
+
+Para añadir validación automática de PR mediante GitHub Actions:
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+Esto genera `.github/workflows/commit-msg-lint.yml`. Haz commit y push.
+
+Para hacerlo obligatorio, activa la protección de rama en tu rama por defecto mediante GitHub Settings → Branches → "Require status checks to pass before merging" → elige `lint-commits / Lint commit messages`.
+
+> **Nota:** los repositorios privados necesitan GitHub Team ($4/mes) para la protección de rama. Los repositorios públicos la obtienen gratis.
+
+### Todos los comandos
+
+| Comando | Propósito |
+|---------|---------|
+| `celestia-devtools init` | Desplegar justfiles + instalar hook commit-msg |
+| `celestia-devtools init --with-workflows` | También genera workflow CI (opt-in) |
+| `celestia-devtools commit-msg-lint check --subject "..."` | Validar una cadena de mensaje |
+| `celestia-devtools pr-merge --subject "..." --squash` | Validar y luego fusionar (independiente) |
+| `celestia-devtools gh pr merge --subject "..."` | Proxy gh transparente |
 
 ## Licencia
 

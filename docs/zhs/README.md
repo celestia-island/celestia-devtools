@@ -48,6 +48,8 @@ celestia-devtools format-markdown .    # 格式化并检查 Markdown 文件
 celestia-devtools prefetch .           # 为离线构建预取依赖
 celestia-devtools check-cross-deps     # 检查交叉编译前置条件
 celestia-devtools locate               # 定位 celestia-island crate 检出路径
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # 检查提交信息
+celestia-devtools hook install         # 安装组织的 commit-msg 钩子
 ```
 
 ## justfile 集成
@@ -84,6 +86,56 @@ fetch URL='':
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## 提交信息治理
+
+`celestia-devtools` 强制遵循组织的 gitmoji 规范——每个提交和 PR 合并必须以 gitmoji 开头，使用英文大写，并以句号（`.`）结尾。完整规则集请参见 `celestia-devtools commit-msg-lint check --help`。
+
+### 为什么？
+
+`gh pr merge --squash --subject "..."` 绕过了所有校验——你输入的主题直接成为合并提交。没有把关，糟糕的信息就会溜进去。
+
+### 本地防护（推荐）
+
+`pip install celestia-devtools` 之后，在你的仓库中运行 `celestia-devtools init`。这会安装一个 `commit-msg` 钩子，在 `git commit` 时拒绝不合格的提交信息。
+
+对于 PR 合并防护，向 `~/.bashrc` 添加一个 shell 函数：
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+执行 `source ~/.bashrc` 后，`gh pr merge` 会在转发到真正的 `gh` 二进制文件之前校验主题。所有其他命令（`gh pr list`、`gh issue`、`gh repo` 等）直接透传。`/usr/bin/gh` 的实际二进制文件不会被修改。
+
+对于 CI 或非交互式 shell（不会加载 `.bashrc`），直接使用代理：
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### CI 防护（可选，需主动启用）
+
+通过 GitHub Actions 添加自动 PR 校验：
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+这会生成 `.github/workflows/commit-msg-lint.yml`。提交并推送它。
+
+要强制执行，在默认分支上启用分支保护：GitHub Settings → Branches → "Require status checks to pass before merging" → 选择 `lint-commits / Lint commit messages`。
+
+> **注意：** 私有仓库需要 GitHub Team（$4/月）才能使用分支保护。公开仓库免费。
+
+### 所有命令
+
+| 命令 | 用途 |
+|---------|---------|
+| `celestia-devtools init` | 部署 justfile + 安装 commit-msg 钩子 |
+| `celestia-devtools init --with-workflows` | 同时生成 CI 工作流（需主动启用） |
+| `celestia-devtools commit-msg-lint check --subject "..."` | 校验消息字符串 |
+| `celestia-devtools pr-merge --subject "..." --squash` | 校验后合并（独立使用） |
+| `celestia-devtools gh pr merge --subject "..."` | 透明 gh 代理 |
 
 ## 许可证
 
