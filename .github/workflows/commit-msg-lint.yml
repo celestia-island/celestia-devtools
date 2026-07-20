@@ -4,6 +4,8 @@ on:
   workflow_call: {}
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
+    types: [checks_requested]
 
 jobs:
   lint:
@@ -23,6 +25,12 @@ jobs:
       - name: Install celestia-devtools
         run: pip install git+https://github.com/celestia-island/celestia-devtools.git@master
 
+      - name: Lint PR title (squash merge subject)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "PR title: ${{ github.event.pull_request.title }}"
+          celestia-devtools commit-msg-lint check --subject "${{ github.event.pull_request.title }}"
+
       - name: Lint all commits in the PR
         if: github.base_ref != ''
         run: |
@@ -33,13 +41,11 @@ jobs:
           git log --format='%s' "$RANGE" | \
           celestia-devtools commit-msg-lint check --stdin-subjects
 
-      # On push (no base_ref), lint all new commits in the push range.
       - name: Lint all new commits on push
         if: github.base_ref == '' && github.event_name == 'push'
         run: |
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.event.after }}"
-          # github.event.before is all-zeros for the first push to a branch.
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             RANGE="$AFTER"
           else
