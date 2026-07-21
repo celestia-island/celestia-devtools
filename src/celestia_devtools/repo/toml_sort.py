@@ -159,15 +159,14 @@ def sort_toml_deps(text: str) -> str:
                 # Rebuild: group by class, blank lines between groups only
                 result_lines.append(header_line)
                 result_lines.append("\n")
-                prev_group = -1
-                for idx, (group, _key, text) in enumerate(entries):
-                    if prev_group >= 0 and group != prev_group:
-                        result_lines.append("\n")
-                    prev_group = group
-                    result_lines.append(text)
-                    # Ensure trailing newline
-                    if not text.endswith("\n"):
-                        result_lines.append("\n")
+                 prev_group = -1
+                 for idx, (group, _key, text) in enumerate(entries):
+                     if prev_group >= 0 and group != prev_group:
+                         result_lines.append("\n")
+                     prev_group = group
+                     # Strip trailing blank lines from entry text; we control spacing
+                     text = text.rstrip("\n") + "\n"
+                     result_lines.append(text)
             else:
                 # Empty section — preserve as-is
                 result_lines.extend(lines[header:end])
