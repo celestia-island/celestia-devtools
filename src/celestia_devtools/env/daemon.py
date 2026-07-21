@@ -19,11 +19,29 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional, Sequence
+
+def _find_free_port(start: int) -> int:
+    """Find the first free TCP port starting from *start*."""
+    port = start
+    for _ in range(100):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.1)
+        try:
+            s.bind(("127.0.0.1", port))
+            s.close()
+            return port
+        except OSError:
+            port += 1
+        finally:
+            s.close()
+    raise RuntimeError(f"no free port found starting from {start}")
+
 
 # ── Service definitions ──────────────────────────────────────────────────────
 
@@ -113,9 +131,12 @@ def _systemd_unit_name(repo: str) -> str:
     return f"celestia-{repo}.service"
 
 
-def _generate_unit(repo: str, work_dir: Path, env: dict[str, str], binary: str, args: list[str]) -> str:
+def _generate_unit(repo: str, work_dir: Path, env: dict[str, str], binary: str,
+                   args: list[str], port: int) -> str:
     """Generate a systemd user unit."""
-    env_lines = "\n".join(f"Environment={k}={v}" for k, v in sorted(env.items()))
+    all_env = dict(env)
+    all_env["PORT"] = str(port)
+    env_lines = "\n".join(f"Environment={k}={v}" for k, v in sorted(all_env.items()))
     return f"""[Unit]
 Description=Celestia {repo} dev daemon
 After=network.target
@@ -228,21 +249,25 @@ def cmd_install(repo: str, with_mock: bool = False) -> int:
         print(f"[daemon] binary not found: {binary}", file=sys.stderr)
         return 1
 
-    # 3. Start mock servers if requested
+    # 3. Find free port
+    port = _find_free_port(svc["run_port"])
+    if port != svc["run_port"]:
+        print(f"[daemon] port {svc['run_port']} occupied, using {port}")
+
+    # 4. Start mock servers if requested
     env: dict[str, str] = {}
     if with_mock:
         _start_mock_servers(repo)
-        # Pass mock URLs as env vars to the service
         from celestia_devtools.core.mock import discover_mocks
         mocks = discover_mocks()
         for name, key in MOCK_ENV_MAP.items():
             if name in mocks:
                 env[key] = mocks[name]["url"]
 
-    # 4. Generate systemd unit
+    # 5. Generate systemd unit
     unit_name = _systemd_unit_name(repo)
     unit_path = _systemd_user_dir() / unit_name
-    unit_text = _generate_unit(repo, work_dir, env, str(binary), ["serve"])
+    unit_text = _generate_unit(repo, work_dir, env, str(binary), ["serve"], port)
     unit_path.write_text(unit_text)
     print(f"[daemon] wrote unit: {unit_path}")
 
