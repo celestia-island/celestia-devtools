@@ -43,6 +43,27 @@ def _find_free_port(start: int) -> int:
     raise RuntimeError(f"no free port found starting from {start}")
 
 
+def _start_pglite() -> str:
+    """Start PGlite and return the DATABASE_URL connection string."""
+    import json as _json
+    result = subprocess.run(
+        [sys.executable, "-m", "celestia_devtools", "pglite", "start", "--force"],
+        capture_output=True, text=True, timeout=30,
+    )
+    # Read the URL from the instance file
+    instance_file = Path.home() / ".local" / "share" / "celestia" / "pglite" / "pglite-instance.json"
+    if instance_file.exists():
+        data = _json.loads(instance_file.read_text())
+        url = data.get("url", "")
+        if url:
+            return url
+    # Fallback: try parsing from output
+    for line in result.stdout.split("\n") + result.stderr.split("\n"):
+        if "postgres://" in line or "postgresql://" in line:
+            return line.strip()
+    return ""
+
+
 # ── Service definitions ──────────────────────────────────────────────────────
 
 # Each service knows what binary to run, what features to build, what ports,
@@ -249,13 +270,26 @@ def cmd_install(repo: str, with_mock: bool = False) -> int:
         print(f"[daemon] binary not found: {binary}", file=sys.stderr)
         return 1
 
-    # 3. Find free port
+    # 3. Start PGlite (needed by chest/arona)
+    db_url = _start_pglite()
+    if db_url:
+        print(f"[daemon] PGlite ready: {db_url}")
+
+    # 4. Find free port
     port = _find_free_port(svc["run_port"])
     if port != svc["run_port"]:
         print(f"[daemon] port {svc['run_port']} occupied, using {port}")
 
     # 4. Start mock servers if requested
     env: dict[str, str] = {}
+    if db_url:
+        env["DATABASE_URL"] = db_url
+    if "JWT_SECRET" not in os.environ:
+        env["JWT_SECRET"] = "dev-secret-not-for-production-use-only-32chars"
+    if "SHITTIM_CHEST_ENCRYPTION_KEY" not in os.environ:
+        env["SHITTIM_CHEST_ENCRYPTION_KEY"] = "dev-encryption-key-not-for-prod-32ch"
+    env["SHITTIM_CHEST_HOST"] = "0.0.0.0"
+    env["RUST_LOG"] = os.environ.get("RUST_LOG", "warn,chest=info")
     if with_mock:
         _start_mock_servers(repo)
         from celestia_devtools.core.mock import discover_mocks
