@@ -155,9 +155,7 @@ def _systemd_unit_name(repo: str) -> str:
 def _generate_unit(repo: str, work_dir: Path, env: dict[str, str], binary: str,
                    args: list[str], port: int) -> str:
     """Generate a systemd user unit."""
-    all_env = dict(env)
-    all_env["PORT"] = str(port)
-    env_lines = "\n".join(f"Environment={k}={v}" for k, v in sorted(all_env.items()))
+    env_lines = "\n".join(f"Environment={k}={v}" for k, v in sorted(env.items()))
     return f"""[Unit]
 Description=Celestia {repo} dev daemon
 After=network.target
@@ -289,6 +287,7 @@ def cmd_install(repo: str, with_mock: bool = False) -> int:
     if "SHITTIM_CHEST_ENCRYPTION_KEY" not in os.environ:
         env["SHITTIM_CHEST_ENCRYPTION_KEY"] = "dev-encryption-key-not-for-prod-32ch"
     env["SHITTIM_CHEST_HOST"] = "0.0.0.0"
+    env["SHITTIM_CHEST_PORT"] = str(port)
     env["RUST_LOG"] = os.environ.get("RUST_LOG", "warn,chest=info")
     if with_mock:
         _start_mock_servers(repo)
