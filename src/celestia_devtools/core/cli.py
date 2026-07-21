@@ -58,6 +58,7 @@ COMMANDS: dict[str, str] = {
     "gh": "celestia_devtools.vcs.gh",
     "publish-crates": "celestia_devtools.publish.crates",
     "toml-sort": "celestia_devtools.repo.toml_sort",
+    "daemon": "celestia_devtools.env.daemon",
     "mock-start": "celestia_devtools.core.mock",
     "mock-stop": "celestia_devtools.core.mock",
     "mock-status": "celestia_devtools.core.mock",
