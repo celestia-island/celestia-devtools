@@ -116,6 +116,11 @@ fmt-toml *ARGS='':
 fmt-markdown *ARGS='':
     {{ _devtools }} format-markdown . {{ARGS}}
 
+# Lint and fix decorative ==== comment separators and merge-conflict markers.
+# Run with --fix to apply changes in-place.
+lint-separators *FLAGS='':
+    {{ _devtools }} lint-separators . {{FLAGS}}
+
 # ── Commit message lint ──────────────────────────────────────────────────────
 
 # Validate a commit message against the org gitmoji convention.

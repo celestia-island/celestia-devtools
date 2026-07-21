@@ -240,7 +240,7 @@ def _stop_mock_servers() -> None:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def cmd_install(repo: str, with_mock: bool = False) -> int:
+def cmd_install(repo: str, with_mock: bool = False, no_build: bool = False) -> int:
     """Install (build + create systemd unit + enable + start) the daemon."""
     svc = SERVICE_DEFS[repo]
     work_dir = Path.cwd()
@@ -254,19 +254,23 @@ def cmd_install(repo: str, with_mock: bool = False) -> int:
         print("[daemon] On WSL, ensure systemd is enabled: [boot] systemd=true in /etc/wsl.conf", file=sys.stderr)
         return 1
 
-    # 1. Build
-    print(f"[daemon] building {repo}...")
-    build_cmd = svc["build_cmd"]
-    result = subprocess.run(build_cmd, cwd=work_dir)
-    if result.returncode != 0:
-        print(f"[daemon] build failed (exit {result.returncode})", file=sys.stderr)
-        return result.returncode
-
-    # 2. Locate binary
+    # 1. Build (skip if --no-build)
     binary = work_dir / "target" / "release" / svc["bin"]
-    if not binary.is_file():
-        print(f"[daemon] binary not found: {binary}", file=sys.stderr)
-        return 1
+    if no_build:
+        if not binary.is_file():
+            print(f"[daemon] --no-build: binary not found at {binary}", file=sys.stderr)
+            return 1
+        print(f"[daemon] skipping build (--no-build), using {binary}")
+    else:
+        print(f"[daemon] building {repo}...")
+        build_cmd = svc["build_cmd"]
+        result = subprocess.run(build_cmd, cwd=work_dir)
+        if result.returncode != 0:
+            print(f"[daemon] build failed (exit {result.returncode})", file=sys.stderr)
+            return result.returncode
+        if not binary.is_file():
+            print(f"[daemon] binary not found after build: {binary}", file=sys.stderr)
+            return 1
 
     # 3. Start PGlite (needed by chest/arona)
     db_url = _start_pglite()
@@ -410,7 +414,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     rest = args[1:]
 
     with_mock = "--mock" in rest
-    rest = [a for a in rest if a != "--mock"]
+    no_build = "--no-build" in rest
+    rest = [a for a in rest if a not in ("--mock", "--no-build")]
 
     repo = rest[0] if rest else detect_repo()
     if not repo:
@@ -424,7 +429,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     if cmd == "install":
-        return cmd_install(repo, with_mock)
+        return cmd_install(repo, with_mock, no_build)
     elif cmd == "uninstall":
         return cmd_uninstall(repo)
     elif cmd == "restart":
