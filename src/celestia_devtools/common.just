@@ -226,6 +226,10 @@ malkuth_bin := if env("MALKUTH_BIN", "") != "" {
 malkuth_bin_rel := "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
 
 [script]
+dev *ARGS='':
+    {{ _devtools }} daemon {{ARGS}}
+
+[script]
 dev-watch *ARGS:
     set -eu
     # Ensure MSYS /usr/bin is on PATH (just spawns bash.exe without /etc/profile,
