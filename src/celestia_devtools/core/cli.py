@@ -57,6 +57,7 @@ COMMANDS: dict[str, str] = {
     "pr-merge": "celestia_devtools.vcs.pr_merge",
     "gh": "celestia_devtools.vcs.gh",
     "publish-crates": "celestia_devtools.publish.crates",
+    "toml-sort": "celestia_devtools.repo.toml_sort",
     "mock-start": "celestia_devtools.core.mock",
     "mock-stop": "celestia_devtools.core.mock",
     "mock-status": "celestia_devtools.core.mock",

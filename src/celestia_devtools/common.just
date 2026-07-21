@@ -106,6 +106,11 @@ clean-incremental:
 
 # ── Formatting ────────────────────────────────────────────────────────────────
 
+# Sort Cargo.toml [workspace.dependencies] entries (internal → celestia → external).
+# Call inside your fmt/fmt-check recipe.
+fmt-toml *ARGS='':
+    {{ _devtools }} toml-sort . {{ARGS}}
+
 # Format Markdown docs (stdlib-only; call inside your fmt/fmt-check recipe).
 # Does NOT touch Rust or JS — compose with cargo fmt / pnpm lint yourself.
 fmt-markdown *ARGS='':
