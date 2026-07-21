@@ -2,16 +2,16 @@
 Mock server orchestration — lifecycle management and service discovery.
 
 Provides:
-- per-repo mock server scripts (discovery via env vars or registry file)
+- per-repo mock server scripts (discovery via devtools subprocess)
 - justfile recipes: `mock-start`, `mock-stop`, `mock-status`
-- registry file at `.celestia/mocks.json` for cross-repo address discovery
+- `celestia-devtools registry` — JSON output of all mock addresses
+
+Mock servers query devtools for peer locations instead of using a shared
+file.  devtools already knows every repo's location via its scan logic
+(shared with `register-patches` and `locate`).
 
 Mock server hierarchy (bottom-up):
   arona (LLM) → entelecheia (scepter) → shittim-chest (webui agent activity)
-
-Each mock registers itself in the registry on startup and reads peer
-addresses from the same file.  celestia-devtools provides the `mock`
-CLI group and common.just recipes.
 """
 from __future__ import annotations
 
@@ -24,155 +24,181 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# ── Registry ────────────────────────────────────────────────────────────────
 
-REGISTRY_FILE = ".celestia/mocks.json"
+# ── Repo discovery (shared with register_patches) ──────────────────────────
 
-
-def registry_path(workspace_root: Optional[str] = None) -> Path:
-    root = workspace_root or _find_workspace_root()
-    return Path(root) / REGISTRY_FILE
-
-
-def _find_workspace_root() -> str:
-    """Walk up from cwd to find the workspace root (has .git or justfile)."""
+def find_repo_root() -> Path:
+    """Walk up from cwd to find the workspace root."""
     d = Path.cwd()
     while d != d.parent:
         if (d / "justfile").exists() or (d / ".git").exists():
-            return str(d)
+            return d
         d = d.parent
-    return str(Path.cwd())
+    return Path.cwd()
 
 
-def read_registry() -> dict:
-    path = registry_path()
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
+def discover_sibling_repos() -> dict[str, Path]:
+    """Find all celestia-island repos in the parent directory.
+
+    Returns ``{repo_name: absolute_path}``.
+    """
+    from celestia_devtools.repo.register_patches import is_celestia_repo
+
+    parent = find_repo_root().parent
+    repos: dict[str, Path] = {}
+    if not parent.is_dir():
+        return repos
+    for entry in sorted(parent.iterdir()):
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        if not (entry / ".git").exists():
+            continue
+        name = is_celestia_repo(entry)
+        if name:
+            repos[name] = entry
+    return repos
 
 
-def write_registry(data: dict) -> None:
-    path = registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+# ── Mock addresses ──────────────────────────────────────────────────────────
+
+MOCK_PORTS: dict[str, dict] = {
+    "arona":        {"port": 8429, "protocol": "http"},
+    "entelecheia":  {"port": 8424, "protocol": "ws"},
+    "shittim-chest": {"port": 8428, "protocol": "ws"},
+}
 
 
-def register_mock(name: str, port: int, protocol: str = "ws") -> None:
-    """Register a mock server in the registry."""
-    reg = read_registry()
-    reg[name] = {
-        "name": name,
-        "port": port,
-        "protocol": protocol,
-        "url": f"{protocol}://127.0.0.1:{port}",
-        "pid": os.getpid(),
-    }
-    write_registry(reg)
+def discover_mocks() -> dict:
+    """Build the complete mock registry from sibling repo discovery.
 
-
-def unregister_mock(name: str) -> None:
-    reg = read_registry()
-    reg.pop(name, None)
-    write_registry(reg)
-
-
-def get_mock_url(name: str) -> Optional[str]:
-    reg = read_registry()
-    info = reg.get(name)
-    return info["url"] if info else None
+    Returns a dict like:
+    { "arona": {"path": "/path/to/arona", "port": 8429, "url": "http://127.0.0.1:8429", "script": "/path/to/arona/scripts/mock/server.py"}, ... }
+    Only includes repos that actually have a mock script.
+    """
+    repos = discover_sibling_repos()
+    result: dict = {}
+    for name, info in MOCK_PORTS.items():
+        path = repos.get(name)
+        if not path:
+            continue
+        script = path / "scripts" / "mock" / "server.py"
+        if script.exists():
+            result[name] = {
+                "name": name,
+                "path": str(path),
+                "port": info["port"],
+                "protocol": info["protocol"],
+                "url": f"{info['protocol']}://127.0.0.1:{info['port']}",
+                "script": str(script),
+            }
+    return result
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────
 
-MOCK_PORTS: dict[str, dict] = {
-    "arona":       {"port": 8429, "protocol": "http", "repo": "../arona"},
-    "entelecheia": {"port": 8424, "protocol": "ws",   "repo": "../entelecheia"},
-    "shittim-chest": {"port": 8428, "protocol": "ws", "repo": "."},
-}
-
-
-def start_mock(workspace_root: str, name: str) -> subprocess.Popen:
-    """Start a mock server by name. Returns the Popen handle."""
-    info = MOCK_PORTS.get(name)
-    if not info:
-        raise ValueError(f"Unknown mock: {name}")
-
-    script = Path(workspace_root) / info["repo"] / "scripts" / "mock" / "server.py"
+def start_mock(info: dict, peer_urls: dict[str, str]) -> subprocess.Popen | None:
+    """Start a single mock server. Returns Popen handle or None if skipped."""
+    script = Path(info["script"])
     if not script.exists():
-        raise FileNotFoundError(f"Mock script not found: {script}")
+        print(f"[mock] Skipping {info['name']}: script not found at {script}")
+        return None
 
     env = os.environ.copy()
-    env["ARONA_MOCK_URL"] = get_mock_url("arona") or "http://127.0.0.1:8429"
-    env["ENTE_MOCK_URL"] = get_mock_url("entelecheia") or "ws://127.0.0.1:8424"
+    env["ARONA_MOCK_URL"]  = peer_urls.get("arona", "http://127.0.0.1:8429")
+    env["ENTE_MOCK_URL"]   = peer_urls.get("entelecheia", "ws://127.0.0.1:8424")
+    env["CHEST_MOCK_URL"]  = peer_urls.get("shittim-chest", "ws://127.0.0.1:8428")
 
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-u", str(script)],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    print(f"[mock] Started {info['name']} (pid={proc.pid}) on port {info['port']}")
+    return proc
 
 
-def start_all(workspace_root: str) -> list[subprocess.Popen]:
-    """Start all mocks in dependency order. Stores PIDs in registry."""
+def start_all() -> list[subprocess.Popen]:
+    """Start all mocks in dependency order."""
+    mocks = discover_mocks()
+    if not mocks:
+        print("[mock] No mock scripts found. Ensure repos are checked out.")
+        return []
+
+    # Build peer URL map for env vars
+    peer_urls = {name: m["url"] for name, m in mocks.items()}
+
     procs: list[subprocess.Popen] = []
-    # Start bottom-up: arona → entelecheia → shittim-chest
     for name in ["arona", "entelecheia", "shittim-chest"]:
-        try:
-            proc = start_mock(workspace_root, name)
-            procs.append(proc)
-            register_mock(name, MOCK_PORTS[name]["port"], MOCK_PORTS[name]["protocol"])
-            print(f"[mock] Started {name} (pid={proc.pid}) on port {MOCK_PORTS[name]['port']}")
-            time.sleep(1)  # allow server to bind
-        except (FileNotFoundError, ValueError) as e:
-            print(f"[mock] Skipping {name}: {e}")
+        info = mocks.get(name)
+        if info:
+            proc = start_mock(info, peer_urls)
+            if proc:
+                procs.append(proc)
+                time.sleep(1)  # allow server to bind
     return procs
 
 
 def stop_all() -> None:
-    """Kill all registered mocks by PID."""
-    reg = read_registry()
-    for name, info in reg.items():
-        pid = info.get("pid")
-        if pid:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                print(f"[mock] Stopped {name} (pid={pid})")
-            except ProcessLookupError:
-                pass
-    # Clear registry
-    path = registry_path()
-    if path.exists():
-        path.unlink()
+    """Kill all mock server processes found in the process list."""
+    killed = 0
+    for _, info in MOCK_PORTS.items():
+        code = subprocess.run(
+            ["fuser", "-k", f"{info['port']}/tcp"],
+            capture_output=True, timeout=5,
+        ).returncode
+        if code == 0:
+            killed += 1
+    print(f"[mock] Stopped {killed} mock server(s)")
 
 
 def status() -> None:
-    """Print status of all registered mocks."""
-    reg = read_registry()
-    if not reg:
-        print("[mock] No mock servers registered")
+    """Print status of all mock servers."""
+    mocks = discover_mocks()
+    if not mocks:
+        print("[mock] No mock scripts found")
         return
-    for name, info in reg.items():
-        pid = info.get("pid")
-        alive = "running" if pid and _is_alive(pid) else "dead"
-        print(f"[mock] {name}: {info['url']} ({alive}, pid={pid})")
+
+    for name, info in mocks.items():
+        port = info["port"]
+        alive = _port_listening(port)
+        print(f"[mock] {name}: {info['url']} ({'running' if alive else 'stopped'})")
 
 
-def _is_alive(pid: int) -> bool:
+def _port_listening(port: int) -> bool:
+    """Check if a TCP port is in LISTEN state."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.5)
     try:
-        os.kill(pid, 0)
+        s.connect(("127.0.0.1", port))
+        s.close()
         return True
-    except OSError:
+    except (ConnectionRefusedError, OSError):
         return False
+
+
+def registry() -> str:
+    """Return the full mock registry as a JSON string."""
+    mocks = discover_mocks()
+    # Add URL-only entries for mocks that aren't locally available but known
+    for name, info in MOCK_PORTS.items():
+        if name not in mocks:
+            mocks[name] = {
+                "name": name, "port": info["port"], "protocol": info["protocol"],
+                "url": f"{info['protocol']}://127.0.0.1:{info['port']}",
+            }
+    return json.dumps(mocks, indent=2)
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
 
 def main() -> int:
     cmd = sys.argv[0]
-    root = _find_workspace_root()
-
     if cmd == "mock-start":
-        procs = start_all(root)
+        procs = start_all()
         if not procs:
-            print("[mock] No mock servers started. Ensure repos are checked out in sibling directories.")
+            print("[mock] No mock servers started.")
             return 1
         print("[mock] All mock servers started. Press Ctrl+C to stop.")
         try:
@@ -184,6 +210,8 @@ def main() -> int:
         stop_all()
     elif cmd == "mock-status":
         status()
+    elif cmd == "registry":
+        print(registry(), end="")
     else:
         print(f"Unknown mock command: {cmd}", file=sys.stderr)
         return 1

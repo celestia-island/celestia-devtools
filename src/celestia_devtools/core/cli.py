@@ -60,6 +60,7 @@ COMMANDS: dict[str, str] = {
     "mock-start": "celestia_devtools.core.mock",
     "mock-stop": "celestia_devtools.core.mock",
     "mock-status": "celestia_devtools.core.mock",
+    "registry": "celestia_devtools.core.mock",
 }
 
 
