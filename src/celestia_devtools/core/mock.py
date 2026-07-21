@@ -55,7 +55,10 @@ def discover_sibling_repos() -> dict[str, Path]:
     for entry in sorted(parent.iterdir()):
         if not entry.is_dir() or entry.name.startswith("."):
             continue
-        if not (entry / ".git").exists():
+        try:
+            if not (entry / ".git").exists():
+                continue
+        except PermissionError:
             continue
         name = is_celestia_repo(entry)
         if name:
