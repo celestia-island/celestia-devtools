@@ -91,10 +91,10 @@ SERVICE_DEFS: dict[str, dict] = {
         "mock_deps": ["arona"],
     },
     "arona": {
-        "bin": "arona",
-        "package": "core",
+        "bin": "_cli",
+        "package": "_cli",
         "features": [],
-        "build_cmd": ["cargo", "build", "-p", "core", "--bin", "arona", "--release"],
+        "build_cmd": ["cargo", "build", "-p", "_cli", "--release"],
         "run_port": 8420,
         "health_port": 8420,
         "mock_deps": [],
