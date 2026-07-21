@@ -44,8 +44,12 @@ def discover_sibling_repos() -> dict[str, Path]:
     """
     from celestia_devtools.repo.register_patches import is_celestia_repo
 
+    own_name = is_celestia_repo(find_repo_root())
     parent = find_repo_root().parent
     repos: dict[str, Path] = {}
+    # Also include the repo we're running from
+    if own_name:
+        repos[own_name] = find_repo_root()
     if not parent.is_dir():
         return repos
     for entry in sorted(parent.iterdir()):
