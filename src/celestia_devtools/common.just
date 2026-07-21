@@ -533,3 +533,19 @@ vite-dev *ARGS='':
     else
       exec "$malkuth" --watch src --drain-secs 2 -- pnpm vite build
     fi
+
+# ── Mock server orchestration ─────────────────────────────────────────
+
+# Start all mock servers (arona → entelecheia → shittim-chest).
+# Each repo must be checked out as a sibling directory.
+# Press Ctrl+C to stop all.
+mock-start:
+    {{ _devtools }} mock-start
+
+# Stop all running mock servers.
+mock-stop:
+    {{ _devtools }} mock-stop
+
+# Show status of all registered mock servers.
+mock-status:
+    {{ _devtools }} mock-status
