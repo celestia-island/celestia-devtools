@@ -1,135 +1,65 @@
 #!/usr/bin/env python3
-"""Daemon lifecycle management for celestia dev services.
-
-Provides systemd-based (Linux) service management with optional mock server
-integration.  On Windows, falls back to WSL2 celestia dev container.
+"""Daemon lifecycle — malkuth-based service supervision for celestia dev services.
 
 Usage:
-    celestia-devtools daemon install [--mock] [repo]
-    celestia-devtools daemon uninstall [repo]
-    celestia-devtools daemon restart [--mock] [repo]
-    celestia-devtools daemon status [repo]
+    celestia-devtools daemon build [repo...]
+    celestia-devtools daemon generate-config <repo> [repo...] [--output path]
+    celestia-devtools daemon start [--mock]
+    celestia-devtools daemon status
+    celestia-devtools daemon stop
 
-Repo is auto-detected from cwd.  Supported repos: shittim-chest, entelecheia, arona.
+No systemd required — services are supervised by `malkuth daemon --config`.
 """
 from __future__ import annotations
 
-import json
 import os
-import platform
-import re
-import shutil
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-def _find_free_port(start: int) -> int:
-    """Find the first free TCP port starting from *start*."""
-    port = start
-    for _ in range(100):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.1)
-        try:
-            s.bind(("127.0.0.1", port))
-            s.close()
-            return port
-        except OSError:
-            port += 1
-        finally:
-            s.close()
-    raise RuntimeError(f"no free port found starting from {start}")
-
-
-def _start_pglite() -> str:
-    """Start PGlite and return the DATABASE_URL connection string."""
-    import json as _json
-    result = subprocess.run(
-        [sys.executable, "-m", "celestia_devtools", "pglite", "start", "--force"],
-        capture_output=True, text=True, timeout=30,
-    )
-    # Read the URL from the instance file
-    instance_file = Path.home() / ".local" / "share" / "celestia" / "pglite" / "pglite-instance.json"
-    if instance_file.exists():
-        data = _json.loads(instance_file.read_text())
-        url = data.get("url", "")
-        if url:
-            return url
-    # Fallback: try parsing from output
-    for line in result.stdout.split("\n") + result.stderr.split("\n"):
-        if "postgres://" in line or "postgresql://" in line:
-            return line.strip()
-    return ""
-
-
 # ── Service definitions ──────────────────────────────────────────────────────
-
-# Each service knows what binary to run, what features to build, what ports,
-# and which mock servers it depends on.
 
 SERVICE_DEFS: dict[str, dict] = {
     "shittim-chest": {
         "bin": "chest",
-        "package": "core",
-        "features": ["mock-mode"],
         "build_cmd": ["cargo", "build", "-p", "core", "--bin", "chest",
                       "--features", "mock-mode", "--release"],
         "run_port": 8400,
-        "health_port": 8400,
-        "args": [],  # chest binary runs without subcommand
+        "args": [],
         "env_defaults": {
             "SHITTIM_CHEST_HOST": "127.0.0.1",
             "RUST_LOG": "warn,chest=info",
         },
-        "mock_deps": ["arona", "entelecheia"],
     },
     "entelecheia": {
         "bin": "scepter",
-        "package": "scepter",
-        "features": ["embedded-db"],
         "build_cmd": ["cargo", "build", "-p", "scepter",
                       "--features", "embedded-db", "--release"],
         "run_port": 8410,
-        "health_port": 8410,
         "args": [],
         "env_defaults": {
             "RUST_LOG": "warn,scepter=info",
         },
-        "mock_deps": ["arona"],
     },
     "arona": {
         "bin": "_cli",
-        "package": "_cli",
-        "features": [],
         "build_cmd": ["cargo", "build", "-p", "_cli", "--release"],
         "run_port": 8405,
-        "health_port": 8405,
-        "args": ["serve"],  # arona binary requires `serve` subcommand
+        "args": ["serve"],
         "env_defaults": {
             "MOCK_MODE": "1",
             "RUST_LOG": "warn,arona=info",
         },
-        "mock_deps": [],
     },
 }
 
-# Mock port assignments (must match scripts/mock/server.py in each repo)
-MOCK_PORTS: dict[str, dict] = {
-    "arona":        {"port": 8429, "protocol": "http"},
-    "entelecheia":  {"port": 8424, "protocol": "ws"},
-    "shittim-chest": {"port": 8428, "protocol": "ws"},
-}
-
-MOCK_ENV_MAP = {
-    "arona": "ARONA_MOCK_URL",
-    "entelecheia": "ENTE_MOCK_URL",
-}
+DEFAULT_CONFIG_PATH = "/etc/malkuth/services.toml"
+DAEMON_PID_FILE = "/tmp/malkuth-daemon.pid"
 
 
 def detect_repo() -> Optional[str]:
-    """Detect which celestia repo we are in from cwd."""
     from celestia_devtools.repo.register_patches import is_celestia_repo
     d = Path.cwd()
     while d != d.parent:
@@ -141,281 +71,163 @@ def detect_repo() -> Optional[str]:
     return None
 
 
-# ── Systemd helpers ──────────────────────────────────────────────────────────
-
-def _is_user_session() -> bool:
-    """True if running inside a systemd user session (XDG_RUNTIME_DIR + systemctl --user works)."""
-    try:
-        subprocess.run(
-            ["systemctl", "--user", "list-units"],
-            capture_output=True, timeout=5,
-        ).check_returncode()
-        return True
-    except Exception:
-        return False
+def _find_sibling_dir(repo: str) -> Optional[Path]:
+    d = Path.cwd().parent / repo
+    if d.is_dir() and (d / "Cargo.toml").exists():
+        return d
+    return None
 
 
-def _systemd_user_dir() -> Path:
-    """~/.config/systemd/user/ — parent dirs created if needed."""
-    d = Path.home() / ".config" / "systemd" / "user"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+def cmd_build(repos: list[str]) -> int:
+    if not repos:
+        r = detect_repo()
+        repos = [r] if r else []
+    if not repos:
+        print("[daemon] no repos specified", file=sys.stderr)
+        return 1
+
+    for repo in repos:
+        if repo not in SERVICE_DEFS:
+            print(f"[daemon] unsupported: {repo}", file=sys.stderr)
+            continue
+        svc = SERVICE_DEFS[repo]
+        work_dir = _find_sibling_dir(repo) or Path.cwd()
+        if not (work_dir / "Cargo.toml").exists():
+            print(f"[daemon] {repo} not found at {work_dir}", file=sys.stderr)
+            continue
+        print(f"[daemon] building {repo}...")
+        result = subprocess.run(svc["build_cmd"], cwd=work_dir)
+        if result.returncode != 0:
+            print(f"[daemon] {repo} build failed", file=sys.stderr)
+            return result.returncode
+        print(f"[daemon] {repo} built")
+    return 0
 
 
-def _systemd_unit_name(repo: str) -> str:
-    return f"celestia-{repo}.service"
+def cmd_generate_config(repos: list[str], output_path: str = "") -> int:
+    if not repos:
+        print("[daemon] usage: generate-config <repo> [repo...] [--output path]", file=sys.stderr)
+        return 1
 
-
-def _generate_unit(repo: str, work_dir: Path, env: dict[str, str], binary: str,
-                   args: list[str], port: int) -> str:
-    """Generate a systemd user unit."""
-    env_lines = "\n".join(f"Environment={k}={v}" for k, v in sorted(env.items()))
-    return f"""[Unit]
-Description=Celestia {repo} dev daemon
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory={work_dir}
-{env_lines}
-ExecStart={binary} {" ".join(args)}
-Restart=on-failure
-RestartSec=3
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
+    scan_dir = Path.cwd().parent
+    services_toml = []
+    header = """[daemon]
+host = "127.0.0.1"
+rate_limit_window_secs = 60
+rate_limit_max_restarts = 5
+cooldown_secs = 30
 """
 
-
-def _enable_linger() -> None:
-    """Ensure linger is enabled for the current user (keeps user services alive)."""
-    try:
-        subprocess.run(["loginctl", "enable-linger"], capture_output=True, timeout=10)
-    except Exception:
-        pass
-
-
-# ── Mock lifecycle ────────────────────────────────────────────────────────────
-
-def _start_mock_servers(repo: str) -> dict[str, int]:
-    """Start mock servers that *repo* depends on. Returns {name: pid}."""
-    svc = SERVICE_DEFS.get(repo, {})
-    needed = svc.get("mock_deps", [])
-
-    # Discover mock scripts
-    from celestia_devtools.core.mock import discover_mocks
-    mocks = discover_mocks()
-    peer_urls: dict[str, str] = {name: m["url"] for name, m in mocks.items()}
-
-    procs: dict[str, int] = {}
-    # arona first (if needed), then entelecheia, then shittim-chest (if self-mock)
-    for name in ["arona", "entelecheia", "shittim-chest"]:
-        if name not in needed and name != repo:
+    for repo in repos:
+        if repo not in SERVICE_DEFS:
+            print(f"[daemon] unsupported: {repo}", file=sys.stderr)
             continue
-        info = mocks.get(name)
-        if not info:
-            print(f"[daemon] mock {name} not found locally")
-            continue
-        script = Path(info["script"])
-        if not script.exists():
-            print(f"[daemon] mock script not found: {script}")
+        svc = SERVICE_DEFS[repo]
+        work_dir = _find_sibling_dir(repo) or Path.cwd()
+        binary = work_dir / "target" / "release" / svc["bin"]
+        if not binary.is_file():
+            print(f"[daemon] binary not found: {binary} — run 'daemon build' first", file=sys.stderr)
             continue
 
-        env = os.environ.copy()
-        env["ARONA_MOCK_URL"] = peer_urls.get("arona", "http://127.0.0.1:8429")
-        env["ENTE_MOCK_URL"] = peer_urls.get("entelecheia", "ws://127.0.0.1:8424")
-        env["CHEST_MOCK_URL"] = peer_urls.get("shittim-chest", "ws://127.0.0.1:8428")
+        env = dict(svc.get("env_defaults", {}))
+        args = svc.get("args", [])
+        args_str = ", ".join(f'"{a}"' for a in args) if args else ""
 
+        services_toml.append(f"""
+[[services]]
+id = "{repo}"
+kind = "backend"
+program = "{binary}"
+{f"args = [{args_str}]" if args_str else ""}
+restart_policy = "permanent"
+
+[services.env]
+{chr(10).join(f'{k} = "{v}"' for k, v in sorted(env.items()))}
+""")
+
+    full = header + "\n".join(services_toml)
+    if output_path:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(full)
+        print(f"[daemon] wrote {output_path}")
+    else:
+        print(full)
+    return 0
+
+
+def cmd_start(with_mock: bool = False, config_path: str = "") -> int:
+    cfg = Path(config_path or DEFAULT_CONFIG_PATH)
+    if not cfg.exists():
+        print(f"[daemon] config not found: {cfg}", file=sys.stderr)
+        print("[daemon] run 'generate-config' first", file=sys.stderr)
+        return 1
+
+    # Check if already running
+    if _daemon_running():
+        print("[daemon] already running")
+        return 0
+
+    print(f"[daemon] starting: malkuth daemon --config {cfg}")
+    with open(DAEMON_PID_FILE, "w") as f:
         proc = subprocess.Popen(
-            [sys.executable, "-u", str(script)],
-            env=env,
+            ["malkuth", "daemon", "--config", str(cfg)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        procs[name] = proc.pid
-        print(f"[daemon] started mock {name} (pid={proc.pid}) on port {info['port']}")
-        time.sleep(1)
-    return procs
-
-
-def _stop_mock_servers() -> None:
-    """Kill all mock server processes by port."""
-    for name, info in MOCK_PORTS.items():
-        try:
-            subprocess.run(
-                ["fuser", "-k", f"{info['port']}/tcp"],
-                capture_output=True, timeout=5,
-            )
-        except Exception:
-            pass
-
-
-# ── CLI ──────────────────────────────────────────────────────────────────────
-
-def cmd_install(repo: str, with_mock: bool = False, no_build: bool = False) -> int:
-    """Install (build + create systemd unit + enable + start) the daemon."""
-    svc = SERVICE_DEFS[repo]
-    work_dir = Path.cwd()
-
-    if platform.system() == "Windows":
-        print("[daemon] Windows detected — using WSL2 celestia dev container")
-        return _wsl2_install(repo, with_mock)
-
-    if not _is_user_session():
-        print("[daemon] error: systemd user session not available", file=sys.stderr)
-        print("[daemon] On WSL, ensure systemd is enabled: [boot] systemd=true in /etc/wsl.conf", file=sys.stderr)
-        return 1
-
-    # 1. Build (skip if --no-build)
-    binary = work_dir / "target" / "release" / svc["bin"]
-    if no_build:
-        if not binary.is_file():
-            print(f"[daemon] --no-build: binary not found at {binary}", file=sys.stderr)
-            return 1
-        print(f"[daemon] skipping build (--no-build), using {binary}")
+        f.write(str(proc.pid))
+    time.sleep(2)
+    if _daemon_running():
+        print("[daemon] started")
     else:
-        print(f"[daemon] building {repo}...")
-        build_cmd = svc["build_cmd"]
-        result = subprocess.run(build_cmd, cwd=work_dir)
-        if result.returncode != 0:
-            print(f"[daemon] build failed (exit {result.returncode})", file=sys.stderr)
-            return result.returncode
-        if not binary.is_file():
-            print(f"[daemon] binary not found after build: {binary}", file=sys.stderr)
-            return 1
-
-    # 3. Start PGlite (needed by chest/arona)
-    db_url = _start_pglite()
-    if db_url:
-        print(f"[daemon] PGlite ready: {db_url}")
-
-    # 4. Find free port
-    port = _find_free_port(svc["run_port"])
-    if port != svc["run_port"]:
-        print(f"[daemon] port {svc['run_port']} occupied, using {port}")
-
-    # 4. Build env dict: defaults + overrides from environment
-    svc = SERVICE_DEFS[repo]
-    env: dict[str, str] = dict(svc.get("env_defaults", {}))
-    if db_url:
-        env["DATABASE_URL"] = db_url
-    if "JWT_SECRET" not in os.environ:
-        env.setdefault("JWT_SECRET", "dev-secret-not-for-production-use-only-32chars")
-    if repo == "shittim-chest":
-        env.setdefault("SHITTIM_CHEST_ENCRYPTION_KEY", os.environ.get(
-            "SHITTIM_CHEST_ENCRYPTION_KEY", "dev-encryption-key-not-for-prod-32ch"))
-        env.setdefault("SHITTIM_CHEST_PORT", str(port))
-    env.setdefault("RUST_LOG", "warn,chest=info" if repo == "shittim-chest" else "warn,arona=info")
-    if with_mock:
-        _start_mock_servers(repo)
-        from celestia_devtools.core.mock import discover_mocks
-        mocks = discover_mocks()
-        for name, key in MOCK_ENV_MAP.items():
-            if name in mocks:
-                env[key] = mocks[name]["url"]
-
-    # 5. Generate systemd unit
-    unit_name = _systemd_unit_name(repo)
-    unit_path = _systemd_user_dir() / unit_name
-    unit_text = _generate_unit(repo, work_dir, env, str(binary),
-                                svc.get("args", []), port)
-    unit_path.write_text(unit_text)
-    print(f"[daemon] wrote unit: {unit_path}")
-
-    # 5. Enable linger
-    _enable_linger()
-
-    # 6. Reload, enable, start
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", unit_name], check=True)
-    subprocess.run(["systemctl", "--user", "restart", unit_name], check=True)
-    print(f"[daemon] service {unit_name} installed and started")
+        print("[daemon] failed to start — check malkuth logs", file=sys.stderr)
     return 0
 
 
-def cmd_uninstall(repo: str) -> int:
-    """Stop and remove the daemon."""
-    unit_name = _systemd_unit_name(repo)
-    unit_path = _systemd_user_dir() / unit_name
-
-    subprocess.run(["systemctl", "--user", "stop", unit_name], capture_output=True)
-    subprocess.run(["systemctl", "--user", "disable", unit_name], capture_output=True)
-    if unit_path.exists():
-        unit_path.unlink()
-    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-
-    _stop_mock_servers()
-    print(f"[daemon] service {unit_name} removed")
+def cmd_stop() -> int:
+    if not _daemon_running():
+        print("[daemon] not running")
+        return 0
+    pid = _read_pid()
+    if pid:
+        try:
+            os.kill(pid, 15)  # SIGTERM → graceful drain
+            time.sleep(2)
+            if _daemon_running():
+                os.kill(pid, 9)
+        except ProcessLookupError:
+            pass
+    Path(DAEMON_PID_FILE).unlink(missing_ok=True)
+    print("[daemon] stopped")
     return 0
 
 
-def cmd_restart(repo: str, with_mock: bool = False) -> int:
-    """Rebuild + restart."""
-    svc = SERVICE_DEFS[repo]
-    work_dir = Path.cwd()
-
-    print(f"[daemon] rebuilding {repo}...")
-    result = subprocess.run(svc["build_cmd"], cwd=work_dir)
-    if result.returncode != 0:
-        print(f"[daemon] build failed (exit {result.returncode})", file=sys.stderr)
-        return result.returncode
-
-    # Stop old mock servers, start new ones if needed
-    if with_mock:
-        _stop_mock_servers()
-        time.sleep(1)
-        _start_mock_servers(repo)
-
-    unit_name = _systemd_unit_name(repo)
-    subprocess.run(["systemctl", "--user", "restart", unit_name], check=True)
-    print(f"[daemon] service {unit_name} restarted")
+def cmd_status() -> int:
+    pid = _read_pid()
+    if pid and _daemon_running():
+        print(f"[daemon] running (pid={pid})")
+    else:
+        print("[daemon] not running")
     return 0
 
 
-def cmd_status(repo: str) -> int:
-    """Show daemon + mock status."""
-    unit_name = _systemd_unit_name(repo)
-    print(f"── {repo} daemon ──")
-    result = subprocess.run(
-        ["systemctl", "--user", "status", unit_name],
-        capture_output=True, text=True,
-    )
-    print(result.stdout or result.stderr)
-
-    print(f"\n── mock servers ──")
+def _daemon_running() -> bool:
+    pid = _read_pid()
+    if not pid:
+        return False
     try:
-        subprocess.run(
-            [sys.executable, "-m", "celestia_devtools", "mock-status"],
-            check=True,
-        )
-    except subprocess.CalledProcessError:
-        pass
-    return 0
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
-def _wsl2_install(repo: str, with_mock: bool) -> int:
-    """Windows fallback: use WSL2 celestia debug container."""
-    # Check if WSL2 is available
-    wsl_check = subprocess.run(["wsl", "--list", "--quiet"], capture_output=True, text=True)
-    distros = [d.strip() for d in wsl_check.stdout.split("\n") if d.strip()]
-    target = None
-    for d in distros:
-        if "celestia" in d.lower() or "ubuntu" in d.lower():
-            target = d
-            break
-    if not target:
-        print("[daemon] No WSL2 distro found. Install Ubuntu from Microsoft Store.", file=sys.stderr)
-        return 1
-
-    print(f"[daemon] using WSL2 distro: {target}")
-    # Forward to linux daemon install inside WSL2
-    wsl_cmd = ["wsl", "-d", target, "--", "bash", "-c",
-               f"cd $(wslpath '{Path.cwd().as_posix()}') && "
-               f"python3 -m celestia_devtools daemon install {repo}"
-               + (" --mock" if with_mock else "")]
-    return subprocess.run(wsl_cmd).returncode
+def _read_pid() -> Optional[int]:
+    try:
+        return int(Path(DAEMON_PID_FILE).read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
 
 
 # ── CLI dispatch ─────────────────────────────────────────────────────────────
@@ -429,32 +241,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cmd = args[0]
     rest = args[1:]
 
-    with_mock = "--mock" in rest
-    no_build = "--no-build" in rest
-    rest = [a for a in rest if a not in ("--mock", "--no-build")]
-
-    repo = rest[0] if rest else detect_repo()
-    if not repo:
-        print("[daemon] error: cannot detect repo from cwd", file=sys.stderr)
-        print("[daemon] usage: celestia-devtools daemon <install|uninstall|restart|status> [repo]", file=sys.stderr)
-        return 1
-
-    if repo not in SERVICE_DEFS:
-        print(f"[daemon] error: unsupported repo '{repo}'", file=sys.stderr)
-        print(f"[daemon] supported: {', '.join(SERVICE_DEFS)}", file=sys.stderr)
-        return 1
-
-    if cmd == "install":
-        return cmd_install(repo, with_mock, no_build)
-    elif cmd == "uninstall":
-        return cmd_uninstall(repo)
-    elif cmd == "restart":
-        return cmd_restart(repo, with_mock)
+    if cmd == "build":
+        return cmd_build(rest)
+    elif cmd == "generate-config":
+        output = ""
+        repos = list(rest)
+        if "--output" in rest:
+            idx = rest.index("--output")
+            if idx + 1 < len(rest):
+                output = rest[idx + 1]
+                repos = [r for r in rest if r not in ("--output", output)]
+        return cmd_generate_config(repos, output)
+    elif cmd == "start":
+        with_mock = "--mock" in rest
+        config = ""
+        return cmd_start(with_mock, config)
+    elif cmd == "stop":
+        return cmd_stop()
     elif cmd == "status":
-        return cmd_status(repo)
+        return cmd_status()
     else:
-        print(f"[daemon] unknown command: {cmd}", file=sys.stderr)
-        print("[daemon] usage: daemon <install|uninstall|restart|status> [--mock] [repo]", file=sys.stderr)
+        print(f"[daemon] unknown: {cmd}", file=sys.stderr)
+        print("[daemon] commands: build | generate-config | start | stop | status", file=sys.stderr)
         return 1
 
 
