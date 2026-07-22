@@ -69,7 +69,7 @@ def discover_sibling_repos() -> dict[str, Path]:
 # ── Mock addresses ──────────────────────────────────────────────────────────
 
 MOCK_PORTS: dict[str, dict] = {
-    "arona":        {"port": 8429, "protocol": "http"},
+    "arona":        {"port": 8420, "protocol": "http"},
     "entelecheia":  {"port": 8424, "protocol": "ws"},
     "shittim-chest": {"port": 8428, "protocol": "ws"},
 }
@@ -79,7 +79,7 @@ def discover_mocks() -> dict:
     """Build the complete mock registry from sibling repo discovery.
 
     Returns a dict like:
-    { "arona": {"path": "/path/to/arona", "port": 8429, "url": "http://127.0.0.1:8429", "script": "/path/to/arona/scripts/mock/server.py"}, ... }
+    { "arona": {"path": "/path/to/arona", "port": 8420, "url": "http://127.0.0.1:8420", "script": "/path/to/arona/scripts/mock/server.py"}, ... }
     Only includes repos that actually have a mock script.
     """
     repos = discover_sibling_repos()
@@ -111,7 +111,7 @@ def start_mock(info: dict, peer_urls: dict[str, str]) -> subprocess.Popen | None
         return None
 
     env = os.environ.copy()
-    env["ARONA_MOCK_URL"]  = peer_urls.get("arona", "http://127.0.0.1:8429")
+    env["ARONA_MOCK_URL"]  = peer_urls.get("arona", "http://127.0.0.1:8420")
     env["ENTE_MOCK_URL"]   = peer_urls.get("entelecheia", "ws://127.0.0.1:8424")
     env["CHEST_MOCK_URL"]  = peer_urls.get("shittim-chest", "ws://127.0.0.1:8428")
 

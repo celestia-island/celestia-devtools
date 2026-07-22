@@ -76,8 +76,8 @@ SERVICE_DEFS: dict[str, dict] = {
         "features": ["mock-mode"],
         "build_cmd": ["cargo", "build", "-p", "core", "--bin", "chest",
                       "--features", "mock-mode", "--release"],
-        "run_port": 3000,
-        "health_port": 3000,
+        "run_port": 8400,
+        "health_port": 8400,
         "mock_deps": ["arona", "entelecheia"],  # must start these first
     },
     "entelecheia": {
@@ -86,8 +86,8 @@ SERVICE_DEFS: dict[str, dict] = {
         "features": ["embedded-db"],
         "build_cmd": ["cargo", "build", "-p", "scepter",
                       "--features", "embedded-db", "--release"],
-        "run_port": 18424,
-        "health_port": 18424,
+        "run_port": 8410,
+        "health_port": 8410,
         "mock_deps": ["arona"],
     },
     "arona": {
@@ -95,8 +95,8 @@ SERVICE_DEFS: dict[str, dict] = {
         "package": "_cli",
         "features": [],
         "build_cmd": ["cargo", "build", "-p", "_cli", "--release"],
-        "run_port": 8420,
-        "health_port": 8420,
+        "run_port": 8405,
+        "health_port": 8405,
         "mock_deps": [],
     },
 }
