@@ -78,7 +78,12 @@ SERVICE_DEFS: dict[str, dict] = {
                       "--features", "mock-mode", "--release"],
         "run_port": 8400,
         "health_port": 8400,
-        "mock_deps": ["arona", "entelecheia"],  # must start these first
+        "args": [],  # chest binary runs without subcommand
+        "env_defaults": {
+            "SHITTIM_CHEST_HOST": "127.0.0.1",
+            "RUST_LOG": "warn,chest=info",
+        },
+        "mock_deps": ["arona", "entelecheia"],
     },
     "entelecheia": {
         "bin": "scepter",
@@ -88,6 +93,10 @@ SERVICE_DEFS: dict[str, dict] = {
                       "--features", "embedded-db", "--release"],
         "run_port": 8410,
         "health_port": 8410,
+        "args": [],
+        "env_defaults": {
+            "RUST_LOG": "warn,scepter=info",
+        },
         "mock_deps": ["arona"],
     },
     "arona": {
@@ -97,6 +106,11 @@ SERVICE_DEFS: dict[str, dict] = {
         "build_cmd": ["cargo", "build", "-p", "_cli", "--release"],
         "run_port": 8405,
         "health_port": 8405,
+        "args": ["serve"],  # arona binary requires `serve` subcommand
+        "env_defaults": {
+            "MOCK_MODE": "1",
+            "RUST_LOG": "warn,arona=info",
+        },
         "mock_deps": [],
     },
 }
@@ -282,17 +296,18 @@ def cmd_install(repo: str, with_mock: bool = False, no_build: bool = False) -> i
     if port != svc["run_port"]:
         print(f"[daemon] port {svc['run_port']} occupied, using {port}")
 
-    # 4. Start mock servers if requested
-    env: dict[str, str] = {}
+    # 4. Build env dict: defaults + overrides from environment
+    svc = SERVICE_DEFS[repo]
+    env: dict[str, str] = dict(svc.get("env_defaults", {}))
     if db_url:
         env["DATABASE_URL"] = db_url
     if "JWT_SECRET" not in os.environ:
-        env["JWT_SECRET"] = "dev-secret-not-for-production-use-only-32chars"
-    if "SHITTIM_CHEST_ENCRYPTION_KEY" not in os.environ:
-        env["SHITTIM_CHEST_ENCRYPTION_KEY"] = "dev-encryption-key-not-for-prod-32ch"
-    env["SHITTIM_CHEST_HOST"] = "0.0.0.0"
-    env["SHITTIM_CHEST_PORT"] = str(port)
-    env["RUST_LOG"] = os.environ.get("RUST_LOG", "warn,chest=info")
+        env.setdefault("JWT_SECRET", "dev-secret-not-for-production-use-only-32chars")
+    if repo == "shittim-chest":
+        env.setdefault("SHITTIM_CHEST_ENCRYPTION_KEY", os.environ.get(
+            "SHITTIM_CHEST_ENCRYPTION_KEY", "dev-encryption-key-not-for-prod-32ch"))
+        env.setdefault("SHITTIM_CHEST_PORT", str(port))
+    env.setdefault("RUST_LOG", "warn,chest=info" if repo == "shittim-chest" else "warn,arona=info")
     if with_mock:
         _start_mock_servers(repo)
         from celestia_devtools.core.mock import discover_mocks
@@ -304,7 +319,8 @@ def cmd_install(repo: str, with_mock: bool = False, no_build: bool = False) -> i
     # 5. Generate systemd unit
     unit_name = _systemd_unit_name(repo)
     unit_path = _systemd_user_dir() / unit_name
-    unit_text = _generate_unit(repo, work_dir, env, str(binary), ["serve"], port)
+    unit_text = _generate_unit(repo, work_dir, env, str(binary),
+                                svc.get("args", []), port)
     unit_path.write_text(unit_text)
     print(f"[daemon] wrote unit: {unit_path}")
 
