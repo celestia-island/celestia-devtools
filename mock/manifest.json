@@ -1,0 +1,42 @@
+{
+  "description": "Celestia mock data — centralized in celestia-devtools",
+  "version": "0.2.0",
+  "generated_at": "2026-07-23T00:00:00Z",
+  "model": "deepseek-v4-flash",
+  "structure": {
+    "accounts/seed.sql": "4 user accounts (demiurge/momoi/midori/yuzu) + workspaces + RBAC",
+    "accounts/workspaces.toml": "UUID → workspace metadata lookup table (owner, kind, remote, visibility, projects, scenarios)",
+    "fixtures/<uuid>/": "Mock data organized by workspace UUID (matches seed.sql)",
+    "playback/server.py": "Interactive WebSocket mock — HubRis task_decompose → dispatch → integrate"
+  },
+  "workspaces": {
+    "3a7bc1d2-e4f5-6789-0abc-def012345678": {
+      "name": "demiurge-personal",
+      "owner": "demiurge",
+      "kind": "personal",
+      "visibility": ["demiurge", "momoi", "midori", "yuzu"]
+    },
+    "00000000-0000-4000-8000-000000000201": {
+      "name": "momoi-shittim-chest",
+      "owner": "momoi",
+      "kind": "local_filesystem",
+      "visibility": ["momoi", "demiurge"]
+    },
+    "00000000-0000-4000-8000-000000000202": {
+      "name": "midori-hydrogen-corridor",
+      "owner": "midori",
+      "kind": "git",
+      "remote": "https://github.com/celestia-island/entelecheia.git",
+      "visibility": ["midori", "demiurge"],
+      "projects": ["entelecheia","plana","evernight","aoba","aris"],
+      "scenarios": ["h2-corridor-onboarding","h2-corridor-alarm","plc-auto-program","aoba-code-review"],
+      "fixtures": ["entanglement-reports.jsonl","hydrogen-plant-topology.json","aoba-reports.jsonl","aris-reports.jsonl"]
+    },
+    "00000000-0000-4000-8000-000000000203": {
+      "name": "yuzu-container-sandbox",
+      "owner": "yuzu",
+      "kind": "container",
+      "visibility": ["yuzu", "demiurge"]
+    }
+  }
+}

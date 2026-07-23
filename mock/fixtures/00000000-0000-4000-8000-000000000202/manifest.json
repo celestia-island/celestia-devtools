@@ -1,0 +1,12 @@
+{
+  "workspace": "midori-hydrogen-corridor",
+  "uuid": "00000000-0000-4000-8000-000000000202",
+  "owner": "midori",
+  "kind": "git",
+  "fixtures": {
+    "entanglement-reports.jsonl": "YOLO background cycle reports (HubRis/OreXis/KaLos)",
+    "hydrogen-plant-topology.json": "14 Modbus stations + SCADA panels + gauges",
+    "aoba-reports.jsonl": "aoba code review (KaLos agent, DS v4 generated)",
+    "aris-reports.jsonl": "aris browser engine analysis (PhiLia agent, DS v4 generated)"
+  }
+}

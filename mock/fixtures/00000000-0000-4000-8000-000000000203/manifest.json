@@ -1,0 +1,7 @@
+{
+  "workspace": "yuzu-container-sandbox",
+  "uuid": "00000000-0000-4000-8000-000000000203",
+  "owner": "yuzu",
+  "kind": "container",
+  "fixtures": {}
+}
