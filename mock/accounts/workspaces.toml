@@ -1,0 +1,71 @@
+# Mock workspace registry — UUID → metadata lookup table.
+#
+# Each workspace is identified by its database UUID (matching seed.sql).
+# Fixture data lives under fixtures/<uuid>/.
+#
+# Fields:
+#   uuid        — workspace UUID (matches seed.sql workspace_sessions.id)
+#   name        — human-readable label
+#   owner       — account username
+#   kind        — workspace kind (personal / local_filesystem / git / container)
+#   remote      — git remote URL (only for kind=git)
+#   branch      — git branch (only for kind=git)
+#   path        — filesystem path (for local_filesystem / container)
+#   visibility  — list of usernames who can access this workspace
+#   projects    — repos/projects contained in this workspace
+#   scenarios   — mock playback scenarios active for this workspace
+
+version = "0.2.0"
+
+[[workspaces]]
+uuid = "3a7bc1d2-e4f5-6789-0abc-def012345678"
+name = "demiurge-personal"
+owner = "demiurge"
+kind = "personal"
+visibility = ["demiurge", "momoi", "midori", "yuzu"]
+projects = []
+scenarios = []
+
+[[workspaces]]
+uuid = "00000000-0000-4000-8000-000000000201"
+name = "momoi-shittim-chest"
+owner = "momoi"
+kind = "local_filesystem"
+path = "/mnt/sdb1/shittim-chest"
+visibility = ["momoi", "demiurge"]
+projects = ["shittim-chest"]
+scenarios = []
+
+[[workspaces]]
+uuid = "00000000-0000-4000-8000-000000000202"
+name = "midori-hydrogen-corridor"
+owner = "midori"
+kind = "git"
+remote = "https://github.com/celestia-island/entelecheia.git"
+branch = "master"
+path = "/mnt/sdb1/entelecheia"
+visibility = ["midori", "demiurge"]
+projects = ["entelecheia", "plana", "evernight", "aoba", "aris"]
+scenarios = [
+    "h2-corridor-onboarding",
+    "h2-corridor-alarm",
+    "plc-auto-program",
+    "aoba-code-review",
+]
+description = """
+Hydrogen corridor digital twin workspace.
+Contains the entelecheia industrial IoT agent suite (HubRis, PoleMos, SkeMma, OreXis).
+Connected to 14 Modbus stations across Box 1-6 of the 6-box containerized hydrogen plant.
+PLC: Siemens S7-1500 @192.168.10.40:102.
+EverNight handles all hardware I/O (Modbus RTU/TCP, S7comm, OPC-UA).
+"""
+
+[[workspaces]]
+uuid = "00000000-0000-4000-8000-000000000203"
+name = "yuzu-container-sandbox"
+owner = "yuzu"
+kind = "container"
+path = "/tmp/mock-container"
+visibility = ["yuzu", "demiurge"]
+projects = []
+scenarios = []
