@@ -111,7 +111,7 @@ def cmd_generate_config(repos: list[str], output_path: str = "") -> int:
         print("[daemon] usage: generate-config <repo> [repo...] [--output path]", file=sys.stderr)
         return 1
 
-    scan_dir = Path.cwd().parent
+    _scan_dir = Path.cwd().parent
     services_toml = []
     header = """[daemon]
 host = "127.0.0.1"

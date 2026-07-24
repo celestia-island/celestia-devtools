@@ -69,7 +69,8 @@ _CONFLICT_MARKER_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 _DASH_LINE = "------"
-_DASH_WRAP = lambda text: f"------ {text} ------"
+def _DASH_WRAP(text: str) -> str:
+    return f"------ {text} ------"
 
 
 def _replace_comment_sep(m: re.Match) -> str:
