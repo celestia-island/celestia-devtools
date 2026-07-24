@@ -133,7 +133,7 @@ def sort_toml_deps(text: str) -> str:
     """Sort dependency sections in *text* and return the formatted result."""
     lines = io.StringIO(text).readlines()
     # Retain original line endings where possible
-    original_line_endings = [l for l in lines if l.endswith("\n")]
+    original_line_endings = [line for line in lines if line.endswith("\n")]
     if not original_line_endings:
         return text  # empty file
 
@@ -160,7 +160,7 @@ def sort_toml_deps(text: str) -> str:
                 result_lines.append(header_line)
                 result_lines.append("\n")
                 prev_group = -1
-                for idx, (group, _key, text) in enumerate(entries):
+                for _idx, (group, _key, text) in enumerate(entries):
                      if prev_group >= 0 and group != prev_group:
                          result_lines.append("\n")
                      prev_group = group

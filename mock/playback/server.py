@@ -26,7 +26,11 @@ Usage:
   python3 server.py [--port 8428] [--speed 1.0]
 """
 
-import asyncio, json, os, sys, time, math, random
+import asyncio
+import json
+import os
+import math
+import random
 from datetime import datetime, timezone
 from typing import Any, Optional
 import websockets
@@ -413,7 +417,7 @@ async def warmup(ws):
     await asyncio.sleep(0.5)
 
     # Past YOLO reports
-    for i, report in enumerate(YOLO_PAST):
+    for _i, report in enumerate(YOLO_PAST):
         p = dict(report)
         now = datetime.now(timezone.utc).isoformat()
         p["timestamp"] = p.get("timestamp", now)
@@ -534,7 +538,7 @@ async def play_response(ws, user_text: str):
         await asyncio.sleep(0.2 * _d)
 
         sub_words = sub["report"].split()
-        for i, w in enumerate(sub_words):
+        for _i, w in enumerate(sub_words):
             await _send(ws, "Sync.AgentStreamingChunk", {
                 "agent_type": agent_type, "agent_id": agent_id,
                 "chunk": w + " ", "is_done": False, "chunk_kind": "Text", "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -784,18 +788,18 @@ async def main():
 
     SPEED = args.speed
 
-    print(f"🎬 Entelecheia Interactive Mock Server")
+    print("🎬 Entelecheia Interactive Mock Server")
     print(f"   ws://{args.host}:{args.port}")
     print(f"   Speed:       {SPEED}x")
     print(f"   YOLO past:   {len(YOLO_PAST)} historical reports")
     print(f"   Templates:   {len(RESPONSES)} response patterns")
     print(f"   Topology:    {len(STATIONS)} stations")
-    print(f"")
-    print(f"   Flow: connect → see YOLO reports → send message → thinking → streaming → report")
-    print(f"")
+    print("")
+    print("   Flow: connect → see YOLO reports → send message → thinking → streaming → report")
+    print("")
 
     async with websockets.serve(handler, args.host, args.port):
-        print(f"  Ready — connect shittim-chest WebUI")
+        print("  Ready — connect shittim-chest WebUI")
         await asyncio.Future()
 
 if __name__ == "__main__":

@@ -17,8 +17,10 @@ class TestCommandRegistry:
         expected = {
             "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
             "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite",
-            "serve", "locate", "register-patches", "init",
+            "serve", "locate", "register-patches", "register-npm-patches", "init",
             "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
+            "daemon", "mock-start", "mock-status", "mock-stop",
+            "registry", "toml-sort",
         }
         assert set(COMMANDS.keys()) == expected
 
@@ -76,3 +78,53 @@ class TestModuleRun:
         )
         assert result.returncode == 0
         assert "celestia-devtools" in result.stdout
+
+
+class TestStaleLocalPatchCleanup:
+    def test_removes_stale_absolute_path(self):
+        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
+
+        import os
+        import tempfile
+        from pathlib import Path
+        bad = os.path.abspath(os.path.join(os.sep, "nonexistent", "abcdef", "crate"))
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "Cargo.toml").write_text("[package]\nname = \"ok\"\n")
+            config = f"""[patch.crates-io]
+kirino = {{ path = "{bad}" }}
+ok = {{ path = "{td}" }}
+"""
+            cleaned, warnings = _clean_stale_local_patches(config)
+            assert len(warnings) == 1
+            assert "nonexistent" in warnings[0]
+            assert 'kirino' not in cleaned
+            assert 'ok' in cleaned
+
+    def test_ignores_relative_and_git_patches(self):
+        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
+
+        config = """[patch.crates-io]
+lib = { path = "./packages/lib" }
+
+[patch."https://github.com/org/repo.git"]
+crate = { git = "https://github.com/org/repo" }
+"""
+        cleaned, warnings = _clean_stale_local_patches(config)
+        assert len(warnings) == 0
+        assert './packages/lib' in cleaned
+        assert 'github.com/org/repo' in cleaned
+
+    def test_leaves_intact_when_nothing_stale(self):
+        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            from pathlib import Path
+            p = Path(td)
+            (p / "Cargo.toml").write_text("[package]\nname = \"test\"\n")
+            config = f"""[patch.crates-io]
+test = {{ path = \"{td}\" }}
+"""
+            cleaned, warnings = _clean_stale_local_patches(config)
+            assert len(warnings) == 0
+            assert 'test' in cleaned

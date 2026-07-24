@@ -293,11 +293,15 @@ def generate_per_repo_patches(
     patches: dict[str, list[tuple[str, Path]]] = {}
     crates_io_patches: list[tuple[str, Path]] = []
     missing: list[str] = []
+    stale: list[str] = []
 
     for dep_name, git_url in sorted(actual_deps.items()):
         crate = crate_index.get(dep_name)
         if crate is None:
             missing.append(dep_name)
+            continue
+        if not (crate.path / "Cargo.toml").is_file():
+            stale.append(f"{dep_name} ({crate.path})")
             continue
         if dep_name in crates_io_names or git_url == "crates-io":
             crates_io_patches.append((dep_name, crate.path))
@@ -308,6 +312,12 @@ def generate_per_repo_patches(
         print(
             f"[register-patches] {len(missing)} dep(s) have no local checkout "
             f"(will stay as git dep): {', '.join(sorted(missing))}",
+            file=sys.stderr,
+        )
+    if stale:
+        print(
+            f"[register-patches] {len(stale)} crate(s) have missing Cargo.toml "
+            f"(workspace member removed?): {', '.join(sorted(stale))}",
             file=sys.stderr,
         )
 
@@ -357,8 +367,19 @@ def generate_fallback_patches(repos: list[RepoInfo]) -> str:
 
     for repo in sorted(repos, key=lambda r: r.name):
         lines.append(f'[patch."{repo.git_url}"]')
+        wrote_any = False
         for crate in sorted(repo.crates, key=lambda c: c.name):
+            if not (crate.path / "Cargo.toml").is_file():
+                print(
+                    f"[register-patches] skipping stale crate path "
+                    f"{crate.name} ({crate.path}) — Cargo.toml missing",
+                    file=sys.stderr,
+                )
+                continue
             lines.append(f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}')
+            wrote_any = True
+        if not wrote_any:
+            lines.pop()  # remove the section header
         lines.append("")
 
     return "\n".join(lines)
@@ -366,6 +387,68 @@ def generate_fallback_patches(repos: list[RepoInfo]) -> str:
 
 MANUAL_BEGIN = "# ── celestia-devtools BEGIN manual (preserved across regeneration) ──"
 MANUAL_END = "# ── celestia-devtools END manual ──"
+
+
+def _clean_stale_local_patches(text: str) -> tuple[str, list[str]]:
+    """Scan *text* for local-path ``[patch.*]`` entries whose directories no
+    longer exist, remove them, and return the cleaned text together with a
+    list of warning messages (one per removed entry).
+
+    Only ``path = \"...\"`` values that look like absolute filesystem paths
+    are checked; git / registry / source URLs are left alone.
+    """
+    lines = text.split("\n")
+    removed: list[str] = []
+    in_patch = False
+    in_manual = False
+    current_section: str | None = None
+    skip_lines: set[int] = set()
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped == MANUAL_BEGIN:
+            in_manual = True
+            continue
+        if stripped == MANUAL_END:
+            in_manual = False
+            continue
+        if in_manual:
+            continue
+
+        if re.match(r'^\[patch\b', stripped):
+            in_patch = True
+            current_section = stripped
+            continue
+
+        if in_patch:
+            if stripped.startswith("[") and not stripped.startswith("[["):
+                in_patch = False
+                current_section = None
+                continue
+
+            m = re.match(r'^(\S+)\s*=\s*\{\s*path\s*=\s*"([^"]+)"', stripped)
+            if m:
+                key, path_val = m.group(1), m.group(2)
+                # Ignore non-filesystem references (git/registry URLs).
+                if path_val.startswith(("http://", "https://", "git://", "git+", "ssh://")):
+                    continue
+                p = Path(path_val)
+                # A local path is stale iff it points to a directory that
+                # no longer contains a Cargo.toml.  Relative paths ("./pkgs/…")
+                # are left alone — they may be legit intra-repo references.
+                if p.is_absolute() and not (p / "Cargo.toml").is_file():
+                    skip_lines.add(i)
+                    removed.append(
+                        f"{key} = {{ path = \"{path_val}\" }}"
+                        f"  (section: {current_section})"
+                    )
+
+    if not removed:
+        return text, []
+
+    cleaned = [line for i, line in enumerate(lines) if i not in skip_lines]
+    return "\n".join(cleaned).rstrip() + "\n", removed
 
 
 def _strip_all_patch_sections(text: str) -> str:
@@ -445,6 +528,25 @@ def update_cargo_config(
     existing = ""
     if config_path.is_file():
         existing = config_path.read_text(encoding="utf-8", errors="ignore")
+
+    # Step 0 — scan for stale local-path patches (paths that no longer exist on
+    # disk) and remove them.  Only local absolute paths are checked; git /
+    # registry source patches are left alone.
+    cleaned, stale_warnings = _clean_stale_local_patches(existing)
+    if stale_warnings:
+        print(
+            f"[register-patches] {len(stale_warnings)} stale local-patch"
+            f" path(s) removed (directory no longer exists):",
+            file=sys.stderr,
+        )
+        for w in stale_warnings:
+            print(f"  ✗ {w}", file=sys.stderr)
+        # Only update `existing` if we actually changed something so the
+        # config is written back with stale entries removed.
+        if not dry_run:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(cleaned, encoding="utf-8")
+        existing = cleaned
 
     stripped = _strip_all_patch_sections(existing)
 
