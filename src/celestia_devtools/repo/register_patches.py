@@ -293,11 +293,15 @@ def generate_per_repo_patches(
     patches: dict[str, list[tuple[str, Path]]] = {}
     crates_io_patches: list[tuple[str, Path]] = []
     missing: list[str] = []
+    stale: list[str] = []
 
     for dep_name, git_url in sorted(actual_deps.items()):
         crate = crate_index.get(dep_name)
         if crate is None:
             missing.append(dep_name)
+            continue
+        if not (crate.path / "Cargo.toml").is_file():
+            stale.append(f"{dep_name} ({crate.path})")
             continue
         if dep_name in crates_io_names or git_url == "crates-io":
             crates_io_patches.append((dep_name, crate.path))
@@ -308,6 +312,12 @@ def generate_per_repo_patches(
         print(
             f"[register-patches] {len(missing)} dep(s) have no local checkout "
             f"(will stay as git dep): {', '.join(sorted(missing))}",
+            file=sys.stderr,
+        )
+    if stale:
+        print(
+            f"[register-patches] {len(stale)} crate(s) have missing Cargo.toml "
+            f"(workspace member removed?): {', '.join(sorted(stale))}",
             file=sys.stderr,
         )
 
@@ -357,8 +367,19 @@ def generate_fallback_patches(repos: list[RepoInfo]) -> str:
 
     for repo in sorted(repos, key=lambda r: r.name):
         lines.append(f'[patch."{repo.git_url}"]')
+        wrote_any = False
         for crate in sorted(repo.crates, key=lambda c: c.name):
+            if not (crate.path / "Cargo.toml").is_file():
+                print(
+                    f"[register-patches] skipping stale crate path "
+                    f"{crate.name} ({crate.path}) — Cargo.toml missing",
+                    file=sys.stderr,
+                )
+                continue
             lines.append(f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}')
+            wrote_any = True
+        if not wrote_any:
+            lines.pop()  # remove the section header
         lines.append("")
 
     return "\n".join(lines)
