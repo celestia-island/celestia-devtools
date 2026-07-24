@@ -85,16 +85,20 @@ class TestStaleLocalPatchCleanup:
         from celestia_devtools.repo.register_patches import _clean_stale_local_patches
 
         import os
+        import tempfile
+        from pathlib import Path
         bad = os.path.abspath(os.path.join(os.sep, "nonexistent", "abcdef", "crate"))
-        config = f"""[patch.crates-io]
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "Cargo.toml").write_text("[package]\nname = \"ok\"\n")
+            config = f"""[patch.crates-io]
 kirino = {{ path = "{bad}" }}
-aoba = {{ path = "{os.sep}tmp" }}
+ok = {{ path = "{td}" }}
 """
-        cleaned, warnings = _clean_stale_local_patches(config)
-        assert len(warnings) == 1
-        assert "nonexistent" in warnings[0]
-        assert 'kirino' not in cleaned
-        assert 'aoba' in cleaned
+            cleaned, warnings = _clean_stale_local_patches(config)
+            assert len(warnings) == 1
+            assert "nonexistent" in warnings[0]
+            assert 'kirino' not in cleaned
+            assert 'ok' in cleaned
 
     def test_ignores_relative_and_git_patches(self):
         from celestia_devtools.repo.register_patches import _clean_stale_local_patches
