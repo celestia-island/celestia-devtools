@@ -111,6 +111,7 @@ GITMOJI_WHITELIST: frozenset[str] = frozenset([
     "\U0001f9f5",    # ðŸ§µ :thread:
     "\U0001f9ba",    # ðŸ¦º :safety_vest:
     "📜",    # 📜 :scroll (org: license)
+    "\U0001f6e1\ufe0f",  # 🛡️ :shield:
 ])
 
 # ── Regexes (compiled once) ──────────────────────────────────────────────────
@@ -224,8 +225,11 @@ def lint(subject: str) -> List[str]:
     # the period requirement is relaxed for them.
     if subject.startswith("\U0001f504"):
         pass  # 🔄 — exempt from period rule
-    elif not _ENDS_WITH_PERIOD_RE.search(subject):
-        violations.append("must end with a period (.)")
+    else:
+        # Strip GitHub squash merge PR reference " (#123)" before checking.
+        pr_stripped = re.sub(r'\s*\(#\d+\)\s*$', '', subject)
+        if not _ENDS_WITH_PERIOD_RE.search(pr_stripped):
+            violations.append("must end with a period (.)")
 
     # Rule 6 — English-only (no CJK).
     cjk = _CJK_RE.search(subject)
