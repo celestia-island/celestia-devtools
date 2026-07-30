@@ -1,5 +1,8 @@
 -- scripts/mock/seed.sql — PostgreSQL seed data for the dev mock stack.
 --
+-- Consumed by celestia-integration tests via conftest.py fixtures for
+-- cross-repo testing (mock/arona/seed.sql and mock/accounts/).
+--
 -- Injected by db::seed_mock() AFTER migrations but BEFORE the backend serves.
 -- Gives the panel pre-seeded users + workspaces + RBAC so a dev can log in
 -- immediately and see a diverse, multi-user / multi-workspace mock.
