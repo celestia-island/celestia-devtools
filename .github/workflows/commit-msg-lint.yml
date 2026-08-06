@@ -53,7 +53,9 @@ jobs:
           celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all new commits on push
-        if: github.event_name == 'push'
+        # github.event.before is a 40-hex string on push payloads (inherited by
+        # workflow_call callers) and empty otherwise — a universal trigger.
+        if: github.event.before
         run: |
           set -o pipefail
           BEFORE="${{ github.event.before }}"
