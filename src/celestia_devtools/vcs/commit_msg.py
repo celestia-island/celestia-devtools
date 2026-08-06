@@ -13,6 +13,9 @@ Rules (applied to the subject line — first line of the commit message):
     ``bump version``, ``update to``, etc.).
 5.  Must end with a period (``.``).
 6.  Must be English-only (no CJK characters or wide punctuation).
+7.  Must NOT use a colon-prefix subject (``Topic phrase: details``) — even
+    with a capitalized leading phrase like ``Fix compliance: ...`` or
+    ``Audit round 23: ...``; write one plain sentence instead.
 
 Exemptions (checked before rules):
 -  ``Merge ...`` / ``Merge branch ...`` (git default).
@@ -123,6 +126,15 @@ _CONVENTIONAL_PREFIX_RE = re.compile(
     r"(?:\([^)]*\))?\s*[:!]",
 )
 
+# Colon-prefix subject ("Topic phrase: details"). Forbidden even when the
+# leading phrase is capitalized, e.g. "Fix compliance: ..." or
+# "Audit round 23: ...". The character immediately before the colon must be a
+# letter/digit so code tokens like "Support :is()" or timestamps such as
+# "09:34Z" are not false positives.
+_COLON_PREFIX_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s",
+)
+
 # Leading bare version number or filler phrases (after gitmoji and space).
 _VERSION_OR_FILLER_START_RE = re.compile(
     r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)",
@@ -199,6 +211,13 @@ def lint(subject: str) -> List[str]:
         violations.append(
             "must NOT use a Conventional Commits prefix (feat:/fix:/chore:/etc.); "
             "the emoji is the type marker"
+        )
+
+    # Rule 7 — no colon-prefix subject.
+    if _COLON_PREFIX_RE.match(tail):
+        violations.append(
+            "must NOT use a colon-prefix subject (e.g. 'Fix compliance: ...', "
+            "'Audit round 23: ...'); write one plain sentence instead"
         )
 
     # Rule 3 — first letter after emoji must be uppercase.
