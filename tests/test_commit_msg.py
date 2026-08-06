@@ -18,14 +18,35 @@ class TestGitmojiWhitelist:
         assert "\U0001f504" in GITMOJI_WHITELIST  # 🔄 (org extension)
 
 
-class TestMergeAndRevertExemptions:
-    def test_merge_commit_bypasses_all_rules(self):
-        assert lint("Merge branch 'fix' into master") == []
-        assert lint("Merge pull request #42 from celestia-island/dev") == []
+class TestMergeBanned:
+    def test_merge_branch_subject_rejected(self):
+        v = lint("Merge branch 'fix' into master")
+        assert any("merge" in violation.lower() for violation in v)
 
+    def test_merge_pull_request_subject_rejected(self):
+        v = lint("Merge pull request #42 from celestia-island/dev")
+        assert any("merge" in violation.lower() for violation in v)
+
+
+class TestRevertExemption:
     def test_revert_commit_bypasses_all_rules(self):
         assert lint('Revert "Fix the parser crash."') == []
         assert lint("Revert something") == []
+
+
+class TestEasyHydroCjkExemption:
+    def test_cjk_rejected_by_default(self):
+        v = lint("✨ 修复解析器")
+        assert any("CJK" in violation for violation in v)
+
+    def test_cjk_allowed_with_flag(self):
+        assert lint("✨ 修复解析器", allow_cjk=True) == []
+
+    def test_easy_hydro_repos_are_in_the_whitelist(self):
+        from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
+
+        assert "easy-hydro-erp" in EASY_HYDRO_REPOS
+        assert "easy-hydro-miniprogram" in EASY_HYDRO_REPOS
 
 
 class TestRule1GitmojiPrefix:
