@@ -36,7 +36,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -o pipefail
-          [ -n "$PR_TITLE" ] || { echo "empty PR title"; exit 1; }
+          [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
           echo "PR title: $PR_TITLE"
           printf '%s\n' "$PR_TITLE" | \
           celestia-devtools commit-msg-lint check --stdin-subjects
