@@ -18,8 +18,16 @@ Rules (applied to the subject line — first line of the commit message):
     ``Audit round 23: ...``; write one plain sentence instead.
 
 Exemptions (checked before rules):
--  ``Merge ...`` / ``Merge branch ...`` (git default).
 -  ``Revert ...`` (git revert).
+
+Merge subjects (``Merge branch ...`` / ``Merge pull request ...``) are
+**rejected**: the org uses squash merges only, so a merge-commit subject is
+a violation, not an exemption.
+
+Easy Hydro repositories (``easy-hydro-erp`` / ``easy-hydro-miniprogram``) are
+exempt from Rule 6 (English-only/CJK) but still recommended to use a gitmoji;
+pass ``--repo <name>`` or ``--allow-cjk`` to the CLI (or ``allow_cjk=True`` to
+``lint()``).
 
 The ``lint()`` function returns a list of violation strings; an empty list means
 the message passes all rules.
@@ -146,6 +154,12 @@ _CJK_RE = re.compile(r"[\u2e80-\u2eff\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff"
                      r"\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff"
                      r"\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]")
 
+# Repositories exempt from the English-only rule (org decision; see AGENTS.md).
+EASY_HYDRO_REPOS: frozenset[str] = frozenset({
+    "easy-hydro-erp",
+    "easy-hydro-miniprogram",
+})
+
 # First English letter position (used for capital-letter check).
 _FIRST_ALPHA_RE = re.compile(r"[A-Za-z]")
 
@@ -177,7 +191,7 @@ def _trim_gitmoji(subject: str) -> str:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def lint(subject: str) -> List[str]:
+def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
     """Validate a single commit-message subject line.
 
     Returns a list of violation descriptions.  An empty list means the message
@@ -191,9 +205,16 @@ def lint(subject: str) -> List[str]:
         violations.append("commit message is empty")
         return violations
 
-    # Exemptions: merge and revert commits.
-    if subject.startswith("Merge ") or subject.startswith("Revert "):
+    # Exemption: git-revert commits (git revert produces "Revert ...").
+    if subject.startswith("Revert "):
         return []
+
+    # Merge subjects are banned: the org uses squash merges only.
+    if subject.startswith("Merge "):
+        violations.append(
+            "merge-commit subjects are forbidden; use squash merge"
+        )
+        return violations
 
     # Rule 1 — gitmoji prefix.
     if not _has_any_gitmoji_prefix(subject):
@@ -228,7 +249,7 @@ def lint(subject: str) -> List[str]:
                 "first letter after the emoji must be uppercase; "
                 f"found lowercase '{alpha.group()}'"
             )
-    else:
+    elif not allow_cjk:
         violations.append("summary must contain at least one English letter")
 
     # Rule 4 — no version-number / filler start.
@@ -242,7 +263,9 @@ def lint(subject: str) -> List[str]:
     # Rule 5 — trailing period.
     # 🔄 sync/refresh messages often carry timestamp metadata in parens, so
     # the period requirement is relaxed for them.
-    if subject.startswith("\U0001f504"):
+    if allow_cjk:
+        pass  # easy-hydro CJK summaries may end in Chinese punctuation or none
+    elif subject.startswith("\U0001f504"):
         pass  # 🔄 — exempt from period rule
     else:
         # Strip GitHub squash merge PR reference " (#123)" before checking.
@@ -250,9 +273,9 @@ def lint(subject: str) -> List[str]:
         if not _ENDS_WITH_PERIOD_RE.search(pr_stripped):
             violations.append("must end with a period (.)")
 
-    # Rule 6 — English-only (no CJK).
+    # Rule 6 — English-only (no CJK), except for the org's Easy Hydro repos.
     cjk = _CJK_RE.search(subject)
-    if cjk is not None:
+    if cjk is not None and not allow_cjk:
         violations.append(
             f"must be English-only; found CJK character "
             f"'{cjk.group()}' at position {cjk.start()}"
@@ -285,6 +308,14 @@ def main() -> int:
         "--stdin-subjects", action="store_true",
         help="read subjects from stdin (one per line) for batch CI validation",
     )
+    p_check.add_argument(
+        "--repo", default=None,
+        help="repository name; easy-hydro-erp / easy-hydro-miniprogram allow CJK",
+    )
+    p_check.add_argument(
+        "--allow-cjk", action="store_true",
+        help="allow CJK in commit subjects (used for easy-hydro repos)",
+    )
 
     args = parser.parse_args()
 
@@ -312,8 +343,9 @@ def main() -> int:
         return 2
 
     errors: List[str] = []
+    allow_cjk = args.allow_cjk or (args.repo in EASY_HYDRO_REPOS)
     for subject in subjects:
-        violations = lint(subject)
+        violations = lint(subject, allow_cjk=allow_cjk)
         if violations:
             errors.append(subject)
             for v in violations:
