@@ -27,13 +27,20 @@ jobs:
 
       - name: Lint PR title (squash merge subject)
         if: github.event_name == 'pull_request'
+        env:
+          # Passed via env so a user-controlled title is never interpolated
+          # into shell syntax (quotes, $() and backticks are inert in env).
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "PR title: ${{ github.event.pull_request.title }}"
-          celestia-devtools commit-msg-lint check --subject "${{ github.event.pull_request.title }}"
+          set -o pipefail
+          echo "PR title: $PR_TITLE"
+          printf '%s\n' "$PR_TITLE" | \
+          celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
         if: github.base_ref != ''
         run: |
+          set -o pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           RANGE="${BASE_SHA}..${HEAD_SHA}"
@@ -44,6 +51,7 @@ jobs:
       - name: Lint all new commits on push
         if: github.base_ref == '' && github.event_name == 'push'
         run: |
+          set -o pipefail
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.event.after }}"
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
