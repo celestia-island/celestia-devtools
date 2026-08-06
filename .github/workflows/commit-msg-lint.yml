@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -26,19 +26,23 @@ jobs:
         run: pip install git+https://github.com/celestia-island/celestia-devtools.git@master
 
       - name: Lint PR title (squash merge subject)
-        if: github.event_name == 'pull_request'
+        # Fires on the repo's own pull_request events and, via workflow_call,
+        # when the CALLER workflow was triggered by a pull_request (github.event
+        # then carries the caller's PR payload).
+        if: github.event.pull_request
         env:
           # Passed via env so a user-controlled title is never interpolated
           # into shell syntax (quotes, $() and backticks are inert in env).
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -o pipefail
+          [ -n "$PR_TITLE" ] || { echo "empty PR title"; exit 1; }
           echo "PR title: $PR_TITLE"
           printf '%s\n' "$PR_TITLE" | \
           celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
-        if: github.base_ref != ''
+        if: github.event.pull_request
         run: |
           set -o pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
@@ -49,7 +53,7 @@ jobs:
           celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all new commits on push
-        if: github.base_ref == '' && github.event_name == 'push'
+        if: github.event_name == 'push'
         run: |
           set -o pipefail
           BEFORE="${{ github.event.before }}"
