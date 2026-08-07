@@ -26,8 +26,17 @@ jobs:
       # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
       # system interpreter with --user + --break-system-packages (PEP 668).
 
-      - name: Install celestia-devtools
-        run: pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+      - name: Ensure celestia-devtools
+        # The org runners preinstall the CLI (node-1 convention, kept fresh by
+        # the mirror sync); pip is only a fallback for hosts without it. A
+        # forced reinstall on every run has proven unreliable on the shared
+        # runners, so keep the preinstalled binary when present.
+        run: |
+          if ! command -v celestia-devtools >/dev/null 2>&1; then
+            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+          else
+            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+          fi
 
       - name: Lint PR title (squash merge subject)
         # Fires on the repo's own pull_request events and, via workflow_call,
