@@ -32,8 +32,9 @@ jobs:
       - name: Lint PR title (squash merge subject)
         # Fires on the repo's own pull_request events and, via workflow_call,
         # when the CALLER workflow was triggered by a pull_request (github.event
-        # then carries the caller's PR payload).
-        if: github.event.pull_request
+        # then carries the caller's PR payload). Dependabot PRs are exempt:
+        # machine-generated subjects cannot satisfy the gitmoji/period rules.
+        if: github.event.pull_request && github.actor != 'dependabot[bot]'
         env:
           # Passed via env so a user-controlled title is never interpolated
           # into shell syntax (quotes, $() and backticks are inert in env).
@@ -46,7 +47,7 @@ jobs:
           celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
-        if: github.event.pull_request
+        if: github.event.pull_request && github.actor != 'dependabot[bot]'
         run: |
           set -o pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
