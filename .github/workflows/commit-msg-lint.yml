@@ -26,14 +26,25 @@ jobs:
       # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
       # system interpreter with --user + --break-system-packages (PEP 668).
 
-      - name: Install celestia-devtools
-        run: pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+      - name: Ensure celestia-devtools
+        # The org runners preinstall the CLI (node-1 convention, kept fresh by
+        # the mirror sync); pip is only a fallback for hosts without it. A
+        # forced reinstall on every run has proven unreliable on the shared
+        # runners, so keep the preinstalled binary when present.
+        run: |
+          if ! command -v celestia-devtools >/dev/null 2>&1; then
+            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+            command -v celestia-devtools >/dev/null 2>&1 || { echo "pip install reported success but the CLI is missing"; exit 1; }
+          else
+            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+          fi
 
       - name: Lint PR title (squash merge subject)
         # Fires on the repo's own pull_request events and, via workflow_call,
         # when the CALLER workflow was triggered by a pull_request (github.event
-        # then carries the caller's PR payload).
-        if: github.event.pull_request
+        # then carries the caller's PR payload). Dependabot PRs are exempt:
+        # machine-generated subjects cannot satisfy the gitmoji/period rules.
+        if: github.event.pull_request && github.actor != 'dependabot[bot]'
         env:
           # Passed via env so a user-controlled title is never interpolated
           # into shell syntax (quotes, $() and backticks are inert in env).
@@ -46,7 +57,7 @@ jobs:
           celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
-        if: github.event.pull_request
+        if: github.event.pull_request && github.actor != 'dependabot[bot]'
         run: |
           set -o pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
