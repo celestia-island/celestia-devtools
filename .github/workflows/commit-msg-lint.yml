@@ -34,6 +34,7 @@ jobs:
         run: |
           if ! command -v celestia-devtools >/dev/null 2>&1; then
             pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+            command -v celestia-devtools >/dev/null 2>&1 || { echo "pip install reported success but the CLI is missing"; exit 1; }
           else
             echo "celestia-devtools already available: $(command -v celestia-devtools)"
           fi
