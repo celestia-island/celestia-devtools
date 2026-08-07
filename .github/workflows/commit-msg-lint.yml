@@ -10,7 +10,10 @@ on:
 jobs:
   lint:
     name: Lint commit messages
-    runs-on: ubuntu-latest
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier; the
+    # shared node also preinstalls celestia-devtools for fast starts).
+    runs-on: [self-hosted, linux, x64, local]
     permissions:
       contents: read
     steps:
