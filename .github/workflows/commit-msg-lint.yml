@@ -24,10 +24,10 @@ jobs:
       # No actions/setup-python: the python-versions manifest ships no Debian
       # 12 builds, so it fails deterministically on the org's self-hosted
       # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
-      # system interpreter.
+      # system interpreter with --user + --break-system-packages (PEP 668).
 
       - name: Install celestia-devtools
-        run: pip install git+https://github.com/celestia-island/celestia-devtools.git@master
+        run: pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
 
       - name: Lint PR title (squash merge subject)
         # Fires on the repo's own pull_request events and, via workflow_call,
