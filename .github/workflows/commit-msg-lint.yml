@@ -60,9 +60,14 @@ jobs:
         if: github.event.pull_request && github.actor != 'dependabot[bot]'
         run: |
           set -o pipefail
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          RANGE="${BASE_SHA}..${HEAD_SHA}"
+          # The event snapshot of base.sha can go stale after squash merges
+          # advance master (the old base commit disappears from history, making
+          # `base..head` an invalid range). Resolve the real fork point against
+          # the checked-out master instead of trusting the stale snapshot.
+          BASE_REF="$(git rev-parse --verify -q origin/master || git rev-parse --verify -q master || git rev-parse --verify -q refs/remotes/origin/master)"
+          MERGE_BASE="$(git merge-base "$BASE_REF" "$HEAD_SHA" 2>/dev/null || echo "$BASE_REF")"
+          RANGE="${MERGE_BASE}..${HEAD_SHA}"
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
           celestia-devtools commit-msg-lint check --stdin-subjects
