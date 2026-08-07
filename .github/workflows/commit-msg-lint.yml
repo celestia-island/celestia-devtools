@@ -10,7 +10,10 @@ on:
 jobs:
   lint:
     name: Lint commit messages
-    runs-on: ubuntu-latest
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier; the
+    # shared node also preinstalls celestia-devtools for fast starts).
+    runs-on: [self-hosted, linux, x64, local]
     permissions:
       contents: read
     steps:
@@ -18,22 +21,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
+      # No actions/setup-python: the python-versions manifest ships no Debian
+      # 12 builds, so it fails deterministically on the org's self-hosted
+      # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
+      # system interpreter with --user + --break-system-packages (PEP 668).
 
       - name: Install celestia-devtools
-        run: pip install git+https://github.com/celestia-island/celestia-devtools.git@master
+        run: pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
 
       - name: Lint PR title (squash merge subject)
-        if: github.event_name == 'pull_request'
+        # Fires on the repo's own pull_request events and, via workflow_call,
+        # when the CALLER workflow was triggered by a pull_request (github.event
+        # then carries the caller's PR payload).
+        if: github.event.pull_request
+        env:
+          # Passed via env so a user-controlled title is never interpolated
+          # into shell syntax (quotes, $() and backticks are inert in env).
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "PR title: ${{ github.event.pull_request.title }}"
-          celestia-devtools commit-msg-lint check --subject "${{ github.event.pull_request.title }}"
+          set -o pipefail
+          [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
+          echo "PR title: $PR_TITLE"
+          printf '%s\n' "$PR_TITLE" | \
+          celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
-        if: github.base_ref != ''
+        if: github.event.pull_request
         run: |
+          set -o pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           RANGE="${BASE_SHA}..${HEAD_SHA}"
@@ -42,8 +57,11 @@ jobs:
           celestia-devtools commit-msg-lint check --stdin-subjects
 
       - name: Lint all new commits on push
-        if: github.base_ref == '' && github.event_name == 'push'
+        # github.event.before is a 40-hex string on push payloads (inherited by
+        # workflow_call callers) and empty otherwise — a universal trigger.
+        if: github.event.before
         run: |
+          set -o pipefail
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.event.after }}"
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
