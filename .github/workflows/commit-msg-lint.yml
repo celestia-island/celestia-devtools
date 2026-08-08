@@ -10,6 +10,11 @@ on:
 jobs:
   lint:
     name: Lint commit messages
+    # Fork PRs must not consume self-hosted runner capacity or execute
+    # untrusted code on the shared node; they need maintainer approval anyway.
+    # Guard applies both to direct pull_request triggers and to workflow_call
+    # callers (github.event then carries the caller's PR payload).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Org convention: real work runs on the org self-hosted runners (hosted
     # provisioning has been observed failing at the org billing tier; the
     # shared node also preinstalls celestia-devtools for fast starts).
