@@ -65,7 +65,7 @@ INSERT INTO workspace_sessions (id, user_id, workspace_path, editor_name, editor
 VALUES
     ('00000000-0000-4000-8000-000000000201',
      '00000000-0000-4000-8000-000000000101',
-     '/mnt/sdb1/shittim-chest',
+     '/opt/shittim-chest',
      'local_filesystem', 'dev',
      NULL, NULL,
      '["read","write"]'::jsonb,
@@ -73,7 +73,7 @@ VALUES
      'local_filesystem', 'local_filesystem'),
     ('00000000-0000-4000-8000-000000000202',
      '00000000-0000-4000-8000-000000000102',
-     '/mnt/sdb1/entelecheia',
+     '/opt/entelecheia',
      'git', 'dev',
      'https://github.com/celestia-island/entelecheia.git',
      'master',
