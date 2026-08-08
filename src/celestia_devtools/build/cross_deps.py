@@ -109,15 +109,17 @@ def check_rustup_target(target: str) -> bool:
     return False
 
 
-def _pip_install(package: str) -> bool:
+def _pip_install(package: str, version: str | None = None) -> bool:
+    spec = f"{package}=={version}" if version else package
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", package],
+        [sys.executable, "-m", "pip", "install", spec],
         capture_output=True, text=True,
     )
     return result.returncode == 0
 
 
-def check_pip_package(package: str, import_name: str | None = None) -> bool:
+def check_pip_package(package: str, import_name: str | None = None,
+                      version: str | None = None) -> bool:
     """Check if a pip package is importable; install if missing."""
     import_name = import_name or package
     result = subprocess.run(
@@ -129,12 +131,19 @@ def check_pip_package(package: str, import_name: str | None = None) -> bool:
         return True
 
     _info(f"Installing {package} via pip...")
-    if _pip_install(package):
+    if _pip_install(package, version):
         _ok(f"{package} installed")
         return True
 
     _err(f"Failed to install {package}")
     return False
+
+
+# ── Pinned versions for auto-installed pip packages ───────────────────────────
+# Exact pins keep cross-build environments reproducible. Bump deliberately and
+# re-verify the zigbuild flow after upgrading.
+_ZIGLANG_VERSION = "0.16.0"
+_CARGO_ZIGBUILD_VERSION = "0.23.0"
 
 
 def check_cargo_zigbuild() -> bool:
@@ -152,7 +161,7 @@ def check_cargo_zigbuild() -> bool:
         return True
 
     _info("Installing cargo-zigbuild via pip...")
-    if _pip_install("cargo-zigbuild"):
+    if _pip_install("cargo-zigbuild", _CARGO_ZIGBUILD_VERSION):
         _ok("cargo-zigbuild installed")
         return True
 
@@ -197,7 +206,7 @@ def main() -> int:
     all_ok = True
 
     all_ok = check_rustup_target(args.target) and all_ok
-    all_ok = check_pip_package("ziglang", "ziglang") and all_ok
+    all_ok = check_pip_package("ziglang", "ziglang", _ZIGLANG_VERSION) and all_ok
     all_ok = check_cargo_zigbuild() and all_ok
     check_openssl_needs(args.features)
 
