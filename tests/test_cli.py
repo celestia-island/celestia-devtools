@@ -20,7 +20,7 @@ class TestCommandRegistry:
             "serve", "locate", "register-patches", "register-npm-patches", "init",
             "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
             "daemon", "mock-start", "mock-status", "mock-stop",
-            "registry", "toml-sort",
+            "registry", "toml-sort", "sign-agent",
         }
         assert set(COMMANDS.keys()) == expected
 

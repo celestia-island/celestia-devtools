@@ -25,6 +25,7 @@ Commands::
     hook              Manage the celestia-devtools commit-msg hook lifecycle
     pr-merge          Validate subject and merge via gh pr merge.
     gh                Transparent gh proxy — validates subject on pr merge, forwards everything else.
+    sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
 
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
@@ -63,6 +64,7 @@ COMMANDS: dict[str, str] = {
     "mock-stop": "celestia_devtools.core.mock",
     "mock-status": "celestia_devtools.core.mock",
     "registry": "celestia_devtools.core.mock",
+    "sign-agent": "celestia_devtools.agent.sign",
 }
 
 
