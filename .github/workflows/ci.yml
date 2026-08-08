@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [master, dev]
   pull_request:
@@ -9,41 +10,48 @@ on:
 jobs:
   lint:
     name: Lint (ruff)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, local]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install ruff
-      - run: ruff check src/ tests/
+      # No actions/setup-python: the python-versions manifest ships no Debian
+      # 12 builds, so it fails deterministically on the org's self-hosted
+      # runners. Node-1 preinstalls python3.11; use it via a venv.
+      - name: Setup python
+        run: python3 -m venv .venv
+      - name: Install ruff
+        run: .venv/bin/pip install ruff
+      - name: Lint
+        run: .venv/bin/ruff check src/ tests/
 
   test:
     name: Test (pytest)
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+    runs-on: [self-hosted, linux, x64, local]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: pytest tests/ -v
+      # The version matrix (3.9/3.11/3.12) is temporarily reduced to the
+      # system python3.11 while the org runners are Debian 12 (setup-python
+      # cannot provision any version there); the package still declares
+      # python >=3.9 in its metadata.
+      - name: Setup python
+        run: python3 -m venv .venv
+      - name: Install
+        run: .venv/bin/pip install -e ".[dev]"
+      - name: Test
+        run: .venv/bin/pytest tests/ -v
       - name: CLI smoke test
         run: |
-          python -m celestia_devtools --version
-          python -m celestia_devtools --help > /dev/null
-          python -m celestia_devtools include-path
+          .venv/bin/python -m celestia_devtools --version
+          .venv/bin/python -m celestia_devtools --help > /dev/null
+          .venv/bin/python -m celestia_devtools include-path
 
   markdown-check:
     name: Markdown self-check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, local]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install -e .
-      - run: python -m celestia_devtools format-markdown . --check
+      - name: Setup python
+        run: python3 -m venv .venv
+      - name: Install
+        run: .venv/bin/pip install -e .
+      - name: Check markdown
+        run: .venv/bin/python -m celestia_devtools format-markdown . --check

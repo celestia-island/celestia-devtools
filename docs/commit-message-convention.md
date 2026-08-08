@@ -19,12 +19,22 @@ Every commit subject (first line of the commit message) must follow this format:
 | English only | `🐛 Fix the parser crash.` | `🐛 修复解析器崩溃。` |
 | Descriptive (no version-only / filler) | `⬆️ Upgrade the HTTP client to v2.` | `⬆️ 0.3.0` |
 
-## Exemptions
+## Exemptions and org additions
 
-The following commit types are automatically exempt:
+The following commit types are handled specially:
 
-- **Merge commits**: `Merge branch 'foo'` / `Merge pull request #42`
 - **Revert commits**: `Revert "..."`
+
+Merge commits (`Merge branch 'foo'` / `Merge pull request #42`) are **rejected**
+because the org uses squash merges only; they are not exempt.
+
+The gitmoji whitelist includes the gitmoji.dev canonical set plus the org
+additions: 🔗 (symlink/copilot), 🔄 (sync/refresh), 📜 (license), 🛡️ (shield).
+
+The Easy Hydro repositories (`easy-hydro-erp`, `easy-hydro-miniprogram`) are
+exempt from the English-only/CJK rule. Pass `--repo easy-hydro-erp` or
+`--allow-cjk` to `celestia-devtools commit-msg-lint check`; a gitmoji prefix is
+still recommended there.
 
 To skip the check for a single commit:
 
@@ -84,5 +94,9 @@ Existing commits in the repository history are not retroactively validated — t
 | 🔨 | Hammer | Dev scripts |
 | 🌐 | Globe | i18n |
 | 💡 | Bulb | Comments |
+| 🔗 | Link | Symlink / Copilot (org) |
+| 🔄 | Counterclockwise arrows | Sync / refresh (org) |
+| 📜 | Scroll | License (org) |
+| 🛡️ | Shield | Security shield (org) |
 
 See [gitmoji.dev](https://gitmoji.dev) for the full list.

@@ -18,14 +18,35 @@ class TestGitmojiWhitelist:
         assert "\U0001f504" in GITMOJI_WHITELIST  # 🔄 (org extension)
 
 
-class TestMergeAndRevertExemptions:
-    def test_merge_commit_bypasses_all_rules(self):
-        assert lint("Merge branch 'fix' into master") == []
-        assert lint("Merge pull request #42 from celestia-island/dev") == []
+class TestMergeBanned:
+    def test_merge_branch_subject_rejected(self):
+        v = lint("Merge branch 'fix' into master")
+        assert any("merge" in violation.lower() for violation in v)
 
+    def test_merge_pull_request_subject_rejected(self):
+        v = lint("Merge pull request #42 from celestia-island/dev")
+        assert any("merge" in violation.lower() for violation in v)
+
+
+class TestRevertExemption:
     def test_revert_commit_bypasses_all_rules(self):
         assert lint('Revert "Fix the parser crash."') == []
         assert lint("Revert something") == []
+
+
+class TestEasyHydroCjkExemption:
+    def test_cjk_rejected_by_default(self):
+        v = lint("✨ 修复解析器")
+        assert any("CJK" in violation for violation in v)
+
+    def test_cjk_allowed_with_flag(self):
+        assert lint("✨ 修复解析器", allow_cjk=True) == []
+
+    def test_easy_hydro_repos_are_in_the_whitelist(self):
+        from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
+
+        assert "easy-hydro-erp" in EASY_HYDRO_REPOS
+        assert "easy-hydro-miniprogram" in EASY_HYDRO_REPOS
 
 
 class TestRule1GitmojiPrefix:
@@ -127,6 +148,42 @@ class TestRule6EnglishOnly:
     def test_fails_mixed(self):
         v = lint("\u2728 Fix \u89e3\u6790\u5668 crash.")
         assert any("CJK" in violation for violation in v)
+
+
+class TestRule7NoColonPrefix:
+    """Topic-phrase colon prefixes are forbidden, even capitalized."""
+
+    def test_fails_capitalized_fix_colon(self):
+        v = lint("\U0001f41b Fix compliance: nonce handshake.")
+        assert any("colon-prefix" in violation for violation in v)
+
+    def test_fails_audit_round_colon(self):
+        v = lint("\u267b\ufe0f Audit round 23: drop dead queries. (#227)")
+        assert any("colon-prefix" in violation for violation in v)
+
+    def test_fails_phase_colon(self):
+        v = lint("\u2728 Phase 6: Theme bridge.")
+        assert any("colon-prefix" in violation for violation in v)
+
+    def test_fails_fix_chest_login_colon(self):
+        v = lint("\U0001f41b Fix chest login: form navigation and embedded assets. (#177)")
+        assert any("colon-prefix" in violation for violation in v)
+
+    def test_passes_plain_sentence(self):
+        assert lint("\U0001f41b Fix nonce handshake and embed path.") == []
+
+    def test_passes_code_token_colon(self):
+        # Colons inside code tokens are not topic prefixes.
+        assert lint("\U0001f41b Support :is() selector in CSS parsing.") == []
+
+    def test_passes_colon_inside_parentheses(self):
+        assert lint("\u2728 Add timer (format: HH:mm) support.") == []
+
+    def test_passes_sync_timestamp_colon(self):
+        assert lint("\U0001f504 Sync provider model list (updated 2026-07-07T09:34Z)") == []
+
+    def test_passes_dependabot_style_quoted_subject(self):
+        assert lint('\u2b07\ufe0f "Bump actions/setup-python from 6 to 7". (#38)') == []
 
 
 class TestEmptyAndWhitespace:
