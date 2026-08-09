@@ -89,7 +89,9 @@ def _build_manifest(agent_dir: Path) -> bytes:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         files.append({"path": rel, "sha256": digest})
     manifest = {"version": MANIFEST_VERSION, "files": files}
-    return json.dumps(manifest, separators=(",", ":"), sort_keys=False).encode()
+    return json.dumps(
+        manifest, separators=(",", ":"), sort_keys=False, ensure_ascii=False
+    ).encode()
 
 
 def cmd_keygen(args: argparse.Namespace) -> int:

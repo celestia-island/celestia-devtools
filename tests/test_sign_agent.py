@@ -117,3 +117,23 @@ def test_pem_helpers_roundtrip() -> None:
     raw = bytes(range(32))
     pem = _raw_to_spki_pem(raw)
     assert _spki_to_raw(pem) == raw
+
+
+def test_manifest_keeps_raw_utf8(workdir: Path) -> None:
+    """serde_json outputs raw UTF-8; the Python side must not escape it."""
+    agent = workdir / "agent"
+    (agent / "子目录").mkdir(parents=True)
+    (agent / "agent.toml").write_text('[agent]\nid = "demo"\nlayer = 3\n')
+    (agent / "子目录" / "说明.txt").write_text("你好\n")
+    manifest = _build_manifest(agent)
+    assert "子目录" in manifest.decode()
+    assert "\\u" not in manifest.decode()
+
+
+def test_manifest_excludes_git_anywhere(workdir: Path) -> None:
+    agent = workdir / "agent"
+    (agent / "sub" / ".git").mkdir(parents=True)
+    (agent / "agent.toml").write_text('[agent]\nid = "demo"\nlayer = 3\n')
+    (agent / "sub" / ".git" / "config").write_text("[core]\n")
+    manifest = _build_manifest(agent).decode()
+    assert ".git" not in manifest
