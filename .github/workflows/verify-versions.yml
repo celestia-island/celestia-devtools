@@ -30,26 +30,23 @@ jobs:
 
       # No actions/setup-python: the python-versions manifest ships no Debian
       # 12 builds, so it fails deterministically on the org's self-hosted
-      # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
-      # system interpreter with --user + --break-system-packages (PEP 668).
-
-      - name: Ensure celestia-devtools
-        # The org runners preinstall the CLI (node-1 convention, kept fresh by
-        # the mirror sync); pip is only a fallback for hosts without it. The
-        # preinstalled binary can predate the verify-versions command, so probe
-        # for the command and reinstall from master when it is missing. A
-        # forced reinstall on every run has proven unreliable on the shared
-        # runners, so keep the preinstalled binary when it already works.
-        run: |
-          if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
-            echo "celestia-devtools with verify-versions already available: $(command -v celestia-devtools)"
-          else
-            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
-            celestia-devtools verify-versions --help >/dev/null 2>&1 || { echo "installed celestia-devtools lacks the verify-versions command"; exit 1; }
-          fi
+      # runners. Node-1 preinstalls python3; the fallback below avoids pip
+      # entirely (pip builds against github.com have proven unreliable on the
+      # shared runners) and runs straight from a shallow devtools clone.
 
       - name: Verify versions
-        # Drift always fails the job; CHANGELOG warnings are non-fatal unless
-        # the caller opts into --strict. The checked-out repo is the target.
+        # Prefer the preinstalled CLI (node-1 convention, kept fresh by the
+        # mirror sync) when it already knows the command. Otherwise clone
+        # celestia-devtools@master and run the module directly with
+        # PYTHONPATH=src — deterministic, no build dependencies. Drift always
+        # fails the job; CHANGELOG warnings are non-fatal unless the caller
+        # opts into --strict. The checked-out repo is the target.
         run: |
-          celestia-devtools verify-versions .
+          if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
+            echo "Using preinstalled celestia-devtools: $(command -v celestia-devtools)"
+            celestia-devtools verify-versions .
+          else
+            echo "Preinstalled CLI lacks verify-versions; running from a fresh devtools clone"
+            rm -rf /tmp/celestia-devtools && git clone --depth 1 https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools
+            cd /tmp/celestia-devtools && PYTHONPATH=src python3 -m celestia_devtools verify-versions "$GITHUB_WORKSPACE"
+          fi
