@@ -35,15 +35,17 @@ jobs:
 
       - name: Ensure celestia-devtools
         # The org runners preinstall the CLI (node-1 convention, kept fresh by
-        # the mirror sync); pip is only a fallback for hosts without it. A
+        # the mirror sync); pip is only a fallback for hosts without it. The
+        # preinstalled binary can predate the verify-versions command, so probe
+        # for the command and reinstall from master when it is missing. A
         # forced reinstall on every run has proven unreliable on the shared
-        # runners, so keep the preinstalled binary when present.
+        # runners, so keep the preinstalled binary when it already works.
         run: |
-          if ! command -v celestia-devtools >/dev/null 2>&1; then
-            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
-            command -v celestia-devtools >/dev/null 2>&1 || { echo "pip install reported success but the CLI is missing"; exit 1; }
+          if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
+            echo "celestia-devtools with verify-versions already available: $(command -v celestia-devtools)"
           else
-            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+            celestia-devtools verify-versions --help >/dev/null 2>&1 || { echo "installed celestia-devtools lacks the verify-versions command"; exit 1; }
           fi
 
       - name: Verify versions
