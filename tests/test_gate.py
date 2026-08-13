@@ -12,7 +12,6 @@ from celestia_devtools.build.gate import (
     build_web_graph,
     classify_credential_line,
     detect_modes,
-    findmnt_mounts,
     precheck_mounts,
     resolve_modes,
     scan_large_downloads,
