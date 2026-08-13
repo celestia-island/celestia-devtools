@@ -21,10 +21,11 @@ install:
 
 # Verify all modules import and CLI responds, then run pytest.
 test:
-    {{python_cmd}} -c "from celestia_devtools.core import cli, logger; from celestia_devtools.build import cache_guard, cross_deps, prefetch; from celestia_devtools.repo import locate, init; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; print('imports ok')"
+    {{python_cmd}} -c "from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate; from celestia_devtools.repo import locate, init; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; print('imports ok')"
     {{ _devtools }} --help > /dev/null
     {{ _devtools }} --version
     {{ _devtools }} include-path
+    {{ _devtools }} gate --list > /dev/null
     {{python_cmd}} -m pytest tests/ -v
 
 # Lint with ruff.

@@ -136,6 +136,45 @@ For enforcement, enable branch protection on your default branch via GitHub Sett
 | `celestia-devtools commit-msg-lint check --subject "..."` | Validate a message string |
 | `celestia-devtools pr-merge --subject "..." --squash` | Validate then merge (standalone) |
 | `celestia-devtools gh pr merge --subject "..."` | Transparent gh proxy |
+| `celestia-devtools gate` | Run the local CI gate (see below) |
+
+## Local Gate
+
+`celestia-devtools gate` reproduces the CI checklist in one local command, so
+"local verification == CI" before opening a PR. It encodes three design
+elements: **modes**, **dependency ordering**, and a **concurrency budget**.
+
+```bash
+celestia-devtools gate              # auto-detect the repo's mode
+celestia-devtools gate rust         # cargo fmt/clippy/test/deny + lint-commits
+celestia-devtools gate web          # pnpm install/lint/build/test + lint-commits
+celestia-devtools gate python       # ruff check/format + pytest + lint-commits
+celestia-devtools gate all          # every mode detectable in the repo
+celestia-devtools gate rust --list  # print the resolved step graph (dry-run)
+celestia-devtools gate web --jobs 2 # cap parallel execution at 2 workers
+celestia-devtools gate rust --coverage  # enable cargo tarpaulin coverage
+```
+
+- **Modes** — no argument auto-detects from the repo (`Cargo.toml` → rust,
+  `package.json`/`pnpm-workspace.yaml` → web, `pyproject.toml` → python).
+- **Dependency ordering** — each mode is a DAG (e.g. rust:
+  `fmt → clippy → test → deny → coverage → lint-commits`). A step runs only
+  after its dependencies pass; a failed step aborts its dependents.
+- **Concurrency budget** — `--jobs N` (default: CPU count capped at 4) bounds
+  parallel execution of independent steps via a generic topological scheduler.
+
+`gate rust` / `gate web` also run a **credential scan** pre-step: files changed
+vs `origin/master` are grepped for `password|secret|token|api_key|BEGIN …
+PRIVATE KEY`, failing only on literal non-placeholder values (`CHANGE_ME`,
+`<your-password>`, `test-password`, `sk-xxx`, `192.0.2.x`, … are whitelisted).
+
+`celestia-devtools gate precheck` runs the safety diagnostics from the workspace
+postmortem follow-ups: NFS mount-point warnings (a `findmnt` scan for `_worktree`
+paths at `rm -rf` risk) and a large-download heuristic scan (`hf_hub_download` /
+`huggingface_hub` / `modelscope` without `HF_HUB_DISABLE_XET=1` / `no_proxy`
+hints). Both are advisory warnings, never failures.
+
+Exit codes: `0` all steps passed, `1` any step failed, `2` usage error.
 
 ## License
 
