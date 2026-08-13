@@ -27,7 +27,7 @@ Commands::
     gh                Transparent gh proxy — validates subject on pr merge, forwards everything else.
     sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
     gate              Run the local CI gate (modes + DAG ordering + job budget)
-
+    verify-versions   Check cargo/npm version drift across a repository
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -67,7 +67,7 @@ COMMANDS: dict[str, str] = {
     "registry": "celestia_devtools.core.mock",
     "sign-agent": "celestia_devtools.agent.sign",
     "gate": "celestia_devtools.build.gate",
-}
+    "verify-versions": "celestia_devtools.repo.verify_versions",}
 
 
 def _print_help(file=None) -> None:

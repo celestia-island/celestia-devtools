@@ -1,0 +1,53 @@
+name: Verify Versions
+
+on:
+  workflow_call: {}
+
+jobs:
+  verify:
+    name: Verify version consistency
+    # Fork PRs must not consume self-hosted runner capacity or execute
+    # untrusted code on the shared node; they need maintainer approval anyway.
+    # For workflow_call callers, github.event carries the caller's PR payload,
+    # so the same guard applies.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier; the
+    # shared node also preinstalls celestia-devtools for fast starts).
+    runs-on: [self-hosted, linux, x64, local]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+        # Defensive: the runner env rewrites github.com/celestia-island/* to
+        # local bare mirrors (per-repo exact-prefix rules). Mirrors may lack
+        # fresh refs, so bypass the rewriting and clone straight from github.com.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      # No actions/setup-python: the python-versions manifest ships no Debian
+      # 12 builds, so it fails deterministically on the org's self-hosted
+      # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
+      # system interpreter with --user + --break-system-packages (PEP 668).
+
+      - name: Ensure celestia-devtools
+        # The org runners preinstall the CLI (node-1 convention, kept fresh by
+        # the mirror sync); pip is only a fallback for hosts without it. A
+        # forced reinstall on every run has proven unreliable on the shared
+        # runners, so keep the preinstalled binary when present.
+        run: |
+          if ! command -v celestia-devtools >/dev/null 2>&1; then
+            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
+            command -v celestia-devtools >/dev/null 2>&1 || { echo "pip install reported success but the CLI is missing"; exit 1; }
+          else
+            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+          fi
+
+      - name: Verify versions
+        # Drift always fails the job; CHANGELOG warnings are non-fatal unless
+        # the caller opts into --strict. The checked-out repo is the target.
+        run: |
+          celestia-devtools verify-versions .
