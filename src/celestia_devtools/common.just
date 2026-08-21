@@ -121,6 +121,14 @@ fmt-markdown *ARGS='':
 lint-separators *FLAGS='':
     {{ _devtools }} lint-separators . {{FLAGS}}
 
+# Vendor the five org protocol docs (license/cla/code-of-conduct/security/
+# contributing) from docs.celestia.world into packages/webui/.generated/
+# protocols as per-(type, lang) vendor markdown plus a meta.ts manifest.
+# Resolves the docs checkout via $DOCS_CELESTIA_WORLD_ROOT, the sibling
+# ../docs.celestia.world, or a shallow clone into target/docs-celestia-shared.
+protocol-bundle *FLAGS='':
+    {{ _devtools }} protocol-bundle {{FLAGS}}
+
 # ── Commit message lint ──────────────────────────────────────────────────────
 
 # Validate a commit message against the org gitmoji convention.
