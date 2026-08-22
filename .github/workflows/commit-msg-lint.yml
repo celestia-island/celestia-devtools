@@ -93,6 +93,11 @@ jobs:
       - name: Lint all new commits on push
         # github.event.before is a 40-hex string on push payloads (inherited by
         # workflow_call callers) and empty otherwise — a universal trigger.
+        # A force-push rewrites history, so `before` can point at a commit the
+        # repository no longer contains (it gets GC'd) — `before..after` then
+        # fails with "Invalid revision range". The PR step above already lints
+        # the full `merge-base(base, head)..head` range, so a missing `before`
+        # is safely skippable here.
         if: github.event.before
         run: |
           set -o pipefail
@@ -100,8 +105,11 @@ jobs:
           AFTER="${{ github.event.after }}"
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             RANGE="$AFTER"
-          else
+          elif git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             RANGE="${BEFORE}..${AFTER}"
+          else
+            echo "before ($BEFORE) is unreachable after a force-push; skipping (PR range already linted)"
+            exit 0
           fi
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
