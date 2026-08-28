@@ -101,7 +101,17 @@ jobs:
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             RANGE="$AFTER"
           else
-            RANGE="${BEFORE}..${AFTER}"
+            # A force-push rewrites the previous head away, so the event's
+            # `before` can point at an unreachable commit the checkout does
+            # not have (git log then fails with "invalid revision range").
+            # The PR-wide lint step above already covers the full PR range
+            # with a merge-base fallback, so linting just the new head is a
+            # safe degradation for that case.
+            if ! git rev-parse --verify -q "$BEFORE" >/dev/null 2>&1; then
+              RANGE="$AFTER"
+            else
+              RANGE="${BEFORE}..${AFTER}"
+            fi
           fi
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
