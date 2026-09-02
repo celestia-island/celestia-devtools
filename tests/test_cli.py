@@ -20,7 +20,9 @@ class TestCommandRegistry:
             "serve", "locate", "register-patches", "register-npm-patches", "init",
             "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
             "daemon", "mock-start", "mock-status", "mock-stop",
-            "registry", "toml-sort", "sign-agent", "gate", "verify-versions",        }
+            "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
+            "link-npm-siblings",
+        }
         assert set(COMMANDS.keys()) == expected
 
     @pytest.mark.parametrize("cmd,module_path", list(COMMANDS.items()))
