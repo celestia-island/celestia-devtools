@@ -461,6 +461,17 @@ npm-release *PKGS='':
       done
     fi
 
+# Overlay local @celestia-island sibling checkouts into node_modules via
+# symlinks for local development (repo manifests stay registry-only).
+#   just link-npm-siblings             # apply/refresh links
+#   just link-npm-siblings --status    # inspect current state
+#   just link-npm-siblings --remove    # back to pure registry resolution
+# Run after every `pnpm install` — installs restore registry resolution.
+[script]
+link-npm-siblings *ARGS='':
+    set -euo pipefail
+    {{ _devtools }} link-npm-siblings "$@"
+
 # ── Vite frontend build — no dev server, no HMR, no overlay noise ─────────────
 #
 # celestia frontends (shittim-chest, hikari, tairitsu, …) use vite build +
