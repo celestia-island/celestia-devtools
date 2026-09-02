@@ -43,12 +43,18 @@ class NpmPackage(NamedTuple):
 
 
 def _git_remote_origin(repo_path: Path) -> str | None:
-    """Return the origin URL for *repo_path*, or ``None``."""
+    """Return the raw origin URL for *repo_path*, or ``None``.
+
+    Reads ``remote.origin.url`` from config directly: ``git remote get-url``
+    applies ``url.<x>.insteadOf`` rewrites (active on self-hosted runners,
+    which map github.com/celestia-island/* onto local bare mirrors) and would
+    hide the canonical URL this regex needs to match.
+    """
     try:
         import subprocess as _subprocess
 
         r = _subprocess.run(
-            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
             capture_output=True, text=True, timeout=10,
         )
         if r.returncode == 0:

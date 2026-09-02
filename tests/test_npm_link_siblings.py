@@ -283,6 +283,35 @@ class TestRegisterNpmPatchesRetired:
         assert "no legacy overrides block" in capsys.readouterr().out
 
 
+class TestIsCelestiaRepo:
+    def test_reads_raw_config_not_insteadof_rewritten(self, tmp_path: Path):
+        """Runners rewrite github.com/celestia-island/* onto local mirrors via
+        url.insteadOf; `git remote get-url` would print the mirror path and
+        break discovery. The raw config read must still match."""
+        import subprocess
+
+        repo = tmp_path / "hikari"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin",
+             "https://github.com/celestia-island/hikari.git"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config",
+             'url."/mnt/fast/runner-shared/mirrors/".insteadOf',
+             "https://github.com/celestia-island/"],
+            check=True,
+        )
+        rewritten = subprocess.run(
+            ["git", "-C", str(repo), "remote", "get-url", "origin"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert "mirrors" in rewritten  # sanity: the rewrite is in effect
+        assert ls.is_celestia_repo(repo) == "hikari"
+
+
 class TestLinkSiblingsMain:
     def _git_repo(self, path: Path, origin: str) -> None:
         import subprocess
