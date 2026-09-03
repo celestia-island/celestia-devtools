@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.4.0
+# Version: 0.4.1
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -470,7 +470,7 @@ npm-release *PKGS='':
 [script]
 link-npm-siblings *ARGS='':
     set -euo pipefail
-    {{ _devtools }} link-npm-siblings "$@"
+    {{ _devtools }} link-npm-siblings {{ARGS}}
 
 # ── Vite frontend build — no dev server, no HMR, no overlay noise ─────────────
 #

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "celestia-devtools"
-version = "0.4.0"
+version = "0.4.1"
 description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
