@@ -178,6 +178,58 @@ class TestApplyLink:
         assert result.action == "dry-run"
         assert not plan.link_path.exists()
 
+    def test_pnpm_replacement_after_overlay_records_new_original(
+        self, tmp_path: Path, hikari_sibling: NpmPackage,
+    ):
+        """overlay -> pnpm install replaces our link -> re-apply must record
+        pnpm's target as the restore point; `setdefault` saw the existing
+        ``original: None`` and dropped it, leaving the dep missing on --remove."""
+        repo = _make_target(tmp_path)
+        plan = self._plan(repo, hikari_sibling)
+        state = {"links": {}}
+        apply_link(plan, repo, state)  # first overlay: nothing pre-existing
+        assert state["links"][str(plan.link_path)]["original"] is None
+
+        pnpm_target = tmp_path / "pnpm-store-hikari"  # pnpm install rewrites the link
+        pnpm_target.mkdir()
+        plan.link_path.unlink()  # pnpm replaces (not nests) the overlay link
+        os.symlink(pnpm_target, plan.link_path)
+        result = apply_link(plan, repo, state)
+        assert result.action == "updated"
+        assert state["links"][str(plan.link_path)]["original"] == str(pnpm_target)
+
+    def test_own_link_reapply_never_records_itself_as_original(
+        self, tmp_path: Path, hikari_sibling: NpmPackage,
+    ):
+        repo = _make_target(tmp_path)
+        plan = self._plan(repo, hikari_sibling)
+        state = {"links": {}}
+        apply_link(plan, repo, state)
+        for _ in range(3):
+            assert apply_link(plan, repo, state).action == "ok"
+        assert state["links"][str(plan.link_path)]["original"] is None
+
+    def test_unreadable_symlink_does_not_crash_apply(
+        self, tmp_path: Path, hikari_sibling: NpmPackage, monkeypatch,
+    ):
+        """The OSError fallback used to call os.readlink a second time
+        unguarded — if the first call raised, the second raised again."""
+
+        def boom(path):
+            raise OSError("readlink exploded")
+
+        repo = _make_target(tmp_path)
+        plan = self._plan(repo, hikari_sibling)
+        plan.link_path.parent.mkdir(parents=True)
+        os.symlink(tmp_path / "whatever", plan.link_path)
+        state = {"links": {}}
+        monkeypatch.setattr(ls.os, "readlink", boom)
+        result = apply_link(plan, repo, state)
+        assert result.action == "updated"
+        monkeypatch.undo()  # re-enable readlink for the assertion below
+        assert plan.link_path.is_symlink()
+        assert Path(os.readlink(plan.link_path)) == hikari_sibling.path
+
 
 class TestRemoveLinks:
     def test_restores_original_and_clears_state(self, tmp_path: Path, hikari_sibling: NpmPackage):
@@ -216,6 +268,35 @@ class TestRemoveLinks:
         repo = _make_target(tmp_path)
         assert remove_links(repo) == 0
         assert "nothing to remove" in capsys.readouterr().out
+
+    def test_foreign_worktree_entries_are_kept(self, tmp_path: Path, hikari_sibling: NpmPackage):
+        """Worktree node_modules symlinks share one physical state file; a
+        --remove must only consume entries keyed under the current repo root."""
+        repo = _make_target(tmp_path)
+        plan = LinkPlan(
+            name=hikari_sibling.name, sibling=hikari_sibling,
+            link_path=repo / "packages" / "webui" / "node_modules" / hikari_sibling.name,
+            consumer="packages/webui",
+        )
+        state = {"links": {}}
+        apply_link(plan, repo, state)
+        foreign_key = str(tmp_path / "worktree-B" / "node_modules" / "@celestia-island/hikari")
+        state["links"][foreign_key] = {"original": None, "was_dir": False, "target": "/x"}
+        ls.save_state(repo, state)
+
+        assert remove_links(repo) == 0
+        assert not plan.link_path.exists()  # own entry removed
+        remaining = ls.load_state(repo)["links"]
+        assert foreign_key in remaining  # foreign entry kept, state file alive
+
+        # The owning worktree clears its own entry afterwards. Its
+        # node_modules is symlinked to the shared checkout (org convention),
+        # so _state_path(worktree-B) resolves to the same physical file.
+        wt_b = tmp_path / "worktree-B"
+        (wt_b / "packages" / "webui").mkdir(parents=True)
+        os.symlink(repo / "node_modules", wt_b / "node_modules")
+        assert remove_links(wt_b) == 0
+        assert not ls._state_path(repo).exists()
 
 
 class TestRemoveOverridesBlock:
@@ -393,3 +474,45 @@ class TestLinkSiblingsMain:
         assert ls.main() == 0
         err = capsys.readouterr().err
         assert "legacy sibling references" in err
+
+    def test_remove_reachable_without_declared_deps(self, tmp_path: Path, monkeypatch, capsys):
+        """`if not declared: return 0` used to short-circuit before --remove,
+        so stale recorded links never cleared once the dep declaration was dropped."""
+        scan_dir = tmp_path / "celestia"
+        _make_sibling(scan_dir, "hikari", "hikari")
+        self._git_repo(scan_dir / "hikari", "https://github.com/celestia-island/hikari.git")
+        repo = _make_target(scan_dir, webui_deps={"@celestia-island/hikari": "^*"})
+        monkeypatch.chdir(repo)
+        _argv(monkeypatch, "--scan-dir", str(scan_dir))
+        ls.main()
+        assert ls._state_path(repo).is_file()
+        capsys.readouterr()
+
+        # Drop the family dep: the repo no longer declares anything to link.
+        manifest = repo / "packages" / "webui" / "package.json"
+        manifest.write_text(
+            json.dumps({"name": "@celestia-island/webui", "dependencies": {"vue": "^3"}}),
+            encoding="utf-8",
+        )
+        _argv(monkeypatch, "--remove")
+        assert ls.main() == 0
+        link = repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari"
+        assert not link.exists()
+        assert not ls._state_path(repo).exists()
+
+    def test_status_works_without_declared_deps(self, tmp_path: Path, monkeypatch, capsys):
+        scan_dir = tmp_path / "celestia"
+        scan_dir.mkdir()
+        repo = _make_target(scan_dir)  # no family deps declared
+        monkeypatch.chdir(repo)
+        _argv(monkeypatch, "--scan-dir", str(scan_dir), "--status")
+        assert ls.main() == 0
+        assert "status for" in capsys.readouterr().out
+
+    def test_status_and_remove_mutually_exclusive(self, tmp_path: Path, monkeypatch):
+        repo = _make_target(tmp_path, webui_deps={"@celestia-island/hikari": "^*"})
+        monkeypatch.chdir(repo)
+        _argv(monkeypatch, "--status", "--remove")
+        with pytest.raises(SystemExit) as exc:
+            ls.main()
+        assert exc.value.code == 2

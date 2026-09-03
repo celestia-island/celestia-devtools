@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.4.0
+# Version: 0.4.1
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -453,10 +453,15 @@ npm-release *PKGS='':
     set -euo pipefail
     cd dist
     tag="${NPM_DIST_TAG:-latest}"
-    if [ $# -eq 0 ]; then
+    # just does not forward recipe params as shell positionals into [script]
+    # bodies, so $#/"$@" are always empty here — interpolate {{PKGS}} instead
+    # (same defect class as the link-npm-siblings fix).
+    pkgs=()
+    for pkg in {{PKGS}}; do pkgs+=("$pkg"); done
+    if [ "${#pkgs[@]}" -eq 0 ]; then
       npm publish --access public --tag "$tag"
     else
-      for pkg in "$@"; do
+      for pkg in "${pkgs[@]}"; do
         npm publish "$pkg" --access public --tag "$tag"
       done
     fi
@@ -470,7 +475,7 @@ npm-release *PKGS='':
 [script]
 link-npm-siblings *ARGS='':
     set -euo pipefail
-    {{ _devtools }} link-npm-siblings "$@"
+    {{ _devtools }} link-npm-siblings {{ARGS}}
 
 # ── Vite frontend build — no dev server, no HMR, no overlay noise ─────────────
 #
@@ -502,9 +507,13 @@ vite-build *ARGS='':
 vite-serve *ARGS='':
     set -euo pipefail
     port=5173
+    pending=""
+    # just params are not shell positionals in [script] bodies — walk {{ARGS}}
+    # words instead ($2/shift would see nothing and crash under set -u).
     for a in {{ARGS}}; do
+      if [ -n "$pending" ]; then port="$a"; pending=""; continue; fi
       case "$a" in
-        --port) port="$2"; shift 2 ;;
+        --port) pending=1 ;;
         --port=*) port="${a#--port=}" ;;
       esac
     done
@@ -526,9 +535,11 @@ vite-serve *ARGS='':
 vite-dev *ARGS='':
     set -euo pipefail
     port=5173
+    pending=""
     for a in {{ARGS}}; do
+      if [ -n "$pending" ]; then port="$a"; pending=""; continue; fi
       case "$a" in
-        --port) port="$2"; shift 2 ;;
+        --port) pending=1 ;;
         --port=*) port="${a#--port=}" ;;
       esac
     done

@@ -223,17 +223,25 @@ def apply_link(
     action = "created"
 
     if link_path.is_symlink():
+        current_target: str | None = None
         try:
-            current_target = Path(os.readlink(link_path))
-            resolved = link_path.parent / current_target \
-                if not current_target.is_absolute() else current_target
+            current_target = os.readlink(link_path)
+            resolved_target = Path(current_target)
+            resolved = link_path.parent / resolved_target \
+                if not resolved_target.is_absolute() else resolved_target
             action = "ok" if resolved.resolve() == target.resolve() else "updated"
         except OSError:
             action = "updated"
         if action == "updated":
             # Keep the first-seen pre-overlay target — repeated overlays must
             # not overwrite the restore point with our own previous link.
-            entry.setdefault("original", os.readlink(link_path))
+            # When nothing valid is recorded yet (fresh entry, or a first
+            # overlay that found no pre-existing link at all) but an external
+            # symlink now occupies the location — e.g. pnpm replaced our link
+            # after a fresh install — capture that target instead, or --remove
+            # would leave the dependency missing.
+            if entry.get("original") is None and current_target is not None:
+                entry["original"] = current_target
             entry["was_dir"] = False
             links[key] = entry
     elif link_path.exists():
@@ -274,15 +282,37 @@ def _remove_path(path: Path) -> None:
 
 
 def remove_links(repo_root: Path, *, dry_run: bool = False) -> int:
-    """Undo every link recorded in the state file (restore prior state)."""
+    """Undo every link recorded in the state file (restore prior state).
+
+    Only entries keyed under this repo root are touched. Worktree
+    ``node_modules`` directories are symlinked to the shared main checkout
+    (org convention), so one physical state file aggregates entries from
+    every worktree that used it; entries belonging to other worktrees are
+    kept so their own worktree can still ``--remove`` them, and the state
+    file is only deleted once no foreign entries remain. Keys carry the
+    absolute, resolved path of the declaring repo (root-level and
+    ``packages/*/`` node_modules alike), so the repo-root prefix is the
+    ownership boundary.
+    """
     state = load_state(repo_root)
     links: dict = state.get("links", {})
-    if not links:
-        print("[link-npm-siblings] no recorded sibling links — nothing to remove")
+    prefix = str(repo_root) + os.sep
+    own = {key: entry for key, entry in links.items() if key.startswith(prefix)}
+    foreign = {key: entry for key, entry in links.items() if not key.startswith(prefix)}
+
+    if not own:
+        if foreign:
+            print(
+                "[link-npm-siblings] no recorded sibling links for this repo "
+                f"root — keeping {len(foreign)} foreign entries from other "
+                "worktrees sharing this node_modules",
+            )
+        else:
+            print("[link-npm-siblings] no recorded sibling links — nothing to remove")
         return 0
 
     restored = 0
-    for key, entry in sorted(links.items()):
+    for key, entry in sorted(own.items()):
         link_path = Path(key)
         if dry_run:
             print(f"[link-npm-siblings] dry-run: would remove {link_path}")
@@ -302,9 +332,17 @@ def remove_links(repo_root: Path, *, dry_run: bool = False) -> int:
             restored += 1
 
     if not dry_run:
-        _state_path(repo_root).unlink(missing_ok=True)
+        if foreign:
+            state["links"] = foreign
+            save_state(repo_root, state)
+            print(
+                "[link-npm-siblings] kept foreign state entries — run --remove "
+                "from their own worktree to clear them",
+            )
+        else:
+            _state_path(repo_root).unlink(missing_ok=True)
         missing = [
-            key for key, entry in links.items()
+            key for key, entry in own.items()
             if entry.get("was_dir") and not Path(key).exists()
         ]
         if missing:
@@ -415,8 +453,23 @@ def main() -> int:
 
     own_repo = is_celestia_repo(repo_root)
     scan_dir = _resolve_scan_dir(args.scan_dir)
+
+    if args.status and args.remove:
+        parser.error("--status and --remove are mutually exclusive")
+
+    # --remove must work even in a repo that no longer declares family deps
+    # (stale recorded links still need clearing) and must not pay for the
+    # sibling scan; --status likewise reports before any early-return.
+    if args.remove:
+        return remove_links(repo_root, dry_run=args.dry_run)
+
     siblings = scan_celestia_npm_packages(scan_dir, exclude_repo=own_repo)
     declared = collect_declared_family_deps(repo_root)
+
+    if args.status:
+        plans, notices = plan_links(repo_root, siblings, declared)
+        _print_status(repo_root, plans, notices)
+        return 0
 
     if not declared:
         print(
@@ -424,9 +477,6 @@ def main() -> int:
             "nothing to link",
         )
         return 0
-
-    if args.remove:
-        return remove_links(repo_root, dry_run=args.dry_run)
 
     plans, notices = plan_links(repo_root, siblings, declared)
 
