@@ -211,3 +211,60 @@ class TestOwnedCloneSelfRefresh:
         got = pb.resolve_docs_root(repo, docs_root=None)
         assert got == clone.resolve()
         assert "refusing to refresh non-owned clone" in capsys.readouterr().err
+
+
+class TestCheckMode:
+    """--check freshness gate: missing / source-newer / content-diff."""
+
+    def test_in_sync_after_generate(self, fake_docs, tmp_path):
+        repo = fake_docs.parent / "repo"
+        out = tmp_path / "out" / "protocols"
+        pb.generate(repo, fake_docs, out_dir=out)
+        assert pb.collect_diffs(repo, fake_docs, out) == []
+
+    def test_detects_content_diff(self, fake_docs, tmp_path):
+        repo = fake_docs.parent / "repo"
+        out = tmp_path / "out" / "protocols"
+        pb.generate(repo, fake_docs, out_dir=out)
+        src = fake_docs / "docs" / "en" / "meta" / "license.md"
+        src.write_text("# license (en) — reflowed\n\nbody\n", encoding="utf-8")
+        diffs = pb.collect_diffs(repo, fake_docs, out)
+        assert any("license/en" in d and "content differs" in d for d in diffs)
+
+    def test_detects_missing_vendored(self, fake_docs, tmp_path):
+        repo = fake_docs.parent / "repo"
+        out = tmp_path / "out" / "protocols"
+        pb.generate(repo, fake_docs, out_dir=out)
+        (out / "vendor" / "cla.en.md").unlink()
+        diffs = pb.collect_diffs(repo, fake_docs, out)
+        assert any("cla/en" in d and "missing" in d for d in diffs)
+
+    def test_detects_source_newer_mtime(self, fake_docs, tmp_path):
+        repo = fake_docs.parent / "repo"
+        out = tmp_path / "out" / "protocols"
+        pb.generate(repo, fake_docs, out_dir=out)
+        src = fake_docs / "docs" / "en" / "meta" / "security.md"
+        st = src.stat()
+        os.utime(src, (st.st_atime + 10, st.st_mtime + 10))
+        diffs = pb.collect_diffs(repo, fake_docs, out)
+        assert any("security/en" in d and "source newer" in d for d in diffs)
+        # content-equal + mtime-only drift must still be flagged (resync heals it)
+        assert not any("content differs" in d for d in diffs)
+
+    def test_missing_vendor_dir_single_reason(self, fake_docs, tmp_path):
+        repo = fake_docs.parent / "repo"
+        out = tmp_path / "out" / "protocols"
+        diffs = pb.collect_diffs(repo, fake_docs, out)
+        assert diffs == [f"vendor directory missing entirely ({out / 'vendor'})"]
+
+    def test_main_exit_codes(self, fake_docs, tmp_path):
+        repo = fake_docs.parent / "repo"
+        out = tmp_path / "out" / "protocols"
+        base = ["--repo-root", str(repo), "--docs-root", str(fake_docs),
+                "--out", str(out)]
+        assert pb.main([*base, "--check"]) == 10  # nothing vendored yet
+        pb.generate(repo, fake_docs, out_dir=out)
+        assert pb.main([*base, "--check"]) == 0
+        src = fake_docs / "docs" / "en" / "meta" / "cla.md"
+        src.write_text("# cla (en) — updated\n", encoding="utf-8")
+        assert pb.main([*base, "--check"]) == 10
