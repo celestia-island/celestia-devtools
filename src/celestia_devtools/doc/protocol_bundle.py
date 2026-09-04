@@ -38,6 +38,15 @@ Usage::
 
     celestia-devtools protocol-bundle [--repo-root PATH] [--out PATH]
                                       [--docs-root PATH] [--verbose]
+    celestia-devtools protocol-bundle --check [--repo-root PATH] ...
+
+``--check`` is a dry-run freshness gate for build scripts: it resolves the
+docs checkout exactly like a real run (including the owned-clone
+self-refresh) and compares every source file against its vendored copy —
+missing, source-newer (mtime) or content-diff — WITHOUT writing anything.
+Exit code ``0`` = in sync, ``10`` = at least one vendored file differs
+(reasons on stderr), other nonzero = could not determine (docs checkout
+unavailable etc.).  Callers re-run without ``--check`` to resync.
 """
 
 from __future__ import annotations
@@ -47,6 +56,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
@@ -226,6 +236,57 @@ def collect_languages(docs_root: Path) -> list[str]:
     return ordered
 
 
+def collect_diffs(
+    repo_root: Path,
+    docs_root: Path,
+    out_dir: Path | None = None,
+) -> list[str]:
+    """Compare vendored copies against sources WITHOUT writing anything.
+
+    Returns one human-readable reason per vendored file that is missing,
+    older than its source (mtime) or differs in content — the same three
+    conditions a real run would fix. Empty list = in sync.
+    """
+    out_dir = out_dir or repo_root / "packages" / "webui" / ".generated" / "protocols"
+    vendor_dir = out_dir / "vendor"
+    if not vendor_dir.is_dir():
+        return [f"vendor directory missing entirely ({vendor_dir})"]
+
+    diffs: list[str] = []
+    for doc_type, rel_suffix in TYPE_FILES.items():
+        for lang in collect_languages(docs_root):
+            rel = f"docs/{lang}/{rel_suffix}"
+            src = docs_root / rel
+            if not src.is_file():
+                continue
+            dest = vendor_dir / f"{doc_type}.{lang}.md"
+            if not dest.is_file():
+                diffs.append(f"{doc_type}/{lang}: vendored file missing")
+                continue
+            try:
+                src_mtime = src.stat().st_mtime
+                dest_mtime = dest.stat().st_mtime
+            except OSError as exc:
+                diffs.append(f"{doc_type}/{lang}: stat failed ({exc})")
+                continue
+            try:
+                if src.read_text(encoding="utf-8") != dest.read_text(encoding="utf-8"):
+                    diffs.append(f"{doc_type}/{lang}: content differs from source")
+                    continue
+            except (OSError, UnicodeDecodeError) as exc:
+                diffs.append(f"{doc_type}/{lang}: unreadable ({exc})")
+                continue
+            # Content-equal but the source was touched later — flag mtime drift
+            # so the caller resyncs and the copies converge (heals on next run).
+            if src_mtime > dest_mtime:
+                diffs.append(
+                    f"{doc_type}/{lang}: source newer than vendored copy "
+                    f"({datetime.fromtimestamp(src_mtime, timezone.utc).isoformat(timespec='seconds')}Z > "
+                    f"{datetime.fromtimestamp(dest_mtime, timezone.utc).isoformat(timespec='seconds')}Z)"
+                )
+    return diffs
+
+
 def generate(
     repo_root: Path,
     docs_root: Path,
@@ -317,6 +378,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--docs-root", default=None,
                         help="explicit docs.celestia.world checkout "
                              "(default: $DOCS_CELESTIA_WORLD_ROOT → sibling → clone)")
+    parser.add_argument("--check", action="store_true",
+                        help="dry-run freshness gate: report vendored files that "
+                             "differ from source (missing / source-newer / content) "
+                             "and exit 10, without writing anything")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -325,6 +390,24 @@ def main(argv: list[str] | None = None) -> int:
     if docs_root is None:
         _stderr("error", f"could not locate {DOCS_REPO}; set {DOCS_ENV_VAR}")
         return 127
+
+    if args.check:
+        out_dir = Path(args.out).resolve() if args.out else None
+        diffs = collect_diffs(repo_root, docs_root, out_dir)
+        if diffs:
+            shown = diffs[:20]
+            for reason in shown:
+                _stderr("stale", reason)
+            if len(diffs) > len(shown):
+                _stderr("stale", f"... and {len(diffs) - len(shown)} more")
+            _stderr("error",
+                    f"{len(diffs)} vendored protocol file(s) differ from source — "
+                    f"resync with: celestia-devtools protocol-bundle "
+                    f"--repo-root {repo_root}")
+            return 10
+        head = _docs_head(docs_root) or "no git"
+        print(f"[protocol-bundle] in sync with {docs_root} (source HEAD {head})")
+        return 0
 
     count = generate(
         repo_root,
