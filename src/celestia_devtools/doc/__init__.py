@@ -1,4 +1,6 @@
-"""Documentation tooling: Markdown formatter and language-aware linter.
+"""Documentation tooling: Markdown formatter/linter and the protocol-doc vendor.
+
+  protocol-bundle — vendor the five org legal docs into a webui .generated area.
 
   markdown   — formatting engine (headings, fences, tables, lists, blockquotes)
   linter/    — language-aware checks, split by concern:

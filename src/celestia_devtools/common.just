@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.4.1
+# Version: 0.4.2
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -120,6 +120,15 @@ fmt-markdown *ARGS='':
 # Run with --fix to apply changes in-place.
 lint-separators *FLAGS='':
     {{ _devtools }} lint-separators . {{FLAGS}}
+
+# Vendor the five org protocol docs (license/cla/code-of-conduct/security/
+# contributing) from docs.celestia.world into packages/webui/.generated/
+# protocols as per-(type, lang) vendor markdown plus a meta.ts manifest.
+# Resolves the docs checkout via $DOCS_CELESTIA_WORLD_ROOT, the sibling
+# ../docs.celestia.world, or a shallow clone into target/docs-celestia-shared
+# (the owned clone self-refreshes to the remote head on every run).
+protocol-bundle *FLAGS='':
+    {{ _devtools }} protocol-bundle {{FLAGS}}
 
 # ── Commit message lint ──────────────────────────────────────────────────────
 
