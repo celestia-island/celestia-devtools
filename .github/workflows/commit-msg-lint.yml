@@ -43,13 +43,47 @@ jobs:
         # the mirror sync); pip is only a fallback for hosts without it. A
         # forced reinstall on every run has proven unreliable on the shared
         # runners, so keep the preinstalled binary when present.
+        #
+        # Fallback chain, each step degrading instead of dying: pip (as
+        # before, but with the same mirror-rewrite bypass as checkout — a
+        # rewritten git+https install stalls ~10min against stale local
+        # mirrors) → any pip flavor → a pip-less shallow clone driven
+        # through PYTHONPATH (the commit-msg-lint path is stdlib-only).
+        # The chosen invocation lands in DT_CMD for the lint steps.
         run: |
-          if ! command -v celestia-devtools >/dev/null 2>&1; then
-            pip install --user --break-system-packages git+https://github.com/celestia-island/celestia-devtools.git@master
-            command -v celestia-devtools >/dev/null 2>&1 || { echo "pip install reported success but the CLI is missing"; exit 1; }
-          else
+          if command -v celestia-devtools >/dev/null 2>&1; then
             echo "celestia-devtools already available: $(command -v celestia-devtools)"
+            echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+            exit 0
           fi
+          PIP_BIN=""
+          if command -v pip >/dev/null 2>&1; then
+            PIP_BIN=pip
+          elif command -v pip3 >/dev/null 2>&1; then
+            PIP_BIN=pip3
+          elif python3 -c "import pip" >/dev/null 2>&1; then
+            PIP_BIN="python3 -m pip"
+          fi
+          if [ -n "$PIP_BIN" ]; then
+            # Unquoted on purpose: PIP_BIN may be "python3 -m pip".
+            if GIT_CONFIG_COUNT=0 $PIP_BIN install --user --break-system-packages \
+                git+https://github.com/celestia-island/celestia-devtools.git@master \
+              && command -v celestia-devtools >/dev/null 2>&1; then
+              echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "pip install unavailable or failed; falling back to the pip-less clone"
+          fi
+          DT_SRC="$RUNNER_TEMP/celestia-devtools"
+          rm -rf "$DT_SRC"
+          GIT_CONFIG_COUNT=0 git clone --depth 1 \
+            https://github.com/celestia-island/celestia-devtools.git "$DT_SRC"
+          if ! PYTHONPATH="$DT_SRC/src" python3 -m celestia_devtools --help >/dev/null 2>&1; then
+            echo "pip-less bootstrap failed (python3 missing or clone broken)" >&2
+            exit 1
+          fi
+          echo "PYTHONPATH=$DT_SRC/src" >> "$GITHUB_ENV"
+          echo "DT_CMD=python3 -m celestia_devtools" >> "$GITHUB_ENV"
 
       - name: Lint PR title (squash merge subject)
         # Fires on the repo's own pull_request events and, via workflow_call,
@@ -66,7 +100,7 @@ jobs:
           [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
           echo "PR title: $PR_TITLE"
           printf '%s\n' "$PR_TITLE" | \
-          celestia-devtools commit-msg-lint check --stdin-subjects
+          $DT_CMD commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
         if: github.event.pull_request && github.actor != 'dependabot[bot]'
@@ -88,7 +122,7 @@ jobs:
           RANGE="${MERGE_BASE}..${HEAD_SHA}"
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
-          celestia-devtools commit-msg-lint check --stdin-subjects
+          $DT_CMD commit-msg-lint check --stdin-subjects
 
       - name: Lint all new commits on push
         # github.event.before is a 40-hex string on push payloads (inherited by
@@ -115,4 +149,4 @@ jobs:
           fi
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
-          celestia-devtools commit-msg-lint check --stdin-subjects
+          $DT_CMD commit-msg-lint check --stdin-subjects
