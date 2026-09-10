@@ -21,7 +21,7 @@ class TestCommandRegistry:
             "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
             "daemon", "mock-start", "mock-status", "mock-stop",
             "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
-            "link-npm-siblings", "protocol-bundle",
+            "link-npm-siblings", "protocol-bundle", "nav-lint",
         }
         assert set(COMMANDS.keys()) == expected
 
