@@ -25,6 +25,7 @@ Commands::
     commit-msg-lint   Validate commit messages against the org gitmoji convention
     hook              Manage the celestia-devtools commit-msg hook lifecycle
     pr-merge          Validate subject and merge via gh pr merge.
+    nav-lint          Gate navigation call sites against poisoned/off-origin targets
     gh                Transparent gh proxy — validates subject on pr merge, forwards everything else.
     sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
     gate              Run the local CI gate (modes + DAG ordering + job budget)
@@ -61,6 +62,7 @@ COMMANDS: dict[str, str] = {
     "commit-msg-lint": "celestia_devtools.vcs.commit_msg",
     "hook": "celestia_devtools.vcs.hook",
     "pr-merge": "celestia_devtools.vcs.pr_merge",
+    "nav-lint": "celestia_devtools.lint.nav_lint",
     "gh": "celestia_devtools.vcs.gh",
     "publish-crates": "celestia_devtools.publish.crates",
     "toml-sort": "celestia_devtools.repo.toml_sort",
