@@ -83,6 +83,11 @@ def main() -> None:
     org = ask("GitHub org", DEFAULT_ORG)
     name = ask("Runner name", f"{socket.gethostname().lower()}-wsl")
     labels = ask("Labels", DEFAULT_LABELS)
+    print("\nNetwork (both optional, Enter = skip; needed on firewalled hosts):")
+    print("  proxy accepts an HTTP(S) proxy URL, e.g. http://<proxy-host>:<port>")
+    print("  mirror accepts a GitHub download prefix, e.g. https://ghfast.top")
+    proxy = ask("Proxy URL", "")
+    gh_mirror = ask("GitHub mirror prefix", "")
     print("\n" + TOKEN_HELP.format(org=org) + "\n")
     token = ""
     while not token:
@@ -93,14 +98,19 @@ def main() -> None:
     # Stage 1 needs no secrets.
     run_ps("win-install-wsl.ps1")
 
-    # Stage 2 receives the token through the environment (the ps1 params read
-    # CI_* first; the ps1 itself forwards RUNNER_* into WSL via WSLENV).
+    # Stage 2 receives the token and network knobs through the environment
+    # (the ps1 params read CI_* first; the ps1 itself forwards RUNNER_* and
+    # the proxy/mirror knobs into WSL via WSLENV).
     env = {
         "CI_ORG": org,
         "CI_RUNNER_NAME": name,
         "CI_LABELS": labels,
         "CI_TOKEN": token,
     }
+    if proxy:
+        env["CI_PROXY"] = proxy
+    if gh_mirror:
+        env["CI_GH_PROXY"] = gh_mirror
     run_ps("win-register-runner.ps1", env)
 
     print("\n== this host has joined the CI fleet ==")

@@ -41,6 +41,26 @@ runner**（systemd 常驻 + 开机自启 + 10 分钟看门狗）。
   加了 `wsl` 标签，将来想限制/排除这批机器时有抓手。
 - runner 数据在 WSL 发行版里；整机重装 = 重跑本脚本即可（`--replace` 幂等重注册）。
 
+## 防火墙网络（可选参数：代理 / 镜像）
+
+直连 GitHub 不通的环境，编排器会多问两项（直接回车跳过即直连）：
+
+- **Proxy URL**：HTTP(S) 代理地址，形如 `http://<代理主机>:<端口>`。
+  设置后，WSL 内的 apt/curl/node/pip 下载与 **runner 系统服务的 GitHub 长轮询**
+  都走该代理——`NO_PROXY` 默认排除 `localhost,127.0.0.1`。
+- **GitHub mirror prefix**：仅加速 github 上的**下载**（runner 包 / just 二进制），
+  形如 `https://ghfast.top`，拼接规则为 `<mirror>/https://github.com/...`。
+  ⚠️ 镜像只管下载；**runner 运行时的 api 轮询不走镜像**——被墙主机必须配代理，
+  否则装完也连不上 GitHub。
+
+手工指定（跳过交互）也可以，直接设环境变量再跑阶段 2：
+
+```powershell
+$env:CI_PROXY   = "http://<代理主机>:<端口>"   # 可选
+$env:CI_GH_PROXY = "https://ghfast.top"        # 可选
+powershell -ExecutionPolicy Bypass -File win-register-runner.ps1
+```
+
 ## 事后运维
 
 - 服务：`wsl -d Ubuntu-22.04 -u root -- systemctl status actions-runner.service`

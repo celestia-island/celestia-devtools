@@ -19,7 +19,16 @@ param(
   [string]$Org = $(if ($env:CI_ORG) { $env:CI_ORG } else { "celestia-island" }),
   [string]$RunnerName = $(if ($env:CI_RUNNER_NAME) { $env:CI_RUNNER_NAME } else { "$env:COMPUTERNAME-wsl".ToLower() }),
   [string]$Labels = $(if ($env:CI_LABELS) { $env:CI_LABELS } else { "self-hosted,linux,x64,local,wsl" }),
-  [string]$Token = $env:CI_TOKEN
+  [string]$Token = $env:CI_TOKEN,
+  # Optional network knobs for firewalled hosts:
+  #   -Proxy   URL of an HTTP(S) proxy (e.g. http://<proxy-host>:<port>) —
+  #            used for downloads AND baked into the runner service so its
+  #            GitHub polling and spawned jobs all go through it.
+  #   -GHProxy mirror prefix for github release downloads (download speed-up
+  #            only; the runner runtime does not use mirrors).
+  [string]$Proxy = $env:CI_PROXY,
+  [string]$GHProxy = $env:CI_GH_PROXY,
+  [string]$NoProxy = $(if ($env:CI_NO_PROXY) { $env:CI_NO_PROXY } else { "localhost,127.0.0.1" })
 )
 $ErrorActionPreference = "Stop"
 $distro = "Ubuntu-22.04"
@@ -38,6 +47,21 @@ Write-Host "== stage 2: register runner '$RunnerName' ==" -ForegroundColor Cyan
 # --- copy the linux installer into the distro --------------------------------
 $installer = Join-Path $scriptDir "wsl-runner-install.sh"
 Get-Content $installer -Raw | wsl -d $distro -u root -- bash -c "mkdir -p /opt/ci-fleet && cat > /opt/ci-fleet-install.sh && chmod +x /opt/ci-fleet-install.sh"
+
+# --- optional network knobs (proxy / mirror) ---------------------------------
+if ($Proxy) {
+  $env:HTTPS_PROXY = $Proxy
+  $env:HTTP_PROXY = $Proxy
+  if (-not $NoProxy) { $NoProxy = "localhost,127.0.0.1" }
+  $env:NO_PROXY = $NoProxy
+  $env:WSLENV = "$env:WSLENV:HTTP_PROXY/u:HTTPS_PROXY/u:NO_PROXY/u"
+  Write-Host "Proxy enabled: $Proxy"
+}
+if ($GHProxy) {
+  $env:GH_PROXY = $GHProxy
+  $env:WSLENV = "$env:WSLENV:GH_PROXY/u"
+  Write-Host "GitHub mirror enabled: $GHProxy (downloads only)"
+}
 
 # --- forward configuration into WSL (WSLENV /u = one-way into the distro) ----
 $env:RUNNER_TOKEN = $Token
