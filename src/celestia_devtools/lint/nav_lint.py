@@ -160,13 +160,50 @@ def _classify_router_arg(arg: str) -> str | None:
     root = _literal_root(arg)
     if root in ("/", "#"):
         return None
-    if arg.startswith("{") and _is_router_object_safe(_flatten_object(arg)):
+    flat = _flatten_object(arg)
+    if flat.startswith("{") and _is_router_object_safe(flat):
         return None
+    # Ternary object locations (`cond ? { path: "/x" } : { path: "/y" }`):
+    # safe only when EVERY branch is provably safe.
+    if "?" in flat and re.search(r"\?\s*\{", flat):
+        branches = _split_ternary(flat)
+        if branches and all(
+            (lambda b: _literal_root(b) in ("/", "#")
+             or (b.strip().startswith("{") and _is_router_object_safe(b)))(b)
+            for b in branches
+        ):
+            return None
     return (
         "router-target"
         if root is None
         else f"router-target-rooted-{root!r}"
     )
+
+
+def _split_ternary(flat: str) -> List[str]:
+    """Split a flattened ternary into its branch expressions."""
+    parts: List[str] = []
+    depth = 0
+    cur: List[str] = []
+    seen_q = False
+    for ch in flat:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "?" and depth == 0:
+            seen_q = True
+            cur = []
+            continue
+        elif ch == ":" and depth == 0 and seen_q:
+            parts.append("".join(cur))
+            cur = []
+            continue
+        if seen_q:
+            cur.append(ch)
+    if seen_q and cur:
+        parts.append("".join(cur))
+    return parts
 
 
 def _flatten_object(arg: str) -> str:

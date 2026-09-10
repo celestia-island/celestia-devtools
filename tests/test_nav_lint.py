@@ -181,3 +181,24 @@ def test_skips_node_modules_and_dist(tmp_path):
 def test_vue_template_push_scanned(tmp_path):
     f = write(tmp_path, '<button @click="$router.push(target)">go</button>\n', "Comp.vue")
     assert codes(nav_lint.scan_file(f)) == ["router-target"]
+
+
+def test_router_ternary_object_locations_pass(tmp_path):
+    # AdminLayout pattern: both branches carry literal paths.
+    f = write(
+        tmp_path,
+        "router.push(\n"
+        "  hash\n"
+        '    ? { path: "/backend", hash: `#${hash}`, query }\n'
+        '    : { path: "/backend", query },\n'
+        ");\n",
+    )
+    assert nav_lint.scan_file(f) == []
+
+
+def test_router_ternary_with_unsafe_branch_flagged(tmp_path):
+    f = write(
+        tmp_path,
+        "router.push(cond ? { path: '/ok' } : target);\n",
+    )
+    assert codes(nav_lint.scan_file(f)) == ["router-target"]
