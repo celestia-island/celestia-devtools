@@ -18,6 +18,10 @@ irm https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/c
 & ([scriptblock]::Create((irm https://ghfast.top/https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/ci-fleet/bootstrap-ci.ps1))) -GHProxy https://ghfast.top -Proxy http://<代理主机>:<端口>
 ```
 
+> ⚠️ 上面两条 URL 指向 **master**——本目录的 PR 合并前 master 上还没有这个文件，
+> 会报 404。合并前请改用分支 URL（把两处 `/master/ci-fleet/` 换成
+> `/feat/ci-fleet-bootstrap/ci-fleet/`）。
+
 执行后弹 UAC（点"是"），随后在**弹出的管理员窗口**里按提示输入：
 
 | 项 | 默认 | 说明 |
@@ -49,6 +53,18 @@ irm https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/c
 | 直连 GitHub 可用 | 什么都不填 |
 | github.com 被墙、代理可用 | `-Proxy http://<代理>:<端口>`（**必选**，runner 运行时轮询必须走它） |
 | 想加速大文件下载 | 追加 `-GHProxy <镜像前缀>`（镜像只管下载，救不了运行时连接） |
+
+**代理连通性自测**（管理员 PowerShell，两条任选；⚠️ Windows PowerShell 里的
+`curl` 是 `Invoke-WebRequest` 的别名，不认 `-x/-w` 这些 curl 参数——要么用
+`curl.exe` 全名，要么用原生写法）：
+
+```powershell
+# 写法 A：系统自带 curl.exe（Win10 1803+ 内置；注意是 curl.exe 不是 curl）
+curl.exe -x http://<代理主机>:<端口> -o NUL -w "%{http_code}" -L https://github.com
+
+# 写法 B：PowerShell 原生（输出 200 即通；失败会直接打印异常信息）
+try { (Invoke-WebRequest -Proxy http://<代理主机>:<端口> -Uri https://github.com -UseBasicParsing).StatusCode } catch { $_.Exception.Message }
+```
 
 实验室内网已有统一代理出口（daemon 节点 sing-box），具体地址找值班 agent /
 看 PLAN 网络章节，**不要写进任何仓库文件**。
