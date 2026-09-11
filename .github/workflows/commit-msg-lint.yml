@@ -47,6 +47,12 @@ jobs:
       # --break-system-packages (PEP 668).
 
       - name: Ensure celestia-devtools
+        # Keep this bootstrap in sync with the identical step in
+        # .github/workflows/pr-title-check.yml: a single shared composite action
+        # cannot be referenced from a reusable workflow (an
+        # `owner/repo/.github/actions/x@master` reference resolves to master, so
+        # the action could not be verified in the PR that adds it).
+        #
         # Hosted runners start empty, so this step is the real bootstrap now;
         # the command -v branch stays for the org self-hosted nodes (and local
         # runs), which preinstall the CLI via the mirror sync — a forced

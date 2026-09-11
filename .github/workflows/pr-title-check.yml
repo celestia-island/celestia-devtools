@@ -1,0 +1,120 @@
+name: PR Title Check
+
+# Validates the PR title, which becomes the squash-merge subject — the org rule
+# in AGENTS.md §3 applies to titles exactly as it does to commit subjects.
+#
+# Centralised here (reusable workflow) instead of copied per repo, so all of the
+# org lints titles with the same celestia-devtools linter on GitHub-hosted
+# runners. Repos call it with:
+#
+#   jobs:
+#     pr-title-check:
+#       uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master
+#
+# It supersedes the per-repo copies that downloaded the `noa` release binary:
+# that binary needs glibc 2.39 while the org self-hosted nodes run glibc 2.36,
+# and installing it into /usr/local/bin failed outright on the shared nodes
+# (`tar: noa: Cannot open: Permission denied` / `File exists`), which left the
+# title checks red — see the 2026-09-11 migration.
+
+on:
+  workflow_call: {}
+  # Runs on this repo's own PRs too, which is also how the workflow is verified
+  # before any caller adopts it.
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+
+jobs:
+  title:
+    name: PR Title Check
+    # Fork PRs run no lint here: they need maintainer approval anyway, and a
+    # fork's run must not spend shared org runner time on untrusted content.
+    # Guard applies both to direct pull_request triggers and to workflow_call
+    # callers (github.event then carries the caller's PR payload).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # A title check is a seconds-long, stdlib-only job: GitHub-hosted runners
+    # provision instantly and in parallel, so it never queues behind real builds
+    # on the org self-hosted fleet. Public repos are free and unlimited;
+    # private-repo runs draw on the org's monthly included minutes.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # No checkout: the title comes from the event payload, so this job needs
+      # nothing but the linter.
+
+      # No actions/setup-python: the hosted Ubuntu image already ships python3
+      # + pip, and the bootstrap below needs nothing more (its last resort is a
+      # stdlib-only PYTHONPATH invocation). The python-versions manifest ships
+      # no builds for the org's Debian 12 self-hosted nodes, so pulling
+      # setup-python in would break those hosts if the job were ever pinned
+      # back.
+
+      - name: Ensure celestia-devtools
+        # Keep this bootstrap in sync with the identical step in
+        # .github/workflows/commit-msg-lint.yml: both reusable workflows must
+        # work on a bare hosted runner, and a single shared composite action
+        # cannot be referenced here (a reusable workflow reaching
+        # `owner/repo/.github/actions/x@master` would resolve to master, so the
+        # action could not be verified in the PR that adds it).
+        #
+        # Fallback chain, each step degrading instead of dying: pip (primary on
+        # hosted runners, with the mirror-rewrite bypass — a rewritten git+https
+        # install stalls ~10min against stale local mirrors) → any pip flavor →
+        # a pip-less shallow clone driven through PYTHONPATH (the message-lint
+        # path is stdlib-only). The chosen invocation lands in DT_CMD.
+        run: |
+          if command -v celestia-devtools >/dev/null 2>&1; then
+            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+            echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          PIP_BIN=""
+          if command -v pip >/dev/null 2>&1; then
+            PIP_BIN=pip
+          elif command -v pip3 >/dev/null 2>&1; then
+            PIP_BIN=pip3
+          elif python3 -c "import pip" >/dev/null 2>&1; then
+            PIP_BIN="python3 -m pip"
+          fi
+          if [ -n "$PIP_BIN" ]; then
+            # Unquoted on purpose: PIP_BIN may be "python3 -m pip".
+            # --user drops the console script into ~/.local/bin: put it on PATH
+            # for this step and register it for the lint step below, so an image
+            # that leaves ~/.local/bin off PATH cannot silently degrade to the
+            # slower clone fallback.
+            export PATH="$HOME/.local/bin:$PATH"
+            if GIT_CONFIG_COUNT=0 $PIP_BIN install --user --break-system-packages \
+                git+https://github.com/celestia-island/celestia-devtools.git@master \
+              && command -v celestia-devtools >/dev/null 2>&1; then
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "pip install unavailable or failed; falling back to the pip-less clone"
+          fi
+          DT_SRC="$RUNNER_TEMP/celestia-devtools"
+          rm -rf "$DT_SRC"
+          GIT_CONFIG_COUNT=0 git clone --depth 1 \
+            https://github.com/celestia-island/celestia-devtools.git "$DT_SRC"
+          if ! PYTHONPATH="$DT_SRC/src" python3 -m celestia_devtools --help >/dev/null 2>&1; then
+            echo "pip-less bootstrap failed (python3 missing or clone broken)" >&2
+            exit 1
+          fi
+          echo "PYTHONPATH=$DT_SRC/src" >> "$GITHUB_ENV"
+          echo "DT_CMD=python3 -m celestia_devtools" >> "$GITHUB_ENV"
+
+      - name: Lint PR title (squash merge subject)
+        # Dependabot PRs are exempt: machine-generated subjects cannot satisfy
+        # the gitmoji/period rules (same exemption as the commit lint job).
+        if: github.event.pull_request && github.actor != 'dependabot[bot]'
+        env:
+          # Passed via env so a user-controlled title is never interpolated into
+          # shell syntax (quotes, $() and backticks are inert in env).
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -o pipefail
+          [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
+          echo "PR title: $PR_TITLE"
+          printf '%s\n' "$PR_TITLE" | \
+          $DT_CMD commit-msg-lint check --stdin-subjects
