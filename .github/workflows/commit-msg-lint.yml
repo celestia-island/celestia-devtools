@@ -10,15 +10,18 @@ on:
 jobs:
   lint:
     name: Lint commit messages
-    # Fork PRs must not consume self-hosted runner capacity or execute
-    # untrusted code on the shared node; they need maintainer approval anyway.
+    # Fork PRs run no lint here: they need maintainer approval anyway, and a
+    # fork's run must not spend shared org runner time on untrusted content.
     # Guard applies both to direct pull_request triggers and to workflow_call
     # callers (github.event then carries the caller's PR payload).
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Org convention: real work runs on the org self-hosted runners (hosted
-    # provisioning has been observed failing at the org billing tier; the
-    # shared node also preinstalls celestia-devtools for fast starts).
-    runs-on: [self-hosted, linux, x64, local]
+    # Message lint is a sub-minute, stdlib-only job, so it runs on GitHub-hosted
+    # runners instead of the org self-hosted fleet: hosted provisioning is
+    # instant and parallel, and a queued lint check must never hold a PR behind
+    # real builds (the 4-VM node-ci pool produced ~1h queues for exactly this
+    # check). Public repos are free and unlimited; private-repo runs draw on the
+    # org's monthly included minutes.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -26,26 +29,32 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-        # Defensive: the runner env rewrites github.com/celestia-island/* to
-        # local bare mirrors (per-repo exact-prefix rules). Mirrors may lack
-        # fresh PR merge refs (observed "not our ref" failures), so bypass the
-        # rewriting and clone straight from github.com.
+        # Defensive: the org self-hosted runner env rewrites
+        # github.com/celestia-island/* to local bare mirrors (per-repo
+        # exact-prefix rules). Those mirrors may lack fresh PR merge refs
+        # (observed "not our ref" failures), so bypass the rewriting and clone
+        # straight from github.com — a no-op on hosted runners, which rewrite
+        # nothing, but still correct if the job is ever pinned back.
         env:
           GIT_CONFIG_COUNT: "0"
 
-      # No actions/setup-python: the python-versions manifest ships no Debian
-      # 12 builds, so it fails deterministically on the org's self-hosted
-      # runners. Node-1 preinstalls python3 + pip; the pip step below uses the
-      # system interpreter with --user + --break-system-packages (PEP 668).
+      # No actions/setup-python: the hosted Ubuntu image already ships python3
+      # + pip, and the bootstrap below needs nothing more (its last resort is a
+      # stdlib-only PYTHONPATH invocation). The python-versions manifest ships
+      # no builds for the org's Debian 12 self-hosted nodes, so pulling
+      # setup-python in would break those hosts if the job were ever pinned
+      # back. The pip step uses the system interpreter with --user +
+      # --break-system-packages (PEP 668).
 
       - name: Ensure celestia-devtools
-        # The org runners preinstall the CLI (node-1 convention, kept fresh by
-        # the mirror sync); pip is only a fallback for hosts without it. A
-        # forced reinstall on every run has proven unreliable on the shared
-        # runners, so keep the preinstalled binary when present.
+        # Hosted runners start empty, so this step is the real bootstrap now;
+        # the command -v branch stays for the org self-hosted nodes (and local
+        # runs), which preinstall the CLI via the mirror sync — a forced
+        # reinstall there has proven unreliable, so keep the preinstalled
+        # binary when present.
         #
-        # Fallback chain, each step degrading instead of dying: pip (as
-        # before, but with the same mirror-rewrite bypass as checkout — a
+        # Fallback chain, each step degrading instead of dying: pip (primary on
+        # hosted runners, with the same mirror-rewrite bypass as checkout — a
         # rewritten git+https install stalls ~10min against stale local
         # mirrors) → any pip flavor → a pip-less shallow clone driven
         # through PYTHONPATH (the commit-msg-lint path is stdlib-only).
@@ -66,9 +75,15 @@ jobs:
           fi
           if [ -n "$PIP_BIN" ]; then
             # Unquoted on purpose: PIP_BIN may be "python3 -m pip".
+            # --user drops the console script into ~/.local/bin: put it on PATH
+            # for this step and register it for the lint steps below, so an
+            # image that leaves ~/.local/bin off PATH cannot silently degrade
+            # to the slower clone fallback.
+            export PATH="$HOME/.local/bin:$PATH"
             if GIT_CONFIG_COUNT=0 $PIP_BIN install --user --break-system-packages \
                 git+https://github.com/celestia-island/celestia-devtools.git@master \
               && command -v celestia-devtools >/dev/null 2>&1; then
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
               echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
               exit 0
             fi
