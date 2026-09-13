@@ -69,21 +69,22 @@ class TestLedgerParsing:
         assert entries[0].scope == ("entelecheia",)
 
     def test_bundled_ledger_matches_plan_item_18(self):
-        """Content tracks PLAN.md §1.2 item 18 at its 2026-09-13 revision.
+        """Content tracks PLAN.md §1.2 item 18 at its latest 2026-09-13 revision.
 
-        P0-A / P0-B / P0-D are still open; P0-C was closed by
-        easy-hydro-miniprogram #27; P0-E was re-scoped to evernight after its
-        original master-CI numbers turned out to be measured on rewritten
-        commits (AGENTS §8.3.7).
+        P0-A / P0-B stay open (entelecheia #285 delivers the read-back and the
+        endpoint policy but a second-round review found them not yet binding);
+        P0-C is closed by easy-hydro-miniprogram #27 and P0-D by entelecheia
+        #284; P0-E is scoped to evernight because its original master-CI numbers
+        were measured on rewritten commits (AGENTS §8.3.7).
         """
         entries = load_ledger(bundled_ledger_path())
         by_id = {entry.id: entry for entry in entries}
         assert set(by_id) == {"P0-A", "P0-B", "P0-C", "P0-D", "P0-E"}
-        assert {entry.id for entry in entries if entry.is_open} == {
-            "P0-A", "P0-B", "P0-D", "P0-E",
-        }
+        assert {entry.id for entry in entries if entry.is_open} == {"P0-A", "P0-B", "P0-E"}
         assert by_id["P0-C"].status == "closed"
-        assert by_id["P0-C"].closed_by == "#27"
+        assert by_id["P0-C"].closed_by == "easy-hydro-miniprogram#27"
+        assert by_id["P0-D"].status == "closed"
+        assert by_id["P0-D"].closed_by == "#284"
         assert all(entry.opened_at == "2026-09-10" for entry in entries)
         assert all(entry.evidence for entry in entries)
         assert by_id["P0-A"].covers("entelecheia")

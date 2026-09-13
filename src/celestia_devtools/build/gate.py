@@ -57,7 +57,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Union
 
 from celestia_devtools.core import logger
 from celestia_devtools.core.scheduler import (
@@ -96,6 +96,7 @@ _PLACEHOLDER_PATTERN = re.compile(
     r"(?:your|optional|dummy|sample|fake|placeholder|test)[-_ ][\w-]*"
     r"(?:password|secret|token|api[-_ ]?key)\b|"
     r"sk-xxx|xxxxx|xxxx|xxx|example|placeholder|redacted|"
+    r"\b(?:REPLACE_ME|changethis|change_this|unspecified|bearer|dummy|fake)\b|"
     r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+",
     re.IGNORECASE,
 )
@@ -176,8 +177,13 @@ _KEY_QUALIFIERS = frozenset({
 _KEY_SEPARATOR_PATTERN = re.compile(r"[^A-Za-z0-9]+")
 _CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-#: A compact literal value — no whitespace, no call/subscript punctuation.
+#: An unquoted literal value — a compact token with no call/subscript punctuation.
 _LITERAL_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_./+=:@~-]{4,}$")
+
+#: A quoted literal may carry arbitrary punctuation (``"P@ssw0rd!2026#Prod"``)
+#: but not whitespace: text with spaces is prose or a sliced expression, not a
+#: committed secret.
+_QUOTED_LITERAL_PATTERN = re.compile(r"^\S{4,}$")
 
 #: A quoted value shorter than this is a config keyword or a flag, not a
 #: secret (``TOKEN = "x"`` in a declaration is not a credential).
@@ -192,8 +198,13 @@ _CONTROL_WORDS = frozenset({
 })
 
 # Directories never walked by the workspace credential sweep.
+#: Directory names excluded from the sweep by design (build artefacts, VCS and
+#: dependency trees). ``build`` is deliberately NOT here: it is a legitimate
+#: source directory name (this package's own ``celestia_devtools/build``), and a
+#: name-based prune would make the gate blind to it. Excluded names are reported
+#: by the CLI so a green run never reads as "everything was scanned".
 _SWEEP_SKIP_DIRS = frozenset({
-    ".git", "node_modules", "target", "dist", "build", "vendor", "coverage",
+    ".git", "node_modules", "target", "dist", "vendor", "coverage",
     ".venv", "venv", "__pycache__", ".next", ".nuxt", ".pytest_cache",
     ".ruff_cache", ".mypy_cache", "site-packages",
 })
@@ -272,10 +283,13 @@ def looks_like_literal(line: str, value: Optional[str]) -> bool:
     """
     if not value or value.lower() in _CONTROL_WORDS:
         return False
+    quoted = _is_quoted_value(line, value)
+    if quoted:
+        if not _QUOTED_LITERAL_PATTERN.match(value):
+            return False
+        return len(value) >= _MIN_LITERAL_LEN or bool(_PROVIDER_TOKEN_PATTERN.search(value))
     if not _LITERAL_VALUE_PATTERN.match(value):
         return False
-    if _is_quoted_value(line, value):
-        return len(value) >= _MIN_LITERAL_LEN or bool(_PROVIDER_TOKEN_PATTERN.search(value))
     if _PROVIDER_TOKEN_PATTERN.search(value):
         return True
     has_digit = any(char.isdigit() for char in value)
@@ -324,7 +338,9 @@ def classify_credential_line(line: str) -> str:
         return "violation" if looks_like_literal("", secret) else "report"
 
     if value is not None and is_credential_key(key):
-        if _value_is_excused(value) or _ENV_REF_PATTERN.search(line):
+        # Judge the excuse on the VALUE: a comment elsewhere on the line
+        # (``# fallback for process.env``) must not demote a real literal.
+        if _value_is_excused(value):
             return "report"
         return "violation" if looks_like_literal(line, value) else "report"
 
@@ -491,14 +507,18 @@ def discover_langyo_repos(
 
 
 def _sweep_entry_verdict(path: Path) -> Optional[str]:
-    """``None`` when *path* should be scanned, else the skip reason."""
+    """``None`` when *path* should be scanned, else the skip reason.
+
+    Order matters: ``Path.exists()`` swallows ELOOP, so a symlink loop has to be
+    diagnosed from ``stat`` before the "broken symlink" shortcut can claim it.
+    """
     try:
-        if path.is_symlink() and not path.exists():
-            return "broken symlink"
         stat_result = path.stat()
     except OSError as exc:
         if getattr(exc, "errno", None) == errno.ELOOP:
             return "unresolvable symlink"
+        if getattr(exc, "errno", None) == errno.ENOENT and path.is_symlink():
+            return "broken symlink"
         return _oserror_reason(exc)
     if not stat.S_ISREG(stat_result.st_mode):
         return "not a regular file"
@@ -520,17 +540,21 @@ def _head_is_binary(path: Path) -> bool:
 
 
 def iter_sweep_files(
-    root: Path, skipped: Optional[List[SkippedPath]] = None
+    root: Path,
+    skipped: Optional[List[SkippedPath]] = None,
+    excluded: Optional[Set[str]] = None,
 ) -> Iterator[Path]:
     """Text files under *root* worth scanning, streaming as they are found.
 
     ``os.walk`` with in-place directory pruning and an ``onerror`` hook, so an
     unreadable directory is reported through *skipped* instead of aborting the
-    sweep or vanishing. Two things are deliberately *not* scanned and are
-    reported instead of dropped quietly: directories behind a symlink (following
-    them risks cycles and escaping the tree) and binary files, which are the
-    only silent category — NUL bytes cannot be a credential, except in UTF-16
-    text, which is decoded and scanned.
+    sweep or vanishing. Anything that is *not* scanned is accounted for:
+    directories behind a symlink, unreadable paths, broken symlinks, loops,
+    sockets/FIFOs and oversized files are all listed with a reason, and the
+    names pruned by :data:`_SWEEP_SKIP_DIRS` are collected into *excluded* so the
+    caller can say which trees it deliberately skipped. Binary files are the one
+    silent category — NUL bytes cannot be a credential, except in UTF-16 text,
+    which is decoded and scanned.
     """
 
     def onerror(exc: OSError) -> None:
@@ -540,7 +564,11 @@ def iter_sweep_files(
         kept: List[str] = []
         for name in dirnames:
             if name in _SWEEP_SKIP_DIRS:
-                continue  # build/VCS trees: excluded by design, not a read failure
+                # excluded by design, not a read failure — collected so the CLI
+                # can state it instead of reporting an unqualified "clean"
+                if excluded is not None:
+                    excluded.add(name)
+                continue
             child = Path(dirpath) / name
             try:
                 if child.is_symlink():
@@ -596,6 +624,8 @@ def credential_sweep(
     include_git_config: bool = True,
     include_sources: bool = True,
     skipped: Optional[List[SkippedPath]] = None,
+    excluded: Optional[Set[str]] = None,
+    stats: Optional[Dict[str, int]] = None,
 ) -> List[CredentialFinding]:
     """Sweep *.git/config* and source trees of *roots* for literal secrets.
 
@@ -604,6 +634,8 @@ def credential_sweep(
     """
     if skipped is None:
         skipped = []
+    if stats is not None:
+        stats.setdefault("files", 0)
     findings: List[CredentialFinding] = []
     seen: set = set()
     for root in roots:
@@ -619,10 +651,12 @@ def credential_sweep(
                 _record_skip(skipped, config, _oserror_reason(exc))
         if not include_sources:
             continue
-        for path in iter_sweep_files(root, skipped=skipped):
+        for path in iter_sweep_files(root, skipped=skipped, excluded=excluded):
             if path in seen:
                 continue
             seen.add(path)
+            if stats is not None:
+                stats["files"] = stats.get("files", 0) + 1
             try:
                 findings.extend(scan_file_credentials(path))
             except OSError as exc:
@@ -642,6 +676,8 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
 
     scan_root = Path(args.scan_root).resolve() if args.scan_root else root.parent
     skipped: List[SkippedPath] = []
+    excluded: Set[str] = set()
+    stats: Dict[str, int] = {}
     targets: List[Path] = []
     if args.repo:
         for name in args.repo:
@@ -674,6 +710,8 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
         include_git_config=not args.no_git_config,
         include_sources=not args.git_config_only,
         skipped=skipped,
+        excluded=excluded,
+        stats=stats,
     )
     violations = [f for f in findings if f.verdict == "violation"]
     reports = [f for f in findings if f.verdict == "report"]
@@ -688,6 +726,16 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
         print("  skipped: " + entry.render(), file=sys.stderr)
     if skipped:
         logger.warn("credential-scan: %d path(s) could not be read (listed above)" % len(skipped))
+    if excluded:
+        logger.info(
+            "credential-scan: excluded by name (build artefacts/VCS/deps): %s"
+            % ", ".join(sorted(excluded))
+        )
+    if not stats.get("files"):
+        logger.warn(
+            "credential-scan: no source file was scanned — an empty scan is not evidence of a "
+            "clean tree"
+        )
 
     if violations:
         logger.error(

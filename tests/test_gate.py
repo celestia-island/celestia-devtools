@@ -757,6 +757,11 @@ VIOLATION_SAMPLES = [
     'url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git',
     "url = https://git:S3cr3t-Passw0rd@github.com/celestia-island/arona.git",
     "url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git  # see 192.0.2.9/docs",
+    # quoted literals may carry arbitrary punctuation …
+    'DB_PASSWORD="P@ssw0rd!2026#Production"',
+    'SECRET_KEY = "aB3dE5fG7hI9jK1lM3nO5pQ7&"',
+    # … and a trailing `process.env` comment must not excuse a real literal
+    'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # fallback for process.env',
 ]
 
 REPORT_SAMPLES = [
@@ -783,6 +788,11 @@ REPORT_SAMPLES = [
     "UNIFIED_APP_SECRET=your-unified-app-secret",
     'gho_EXAMPLE_NOT_A_REAL_TOKEN = "x"',
     "const tokens = useMemo(() => split(x), [x])",
+    'api_key = "unspecified"',
+    'token = "Bearer"',
+    'SECRET_KEY = "REPLACE_ME"',
+    'API_KEY = "fake-key-for-tests"',
+    'password = "two words here"',
     "# set your token here",
     # real repo lines that the first precision pass still flagged (2026-09-13)
     'fetch("/", { cache: "no-store", credentials: "same-origin" }).then(function (r) {',
@@ -851,6 +861,41 @@ class TestCredentialPrecision:
         skipped = []
         assert [p.name for p in iter_sweep_files(root, skipped=skipped)] == ["ok.txt"]
         assert skipped == []
+
+    def test_symlink_loop_has_its_own_reason(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        os.symlink(root / "loop-b", root / "loop-a")
+        os.symlink(root / "loop-a", root / "loop-b")
+        skipped = []
+        assert list(iter_sweep_files(root, skipped=skipped)) == []
+        assert [entry.reason for entry in skipped] == ["unresolvable symlink", "unresolvable symlink"]
+
+    def test_build_directory_is_scanned_and_other_prunes_are_reported(self, tmp_path):
+        """``build`` is a source dir name (this package uses it) — never pruned."""
+        root = tmp_path / "repo"
+        (root / "package" / "build").mkdir(parents=True)
+        (root / "package" / "build" / "leak.py").write_text(
+            'TOKEN = "gho_0123456789abcdefghij"\n', encoding="utf-8"
+        )
+        (root / "dist").mkdir()
+        (root / "dist" / "bundle.js").write_text("x = 1\n", encoding="utf-8")
+        excluded = set()
+        skipped = []
+        files = [
+            path.relative_to(root).as_posix()
+            for path in iter_sweep_files(root, skipped=skipped, excluded=excluded)
+        ]
+        assert files == ["package/build/leak.py"]
+        assert excluded == {"dist"}
+        assert skipped == []
+
+    def test_zero_file_sweep_is_visible_in_stats(self, tmp_path):
+        root = tmp_path / "empty"
+        root.mkdir()
+        stats = {}
+        assert credential_sweep([root], include_git_config=False, stats=stats) == []
+        assert stats["files"] == 0
 
     def test_symlinked_directories_are_reported_not_dropped(self, tmp_path):
         outside = tmp_path / "outside"
