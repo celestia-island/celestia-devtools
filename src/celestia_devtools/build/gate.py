@@ -23,6 +23,13 @@ paths) and a large-download heuristic scan (``hf_hub_download`` /
 ``no_proxy`` hints).  The credential scan runs as a *pre-step* of ``gate rust``
 and ``gate web``.
 
+``gate credential-scan`` extends the same credential classifier beyond the
+changed-files pre-step: it sweeps a checkout's own ``.git/config`` (where a
+remote can bake a token into its userinfo, e.g.
+``https://oauth2:gho_…@github.com/...``) and the source trees of the
+``langyo/*`` business repos (``easy-hydro-*``) that no org workflow visits.
+Reports are advisory; literal secrets exit non-zero.
+
 Usage::
 
     celestia-devtools gate              # auto-detect mode
@@ -30,6 +37,8 @@ Usage::
     celestia-devtools gate web --jobs 2
     celestia-devtools gate all --coverage
     celestia-devtools gate precheck
+    celestia-devtools gate credential-scan --repo arona --repo easy-hydro-erp
+    celestia-devtools gate credential-scan --all-langyo --scan-root /mnt/codespace
 """
 
 from __future__ import annotations
@@ -41,8 +50,9 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple, Union
 
 from celestia_devtools.core import logger
 from celestia_devtools.core.scheduler import (
@@ -72,6 +82,8 @@ _CRED_PATTERN = re.compile(
 # Whitelisted placeholder markers (obvious dummy values + RFC 5737 doc IPs).
 _PLACEHOLDER_PATTERN = re.compile(
     r"CHANGE[_ ]?ME|<your[-_ ]?password>|<password>|test[-_ ]?password|"
+    r"<your[-_ ]?(?:token|secret|api[-_ ]?key)>|<(?:token|secret|api[-_ ]?key)>|"
+    r"your[-_ ]?(?:token|secret|api[-_ ]?key)\b|"
     r"sk-xxx|xxxxx|xxxx|xxx|example|placeholder|redacted|"
     r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+",
     re.IGNORECASE,
@@ -102,6 +114,32 @@ _FLAG_PATTERN = re.compile(
     r"[a-zA-Z0-9_-]*(?:\s|=)\s*",
     re.IGNORECASE,
 )
+
+# A credential embedded in a URL's userinfo — the ``.git/config`` remote form
+# ``https://oauth2:gho_…@github.com/org/repo.git``. Carries no credential WORD,
+# so the broad pattern above never sees it; the userinfo IS the secret.
+_EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(
+    r"[a-z][a-z0-9+.-]*://"          # scheme://
+    r"[^/\s:@]+:"                    # user
+    r"(?P<secret>[^/\s@]+)"          # secret (the URL password / token)
+    r"@[^\s/]+",                     # @host
+    re.IGNORECASE,
+)
+
+# Bare provider tokens (GitHub family) — never placeholders by construction.
+_GITHUB_TOKEN_PATTERN = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b"
+)
+
+# Directories never walked by the workspace credential sweep.
+_SWEEP_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "target", "dist", "build", "vendor", "coverage",
+    ".venv", "venv", "__pycache__", ".next", ".nuxt", ".pytest_cache",
+    ".ruff_cache", ".mypy_cache", "site-packages",
+})
+
+# Files above this size are not credential-scanned (lockfiles, bundles, …).
+_MAX_SWEEP_BYTES = 2 * 1024 * 1024
 
 
 def _first_token(rest: str) -> Optional[str]:
@@ -134,17 +172,248 @@ def classify_credential_line(line: str) -> str:
     Returns ``"clean"`` (no credential token), ``"report"`` (a hit that is
     whitelisted or env-sourced — reported but not fatal), or ``"violation"``
     (a literal non-placeholder secret — fatal).
+
+    Besides the classic ``key = value`` / ``--flag value`` forms, two shapes
+    carry a secret without ever naming one:
+
+    * a URL with credentials in its userinfo — the ``.git/config`` remote form
+      ``https://oauth2:gho_…@github.com/org/repo.git``;
+    * a bare provider token (``gho_…`` / ``ghp_…`` / ``github_pat_…``).
     """
-    if not _CRED_PATTERN.search(line):
+    embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
+    bare_token = _GITHUB_TOKEN_PATTERN.search(line)
+    if not (_CRED_PATTERN.search(line) or embedded or bare_token):
         return "clean"
     if _PRIVATE_KEY_PATTERN.search(line):
         return "report" if _PLACEHOLDER_PATTERN.search(line) else "violation"
+
     value = _extract_secret_value(line)
-    if value is None:
+    if value is None and embedded is not None:
+        # The URL userinfo is the secret this line carries.
+        value = embedded.group("secret")
+
+    if value is not None:
+        if _PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value):
+            return "report"
+        if _ENV_REF_PATTERN.search(line):
+            return "report"
+        return "violation"
+
+    # No assignment and no embedded URL: only a bare provider token is fatal.
+    if _PLACEHOLDER_PATTERN.search(line) or _ENV_REF_PATTERN.search(line):
         return "report"
-    if _PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(line):
-        return "report"
-    return "violation"
+    return "violation" if bare_token else "report"
+
+
+# ── Workspace credential sweep ────────────────────────────────────────────────
+#
+# The per-PR pre-step further down only sees files changed vs origin/master
+# inside one checkout, so two surfaces from the 2026-09-10 audit stayed
+# invisible: tokens baked into a checkout's own `.git/config`
+# (``https://oauth2:gho_…@github.com/...``) and the ``langyo/*`` business repos
+# (the easy-hydro-* family) that no org workflow visits. Both are still the
+# §10.1 red line, so `gate credential-scan` runs the same clean/report/
+# violation classifier over them. It only reports — it never rewrites a
+# checkout.
+
+@dataclass
+class CredentialFinding:
+    """One non-clean line surfaced by the workspace sweep."""
+
+    path: Path
+    line: int
+    verdict: str
+    excerpt: str
+
+    def render(self) -> str:
+        return "%s:%d: [%s] %s" % (self.path, self.line, self.verdict, self.excerpt.strip())
+
+
+def git_dir(root: Path) -> Optional[Path]:
+    """The ``.git`` directory for *root*, following a worktree ``gitdir:`` file."""
+    dot = Path(root) / ".git"
+    if dot.is_dir():
+        return dot
+    if dot.is_file():
+        try:
+            text = dot.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return None
+        if text.startswith("gitdir:"):
+            target = Path(text[len("gitdir:"):].strip())
+            if not target.is_absolute():
+                target = (Path(root) / target).resolve()
+            return target
+    return None
+
+
+def git_config_paths(root: Path) -> List[Path]:
+    """Existing git config files carrying *root*'s remotes.
+
+    A checkout's ``.git/config`` holds the credential-bearing remote URL; a
+    linked worktree stores it in the common dir's config (plus an optional
+    ``config.worktree`` beside its own gitdir).
+    """
+    dot = Path(root) / ".git"
+    candidates: List[Path] = []
+    if dot.is_dir():
+        candidates.append(dot / "config")
+    else:
+        own = git_dir(root)
+        if own is not None:
+            candidates.append(own / "config.worktree")
+            # <common>/worktrees/<name> → <common>/config
+            candidates.append(own.parent.parent / "config")
+    return [path for path in candidates if path.is_file()]
+
+
+def repo_remote_urls(root: Path) -> List[str]:
+    """Remote URLs declared in *root*'s git config (text-level, no git call)."""
+    urls: List[str] = []
+    for config in git_config_paths(root):
+        try:
+            text = config.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r"^\s*url\s*=\s*(\S+)", text, re.MULTILINE):
+            urls.append(match.group(1))
+    return urls
+
+
+def is_langyo_repo(root: Path) -> bool:
+    """True for a business checkout of the ``langyo/*`` account.
+
+    Detected from the origin URL (the remote may itself carry an embedded
+    token), with the ``easy-hydro-*`` directory convention as a fallback.
+    """
+    if any("github.com/langyo/" in url or "github.com:langyo/" in url
+           for url in repo_remote_urls(root)):
+        return True
+    return Path(root).name.startswith("easy-hydro-")
+
+
+def discover_langyo_repos(scan_root: Path) -> List[Path]:
+    """Sibling checkouts under *scan_root* belonging to the langyo account."""
+    root = Path(scan_root)
+    if not root.is_dir():
+        return []
+    return [
+        child for child in sorted(root.iterdir())
+        if child.is_dir() and (child / ".git").exists() and is_langyo_repo(child)
+    ]
+
+
+def iter_sweep_files(root: Path) -> Iterator[Path]:
+    """Text-ish files under *root* worth scanning (VCS/build/binary noise skipped).
+
+    Streams in filesystem order — no global sort, so a large NFS checkout is
+    not materialised in memory before the first file is read.
+    """
+    for path in Path(root).rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            rel_parts = path.relative_to(root).parts
+        except ValueError:
+            rel_parts = path.parts
+        if set(rel_parts) & _SWEEP_SKIP_DIRS:
+            continue
+        try:
+            if path.stat().st_size > _MAX_SWEEP_BYTES:
+                continue
+            with path.open("rb") as handle:
+                if b"\0" in handle.read(4096):
+                    continue
+        except OSError:
+            continue
+        yield path
+
+
+def scan_file_credentials(path: Path) -> List[CredentialFinding]:
+    """Classify every line of *path*, returning the non-clean findings."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if "\0" in text:
+        return []
+    findings: List[CredentialFinding] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        verdict = classify_credential_line(line)
+        if verdict != "clean":
+            findings.append(CredentialFinding(path, lineno, verdict, line))
+    return findings
+
+
+def credential_sweep(
+    roots: Sequence[Path],
+    include_git_config: bool = True,
+    include_sources: bool = True,
+) -> List[CredentialFinding]:
+    """Sweep *.git/config* and source trees of *roots* for literal secrets."""
+    findings: List[CredentialFinding] = []
+    seen: set = set()
+    for root in roots:
+        root = Path(root)
+        configs = git_config_paths(root) if include_git_config else []
+        for config in configs:
+            if config in seen:
+                continue
+            seen.add(config)
+            findings.extend(scan_file_credentials(config))
+        if not include_sources:
+            continue
+        for path in iter_sweep_files(root):
+            if path in seen:
+                continue
+            seen.add(path)
+            findings.extend(scan_file_credentials(path))
+    return findings
+
+
+def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
+    """``gate credential-scan``: sweep .git/config + source trees for secrets."""
+    scan_root = Path(args.scan_root).resolve() if args.scan_root else root.parent
+    targets: List[Path] = []
+    if args.repo:
+        for name in args.repo:
+            candidate = scan_root / name
+            if not candidate.is_dir():
+                print("error: no checkout at %s" % candidate, file=sys.stderr)
+                return 2
+            targets.append(candidate)
+    elif args.all_langyo:
+        targets = discover_langyo_repos(scan_root)
+        if not targets:
+            logger.warn("credential-scan: no langyo/* checkout under %s" % scan_root)
+    else:
+        targets = [root]
+
+    findings = credential_sweep(
+        targets,
+        include_git_config=not args.no_git_config,
+        include_sources=not args.git_config_only,
+    )
+    violations = [f for f in findings if f.verdict == "violation"]
+    reports = [f for f in findings if f.verdict == "report"]
+
+    print("credential-scan: %d path(s) under %s" % (len(targets), scan_root))
+    for finding in violations:
+        print("  " + finding.render(), file=sys.stderr)
+    if args.show_reports:
+        for finding in reports:
+            print("  " + finding.render(), file=sys.stderr)
+    if violations:
+        logger.error(
+            "credential-scan: %d literal non-placeholder secret(s) in %d path(s)"
+            % (len(violations), len(targets))
+        )
+        return 1
+    logger.ok(
+        "credential-scan: no literal secrets (%d placeholder/env hit(s) ignored)"
+        % len(reports)
+    )
+    return 0
 
 
 # ── Mode detection ────────────────────────────────────────────────────────────
@@ -549,8 +818,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument(
         "mode", nargs="?", default=None,
-        choices=list(MODES) + ["precheck"],
-        help="gate mode (rust/web/python/all); omit to auto-detect; 'precheck' runs safety checks",
+        choices=list(MODES) + ["precheck", "credential-scan"],
+        help="gate mode (rust/web/python/all); omit to auto-detect; 'precheck' runs safety "
+             "checks; 'credential-scan' sweeps .git/config + source trees for secrets",
     )
     parser.add_argument(
         "--list", action="store_true",
@@ -568,12 +838,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--repo-root", default=None,
         help="repo root directory (default: current directory)",
     )
+    # credential-scan options.
+    parser.add_argument(
+        "--scan-root", default=None,
+        help="(credential-scan) directory holding the checkouts to sweep "
+             "(default: the parent of the repo root)",
+    )
+    parser.add_argument(
+        "--repo", action="append", default=[], metavar="NAME",
+        help="(credential-scan) sweep <scan-root>/NAME (repeatable)",
+    )
+    parser.add_argument(
+        "--all-langyo", action="store_true",
+        help="(credential-scan) sweep every langyo/* business checkout under --scan-root",
+    )
+    parser.add_argument(
+        "--git-config-only", action="store_true",
+        help="(credential-scan) only read .git/config files, skip source trees",
+    )
+    parser.add_argument(
+        "--no-git-config", action="store_true",
+        help="(credential-scan) only read source trees, skip .git/config files",
+    )
+    parser.add_argument(
+        "--show-reports", action="store_true",
+        help="(credential-scan) also print placeholder/env-referenced hits",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.repo_root or ".").resolve()
 
     if args.mode == "precheck":
         return precheck(root)
+
+    if args.mode == "credential-scan":
+        return credential_scan_cli(root, args)
 
     jobs = args.jobs if args.jobs is not None else default_jobs()
     if jobs < 1:

@@ -21,12 +21,18 @@ install:
 
 # Verify all modules import and CLI responds, then run pytest.
 test:
-    {{python_cmd}} -c "from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate; from celestia_devtools.repo import locate, init; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; print('imports ok')"
+    {{python_cmd}} -c "from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate; from celestia_devtools.repo import locate, init; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; from celestia_devtools.lint import nav_lint, p0_gate; print('imports ok')"
     {{ _devtools }} --help > /dev/null
     {{ _devtools }} --version
     {{ _devtools }} include-path
     {{ _devtools }} gate --list > /dev/null
+    {{ _devtools }} p0-gate --list > /dev/null
     {{python_cmd}} -m pytest tests/ -v
+
+# Fail when this repo is covered by an unresolved P0 (see lint/p0_ledger.toml).
+# Acknowledge a known-open item explicitly with: just p0-gate --ack P0-X
+p0-gate *ARGS='':
+    {{ _devtools }} p0-gate {{ARGS}}
 
 # Lint with ruff.
 lint:

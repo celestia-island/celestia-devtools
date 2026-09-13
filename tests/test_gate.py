@@ -11,9 +11,15 @@ from celestia_devtools.build.gate import (
     build_rust_graph,
     build_web_graph,
     classify_credential_line,
+    credential_sweep,
     detect_modes,
+    discover_langyo_repos,
+    git_config_paths,
+    is_langyo_repo,
+    main as gate_main,
     precheck_mounts,
     resolve_modes,
+    scan_file_credentials,
     scan_large_downloads,
 )
 from celestia_devtools.core.scheduler import (
@@ -317,3 +323,240 @@ class TestLargeDownloadScan:
     def test_ignores_other_files(self, tmp_path):
         (tmp_path / "notes.txt").write_text("huggingface_hub download")
         assert scan_large_downloads(tmp_path) == []
+
+
+# ── Credential scan: embedded tokens (.git/config form) ───────────────────────
+#
+# Synthetic token values only — never a real credential (§10.1).
+
+FAKE_TOKEN = "gho_0123456789abcdefghij"
+FAKE_PAT = "github_pat_0123456789abcdefghijkl"
+
+
+def make_checkout(root, name="leaky", remote_url=None, extra="", files=None):
+    """Create a minimal checkout: <root>/<name>/.git/config + optional files."""
+    repo = root / name
+    (repo / ".git").mkdir(parents=True)
+    if remote_url is not None:
+        (repo / ".git" / "config").write_text(
+            '[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = %s\n%s'
+            % (remote_url, extra),
+            encoding="utf-8",
+        )
+    for rel, text in (files or {}).items():
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return repo
+
+
+class TestEmbeddedCredentialUrls:
+    def test_git_config_remote_with_token_is_violation(self):
+        line = "url = https://oauth2:%s@github.com/celestia-island/arona.git" % FAKE_TOKEN
+        assert classify_credential_line(line) == "violation"
+
+    def test_x_access_token_userinfo_is_violation(self):
+        line = "\turl = https://x-access-token:%s@github.com/o/r.git" % FAKE_TOKEN
+        assert classify_credential_line(line) == "violation"
+
+    def test_placeholder_userinfo_is_report(self):
+        assert classify_credential_line(
+            "url = https://oauth2:<your-token>@github.com/o/r.git") == "report"
+        assert classify_credential_line(
+            "url = https://oauth2:${GITHUB_TOKEN}@github.com/o/r.git") == "report"
+        assert classify_credential_line(
+            "url = https://oauth2:gho_xxxxxxxxxxxxxxxxxxxx@github.com/o/r.git") == "report"
+
+    def test_bare_provider_tokens_are_violations(self):
+        assert classify_credential_line("remote: %s" % FAKE_TOKEN) == "violation"
+        assert classify_credential_line(FAKE_PAT) == "violation"
+        assert classify_credential_line("token = os.getenv('GH_TOKEN')") == "report"
+
+    def test_ordinary_remotes_stay_clean(self):
+        assert classify_credential_line("url = git@github.com:celestia-island/arona.git") == "clean"
+        assert classify_credential_line('[remote "origin"]') == "clean"
+        assert classify_credential_line("url = https://github.com/celestia-island/arona.git") == "clean"
+
+    def test_concatenated_url_parts_stay_clean(self):
+        assert classify_credential_line('"https://" + user + ":" + pw + "@host"') == "clean"
+
+
+class TestGitConfigSweep:
+    def test_git_config_paths_for_plain_checkout(self, tmp_path):
+        repo = make_checkout(tmp_path, remote_url="https://github.com/x/y.git")
+        assert git_config_paths(repo) == [repo / ".git" / "config"]
+
+    def test_git_config_paths_follows_worktree_pointer(self, tmp_path):
+        main = tmp_path / "main"
+        (main / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        (main / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: %s\n" % (main / ".git" / "worktrees" / "wt"))
+        assert git_config_paths(worktree) == [main / ".git" / "config"]
+
+    def test_scan_file_credentials_reports_only_non_clean(self, tmp_path):
+        config = tmp_path / "config"
+        config.write_text(
+            "[remote \"origin\"]\n\turl = https://oauth2:%s@github.com/o/r.git\n"
+            "[user]\n\tname = dev\n" % FAKE_TOKEN,
+            encoding="utf-8",
+        )
+        findings = scan_file_credentials(config)
+        assert len(findings) == 1
+        assert findings[0].verdict == "violation"
+        assert findings[0].line == 2
+        assert FAKE_TOKEN in findings[0].render()
+
+    def test_sweep_flags_embedded_git_config_token(self, tmp_path):
+        repo = make_checkout(
+            tmp_path, remote_url="https://oauth2:%s@github.com/o/r.git" % FAKE_TOKEN
+        )
+        violations = [f for f in credential_sweep([repo]) if f.verdict == "violation"]
+        assert len(violations) == 1
+        assert violations[0].path == repo / ".git" / "config"
+
+    def test_sweep_of_clean_checkout_is_empty(self, tmp_path):
+        repo = make_checkout(
+            tmp_path,
+            remote_url="https://github.com/celestia-island/arona.git",
+            files={"src/main.rs": "fn main() {}\n", "README.md": "no secrets here\n"},
+        )
+        assert [f for f in credential_sweep([repo]) if f.verdict == "violation"] == []
+
+    def test_sweep_can_skip_git_config(self, tmp_path):
+        repo = make_checkout(
+            tmp_path, remote_url="https://oauth2:%s@github.com/o/r.git" % FAKE_TOKEN
+        )
+        assert credential_sweep([repo], include_git_config=False) == []
+
+    def test_sweep_can_skip_sources(self, tmp_path):
+        repo = make_checkout(
+            tmp_path,
+            remote_url="https://github.com/o/r.git",
+            files={"docs/x.md": "FEISHU_APP_SECRET=%s\n" % FAKE_TOKEN},
+        )
+        assert credential_sweep([repo], include_sources=False) == []
+        assert [f for f in credential_sweep([repo]) if f.verdict == "violation"]
+
+
+class TestLangyoRepoCoverage:
+    def test_langyo_remote_detected(self, tmp_path):
+        repo = make_checkout(
+            tmp_path, name="easy-hydro-erp", remote_url="https://github.com/langyo/easy-hydro-erp.git"
+        )
+        assert is_langyo_repo(repo)
+
+    def test_langyo_remote_with_embedded_token_detected(self, tmp_path):
+        repo = make_checkout(
+            tmp_path,
+            name="biz",
+            remote_url="https://oauth2:%s@github.com/langyo/easy-hydro-nas.git" % FAKE_TOKEN,
+        )
+        assert is_langyo_repo(repo)
+
+    def test_org_repo_not_langyo(self, tmp_path):
+        repo = make_checkout(
+            tmp_path, name="arona", remote_url="https://github.com/celestia-island/arona.git"
+        )
+        assert not is_langyo_repo(repo)
+
+    def test_easy_hydro_name_fallback(self, tmp_path):
+        repo = make_checkout(tmp_path, name="easy-hydro-stations-2")
+        assert is_langyo_repo(repo)
+
+    def test_discover_langyo_repos(self, tmp_path):
+        make_checkout(tmp_path, name="arona", remote_url="https://github.com/celestia-island/arona.git")
+        make_checkout(tmp_path, name="biz", remote_url="https://github.com/langyo/easy-hydro-erp.git")
+        found = [p.name for p in discover_langyo_repos(tmp_path)]
+        assert found == ["biz"]
+
+    def test_discover_ignores_missing_scan_root(self, tmp_path):
+        assert discover_langyo_repos(tmp_path / "nope") == []
+
+
+class TestCredentialScanCli:
+    def test_flags_langyo_checkout_and_exits_one(self, tmp_path, capsys):
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        repo = make_checkout(
+            scan_root,
+            name="easy-hydro-erp",
+            remote_url="https://oauth2:%s@github.com/langyo/easy-hydro-erp.git" % FAKE_TOKEN,
+            files={"src/app.py": "TOKEN = '%s'\n" % FAKE_TOKEN},
+        )
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+             "--repo", repo.name]
+        )
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert ".git/config" in err and "src/app.py" in err
+
+    def test_clean_checkout_exits_zero(self, tmp_path, capsys):
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        repo = make_checkout(
+            scan_root, name="arona", remote_url="https://github.com/celestia-island/arona.git"
+        )
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+             "--repo", repo.name]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "1 path(s)" in captured.out
+        assert "[violation]" not in captured.err
+
+    def test_unknown_repo_is_usage_error(self, tmp_path, capsys):
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(tmp_path),
+             "--repo", "absent"]
+        )
+        assert rc == 2
+        assert "no checkout at" in capsys.readouterr().err
+
+    def test_all_langyo_sweeps_business_repos(self, tmp_path, capsys):
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        make_checkout(scan_root, name="arona", remote_url="https://github.com/celestia-island/arona.git")
+        make_checkout(
+            scan_root, name="biz",
+            remote_url="https://oauth2:%s@github.com/langyo/easy-hydro-erp.git" % FAKE_TOKEN,
+        )
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+             "--all-langyo"]
+        )
+        assert rc == 1
+        assert "1 path(s)" in capsys.readouterr().out
+
+    def test_git_config_only_skips_sources(self, tmp_path, capsys):
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        repo = make_checkout(
+            scan_root, name="biz",
+            remote_url="https://github.com/langyo/easy-hydro-erp.git",
+            files={"docs/nas-integration.md": "FEISHU_APP_SECRET=%s\n" % FAKE_TOKEN},
+        )
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+             "--repo", repo.name, "--git-config-only"]
+        )
+        assert rc == 0
+        capsys.readouterr()
+
+    def test_reports_are_not_fatal(self, tmp_path, capsys):
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        repo = make_checkout(
+            scan_root, name="biz",
+            remote_url="https://github.com/langyo/easy-hydro-erp.git",
+            files={"docs/x.md": "api_key = \"<your-api-key>\"\n"},
+        )
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+             "--repo", repo.name, "--show-reports"]
+        )
+        assert rc == 0
+        assert "your-api-key" in capsys.readouterr().err

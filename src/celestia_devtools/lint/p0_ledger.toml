@@ -1,0 +1,81 @@
+# P0 ledger — the machine-readable registry of unresolved P0 findings.
+#
+# Why this file exists: the 2026-09-10 workspace audit
+# (_reports/project-group-evaluation-2026-09-10.md) listed five P0s, but their
+# only carrier was a markdown report nobody was obliged to read — bypassing
+# them cost nothing. `celestia-devtools p0-gate` reads this ledger and fails
+# for any repo covered by an entry whose status is still "open", so an
+# unresolved P0 now blocks the repos it touches until someone either closes
+# the entry (closed_by = the PR that did it) or writes an explicit
+# acknowledgment: `--ack P0-X`, `$CELESTIA_P0_ACK`, or a `P0-ACK: P0-X` line
+# in the PR body.
+#
+# Schema — validated by celestia_devtools.lint.p0_gate; a missing, unreadable,
+# unparsable or schema-invalid ledger is an error, never a silent pass:
+#   id         stable identifier, unique (e.g. "P0-A")
+#   title      one-line description of the finding
+#   severity   "p0" | "p1"
+#   scope      repo names the finding covers; fnmatch patterns allowed
+#              (e.g. "easy-hydro-*") because some findings span a repo family
+#   status     "open" | "closed"
+#   opened_at  ISO date the finding was recorded (YYYY-MM-DD)
+#   closed_by  PR reference that closed it ("" while open, non-empty once closed)
+#   evidence   one line of review evidence for the current status
+#
+# Initial content = PLAN.md §1.2 item 18 (the 2026-09-13 backfill of the audit),
+# rows P0-A…P0-E with that table's statuses. All five were still open as of the
+# 2026-09-13 review; none carries a closing PR yet.
+
+version = 1
+updated_at = "2026-09-13"
+source = "_reports/project-group-evaluation-2026-09-10.md (backfilled as PLAN.md §1.2 item 18)"
+
+[[p0]]
+id = "P0-A"
+title = "Modbus TCP writes are confirmed by the echoed function code only, with no write-then-read-back"
+severity = "p0"
+scope = ["entelecheia"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13 review: modbus_write.rs:285 still accepts resp.len() >= 9 && resp[7] == 0x10 as `confirmed`; only the RTU branch reads the value back"
+
+[[p0]]
+id = "P0-B"
+title = "Industrial write approval is not bound to a device endpoint, so an approved (station, address) can be replayed at any IP"
+severity = "p0"
+scope = ["entelecheia"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13 review: industrial_write_policy.rs:66-80 still matches station_id + protocol + address only; `endpoint` comes from the LLM tool arguments"
+
+[[p0]]
+id = "P0-C"
+title = "Live Feishu app secret and Bitable token committed at HEAD in easy-hydro-miniprogram docs"
+severity = "p0"
+scope = ["easy-hydro-miniprogram"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13 review: nas-integration.md:56-58 still carries the real FEISHU_APP_ID / FEISHU_APP_SECRET / BITABLE_TOKEN values; rotation is pending the user"
+
+[[p0]]
+id = "P0-D"
+title = "Backups have tooling but no schedule, land on the same host, are never rehearsed, and arona has none"
+severity = "p0"
+scope = ["entelecheia", "arona"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13 review: entelecheia scripts/deploy/backup.py + restore.py still have no timer/cron and default to a same-host path; arona ships no backup tool"
+
+[[p0]]
+id = "P0-E"
+title = "Master CI stays red on the main repos (code-level failures, not environment-only)"
+severity = "p0"
+scope = ["entelecheia", "evernight"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13 review: entelecheia 5/19 and evernight 4/27 recent master runs still fail on code-level steps; diagnosis in progress"
