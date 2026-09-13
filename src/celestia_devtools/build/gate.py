@@ -118,19 +118,19 @@ _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(
     r"(?:^|[\s(\"'])"
-    r"[A-Za-z0-9_.-]{0,64}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
-    r"[A-Za-z0-9_.-]{0,64}[\"']?\s*[=:]\s*",
+    r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
+    r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*",
     re.IGNORECASE,
 )
 
 # A flag carrying a credential value, e.g. ``--target-pass s3cr3t-value`` or
 # ``--api-key=realvalue``.
-# The leading alphanumeric is what keeps this linear: a flag name starts with a
-# letter/digit right after its dashes, so a long run of dashes (a minified blob,
-# a separator line) fails at the first character instead of backtracking through
-# a bounded window at every position.
+# Two things keep this linear *and* complete: the optional prefix must start
+# with an alphanumeric (so a long run of dashes fails at the first character
+# instead of backtracking), and it is optional so a flag whose name IS the
+# credential word (``--token``, ``--api-key``) still matches.
 _FLAG_PATTERN = re.compile(
-    r"--?[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
+    r"--?(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?"
     r"(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
     r"[a-zA-Z0-9_-]{0,63}(?:\s|=)\s*",
     re.IGNORECASE,
@@ -140,7 +140,9 @@ _FLAG_PATTERN = re.compile(
 # ``https://oauth2:gho_…@github.com/org/repo.git``. Carries no credential WORD,
 # so the broad pattern above never sees it; the userinfo IS the secret.
 _EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(
-    r"[a-z][a-z0-9+.-]*://"          # scheme://
+    r"[a-z][a-z0-9+.-]{0,32}://"     # scheme:// (bounded: schemes are short,
+                                     # and an unbounded run backtracks on
+                                     # long alphanumeric lines)
     r"[^/\s:@]+:"                    # user
     r"(?P<secret>[^/\s@]+)"          # secret (the URL password / token)
     r"@(?P<host>[^\s/]+)",           # @host

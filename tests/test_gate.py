@@ -790,6 +790,11 @@ VIOLATION_SAMPLES = [
     # an env-ref *substring* inside a value is not an env lookup
     'DB_PASSWORD = "Prod-env(2026)#x"',
     'API_KEY = "getenv-9f8e7d6c5b4a3210"',
+    # flags whose name IS the credential word, and long key names
+    "--token abc12345678",
+    "--secret x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3",
+    "kubectl --token abc12345678 apply",
+    'A' * 200 + '_PASSWORD="Str0ng!Passw0rd!2026"',
 ]
 
 REPORT_SAMPLES = [
@@ -885,6 +890,8 @@ class TestCredentialPrecision:
         assert classify_credential_line(
             "-" * 20000 + " DB_PASSWORD=Str0ng!Passw0rd!2026"
         ) == "violation"
+        # alphanumeric padding used to be quadratic through the URL-scheme run
+        assert classify_credential_line("y" * 20000 + " gho_0123456789abcdefghij") == "violation"
         # 200k is where an unanchored (but bounded) flag pattern still costs
         # seconds, while the anchored one stays in the tens of milliseconds
         assert classify_credential_line("-" * 200000 + " token") == "report"
