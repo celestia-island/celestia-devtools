@@ -232,19 +232,25 @@ def _first_token(rest: str) -> Optional[str]:
     return re.split(r"[\s;#]+", rest, maxsplit=1)[0] or None
 
 
-def _extract_assignment(line: str) -> Tuple[Optional[str], Optional[str]]:
-    """Return ``(key, value)`` for an assignment / flag form, else ``(None, None)``."""
+def _extract_assignment(line: str) -> Tuple[Optional[str], Optional[str], bool]:
+    """Return ``(key, value, key_was_quoted)``, else ``(None, None, False)``.
+
+    ``key_was_quoted`` marks the JSON/JS form (``"password": "…"``) — the shape
+    every i18n label file uses, where a translated string is not a secret.
+    """
     match = _ASSIGN_KEY_PATTERN.search(line)
     if match:
         raw = match.group(0)
-        key = re.split(r"[=:]", raw, maxsplit=1)[0].strip().strip("\"'").lstrip("-")
-        return key, _first_token(line[match.end():])
+        key_part = re.split(r"[=:]", raw, maxsplit=1)[0]
+        quoted_key = key_part.rstrip().endswith(("\"", "'"))
+        key = key_part.strip().strip("\"'").lstrip("-")
+        return key, _first_token(line[match.end():]), quoted_key
     match = _FLAG_PATTERN.search(line)
     if match:
         raw = match.group(0).strip()
         key = re.split(r"[\s=]", raw, maxsplit=1)[0].strip("-")
-        return key, _first_token(line[match.end():])
-    return None, None
+        return key, _first_token(line[match.end():]), False
+    return None, None, False
 
 
 def _key_segments(key: str) -> List[str]:
@@ -302,9 +308,31 @@ def looks_like_literal(line: str, value: Optional[str]) -> bool:
     return len(value) >= 24 and has_alpha and len(set(value)) >= 8
 
 
+def _looks_like_secret_value(value: str) -> bool:
+    """Strict shape test for a credential that sits behind a JSON-quoted key.
+
+    A quoted key is the JSON/i18n shape, where a plain translated string
+    (``"password": "Passwort"``) must never be fatal. Only a provider-token
+    shape or a value mixing digits and letters qualifies; a long alphabetic
+    token without digits is reported, not failed — noise in hundreds of locale
+    files would make the gate ignorable.
+    """
+    if not value:
+        return False
+    if _PROVIDER_TOKEN_PATTERN.search(value):
+        return True
+    return any(char.isdigit() for char in value) and any(char.isalpha() for char in value)
+
+
 def _value_is_excused(value: str) -> bool:
     """A value that is a placeholder or comes from the environment."""
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
+
+
+#: Lines longer than this are classified on their head only (plus a full-line
+#: provider-token scan): the assignment regexes backtrack on very long runs, so a
+#: minified bundle on one line could otherwise stall the sweep for minutes.
+_MAX_CLASSIFY_CHARS = 4096
 
 
 def classify_credential_line(line: str) -> str:
@@ -320,7 +348,16 @@ def classify_credential_line(line: str) -> str:
     remote form ``https://oauth2:gho_…@github.com/org/repo.git``), and a
     credential-keyed assignment whose value is a literal.
     """
-    key, value = _extract_assignment(line)
+    if len(line) > _MAX_CLASSIFY_CHARS:
+        verdict = classify_credential_line(line[:_MAX_CLASSIFY_CHARS])
+        if verdict != "clean":
+            return verdict
+        tail_token = _PROVIDER_TOKEN_PATTERN.search(line)
+        if tail_token is not None and not _value_is_excused(tail_token.group(0)):
+            return "violation"
+        return "clean"
+
+    key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
     if not (_CRED_PATTERN.search(line) or embedded or provider):
@@ -344,6 +381,9 @@ def classify_credential_line(line: str) -> str:
         # Judge the excuse on the VALUE: a comment elsewhere on the line
         # (``# fallback for process.env``) must not demote a real literal.
         if _value_is_excused(value):
+            return "report"
+        if quoted_key and not _looks_like_secret_value(value):
+            # ``"password": "Passwort"`` — an i18n label, not a credential
             return "report"
         return "violation" if looks_like_literal(line, value) else "report"
 
@@ -654,7 +694,7 @@ def credential_sweep(
                 continue
             seen.add(config)
             try:
-                findings.extend(scan_file_credentials(config))
+                findings.extend(scan_file_credentials(config, skipped=skipped))
             except OSError as exc:
                 _record_skip(skipped, config, _oserror_reason(exc))
         if not include_sources:
