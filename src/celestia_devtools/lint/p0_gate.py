@@ -114,10 +114,10 @@ def normalize_repo_name(name: str) -> str:
     value = (name or "").strip().rstrip("/")
     if not value:
         return ""
-    value = value.rsplit("/", 1)[-1]
+    value = value.rsplit("/", 1)[-1].lower()
     if value.endswith(".git"):
         value = value[:-4]
-    return value.strip().lower()
+    return value.strip()
 
 
 @dataclass(frozen=True)

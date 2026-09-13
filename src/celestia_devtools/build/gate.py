@@ -47,6 +47,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import shutil
@@ -77,7 +78,7 @@ MODES = ("rust", "web", "python", "all")
 # `pwd` alternation is guarded by lookarounds so prose like "bypass" or "the
 # test will pass" is not flagged, while `SSH_PASS` / `--target-pass` are.
 _CRED_PATTERN = re.compile(
-    r"password|passwd|passphrase|secret|token|api[_-]?key|"
+    r"password|passwd|passphrase|secret|token|credential|api[_-]?key|"
     r"(?<![a-z0-9])(pass|pwd)(?![a-z0-9])|"
     r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY",
     re.IGNORECASE,
@@ -92,7 +93,8 @@ _CRED_PATTERN = re.compile(
 _PLACEHOLDER_PATTERN = re.compile(
     r"CHANGE[_ ]?ME|<your[-_ ]?password>|<password>|test[-_ ]?password|"
     r"<your[-_ ]?(?:token|secret|api[-_ ]?key)>|<(?:token|secret|api[-_ ]?key)>|"
-    r"your[-_ ][\w-]*(?:password|secret|token|api[-_ ]?key)\b|"
+    r"(?:your|optional|dummy|sample|fake|placeholder|test)[-_ ][\w-]*"
+    r"(?:password|secret|token|api[-_ ]?key)\b|"
     r"sk-xxx|xxxxx|xxxx|xxx|example|placeholder|redacted|"
     r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+",
     re.IGNORECASE,
@@ -115,7 +117,7 @@ _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(
     r"(?:^|[\s(])"
-    r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
+    r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
     r"[A-Za-z0-9_.-]*\s*[=:]\s*",
     re.IGNORECASE,
 )
@@ -135,20 +137,59 @@ _EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(
     r"[a-z][a-z0-9+.-]*://"          # scheme://
     r"[^/\s:@]+:"                    # user
     r"(?P<secret>[^/\s@]+)"          # secret (the URL password / token)
-    r"@[^\s/]+",                     # @host
+    r"@(?P<host>[^\s/]+)",           # @host
     re.IGNORECASE,
 )
 
-# Bare provider tokens (GitHub family) — never placeholders by construction.
-_GITHUB_TOKEN_PATTERN = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b"
+# Provider-issued token shapes. These are high signal on their own — no
+# credential WORD and no particular key name required — because a scanner that
+# only looked at key names would miss ``const k = "AKIA…"``.
+_PROVIDER_TOKEN_PATTERN = re.compile(
+    r"\b(?:"
+    r"gh[pousr]_[A-Za-z0-9]{16,}"           # GitHub
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|glpat-[A-Za-z0-9_-]{16,}"            # GitLab
+    r"|sk-[A-Za-z0-9_-]{16,}"               # OpenAI-style
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"        # Slack
+    r"|AKIA[0-9A-Z]{16}"                    # AWS access key id
+    r"|AIza[0-9A-Za-z_-]{35}"               # Google API key
+    r"|cli_[a-z0-9]{16,}"                   # Feishu app id
+    r")\b"
 )
 
-#: A URL userinfo secret shorter than this is treated as an example, not a
-#: credential: ``user:pass@host`` (and RFC 5737 hosts) in docs must keep the
-#: pre-extension "report" verdict, while a real token/secret in a remote URL
-#: (``oauth2:gho_…``, a 32-char app secret, …) is escalated to a violation.
-_MIN_EMBEDDED_SECRET_LEN = 16
+#: Key segments that name a credential when they are the LAST segment.
+_CRED_KEY_WORDS = frozenset({
+    "password", "passwd", "passphrase", "pwd", "pass", "secret", "token",
+    "apikey", "credential", "credentials",
+})
+
+#: ``…key`` only counts when a qualifier segment precedes it (``api_key``,
+#: ``secret_key``, …) — a bare ``key = …`` is far too common to be a signal.
+_KEY_QUALIFIERS = frozenset({
+    "api", "access", "secret", "private", "public", "ssh", "auth", "app",
+    "signing", "encryption", "client", "server", "master", "session",
+})
+
+#: Split key names on punctuation and camelCase boundaries: ``jsonwebtoken``
+#: stays one segment (not a credential name) while ``JSONWebToken`` /
+#: ``jwtSecret`` / ``MP_JWT_SECRET`` do segment.
+_KEY_SEPARATOR_PATTERN = re.compile(r"[^A-Za-z0-9]+")
+_CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+#: A compact literal value — no whitespace, no call/subscript punctuation.
+_LITERAL_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_./+=:@~-]{4,}$")
+
+#: A quoted value shorter than this is a config keyword or a flag, not a
+#: secret (``TOKEN = "x"`` in a declaration is not a credential).
+_MIN_LITERAL_LEN = 6
+
+#: Bare words that are control flow / config keywords, never secrets.
+_CONTROL_WORDS = frozenset({
+    "write", "read", "none", "null", "true", "false", "nil", "undefined",
+    "deny", "allow", "required", "optional", "inherit", "default",
+    # web-platform option values (``credentials: "same-origin"``)
+    "same-origin", "same-site", "include", "omit", "cors", "no-cors", "navigate",
+})
 
 # Directories never walked by the workspace credential sweep.
 _SWEEP_SKIP_DIRS = frozenset({
@@ -159,6 +200,9 @@ _SWEEP_SKIP_DIRS = frozenset({
 
 # Files above this size are not credential-scanned (lockfiles, bundles, …).
 _MAX_SWEEP_BYTES = 2 * 1024 * 1024
+
+#: UTF-16 byte-order marks — NUL bytes there mean text, not binary.
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
 
 def _first_token(rest: str) -> Optional[str]:
@@ -174,59 +218,117 @@ def _first_token(rest: str) -> Optional[str]:
     return re.split(r"[\s;#]+", rest, maxsplit=1)[0] or None
 
 
-def _extract_secret_value(line: str) -> Optional[str]:
-    """Return the literal value assigned to a credential key, or ``None``."""
+def _extract_assignment(line: str) -> Tuple[Optional[str], Optional[str]]:
+    """Return ``(key, value)`` for an assignment / flag form, else ``(None, None)``."""
     match = _ASSIGN_KEY_PATTERN.search(line)
     if match:
-        return _first_token(line[match.end():])
+        raw = match.group(0)
+        key = re.split(r"[=:]", raw, maxsplit=1)[0].strip().strip("\"'").lstrip("-")
+        return key, _first_token(line[match.end():])
     match = _FLAG_PATTERN.search(line)
     if match:
-        return _first_token(line[match.end():])
-    return None
+        raw = match.group(0).strip()
+        key = re.split(r"[\s=]", raw, maxsplit=1)[0].strip("-")
+        return key, _first_token(line[match.end():])
+    return None, None
+
+
+def _key_segments(key: str) -> List[str]:
+    """Split a key name into lowercase word segments."""
+    segments: List[str] = []
+    for chunk in _KEY_SEPARATOR_PATTERN.split(key):
+        if chunk:
+            segments.extend(_CAMEL_BOUNDARY_PATTERN.split(chunk))
+    return [segment.lower() for segment in segments]
+
+
+def is_credential_key(key: Optional[str]) -> bool:
+    """True when *key* names a credential (``MP_JWT_SECRET``, ``api_key``, …).
+
+    Segmentation is what separates a key name from a *value* that merely
+    contains the word: ``jsonwebtoken = "^10"`` is a dependency, not a secret.
+    """
+    segments = _key_segments(key or "")
+    if not segments:
+        return False
+    if segments[-1] in _CRED_KEY_WORDS:
+        return True
+    if segments[-1] == "key":
+        return len(segments) > 1 and segments[-2] in _KEY_QUALIFIERS
+    return False
+
+
+def _is_quoted_value(line: str, value: str) -> bool:
+    return any('%s%s%s' % (quote, value, quote) in line for quote in ('"', "'", "`"))
+
+
+def looks_like_literal(line: str, value: Optional[str]) -> bool:
+    """True when *value* is a committed literal rather than a code reference.
+
+    A credential is a *value*: ``token = path.strip()``, ``this.token = token``
+    and ``id-token: write`` are identifiers or control words. Treating those as
+    secrets is what makes a scanner ignorable, so an unquoted value must carry a
+    secret-like signal (a digit, a provider token shape, or a long mixed blob).
+    """
+    if not value or value.lower() in _CONTROL_WORDS:
+        return False
+    if not _LITERAL_VALUE_PATTERN.match(value):
+        return False
+    if _is_quoted_value(line, value):
+        return len(value) >= _MIN_LITERAL_LEN or bool(_PROVIDER_TOKEN_PATTERN.search(value))
+    if _PROVIDER_TOKEN_PATTERN.search(value):
+        return True
+    has_digit = any(char.isdigit() for char in value)
+    has_alpha = any(char.isalpha() for char in value)
+    if has_digit and has_alpha:
+        return True
+    return len(value) >= 24 and has_alpha and len(set(value)) >= 8
+
+
+def _value_is_excused(value: str) -> bool:
+    """A value that is a placeholder or comes from the environment."""
+    return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
 
 
 def classify_credential_line(line: str) -> str:
     """Classify one source line for the credential scan.
 
     Returns ``"clean"`` (no credential token), ``"report"`` (a hit that is
-    whitelisted or env-sourced — reported but not fatal), or ``"violation"``
-    (a literal non-placeholder secret — fatal).
+    whitelisted, env-sourced, or merely a code reference — reported but not
+    fatal), or ``"violation"`` (a literal non-placeholder secret — fatal).
 
-    Besides the classic ``key = value`` / ``--flag value`` forms, two shapes
-    carry a secret without ever naming one:
-
-    * a URL with credentials in its userinfo — the ``.git/config`` remote form
-      ``https://oauth2:gho_…@github.com/org/repo.git``;
-    * a bare provider token (``gho_…`` / ``ghp_…`` / ``github_pat_…``).
+    Three shapes carry a secret without ever naming one, and all three are
+    matched here: a provider token (``gho_…`` / ``github_pat_…`` / ``sk-…`` /
+    ``AKIA…``), a URL with credentials in its userinfo (the ``.git/config``
+    remote form ``https://oauth2:gho_…@github.com/org/repo.git``), and a
+    credential-keyed assignment whose value is a literal.
     """
+    key, value = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
-    bare_token = _GITHUB_TOKEN_PATTERN.search(line)
-    if not (_CRED_PATTERN.search(line) or embedded or bare_token):
+    provider = _PROVIDER_TOKEN_PATTERN.search(line)
+    if not (_CRED_PATTERN.search(line) or embedded or provider):
         return "clean"
     if _PRIVATE_KEY_PATTERN.search(line):
         return "report" if _PLACEHOLDER_PATTERN.search(line) else "violation"
 
-    value = _extract_secret_value(line)
-    if value is None and embedded is not None:
-        # The URL userinfo is the secret this line carries — but only escalate
-        # it when it is credential-shaped, so doc examples such as
-        # ``http://user:pass@192.0.2.1:3128`` keep their historical "report".
-        secret = embedded.group("secret")
-        if _DOC_ADDRESS_PATTERN.search(line) or len(secret) < _MIN_EMBEDDED_SECRET_LEN:
-            return "report"
-        value = secret
-
-    if value is not None:
-        if _PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value):
-            return "report"
-        if _ENV_REF_PATTERN.search(line):
-            return "report"
+    # Provider tokens are literals by construction; placeholders and env refs
+    # are judged on the token itself, so a doc IP elsewhere on the line cannot
+    # excuse a real one.
+    if provider is not None and not _value_is_excused(provider.group(0)):
         return "violation"
 
-    # No assignment and no embedded URL: only a bare provider token is fatal.
-    if _PLACEHOLDER_PATTERN.search(line) or _ENV_REF_PATTERN.search(line):
-        return "report"
-    return "violation" if bare_token else "report"
+    if embedded is not None and value is None:
+        secret, host = embedded.group("secret"), embedded.group("host")
+        if _DOC_ADDRESS_PATTERN.search(host) or _value_is_excused(secret):
+            return "report"
+        return "violation" if looks_like_literal("", secret) else "report"
+
+    if value is not None and is_credential_key(key):
+        if _value_is_excused(value) or _ENV_REF_PATTERN.search(line):
+            return "report"
+        return "violation" if looks_like_literal(line, value) else "report"
+
+    return "report"
 
 
 # ── Workspace credential sweep ────────────────────────────────────────────────
@@ -395,6 +497,8 @@ def _sweep_entry_verdict(path: Path) -> Optional[str]:
             return "broken symlink"
         stat_result = path.stat()
     except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ELOOP:
+            return "unresolvable symlink"
         return _oserror_reason(exc)
     if not stat.S_ISREG(stat_result.st_mode):
         return "not a regular file"
@@ -403,12 +507,16 @@ def _sweep_entry_verdict(path: Path) -> Optional[str]:
     return None
 
 
-def _is_binary(path: Path) -> bool:
+def _head_is_binary(path: Path) -> bool:
+    """True for a binary file (NUL bytes that are not a UTF-16 BOM marker)."""
     try:
         with path.open("rb") as handle:
-            return b"\0" in handle.read(4096)
+            head = handle.read(4096)
     except OSError:
         return False
+    if b"\0" not in head:
+        return False
+    return not any(head.startswith(bom) for bom in _UTF16_BOMS)
 
 
 def iter_sweep_files(
@@ -416,35 +524,65 @@ def iter_sweep_files(
 ) -> Iterator[Path]:
     """Text files under *root* worth scanning, streaming as they are found.
 
-    ``os.walk`` with in-place directory pruning (VCS/build trees are never
-    descended into) and an ``onerror`` hook, so an unreadable directory is
-    reported through *skipped* instead of aborting the sweep or vanishing.
-    Binary files are skipped silently: NUL bytes cannot be a credential,
-    whereas an *access* failure is always reported.
+    ``os.walk`` with in-place directory pruning and an ``onerror`` hook, so an
+    unreadable directory is reported through *skipped* instead of aborting the
+    sweep or vanishing. Two things are deliberately *not* scanned and are
+    reported instead of dropped quietly: directories behind a symlink (following
+    them risks cycles and escaping the tree) and binary files, which are the
+    only silent category — NUL bytes cannot be a credential, except in UTF-16
+    text, which is decoded and scanned.
     """
+
     def onerror(exc: OSError) -> None:
         _record_skip(skipped, Path(getattr(exc, "filename", None) or root), _oserror_reason(exc))
 
     for dirpath, dirnames, filenames in os.walk(root, onerror=onerror, followlinks=False):
-        dirnames[:] = [name for name in dirnames if name not in _SWEEP_SKIP_DIRS]
+        kept: List[str] = []
+        for name in dirnames:
+            if name in _SWEEP_SKIP_DIRS:
+                continue  # build/VCS trees: excluded by design, not a read failure
+            child = Path(dirpath) / name
+            try:
+                if child.is_symlink():
+                    _record_skip(skipped, child, "symlinked directory (not followed)")
+                    continue
+            except OSError as exc:
+                _record_skip(skipped, child, _oserror_reason(exc))
+                continue
+            kept.append(name)
+        dirnames[:] = kept
         for name in filenames:
             path = Path(dirpath) / name
             reason = _sweep_entry_verdict(path)
             if reason is not None:
                 _record_skip(skipped, path, reason)
                 continue
-            if _is_binary(path):
+            if _head_is_binary(path):
                 continue
             yield path
+
+
+def _decode_text(data: bytes) -> str:
+    """Decode file bytes as UTF-8, falling back to BOM-marked UTF-16."""
+    for bom, encoding in ((b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
+        if data.startswith(bom):
+            try:
+                return data[len(bom):].decode(encoding, errors="replace")
+            except (UnicodeDecodeError, LookupError):  # pragma: no cover - defensive
+                break
+    return data.decode("utf-8", errors="replace")
 
 
 def scan_file_credentials(path: Path) -> List[CredentialFinding]:
     """Classify every line of *path*, returning the non-clean findings.
 
-    Raises ``OSError`` when the file cannot be read: the caller decides whether
-    that is a reported skip or a hard error — never a silent "clean".
+    UTF-16 text is decoded rather than mistaken for binary. Raises ``OSError``
+    when the file cannot be read: the caller decides whether that is a reported
+    skip or a hard error — never a silent "clean".
     """
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = _decode_text(path.read_bytes())
+    if "\0" in text:
+        return []
     findings: List[CredentialFinding] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         verdict = classify_credential_line(line)
@@ -520,6 +658,8 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
     elif args.all_langyo:
         targets = discover_langyo_repos(scan_root, skipped=skipped)
         if not targets:
+            for entry in skipped:
+                print("  skipped: " + entry.render(), file=sys.stderr)
             print(
                 "error: no langyo/* checkout under %s — refusing to report a clean sweep "
                 "of nothing" % scan_root,

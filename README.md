@@ -191,6 +191,16 @@ socket, a file the user cannot open) are never dropped silently: each is printed
 with its reason, and `--fail-on-skip` turns an incomplete sweep into a failure.
 `--git-config-only` and `--no-git-config` are mutually exclusive.
 
+A hit is a **violation** only when the value is a literal secret: a provider
+token shape (`gho_…`, `github_pat_…`, `glpat-…`, `sk-…`, `xox…`, `AKIA…`,
+`AIza…`, `cli_…`), a URL userinfo that is credential-shaped, or a
+credential-named key (`*_SECRET` / `*_TOKEN` / `*_PASSWORD` / `api_key` / …)
+whose value is a quoted literal, carries a digit, or is a long mixed blob.
+Identifiers, call expressions, control words (`write`), dependency names
+(`jsonwebtoken = "^10"`) and placeholders are reported, not failed — a scanner
+that flags `token = path.strip()` gets ignored, and an ignored scanner protects
+nothing.
+
 `celestia-devtools gate precheck` runs the safety diagnostics from the workspace
 postmortem follow-ups: NFS mount-point warnings (a `findmnt` scan for `_worktree`
 paths at `rm -rf` risk) and a large-download heuristic scan (`hf_hub_download` /

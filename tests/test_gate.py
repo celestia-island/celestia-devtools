@@ -16,8 +16,10 @@ from celestia_devtools.build.gate import (
     detect_modes,
     discover_langyo_repos,
     git_config_paths,
+    is_credential_key,
     is_langyo_repo,
     iter_sweep_files,
+    looks_like_literal,
     main as gate_main,
     precheck_mounts,
     resolve_modes,
@@ -729,3 +731,135 @@ class TestSweepCrashSafety:
             assert "skipped:" in err and "docs" in err
         finally:
             os.chmod(blocked, 0o755)
+
+
+# ── Credential scan: precision acceptance matrix ──────────────────────────────
+#
+# The sweep walks whole source trees, so a scanner that flags identifiers
+# (``token = path.strip()``) is ignored after two runs — and an ignored gate
+# equals no gate. These samples pin both directions: synthetic secrets that must
+# be flagged, and references/placeholders/examples that must not. Synthetic
+# "real" values deliberately avoid whitelisted placeholder words (``example``,
+# ``xxx``, ``CHANGE_ME``) — those are excused by design.
+
+VIOLATION_SAMPLES = [
+    'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"',
+    'ERP_JWT_SECRET="Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0"',
+    "FEISHU_APP_SECRET=Q41m5PIlprEiQURkAtUtQfPHLw6H5uOB",
+    'APP_SECRET = "1f9fdv9Rdy4zmhuHECF1Fh0iiIwiDfCT"',
+    'APP_TOKEN = "IZDKbUioFaLHcGsgCuycstlQnoh"',
+    'DB_PASSWORD: "hunter2hunter2"',
+    'credentials = "dGhpcy1pcy1hLXRlc3Qtc2VjcmV0LTEyMzQ1Ng=="',
+    'API_KEY="sk-0000111122223333"',
+    'AWS_ACCESS_KEY_ID = "AKIAZZ7NN7ZZZZZZZZZZ"',
+    "SSH_PASS=s3cr3t-value-123",
+    "password = supersecret4",
+    'url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git',
+    "url = https://git:S3cr3t-Passw0rd@github.com/celestia-island/arona.git",
+    "url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git  # see 192.0.2.9/docs",
+]
+
+REPORT_SAMPLES = [
+    "token = path.strip()",
+    "token = token[4:].strip()",
+    "const token = api.getToken();",
+    "this.token = token;",
+    "token: string | null;",
+    "token: null,",
+    'print(f"  token: {token[:30]}...")',
+    'jsonwebtoken = "^10"',
+    "id-token: write # npm trusted publishing",
+    "password: require_password,",
+    "/* ------ 字体大小 tokens ------ */",
+    "page_token = None",
+    'token = r.json()["tenant_access_token"]',
+    "self.app_secret = app_secret",
+    "def normalize_split_token(token: str) -> str:",
+    "TOKEN_NORMALIZATION = {",
+    'mp_jwt_secret = os.getenv("MP_JWT_SECRET")',
+    "proxy = http://user:pass@192.0.2.1:3128",
+    "url = https://oauth2:<your-token>@github.com/o/r.git",
+    "url = https://oauth2:${GITHUB_TOKEN}@github.com/o/r.git",
+    "UNIFIED_APP_SECRET=your-unified-app-secret",
+    'gho_EXAMPLE_NOT_A_REAL_TOKEN = "x"',
+    "const tokens = useMemo(() => split(x), [x])",
+    "# set your token here",
+    # real repo lines that the first precision pass still flagged (2026-09-13)
+    'fetch("/", { cache: "no-store", credentials: "same-origin" }).then(function (r) {',
+    "console.log('Stored token:', localStorage.getItem('auth_token')?.substring(0, 20) + '...');",
+    "// 用法：先起 server（PORT=18433 ERP_JWT_SECRET=test-secret-for-smoke-only …），",
+    "UNIFIED_APP_TOKEN=optional-bitable-app-token",
+]
+
+CLEAN_SAMPLES = [
+    "let answer = 42",
+    "url = git@github.com:celestia-island/arona.git",
+    "url = https://github.com/celestia-island/arona.git",
+    '[remote "origin"]',
+    'MONKEY = "value"',
+    'const total = items.length',
+]
+
+
+class TestCredentialPrecision:
+    """Known-fake vs real-shaped samples: a pass/fail matrix, not a vibe."""
+
+    @pytest.mark.parametrize("line", VIOLATION_SAMPLES)
+    def test_real_shaped_values_are_flagged(self, line):
+        assert classify_credential_line(line) == "violation"
+
+    @pytest.mark.parametrize("line", REPORT_SAMPLES)
+    def test_references_placeholders_and_examples_are_not_flagged(self, line):
+        assert classify_credential_line(line) == "report", line
+
+    @pytest.mark.parametrize("line", CLEAN_SAMPLES)
+    def test_non_credential_lines_stay_clean(self, line):
+        assert classify_credential_line(line) == "clean", line
+
+    def test_credential_key_segmentation(self):
+        """``jsonwebtoken`` is a dependency name; ``jwt_secret`` is a key."""
+        assert is_credential_key("MP_JWT_SECRET")
+        assert is_credential_key("api_key")
+        assert is_credential_key("jwtSecret")
+        assert is_credential_key("client_secret")
+        assert not is_credential_key("jsonwebtoken")
+        assert not is_credential_key("key")
+        assert not is_credential_key("monkey")
+        assert not is_credential_key("token_count")
+
+    def test_unquoted_identifier_values_are_not_literals(self):
+        assert not looks_like_literal("token = path.strip()", "path.strip()")
+        assert not looks_like_literal("this.token = token;", "token")
+        assert not looks_like_literal("id-token: write", "write")
+        assert looks_like_literal("token = abc123def456", "abc123def456")
+        assert looks_like_literal('token = "abcdef"', "abcdef")
+        # too short to be a secret: a declaration's placeholder value
+        assert not looks_like_literal('token = "abc"', "abc")
+
+    def test_mixed_script_text_is_decoded_and_scanned(self, tmp_path):
+        """UTF-16 text is text: NUL bytes there must not hide a secret."""
+        target = tmp_path / "config.ini"
+        target.write_bytes("PASSWORD = \"hunter2hunter2\"\n".encode("utf-16-le").join([b"\xff\xfe", b""]))
+        findings = scan_file_credentials(target)
+        assert [f.verdict for f in findings] == ["violation"]
+
+    def test_binary_files_stay_out_of_the_sweep(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "blob.bin").write_bytes(b"\x00\x01PASSWORD=hunter2hunter2\x00")
+        (root / "ok.txt").write_text("nothing here\n", encoding="utf-8")
+        skipped = []
+        assert [p.name for p in iter_sweep_files(root, skipped=skipped)] == ["ok.txt"]
+        assert skipped == []
+
+    def test_symlinked_directories_are_reported_not_dropped(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "leak.py").write_text('TOKEN = "gho_0123456789abcdefghij"\n', encoding="utf-8")
+        root = tmp_path / "repo"
+        (root / "src").mkdir(parents=True)
+        os.symlink(outside, root / "src" / "linked")
+        skipped = []
+        assert list(iter_sweep_files(root, skipped=skipped)) == []
+        assert [entry.path.name for entry in skipped] == ["linked"]
+        assert "symlinked directory" in skipped[0].reason
