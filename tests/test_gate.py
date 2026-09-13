@@ -1,8 +1,11 @@
 """Tests for the local gate orchestrator (scheduler + build/gate)."""
 
 import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -669,6 +672,21 @@ class TestSweepCrashSafety:
         finally:
             os.chmod(lost, 0o755)
 
+    def test_discover_langyo_repos_survives_unreadable_scan_root(self, tmp_path):
+        """The outer guard is load-bearing too: an unreadable root is a skip."""
+        if os.geteuid() == 0:
+            pytest.skip("running as root: mode 000 does not deny access")
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        os.chmod(scan_root, 0o000)
+        skipped = []
+        try:
+            assert discover_langyo_repos(scan_root, skipped=skipped) == []
+            assert [entry.path.name for entry in skipped] == ["ws"]
+            assert "PermissionError" in skipped[0].reason
+        finally:
+            os.chmod(scan_root, 0o755)
+
     def test_broken_symlink_is_skipped_with_reason(self, tmp_path):
         root = tmp_path / "repo"
         root.mkdir()
@@ -762,6 +780,21 @@ VIOLATION_SAMPLES = [
     'SECRET_KEY = "aB3dE5fG7hI9jK1lM3nO5pQ7&"',
     # … and a trailing `process.env` comment must not excuse a real literal
     'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # fallback for process.env',
+    # unquoted literals keep their punctuation (the .env form this gate exists for)
+    "DB_PASSWORD=Str0ng!Passw0rd!2026",
+    "POSTGRES_PASSWORD=Tr0ub4dor&3LongPassword2026",
+    "--target-pass P@ssw0rd!2026#Production",
+    # JSON-style keys are judged strictly (a secret behind one is fatal …)
+    '"client_secret": "x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3"',
+    '"db_password": "Str0ng!Passw0rd!2026"',
+    # an env-ref *substring* inside a value is not an env lookup
+    'DB_PASSWORD = "Prod-env(2026)#x"',
+    'API_KEY = "getenv-9f8e7d6c5b4a3210"',
+    # flags whose name IS the credential word, and long key names
+    "--token abc12345678",
+    "--secret x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3",
+    "kubectl --token abc12345678 apply",
+    'A' * 200 + '_PASSWORD="Str0ng!Passw0rd!2026"',
 ]
 
 REPORT_SAMPLES = [
@@ -793,6 +826,12 @@ REPORT_SAMPLES = [
     'SECRET_KEY = "REPLACE_ME"',
     'API_KEY = "fake-key-for-tests"',
     'password = "two words here"',
+    # … while an i18n label behind the same shape is not (FOUND-B regression)
+    '"password": "Passwort",',
+    '"secret": "Secret",',
+    '"apiKey": "API-ключ",',
+    '"invalidToken": "身份令牌无效",',
+    '"botToken": "Bot-Token",',
     "# set your token here",
     # real repo lines that the first precision pass still flagged (2026-09-13)
     'fetch("/", { cache: "no-store", credentials: "same-origin" }).then(function (r) {',
@@ -836,6 +875,27 @@ class TestCredentialPrecision:
         assert not is_credential_key("key")
         assert not is_credential_key("monkey")
         assert not is_credential_key("token_count")
+
+    def test_very_long_lines_are_classified_without_stalling(self):
+        """A minified single-line file must neither stall nor hide a secret.
+
+        Nothing is truncated: the regexes are linear now (the flag pattern is
+        anchored on the alphanumeric that follows a flag's dashes), so a token or
+        an assignment at any offset is still found. The budget is loose enough
+        not to flake on a loaded runner (the real cost is milliseconds).
+        """
+        started = time.monotonic()
+        assert classify_credential_line("-" * 20000 + " token") == "report"
+        assert classify_credential_line("-" * 20000 + " gho_0123456789abcdefghij") == "violation"
+        assert classify_credential_line(
+            "-" * 20000 + " DB_PASSWORD=Str0ng!Passw0rd!2026"
+        ) == "violation"
+        # alphanumeric padding used to be quadratic through the URL-scheme run
+        assert classify_credential_line("y" * 20000 + " gho_0123456789abcdefghij") == "violation"
+        # 200k is where an unanchored (but bounded) flag pattern still costs
+        # seconds, while the anchored one stays in the tens of milliseconds
+        assert classify_credential_line("-" * 200000 + " token") == "report"
+        assert time.monotonic() - started < 2.0
 
     def test_unquoted_identifier_values_are_not_literals(self):
         assert not looks_like_literal("token = path.strip()", "path.strip()")
@@ -896,6 +956,58 @@ class TestCredentialPrecision:
         stats = {}
         assert credential_sweep([root], include_git_config=False, stats=stats) == []
         assert stats["files"] == 0
+
+    def _run_cli(self, argv, root):
+        """Run the real CLI in a subprocess so logger output is observable."""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        proc = subprocess.run(
+            [sys.executable, "-m", "celestia_devtools", "gate", "credential-scan", *argv,
+             "--repo-root", str(root)],
+            capture_output=True, text=True, env=env,
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def test_cli_exits_one_for_a_punctuation_env_secret(self, tmp_path):
+        """The regression class: an unquoted, punctuation-bearing .env value."""
+        root = tmp_path / "ws"
+        (root / "demo").mkdir(parents=True)
+        (root / "demo" / ".env").write_text(
+            "DB_PASSWORD=Str0ng!Passw0rd!2026\n", encoding="utf-8"
+        )
+        rc, out = self._run_cli(["--scan-root", str(root), "--repo", "demo"], tmp_path)
+        assert rc == 1
+        assert "DB_PASSWORD=" in out and "[violation]" in out
+
+    def test_cli_reports_excluded_trees_and_empty_scans(self, tmp_path):
+        """The two accounting strings are user-facing: pin them at CLI level."""
+        root = tmp_path / "ws"
+        (root / "demo" / "dist").mkdir(parents=True)
+        (root / "demo" / "dist" / "bundle.js").write_text("x = 1\n", encoding="utf-8")
+        rc, out = self._run_cli(
+            ["--scan-root", str(root), "--repo", "demo", "--no-git-config"], tmp_path
+        )
+        assert rc == 0
+        assert "excluded by name" in out and "dist" in out
+        assert "no source file was scanned" in out
+
+    def test_cli_flags_a_late_nul_file_as_a_skip(self, tmp_path):
+        """A NUL after the 4 KiB probe must not read as a scanned-clean file."""
+        root = tmp_path / "ws"
+        (root / "demo").mkdir(parents=True)
+        (root / "demo" / "blob.ini").write_bytes(
+            b"x" * 5000 + b"PASSWORD = \"hunter2hunter2\"\n" + b"\x00" * 8
+        )
+        skipped = []
+        stats = {}
+        credential_sweep([root / "demo"], include_git_config=False, skipped=skipped, stats=stats)
+        assert [entry.reason for entry in skipped] == ["binary content"]
+        assert stats["files"] == 0, "a binary file must not count as scanned"
+        rc, out = self._run_cli(
+            ["--scan-root", str(root), "--repo", "demo", "--no-git-config"], tmp_path
+        )
+        assert rc == 0
+        assert "could not be read" in out
 
     def test_symlinked_directories_are_reported_not_dropped(self, tmp_path):
         outside = tmp_path / "outside"

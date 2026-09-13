@@ -107,7 +107,7 @@ _DOC_ADDRESS_PATTERN = re.compile(r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113
 
 # Reading the value from env/config — no literal secret lives in the tree.
 _ENV_REF_PATTERN = re.compile(
-    r"os\.environ|getenv|environ\s*\[|\$\{|process\.env|\benv\s*\(",
+    r"os\.environ|getenv\s*\(|environ\s*\[|\$\{|process\.env",
     re.IGNORECASE,
 )
 
@@ -117,17 +117,22 @@ _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(
-    r"(?:^|[\s(])"
-    r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
-    r"[A-Za-z0-9_.-]*\s*[=:]\s*",
+    r"(?:^|[\s(\"'])"
+    r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
+    r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*",
     re.IGNORECASE,
 )
 
 # A flag carrying a credential value, e.g. ``--target-pass s3cr3t-value`` or
 # ``--api-key=realvalue``.
+# Two things keep this linear *and* complete: the optional prefix must start
+# with an alphanumeric (so a long run of dashes fails at the first character
+# instead of backtracking), and it is optional so a flag whose name IS the
+# credential word (``--token``, ``--api-key``) still matches.
 _FLAG_PATTERN = re.compile(
-    r"--?[a-zA-Z0-9_-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
-    r"[a-zA-Z0-9_-]*(?:\s|=)\s*",
+    r"--?(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?"
+    r"(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
+    r"[a-zA-Z0-9_-]{0,63}(?:\s|=)\s*",
     re.IGNORECASE,
 )
 
@@ -135,7 +140,9 @@ _FLAG_PATTERN = re.compile(
 # ``https://oauth2:gho_…@github.com/org/repo.git``. Carries no credential WORD,
 # so the broad pattern above never sees it; the userinfo IS the secret.
 _EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(
-    r"[a-z][a-z0-9+.-]*://"          # scheme://
+    r"[a-z][a-z0-9+.-]{0,32}://"     # scheme:// (bounded: schemes are short,
+                                     # and an unbounded run backtracks on
+                                     # long alphanumeric lines)
     r"[^/\s:@]+:"                    # user
     r"(?P<secret>[^/\s@]+)"          # secret (the URL password / token)
     r"@(?P<host>[^\s/]+)",           # @host
@@ -177,8 +184,11 @@ _KEY_QUALIFIERS = frozenset({
 _KEY_SEPARATOR_PATTERN = re.compile(r"[^A-Za-z0-9]+")
 _CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-#: An unquoted literal value — a compact token with no call/subscript punctuation.
-_LITERAL_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_./+=:@~-]{4,}$")
+#: An unquoted literal value: one token, no whitespace and no structural
+#: punctuation (quotes, parens, brackets, commas). Punctuation like ``!``,
+#: ``&``, ``%`` or ``#`` is *allowed* — ``DB_PASSWORD=Str0ng!Passw0rd!2026`` is
+#: exactly the shape this gate exists for.
+_LITERAL_VALUE_PATTERN = re.compile(r"^[^\s\"'`,;(){}\[\]<>]{4,}$")
 
 #: A quoted literal may carry arbitrary punctuation (``"P@ssw0rd!2026#Prod"``)
 #: but not whitespace: text with spaces is prose or a sliced expression, not a
@@ -229,19 +239,25 @@ def _first_token(rest: str) -> Optional[str]:
     return re.split(r"[\s;#]+", rest, maxsplit=1)[0] or None
 
 
-def _extract_assignment(line: str) -> Tuple[Optional[str], Optional[str]]:
-    """Return ``(key, value)`` for an assignment / flag form, else ``(None, None)``."""
+def _extract_assignment(line: str) -> Tuple[Optional[str], Optional[str], bool]:
+    """Return ``(key, value, key_was_quoted)``, else ``(None, None, False)``.
+
+    ``key_was_quoted`` marks the JSON/JS form (``"password": "…"``) — the shape
+    every i18n label file uses, where a translated string is not a secret.
+    """
     match = _ASSIGN_KEY_PATTERN.search(line)
     if match:
         raw = match.group(0)
-        key = re.split(r"[=:]", raw, maxsplit=1)[0].strip().strip("\"'").lstrip("-")
-        return key, _first_token(line[match.end():])
+        key_part = re.split(r"[=:]", raw, maxsplit=1)[0]
+        quoted_key = key_part.rstrip().endswith(("\"", "'"))
+        key = key_part.strip().strip("\"'").lstrip("-")
+        return key, _first_token(line[match.end():]), quoted_key
     match = _FLAG_PATTERN.search(line)
     if match:
         raw = match.group(0).strip()
         key = re.split(r"[\s=]", raw, maxsplit=1)[0].strip("-")
-        return key, _first_token(line[match.end():])
-    return None, None
+        return key, _first_token(line[match.end():]), False
+    return None, None, False
 
 
 def _key_segments(key: str) -> List[str]:
@@ -299,6 +315,22 @@ def looks_like_literal(line: str, value: Optional[str]) -> bool:
     return len(value) >= 24 and has_alpha and len(set(value)) >= 8
 
 
+def _looks_like_secret_value(value: str) -> bool:
+    """Strict shape test for a credential that sits behind a JSON-quoted key.
+
+    A quoted key is the JSON/i18n shape, where a plain translated string
+    (``"password": "Passwort"``) must never be fatal. Only a provider-token
+    shape or a value mixing digits and letters qualifies; a long alphabetic
+    token without digits is reported, not failed — noise in hundreds of locale
+    files would make the gate ignorable.
+    """
+    if not value:
+        return False
+    if _PROVIDER_TOKEN_PATTERN.search(value):
+        return True
+    return any(char.isdigit() for char in value) and any(char.isalpha() for char in value)
+
+
 def _value_is_excused(value: str) -> bool:
     """A value that is a placeholder or comes from the environment."""
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
@@ -317,7 +349,7 @@ def classify_credential_line(line: str) -> str:
     remote form ``https://oauth2:gho_…@github.com/org/repo.git``), and a
     credential-keyed assignment whose value is a literal.
     """
-    key, value = _extract_assignment(line)
+    key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
     if not (_CRED_PATTERN.search(line) or embedded or provider):
@@ -341,6 +373,9 @@ def classify_credential_line(line: str) -> str:
         # Judge the excuse on the VALUE: a comment elsewhere on the line
         # (``# fallback for process.env``) must not demote a real literal.
         if _value_is_excused(value):
+            return "report"
+        if quoted_key and not _looks_like_secret_value(value):
+            # ``"password": "Passwort"`` — an i18n label, not a credential
             return "report"
         return "violation" if looks_like_literal(line, value) else "report"
 
@@ -601,15 +636,20 @@ def _decode_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def scan_file_credentials(path: Path) -> List[CredentialFinding]:
+def scan_file_credentials(
+    path: Path, skipped: Optional[List[SkippedPath]] = None
+) -> List[CredentialFinding]:
     """Classify every line of *path*, returning the non-clean findings.
 
-    UTF-16 text is decoded rather than mistaken for binary. Raises ``OSError``
-    when the file cannot be read: the caller decides whether that is a reported
-    skip or a hard error — never a silent "clean".
+    UTF-16 text is decoded rather than mistaken for binary; a file that is
+    binary after all is recorded in *skipped* instead of quietly returning an
+    empty result. Raises ``OSError`` when the file cannot be read: the caller
+    decides whether that is a reported skip or a hard error — never a silent
+    "clean".
     """
     text = _decode_text(path.read_bytes())
     if "\0" in text:
+        _record_skip(skipped, path, "binary content")
         return []
     findings: List[CredentialFinding] = []
     for lineno, line in enumerate(text.splitlines(), 1):
@@ -646,7 +686,7 @@ def credential_sweep(
                 continue
             seen.add(config)
             try:
-                findings.extend(scan_file_credentials(config))
+                findings.extend(scan_file_credentials(config, skipped=skipped))
             except OSError as exc:
                 _record_skip(skipped, config, _oserror_reason(exc))
         if not include_sources:
@@ -655,10 +695,13 @@ def credential_sweep(
             if path in seen:
                 continue
             seen.add(path)
-            if stats is not None:
-                stats["files"] = stats.get("files", 0) + 1
             try:
-                findings.extend(scan_file_credentials(path))
+                before = len(skipped)
+                findings.extend(scan_file_credentials(path, skipped=skipped))
+                # A file that turned out to be binary was not scanned, so it
+                # must not be counted as one (never both "skipped" and "scanned").
+                if stats is not None and len(skipped) == before:
+                    stats["files"] = stats.get("files", 0) + 1
             except OSError as exc:
                 _record_skip(skipped, path, _oserror_reason(exc))
     return findings
