@@ -103,6 +103,23 @@ class LedgerError(Exception):
     """Raised for a missing / unreadable / invalid ledger (fail-closed)."""
 
 
+def normalize_repo_name(name: str) -> str:
+    """Canonical repo name for scope matching.
+
+    Accepts what a human or CI actually passes — ``owner/repo``, a full URL,
+    ``repo.git``, different casing, surrounding whitespace — and reduces it to
+    the bare lowercase name, so a spelling variant can never silently turn a
+    covered repo into a clear one.
+    """
+    value = (name or "").strip().rstrip("/")
+    if not value:
+        return ""
+    value = value.rsplit("/", 1)[-1]
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.strip().lower()
+
+
 @dataclass(frozen=True)
 class P0Entry:
     """One ledger row."""
@@ -121,8 +138,12 @@ class P0Entry:
         return self.status == STATUS_OPEN
 
     def covers(self, repo: str) -> bool:
-        """True when any ``scope`` pattern matches *repo*."""
-        return any(fnmatch.fnmatchcase(repo, pattern) for pattern in self.scope)
+        """True when any ``scope`` pattern matches *repo* (names normalized)."""
+        target = normalize_repo_name(repo)
+        return any(
+            fnmatch.fnmatchcase(target, normalize_repo_name(pattern))
+            for pattern in self.scope
+        )
 
     def summary(self) -> str:
         return "%s: %s" % (self.id, self.title)
@@ -383,10 +404,13 @@ def _format_ack(ack: Ack) -> str:
 
 
 def render_list(entries: Sequence[P0Entry]) -> str:
-    """Whole ledger, grouped open/closed (oldest first within a group)."""
+    """Whole ledger, grouped open/closed, oldest first within a group."""
     lines: List[str] = []
     for status in STATUSES:
-        group = [entry for entry in entries if entry.status == status]
+        group = sorted(
+            (entry for entry in entries if entry.status == status),
+            key=lambda entry: (entry.opened_at, entry.id),
+        )
         lines.append("%s (%d):" % (status, len(group)))
         if not group:
             lines.append("  (none)")
@@ -444,7 +468,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument(
         "--repo", action="append", default=[], metavar="NAME",
-        help="repo name to check (repeatable); default: the current checkout's origin name",
+        help="repo name to check (repeatable); accepts owner/repo, URLs and a trailing "
+             ".git; default: the current checkout's origin name",
     )
     parser.add_argument(
         "--ack", action="append", default=[], metavar="ID",
@@ -473,7 +498,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(render_list(entries))
         return 0
 
-    repos = [name.strip() for name in args.repo if name.strip()]
+    # Which ledger is in force is part of the record: an override must never be
+    # invisible on a green run.
+    print(
+        "p0-gate: ledger %s (%d entries, %d open)"
+        % (ledger_path, len(entries), sum(1 for entry in entries if entry.is_open)),
+        file=sys.stderr,
+    )
+
+    repos = [normalize_repo_name(name) for name in args.repo if name.strip()]
     if not repos:
         detected = detect_repo_name(root)
         if not detected:
@@ -498,12 +531,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     blocked: List[P0Entry] = []
     acknowledged: List[Tuple[P0Entry, Ack]] = []
     covered_ids: set = set()
+    blocked_ids: set = set()
+    ack_seen: set = set()
     for repo in repos:
         for entry in open_entries_for_repo(entries, repo):
             ack = acked.get(entry.id)
             if ack is None:
-                blocked.append(entry)
-            else:
+                if entry.id not in blocked_ids:
+                    blocked_ids.add(entry.id)
+                    blocked.append(entry)
+            elif (entry.id, ack.source) not in ack_seen:
+                ack_seen.add((entry.id, ack.source))
                 covered_ids.add(entry.id)
                 acknowledged.append((entry, ack))
 

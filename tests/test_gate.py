@@ -1,5 +1,6 @@
 """Tests for the local gate orchestrator (scheduler + build/gate)."""
 
+import os
 import threading
 import time
 
@@ -16,6 +17,7 @@ from celestia_devtools.build.gate import (
     discover_langyo_repos,
     git_config_paths,
     is_langyo_repo,
+    iter_sweep_files,
     main as gate_main,
     precheck_mounts,
     resolve_modes,
@@ -380,6 +382,39 @@ class TestEmbeddedCredentialUrls:
     def test_concatenated_url_parts_stay_clean(self):
         assert classify_credential_line('"https://" + user + ":" + pw + "@host"') == "clean"
 
+    def test_your_dash_placeholders_stay_reports(self):
+        """The real ``your-<noun>-secret`` convention must stay whitelisted.
+
+        easy-hydro-erp/.env.example (tracked) uses exactly this shape; an
+        over-tightened placeholder pattern would flag it as a live secret.
+        """
+        assert classify_credential_line("UNIFIED_APP_SECRET=your-unified-app-secret") == "report"
+        assert classify_credential_line("MP_JWT_SECRET=your-jwt-secret") == "report"
+        assert classify_credential_line("ERP_JWT_SECRET=your_app_token") == "report"
+
+    def test_literals_starting_with_your_stay_violations(self):
+        """A placeholder alternative must not swallow real values.
+
+        ``TOKEN="yoursecret-real-value"`` contains "your…" — an unanchored
+        ``your(token|secret|api_key)`` alternative would downgrade it to
+        "report" and silently stop flagging a committed secret.
+        """
+        assert classify_credential_line('TOKEN="yoursecret-real-value"') == "violation"
+        assert classify_credential_line('API_KEY="yourapikey-9f2b"') == "violation"
+
+    def test_short_userinfo_examples_stay_reports(self):
+        """Doc-shaped URLs must keep their pre-extension verdict.
+
+        AGENTS §10.1.2 requires RFC 5737 addresses in examples, so a URL
+        userinfo there is a placeholder, not a credential.
+        """
+        assert classify_credential_line(
+            "proxy = http://user:pass@192.0.2.1:3128") == "report"
+        assert classify_credential_line(
+            "proxy = http://user:pass@example.internal:3128") == "report"
+        assert classify_credential_line(
+            "url = https://oauth2:<your-token>@github.com/o/r.git") == "report"
+
 
 class TestGitConfigSweep:
     def test_git_config_paths_for_plain_checkout(self, tmp_path):
@@ -560,3 +595,137 @@ class TestCredentialScanCli:
         )
         assert rc == 0
         assert "your-api-key" in capsys.readouterr().err
+
+    def test_contradictory_scan_flags_are_usage_errors(self, tmp_path, capsys):
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--git-config-only",
+             "--no-git-config"]
+        )
+        assert rc == 2
+        assert "mutually exclusive" in capsys.readouterr().err
+
+    def test_all_langyo_without_matches_is_an_error(self, tmp_path, capsys):
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        make_checkout(
+            scan_root, name="arona", remote_url="https://github.com/celestia-island/arona.git"
+        )
+        rc = gate_main(
+            ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+             "--all-langyo"]
+        )
+        assert rc == 2
+        assert "refusing to report a clean sweep of nothing" in capsys.readouterr().err
+
+    def test_unreadable_subtree_is_reported_and_does_not_abort(self, tmp_path, capsys):
+        if os.geteuid() == 0:
+            pytest.skip("running as root: mode 000 does not deny access")
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        repo = make_checkout(
+            scan_root, name="biz", remote_url="https://github.com/langyo/easy-hydro-erp.git"
+        )
+        blocked = repo / "src" / "blocked"
+        blocked.mkdir(parents=True)
+        (blocked / "leak.py").write_text('TOKEN = "%s"\n' % FAKE_TOKEN, encoding="utf-8")
+        os.chmod(blocked, 0o000)
+        try:
+            rc = gate_main(
+                ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+                 "--repo", repo.name]
+            )
+            err = capsys.readouterr().err
+            assert rc == 0, "an unreadable subtree must not crash the sweep"
+            assert "skipped:" in err
+            assert "blocked" in err
+        finally:
+            os.chmod(blocked, 0o755)
+
+
+class TestSweepCrashSafety:
+    """A scanner that dies mid-sweep reports nothing — every loss must be loud."""
+
+    def test_discover_langyo_repos_survives_unreadable_sibling(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("running as root: mode 000 does not deny access")
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        make_checkout(
+            scan_root, name="biz", remote_url="https://github.com/langyo/easy-hydro-erp.git"
+        )
+        # Reproduces /mnt/codespace/lost+found: stat-able itself, but
+        # <child>/.git raises PermissionError from Path.exists().
+        lost = scan_root / "lost+found"
+        lost.mkdir()
+        os.chmod(lost, 0o000)
+        skipped = []
+        try:
+            repos = discover_langyo_repos(scan_root, skipped=skipped)
+            assert [repo.name for repo in repos] == ["biz"]
+            assert [entry.path.name for entry in skipped] == ["lost+found"]
+            assert "PermissionError" in skipped[0].reason
+        finally:
+            os.chmod(lost, 0o755)
+
+    def test_broken_symlink_is_skipped_with_reason(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        (root / "ok.py").write_text("x = 1\n", encoding="utf-8")
+        os.symlink(root / "gone.py", root / "dangling.py")
+        skipped = []
+        files = list(iter_sweep_files(root, skipped=skipped))
+        assert [path.name for path in files] == ["ok.py"]
+        assert [entry.path.name for entry in skipped] == ["dangling.py"]
+        assert "broken symlink" in skipped[0].reason
+
+    def test_fifo_is_skipped_with_reason(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        os.mkfifo(root / "pipe")
+        skipped = []
+        assert list(iter_sweep_files(root, skipped=skipped)) == []
+        assert [entry.path.name for entry in skipped] == ["pipe"]
+        assert "not a regular file" in skipped[0].reason
+
+    def test_unreadable_file_is_a_reported_skip_not_a_clean_read(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("running as root: mode 000 does not deny access")
+        root = tmp_path / "repo"
+        root.mkdir()
+        secret = root / "leak.py"
+        secret.write_text('TOKEN = "%s"\n' % FAKE_TOKEN, encoding="utf-8")
+        os.chmod(secret, 0o000)
+        skipped = []
+        try:
+            findings = credential_sweep([root], include_git_config=False, skipped=skipped)
+            assert findings == []
+            assert [entry.path.name for entry in skipped] == ["leak.py"]
+            assert "PermissionError" in skipped[0].reason
+            with pytest.raises(OSError):
+                scan_file_credentials(secret)
+        finally:
+            os.chmod(secret, 0o644)
+
+    def test_fail_on_skip_turns_an_incomplete_sweep_into_a_failure(self, tmp_path, capsys):
+        if os.geteuid() == 0:
+            pytest.skip("running as root: mode 000 does not deny access")
+        scan_root = tmp_path / "ws"
+        scan_root.mkdir()
+        repo = make_checkout(
+            scan_root, name="biz", remote_url="https://github.com/langyo/easy-hydro-erp.git"
+        )
+        blocked = repo / "docs"
+        blocked.mkdir()
+        os.chmod(blocked, 0o000)
+        try:
+            rc = gate_main(
+                ["credential-scan", "--repo-root", str(tmp_path), "--scan-root", str(scan_root),
+                 "--repo", repo.name, "--fail-on-skip"]
+            )
+            err = capsys.readouterr().err
+            # exit 1 is the --fail-on-skip contract; the skip list itself is
+            # printed directly (the shared logger binds sys.stdout at import).
+            assert rc == 1
+            assert "skipped:" in err and "docs" in err
+        finally:
+            os.chmod(blocked, 0o755)

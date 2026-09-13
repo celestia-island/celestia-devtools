@@ -18,6 +18,7 @@ from celestia_devtools.lint.p0_gate import (
     entries_for_repo,
     load_ledger,
     main,
+    normalize_repo_name,
     open_entries_for_repo,
     parse_ack_markers,
     parse_ledger_text,
@@ -68,18 +69,27 @@ class TestLedgerParsing:
         assert entries[0].scope == ("entelecheia",)
 
     def test_bundled_ledger_matches_plan_item_18(self):
-        """Initial content is PLAN.md §1.2 item 18: P0-A…P0-E, all still open."""
+        """Content tracks PLAN.md §1.2 item 18 at its 2026-09-13 revision.
+
+        P0-A / P0-B / P0-D are still open; P0-C was closed by
+        easy-hydro-miniprogram #27; P0-E was re-scoped to evernight after its
+        original master-CI numbers turned out to be measured on rewritten
+        commits (AGENTS §8.3.7).
+        """
         entries = load_ledger(bundled_ledger_path())
         by_id = {entry.id: entry for entry in entries}
         assert set(by_id) == {"P0-A", "P0-B", "P0-C", "P0-D", "P0-E"}
-        assert all(entry.status == "open" for entry in entries)
-        assert all(entry.closed_by == "" for entry in entries)
+        assert {entry.id for entry in entries if entry.is_open} == {
+            "P0-A", "P0-B", "P0-D", "P0-E",
+        }
+        assert by_id["P0-C"].status == "closed"
+        assert by_id["P0-C"].closed_by == "#27"
         assert all(entry.opened_at == "2026-09-10" for entry in entries)
         assert all(entry.evidence for entry in entries)
         assert by_id["P0-A"].covers("entelecheia")
         assert by_id["P0-C"].covers("easy-hydro-miniprogram")
         assert by_id["P0-D"].covers("arona") and by_id["P0-D"].covers("entelecheia")
-        assert by_id["P0-E"].covers("evernight")
+        assert by_id["P0-E"].covers("evernight") and not by_id["P0-E"].covers("entelecheia")
 
     def test_missing_file_fails_closed(self, tmp_path):
         with pytest.raises(LedgerError, match="not found"):
@@ -155,6 +165,26 @@ class TestScopeMatching:
         assert repo_name_from_url("https://github.com/celestia-island/arona.git") == "arona"
         assert repo_name_from_url("git@github.com:celestia-island/arona.git") == "arona"
         assert repo_name_from_url("") is None
+
+    def test_normalize_repo_name_accepts_what_ci_passes(self):
+        assert normalize_repo_name("entelecheia") == "entelecheia"
+        assert normalize_repo_name("ENTelECHEia") == "entelecheia"
+        assert normalize_repo_name(" entelecheia ") == "entelecheia"
+        assert normalize_repo_name("entelecheia.git") == "entelecheia"
+        assert normalize_repo_name("celestia-island/entelecheia") == "entelecheia"
+        assert normalize_repo_name("https://github.com/celestia-island/entelecheia.git") == "entelecheia"
+        assert normalize_repo_name("") == ""
+
+    def test_spelling_variants_still_cover_the_repo(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv(ACK_ENV, raising=False)
+        ledger = write_ledger(tmp_path)
+        for variant in ("ENTelECHEia", "entelecheia.git", "celestia-island/entelecheia"):
+            assert main(["--repo", variant, "--ledger", str(ledger)]) == 1, variant
+        capsys.readouterr()
+
+    def test_scope_spelling_variants_are_matched(self):
+        entries = parse_ledger_text(LEDGER.replace('["entelecheia"]', '["Entelecheia/"]'))
+        assert open_entries_for_repo(entries, "entelecheia")
 
     def test_detect_repo_name_from_checkout(self, tmp_path):
         if not shutil.which("git"):
@@ -249,6 +279,27 @@ class TestCliPassAndBlock:
         rc = main(["--repo", "hikari", "--repo", "entelecheia", "--ledger", str(ledger)])
         assert rc == 1
         assert "P0-A" in capsys.readouterr().err
+
+    def test_resolved_ledger_is_echoed_on_every_run(self, tmp_path, capsys, monkeypatch):
+        """A ledger override must never be invisible on a green run."""
+        monkeypatch.delenv(ACK_ENV, raising=False)
+        ledger = write_ledger(tmp_path)
+        assert main(["--repo", "hikari", "--ledger", str(ledger)]) == 0
+        err = capsys.readouterr().err
+        assert "p0-gate: ledger %s" % ledger in err
+        assert "2 entries, 1 open" in err
+
+    def test_one_entry_covering_two_repos_is_listed_once(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv(ACK_ENV, raising=False)
+        ledger = write_ledger(
+            tmp_path,
+            LEDGER.replace('scope = ["entelecheia"]', 'scope = ["entelecheia", "arona"]'),
+        )
+        rc = main(["--repo", "entelecheia", "--repo", "arona", "--ledger", str(ledger)])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "covered by 1 unresolved P0 finding(s)" in err
+        assert err.count("P0-A:") == 1
 
 
 class TestCliAcknowledgment:
@@ -374,6 +425,23 @@ class TestCliList:
         assert "open (1):" in out and "closed (1):" in out
         assert "P0-A" in out and "closed by #123" in out
         assert "reviewed 2026-09-13: still present" in out
+
+    def test_render_list_orders_by_opened_at(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.delenv(ACK_ENV, raising=False)
+        first, second = LEDGER.split("[[p0]]")[1], LEDGER.split("[[p0]]")[2]
+        text = (
+            'version = 1\n\n[[p0]]'
+            + first.replace('id = "P0-A"', 'id = "P0-NEW"')
+            .replace('opened_at = "2026-09-10"', 'opened_at = "2026-09-12"')
+            + "[[p0]]"
+            + second.replace('id = "P0-Z"', 'id = "P0-OLD"')
+            .replace('status = "closed"', 'status = "open"')
+            .replace('closed_by = "#123"', 'closed_by = ""')
+        )
+        ledger = write_ledger(tmp_path, text)
+        assert main(["--list", "--ledger", str(ledger)]) == 0
+        out = capsys.readouterr().out
+        assert out.index("P0-OLD") < out.index("P0-NEW")
 
     def test_render_list_marks_missing_entries(self):
         text = render_list(parse_ledger_text(LEDGER.replace('status = "open"', 'status = "closed"')

@@ -28,7 +28,10 @@ changed-files pre-step: it sweeps a checkout's own ``.git/config`` (where a
 remote can bake a token into its userinfo, e.g.
 ``https://oauth2:gho_…@github.com/...``) and the source trees of the
 ``langyo/*`` business repos (``easy-hydro-*``) that no org workflow visits.
-Reports are advisory; literal secrets exit non-zero.
+Reports are advisory; literal secrets exit non-zero.  Paths the sweep cannot
+read (a root-owned ``lost+found``, a broken symlink, a socket, …) are never
+dropped silently: each is printed with its reason, and ``--fail-on-skip``
+turns an incomplete sweep into a failure.
 
 Usage::
 
@@ -47,6 +50,7 @@ import argparse
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -80,14 +84,23 @@ _CRED_PATTERN = re.compile(
 )
 
 # Whitelisted placeholder markers (obvious dummy values + RFC 5737 doc IPs).
+# The "your…" convention is anchored at both ends — it must start with ``your``
+# plus a separator AND end with the credential noun — so real-world placeholders
+# (``your-jwt-secret``, ``your_app_token``) stay whitelisted while a committed
+# literal such as ``TOKEN="yoursecret-real-value"`` is not swallowed by an
+# unanchored alternative.
 _PLACEHOLDER_PATTERN = re.compile(
     r"CHANGE[_ ]?ME|<your[-_ ]?password>|<password>|test[-_ ]?password|"
     r"<your[-_ ]?(?:token|secret|api[-_ ]?key)>|<(?:token|secret|api[-_ ]?key)>|"
-    r"your[-_ ]?(?:token|secret|api[-_ ]?key)\b|"
+    r"your[-_ ][\w-]*(?:password|secret|token|api[-_ ]?key)\b|"
     r"sk-xxx|xxxxx|xxxx|xxx|example|placeholder|redacted|"
     r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+",
     re.IGNORECASE,
 )
+
+# RFC 5737 documentation addresses — AGENTS §10.1.2 requires them in examples,
+# so a credential URL pointing at one cannot be a live credential.
+_DOC_ADDRESS_PATTERN = re.compile(r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+")
 
 # Reading the value from env/config — no literal secret lives in the tree.
 _ENV_REF_PATTERN = re.compile(
@@ -130,6 +143,12 @@ _EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(
 _GITHUB_TOKEN_PATTERN = re.compile(
     r"\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b"
 )
+
+#: A URL userinfo secret shorter than this is treated as an example, not a
+#: credential: ``user:pass@host`` (and RFC 5737 hosts) in docs must keep the
+#: pre-extension "report" verdict, while a real token/secret in a remote URL
+#: (``oauth2:gho_…``, a 32-char app secret, …) is escalated to a violation.
+_MIN_EMBEDDED_SECRET_LEN = 16
 
 # Directories never walked by the workspace credential sweep.
 _SWEEP_SKIP_DIRS = frozenset({
@@ -189,8 +208,13 @@ def classify_credential_line(line: str) -> str:
 
     value = _extract_secret_value(line)
     if value is None and embedded is not None:
-        # The URL userinfo is the secret this line carries.
-        value = embedded.group("secret")
+        # The URL userinfo is the secret this line carries — but only escalate
+        # it when it is credential-shaped, so doc examples such as
+        # ``http://user:pass@192.0.2.1:3128`` keep their historical "report".
+        secret = embedded.group("secret")
+        if _DOC_ADDRESS_PATTERN.search(line) or len(secret) < _MIN_EMBEDDED_SECRET_LEN:
+            return "report"
+        value = secret
 
     if value is not None:
         if _PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value):
@@ -229,114 +253,198 @@ class CredentialFinding:
         return "%s:%d: [%s] %s" % (self.path, self.line, self.verdict, self.excerpt.strip())
 
 
+@dataclass
+class SkippedPath:
+    """A path the sweep could not read, with the reason why."""
+
+    path: Path
+    reason: str
+
+    def render(self) -> str:
+        return "%s (%s)" % (self.path, self.reason)
+
+
+def _oserror_reason(exc: OSError) -> str:
+    return "%s: %s" % (type(exc).__name__, exc.strerror or exc)
+
+
+def _record_skip(skipped: Optional[List[SkippedPath]], path: Path, reason: str) -> None:
+    if skipped is not None:
+        skipped.append(SkippedPath(path, reason))
+
+
 def git_dir(root: Path) -> Optional[Path]:
     """The ``.git`` directory for *root*, following a worktree ``gitdir:`` file."""
     dot = Path(root) / ".git"
-    if dot.is_dir():
-        return dot
-    if dot.is_file():
-        try:
-            text = dot.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
+    try:
+        if dot.is_dir():
+            return dot
+        if not dot.is_file():
             return None
-        if text.startswith("gitdir:"):
-            target = Path(text[len("gitdir:"):].strip())
-            if not target.is_absolute():
-                target = (Path(root) / target).resolve()
-            return target
+        text = dot.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if text.startswith("gitdir:"):
+        target = Path(text[len("gitdir:"):].strip())
+        if not target.is_absolute():
+            target = (Path(root) / target).resolve()
+        return target
     return None
 
 
-def git_config_paths(root: Path) -> List[Path]:
+def git_config_paths(
+    root: Path, skipped: Optional[List[SkippedPath]] = None
+) -> List[Path]:
     """Existing git config files carrying *root*'s remotes.
 
     A checkout's ``.git/config`` holds the credential-bearing remote URL; a
     linked worktree stores it in the common dir's config (plus an optional
-    ``config.worktree`` beside its own gitdir).
+    ``config.worktree`` beside its own gitdir). An unreadable ``.git`` entry
+    (e.g. a root-owned directory whose mode forbids traversal) is recorded in
+    *skipped* instead of raising.
     """
     dot = Path(root) / ".git"
     candidates: List[Path] = []
-    if dot.is_dir():
+    try:
+        is_dir = dot.is_dir()
+        is_file = dot.is_file() if not is_dir else False
+    except OSError as exc:
+        _record_skip(skipped, dot, _oserror_reason(exc))
+        return []
+    if is_dir:
         candidates.append(dot / "config")
-    else:
+    elif is_file:
         own = git_dir(root)
-        if own is not None:
+        if own is None:
+            _record_skip(skipped, dot, "unparsable gitdir pointer")
+        else:
             candidates.append(own / "config.worktree")
             # <common>/worktrees/<name> → <common>/config
             candidates.append(own.parent.parent / "config")
-    return [path for path in candidates if path.is_file()]
+    existing: List[Path] = []
+    for path in candidates:
+        try:
+            if path.is_file():
+                existing.append(path)
+        except OSError as exc:
+            _record_skip(skipped, path, _oserror_reason(exc))
+    return existing
 
 
-def repo_remote_urls(root: Path) -> List[str]:
+def repo_remote_urls(root: Path, skipped: Optional[List[SkippedPath]] = None) -> List[str]:
     """Remote URLs declared in *root*'s git config (text-level, no git call)."""
     urls: List[str] = []
-    for config in git_config_paths(root):
+    for config in git_config_paths(root, skipped=skipped):
         try:
             text = config.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+        except OSError as exc:
+            _record_skip(skipped, config, _oserror_reason(exc))
             continue
         for match in re.finditer(r"^\s*url\s*=\s*(\S+)", text, re.MULTILINE):
             urls.append(match.group(1))
     return urls
 
 
-def is_langyo_repo(root: Path) -> bool:
+def is_langyo_repo(root: Path, skipped: Optional[List[SkippedPath]] = None) -> bool:
     """True for a business checkout of the ``langyo/*`` account.
 
     Detected from the origin URL (the remote may itself carry an embedded
     token), with the ``easy-hydro-*`` directory convention as a fallback.
     """
     if any("github.com/langyo/" in url or "github.com:langyo/" in url
-           for url in repo_remote_urls(root)):
+           for url in repo_remote_urls(root, skipped=skipped)):
         return True
     return Path(root).name.startswith("easy-hydro-")
 
 
-def discover_langyo_repos(scan_root: Path) -> List[Path]:
-    """Sibling checkouts under *scan_root* belonging to the langyo account."""
-    root = Path(scan_root)
-    if not root.is_dir():
-        return []
-    return [
-        child for child in sorted(root.iterdir())
-        if child.is_dir() and (child / ".git").exists() and is_langyo_repo(child)
-    ]
+def discover_langyo_repos(
+    scan_root: Path, skipped: Optional[List[SkippedPath]] = None
+) -> List[Path]:
+    """Sibling checkouts under *scan_root* belonging to the langyo account.
 
-
-def iter_sweep_files(root: Path) -> Iterator[Path]:
-    """Text-ish files under *root* worth scanning (VCS/build/binary noise skipped).
-
-    Streams in filesystem order — no global sort, so a large NFS checkout is
-    not materialised in memory before the first file is read.
+    A sibling that cannot be probed (``lost+found`` on the NFS export is
+    root-owned mode 700, so ``stat``-ing ``<child>/.git`` raises
+    ``PermissionError``) is recorded in *skipped* — a scanner that crashes
+    mid-sweep reports nothing, which is worse than skipping a path out loud.
     """
-    for path in Path(root).rglob("*"):
-        if not path.is_file():
-            continue
+    root = Path(scan_root)
+    try:
+        if not root.is_dir():
+            return []
+        children = sorted(root.iterdir())
+    except OSError as exc:
+        _record_skip(skipped, root, _oserror_reason(exc))
+        return []
+    repos: List[Path] = []
+    for child in children:
         try:
-            rel_parts = path.relative_to(root).parts
-        except ValueError:
-            rel_parts = path.parts
-        if set(rel_parts) & _SWEEP_SKIP_DIRS:
-            continue
-        try:
-            if path.stat().st_size > _MAX_SWEEP_BYTES:
+            if not child.is_dir() or not (child / ".git").exists():
                 continue
-            with path.open("rb") as handle:
-                if b"\0" in handle.read(4096):
-                    continue
-        except OSError:
+        except OSError as exc:
+            _record_skip(skipped, child, _oserror_reason(exc))
             continue
-        yield path
+        if is_langyo_repo(child, skipped=skipped):
+            repos.append(child)
+    return repos
+
+
+def _sweep_entry_verdict(path: Path) -> Optional[str]:
+    """``None`` when *path* should be scanned, else the skip reason."""
+    try:
+        if path.is_symlink() and not path.exists():
+            return "broken symlink"
+        stat_result = path.stat()
+    except OSError as exc:
+        return _oserror_reason(exc)
+    if not stat.S_ISREG(stat_result.st_mode):
+        return "not a regular file"
+    if stat_result.st_size > _MAX_SWEEP_BYTES:
+        return "larger than %d bytes" % _MAX_SWEEP_BYTES
+    return None
+
+
+def _is_binary(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return b"\0" in handle.read(4096)
+    except OSError:
+        return False
+
+
+def iter_sweep_files(
+    root: Path, skipped: Optional[List[SkippedPath]] = None
+) -> Iterator[Path]:
+    """Text files under *root* worth scanning, streaming as they are found.
+
+    ``os.walk`` with in-place directory pruning (VCS/build trees are never
+    descended into) and an ``onerror`` hook, so an unreadable directory is
+    reported through *skipped* instead of aborting the sweep or vanishing.
+    Binary files are skipped silently: NUL bytes cannot be a credential,
+    whereas an *access* failure is always reported.
+    """
+    def onerror(exc: OSError) -> None:
+        _record_skip(skipped, Path(getattr(exc, "filename", None) or root), _oserror_reason(exc))
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=onerror, followlinks=False):
+        dirnames[:] = [name for name in dirnames if name not in _SWEEP_SKIP_DIRS]
+        for name in filenames:
+            path = Path(dirpath) / name
+            reason = _sweep_entry_verdict(path)
+            if reason is not None:
+                _record_skip(skipped, path, reason)
+                continue
+            if _is_binary(path):
+                continue
+            yield path
 
 
 def scan_file_credentials(path: Path) -> List[CredentialFinding]:
-    """Classify every line of *path*, returning the non-clean findings."""
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    if "\0" in text:
-        return []
+    """Classify every line of *path*, returning the non-clean findings.
+
+    Raises ``OSError`` when the file cannot be read: the caller decides whether
+    that is a reported skip or a hard error — never a silent "clean".
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
     findings: List[CredentialFinding] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         verdict = classify_credential_line(line)
@@ -349,43 +457,75 @@ def credential_sweep(
     roots: Sequence[Path],
     include_git_config: bool = True,
     include_sources: bool = True,
+    skipped: Optional[List[SkippedPath]] = None,
 ) -> List[CredentialFinding]:
-    """Sweep *.git/config* and source trees of *roots* for literal secrets."""
+    """Sweep *.git/config* and source trees of *roots* for literal secrets.
+
+    Unreadable paths land in *skipped* (with a reason) instead of raising or
+    being dropped silently.
+    """
+    if skipped is None:
+        skipped = []
     findings: List[CredentialFinding] = []
     seen: set = set()
     for root in roots:
         root = Path(root)
-        configs = git_config_paths(root) if include_git_config else []
+        configs = git_config_paths(root, skipped=skipped) if include_git_config else []
         for config in configs:
             if config in seen:
                 continue
             seen.add(config)
-            findings.extend(scan_file_credentials(config))
+            try:
+                findings.extend(scan_file_credentials(config))
+            except OSError as exc:
+                _record_skip(skipped, config, _oserror_reason(exc))
         if not include_sources:
             continue
-        for path in iter_sweep_files(root):
+        for path in iter_sweep_files(root, skipped=skipped):
             if path in seen:
                 continue
             seen.add(path)
-            findings.extend(scan_file_credentials(path))
+            try:
+                findings.extend(scan_file_credentials(path))
+            except OSError as exc:
+                _record_skip(skipped, path, _oserror_reason(exc))
     return findings
 
 
 def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
     """``gate credential-scan``: sweep .git/config + source trees for secrets."""
+    if args.git_config_only and args.no_git_config:
+        print(
+            "error: --git-config-only and --no-git-config are mutually exclusive "
+            "(together they scan nothing)",
+            file=sys.stderr,
+        )
+        return 2
+
     scan_root = Path(args.scan_root).resolve() if args.scan_root else root.parent
+    skipped: List[SkippedPath] = []
     targets: List[Path] = []
     if args.repo:
         for name in args.repo:
             candidate = scan_root / name
-            if not candidate.is_dir():
+            try:
+                is_checkout = candidate.is_dir()
+            except OSError as exc:
+                print("error: cannot read %s: %s" % (candidate, _oserror_reason(exc)), file=sys.stderr)
+                return 2
+            if not is_checkout:
                 print("error: no checkout at %s" % candidate, file=sys.stderr)
                 return 2
             targets.append(candidate)
     elif args.all_langyo:
-        targets = discover_langyo_repos(scan_root)
+        targets = discover_langyo_repos(scan_root, skipped=skipped)
         if not targets:
-            logger.warn("credential-scan: no langyo/* checkout under %s" % scan_root)
+            print(
+                "error: no langyo/* checkout under %s — refusing to report a clean sweep "
+                "of nothing" % scan_root,
+                file=sys.stderr,
+            )
+            return 2
     else:
         targets = [root]
 
@@ -393,6 +533,7 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
         targets,
         include_git_config=not args.no_git_config,
         include_sources=not args.git_config_only,
+        skipped=skipped,
     )
     violations = [f for f in findings if f.verdict == "violation"]
     reports = [f for f in findings if f.verdict == "report"]
@@ -403,15 +544,26 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
     if args.show_reports:
         for finding in reports:
             print("  " + finding.render(), file=sys.stderr)
+    for entry in skipped:
+        print("  skipped: " + entry.render(), file=sys.stderr)
+    if skipped:
+        logger.warn("credential-scan: %d path(s) could not be read (listed above)" % len(skipped))
+
     if violations:
         logger.error(
             "credential-scan: %d literal non-placeholder secret(s) in %d path(s)"
             % (len(violations), len(targets))
         )
         return 1
+    if skipped and args.fail_on_skip:
+        logger.error(
+            "credential-scan: --fail-on-skip and %d unreadable path(s) — refusing an "
+            "incomplete sweep" % len(skipped)
+        )
+        return 1
     logger.ok(
-        "credential-scan: no literal secrets (%d placeholder/env hit(s) ignored)"
-        % len(reports)
+        "credential-scan: no literal secrets (%d placeholder/env hit(s) ignored, "
+        "%d path(s) skipped)" % (len(reports), len(skipped))
     )
     return 0
 
@@ -863,6 +1015,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--show-reports", action="store_true",
         help="(credential-scan) also print placeholder/env-referenced hits",
+    )
+    parser.add_argument(
+        "--fail-on-skip", action="store_true",
+        help="(credential-scan) exit 1 when any path could not be read "
+             "(an incomplete sweep is not a pass)",
     )
     args = parser.parse_args(argv)
 

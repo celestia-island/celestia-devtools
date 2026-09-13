@@ -23,8 +23,10 @@
 #   evidence   one line of review evidence for the current status
 #
 # Initial content = PLAN.md §1.2 item 18 (the 2026-09-13 backfill of the audit),
-# rows P0-A…P0-E with that table's statuses. All five were still open as of the
-# 2026-09-13 review; none carries a closing PR yet.
+# rows P0-A…P0-E with that table's 2026-09-13 statuses: P0-A / P0-B / P0-D still
+# untouched, P0-C closed by easy-hydro-miniprogram #27, and P0-E re-scoped after
+# its original numbers turned out to be measured on rewritten master commits
+# (AGENTS §8.3.7) — entelecheia is clean there, evernight still has cargo deny.
 
 version = 1
 updated_at = "2026-09-13"
@@ -52,13 +54,13 @@ evidence = "2026-09-13 review: industrial_write_policy.rs:66-80 still matches st
 
 [[p0]]
 id = "P0-C"
-title = "Live Feishu app secret and Bitable token committed at HEAD in easy-hydro-miniprogram docs"
+title = "Live Feishu app secret and Bitable token were committed at HEAD in easy-hydro-miniprogram docs"
 severity = "p0"
 scope = ["easy-hydro-miniprogram"]
-status = "open"
+status = "closed"
 opened_at = "2026-09-10"
-closed_by = ""
-evidence = "2026-09-13 review: nas-integration.md:56-58 still carries the real FEISHU_APP_ID / FEISHU_APP_SECRET / BITABLE_TOKEN values; rotation is pending the user"
+closed_by = "#27"
+evidence = "2026-09-13: PR #27 (ae55a915) replaced all three live values with placeholders; origin/master greps 0 hits. Rotating the exposed secret is still pending the user (AGENTS §10.1.6)"
 
 [[p0]]
 id = "P0-D"
@@ -74,8 +76,8 @@ evidence = "2026-09-13 review: entelecheia scripts/deploy/backup.py + restore.py
 id = "P0-E"
 title = "Master CI stays red on the main repos (code-level failures, not environment-only)"
 severity = "p0"
-scope = ["entelecheia", "evernight"]
+scope = ["evernight"]
 status = "open"
 opened_at = "2026-09-10"
 closed_by = ""
-evidence = "2026-09-13 review: entelecheia 5/19 and evernight 4/27 recent master runs still fail on code-level steps; diagnosis in progress"
+evidence = "2026-09-13 re-check: the original 5/19 + 4/27 numbers were measured on ghost commits (Squash Message Clean rewrote master with GITHUB_TOKEN; AGENTS §8.3.7) — entelecheia master is currently clean, evernight still fails on cargo deny"

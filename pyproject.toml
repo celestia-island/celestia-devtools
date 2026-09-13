@@ -9,6 +9,10 @@ description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
+dependencies = [
+    # tomllib is 3.11+; the declared floor is 3.9.
+    "tomli>=2; python_version < '3.11'",
+]
 authors = [{ name = "langyo", email = "langyo.china@gmail.com" }]
 keywords = ["cargo", "devtools", "build-tools", "celestia-island"]
 classifiers = [
