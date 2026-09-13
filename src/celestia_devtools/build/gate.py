@@ -780,11 +780,40 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
             "clean tree"
         )
 
-    if violations:
-        logger.error(
-            "credential-scan: %d literal non-placeholder secret(s) in %d path(s)"
-            % (len(violations), len(targets))
+    # A checkout can be months behind its remote, and a scan of such a tree reports
+    # leaks that are already fixed upstream — which reads as "master still has live
+    # secrets". This workspace has main checkouts stranded on commits the retired
+    # history-rewriting workflow orphaned (AGENTS §8.3.7), and it has others that are
+    # simply behind — 2026-09-13: all 20 hits this sweep reported came from two
+    # checkouts that were behind `origin/master`, where the same files contain zero
+    # secrets, because the cleanups had already merged. Say it out loud instead of
+    # leaving the reader to infer it from the paths.
+    stale = [(p, note) for p in targets if (note := _checkout_staleness(p))]
+    if stale:
+        logger.warn(
+            "credential-scan: %d checkout(s) are not identical to their remote default branch "
+            "— findings in those trees may already be fixed upstream:" % len(stale)
         )
+        for path, note in sorted(stale, key=lambda item: item[0].name):
+            logger.info("  %-24s %s" % (path.name, note))
+    stale_violations = [
+        finding
+        for finding in violations
+        if any(str(finding.path).startswith(str(path) + os.sep) for path, _ in stale)
+    ]
+
+    if violations:
+        message = "credential-scan: %d literal non-placeholder secret(s) in %d path(s)" % (
+            len(violations),
+            len(targets),
+        )
+        if stale_violations:
+            message += (
+                "; %d of them sit inside %d checkout(s) that differ from origin/<default> — "
+                "check the remote before treating them as live"
+                % (len(stale_violations), len(stale))
+            )
+        logger.error(message)
         return 1
     if skipped and args.fail_on_skip:
         logger.error(
@@ -847,6 +876,31 @@ def _git_output(args: List[str], root: Path) -> Optional[str]:
     if proc.returncode != 0:
         return None
     return proc.stdout
+
+
+def _checkout_staleness(path: Path) -> Optional[str]:
+    """``None`` when *path* is identical to its remote default branch, else a description.
+
+    Returns ``"ahead X / behind Y (origin/<ref>)"`` — note that a checkout can be BOTH
+    (a stranded local commit plus real upstream progress), which ``--count`` reports and
+    a plain ``merge-base --is-ancestor`` test would miss.
+
+    Deliberately silent when there is no remote ref to compare against: "cannot tell"
+    must never be rendered as "behind", or the warning becomes noise.
+    """
+    for ref in ("origin/master", "origin/main"):
+        if _git_output(["rev-parse", "--verify", "-q", ref], path) is None:
+            continue
+        counts = _git_output(["rev-list", "--left-right", "--count", "HEAD...%s" % ref], path)
+        if counts is None:
+            continue
+        parts = counts.split()
+        if len(parts) == 2:
+            ahead, behind = parts
+            if ahead == "0" and behind == "0":
+                return None
+            return "ahead %s / behind %s (%s)" % (ahead, behind, ref)
+    return None
 
 
 def _changed_files(root: Path) -> Optional[List[str]]:

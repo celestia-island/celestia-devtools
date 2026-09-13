@@ -1,6 +1,7 @@
 """Tests for the local gate orchestrator (scheduler + build/gate)."""
 
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -28,6 +29,7 @@ from celestia_devtools.build.gate import (
     resolve_modes,
     scan_file_credentials,
     scan_large_downloads,
+    _checkout_staleness,
 )
 from celestia_devtools.core.scheduler import (
     FAIL,
@@ -1020,3 +1022,84 @@ class TestCredentialPrecision:
         assert list(iter_sweep_files(root, skipped=skipped)) == []
         assert [entry.path.name for entry in skipped] == ["linked"]
         assert "symlinked directory" in skipped[0].reason
+
+
+class TestCheckoutStaleness:
+    """The sweep must say when the tree it scanned is not its remote's HEAD.
+
+    2026-09-13: every hit a real sweep reported came from two checkouts that were
+    *behind* `origin/master`, where the same files contain no secrets at all —
+    the cleanups had already merged (#27, #87). A scan of a stale tree that stays
+    silent about it reads as "the remote still has live secrets", which is the
+    opposite of what the sweep is for.
+    """
+
+    @staticmethod
+    def _repo(path):
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+        for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
+            subprocess.run(["git", "-C", str(path), "config", key, value], check=True)
+        (path / "f.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "-C", str(path), "add", "f.txt"], check=True)
+        subprocess.run(["git", "-C", str(path), "commit", "-qm", "init"], check=True)
+        return path
+
+    @staticmethod
+    def _head(path):
+        return subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    def test_checkout_at_its_remote_head_is_not_reported(self, tmp_path):
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+        repo = self._repo(tmp_path / "fresh")
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/master", self._head(repo)],
+            check=True,
+        )
+        assert _checkout_staleness(repo) is None
+
+    def test_checkout_behind_its_remote_is_reported(self, tmp_path):
+        """The exact shape of the 2026-09-13 misreading: HEAD is an ancestor of the remote."""
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+        repo = self._repo(tmp_path / "behind")
+        (repo / "f.txt").write_text("y", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "commit", "-qam", "second"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/master", self._head(repo)],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(repo), "reset", "-q", "--hard", "HEAD~1"], check=True)
+        note = _checkout_staleness(repo)
+        assert note is not None
+        assert "behind 1" in note
+
+    def test_stranded_checkout_reports_both_directions(self, tmp_path):
+        """A checkout can be ahead *and* behind (the orphaned-commit case, AGENTS §8.3.7)."""
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+        repo = self._repo(tmp_path / "stranded")
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/master", self._head(repo)],
+            check=True,
+        )
+        (repo / "f.txt").write_text("local", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "commit", "-qam", "local-only"], check=True)
+        note = _checkout_staleness(repo)
+        assert note is not None
+        assert "ahead 1" in note and "behind 0" in note
+
+    def test_no_remote_ref_is_silent_rather_than_wrong(self, tmp_path):
+        """"Cannot tell" must never be rendered as "behind", or the warning is noise."""
+        if not shutil.which("git"):
+            pytest.skip("git not available")
+        repo = self._repo(tmp_path / "noremote")
+        assert _checkout_staleness(repo) is None
+
+    def test_plain_directory_without_git_is_silent(self, tmp_path):
+        plain = tmp_path / "notarepo"
+        plain.mkdir()
+        assert _checkout_staleness(plain) is None
