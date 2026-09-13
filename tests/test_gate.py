@@ -1,8 +1,11 @@
 """Tests for the local gate orchestrator (scheduler + build/gate)."""
 
 import os
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -762,6 +765,15 @@ VIOLATION_SAMPLES = [
     'SECRET_KEY = "aB3dE5fG7hI9jK1lM3nO5pQ7&"',
     # … and a trailing `process.env` comment must not excuse a real literal
     'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # fallback for process.env',
+    # unquoted literals keep their punctuation (the .env form this gate exists for)
+    "DB_PASSWORD=Str0ng!Passw0rd!2026",
+    "POSTGRES_PASSWORD=Tr0ub4dor&3LongPassword2026",
+    "--target-pass P@ssw0rd!2026#Production",
+    # JSON-style keys
+    '"client_secret": "x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3"',
+    # an env-ref *substring* inside a value is not an env lookup
+    'DB_PASSWORD = "Prod-env(2026)#x"',
+    'API_KEY = "getenv-9f8e7d6c5b4a3210"',
 ]
 
 REPORT_SAMPLES = [
@@ -896,6 +908,47 @@ class TestCredentialPrecision:
         stats = {}
         assert credential_sweep([root], include_git_config=False, stats=stats) == []
         assert stats["files"] == 0
+
+    def _run_cli(self, argv, root):
+        """Run the real CLI in a subprocess so logger output is observable."""
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+        proc = subprocess.run(
+            [sys.executable, "-m", "celestia_devtools", "gate", "credential-scan", *argv,
+             "--repo-root", str(root)],
+            capture_output=True, text=True, env=env,
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def test_cli_reports_excluded_trees_and_empty_scans(self, tmp_path):
+        """The two accounting strings are user-facing: pin them at CLI level."""
+        root = tmp_path / "ws"
+        (root / "demo" / "dist").mkdir(parents=True)
+        (root / "demo" / "dist" / "bundle.js").write_text("x = 1\n", encoding="utf-8")
+        rc, out = self._run_cli(
+            ["--scan-root", str(root), "--repo", "demo", "--no-git-config"], tmp_path
+        )
+        assert rc == 0
+        assert "excluded by name" in out and "dist" in out
+        assert "no source file was scanned" in out
+
+    def test_cli_flags_a_late_nul_file_as_a_skip(self, tmp_path):
+        """A NUL after the 4 KiB probe must not read as a scanned-clean file."""
+        root = tmp_path / "ws"
+        (root / "demo").mkdir(parents=True)
+        (root / "demo" / "blob.ini").write_bytes(
+            b"x" * 5000 + b"PASSWORD = \"hunter2hunter2\"\n" + b"\x00" * 8
+        )
+        skipped = []
+        stats = {}
+        credential_sweep([root / "demo"], include_git_config=False, skipped=skipped, stats=stats)
+        assert [entry.reason for entry in skipped] == ["binary content"]
+        assert stats["files"] == 0, "a binary file must not count as scanned"
+        rc, out = self._run_cli(
+            ["--scan-root", str(root), "--repo", "demo", "--no-git-config"], tmp_path
+        )
+        assert rc == 0
+        assert "could not be read" in out
 
     def test_symlinked_directories_are_reported_not_dropped(self, tmp_path):
         outside = tmp_path / "outside"

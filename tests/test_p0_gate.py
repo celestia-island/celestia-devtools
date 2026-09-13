@@ -82,9 +82,9 @@ class TestLedgerParsing:
         assert set(by_id) == {"P0-A", "P0-B", "P0-C", "P0-D", "P0-E"}
         assert {entry.id for entry in entries if entry.is_open} == {"P0-A", "P0-B", "P0-E"}
         assert by_id["P0-C"].status == "closed"
-        assert by_id["P0-C"].closed_by == "easy-hydro-miniprogram#27"
+        assert by_id["P0-C"].closed_by == "langyo/easy-hydro-miniprogram#27"
         assert by_id["P0-D"].status == "closed"
-        assert by_id["P0-D"].closed_by == "#284"
+        assert by_id["P0-D"].closed_by == "celestia-island/entelecheia#284"
         assert all(entry.opened_at == "2026-09-10" for entry in entries)
         assert all(entry.evidence for entry in entries)
         assert by_id["P0-A"].covers("entelecheia")

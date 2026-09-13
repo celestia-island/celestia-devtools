@@ -107,7 +107,7 @@ _DOC_ADDRESS_PATTERN = re.compile(r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113
 
 # Reading the value from env/config — no literal secret lives in the tree.
 _ENV_REF_PATTERN = re.compile(
-    r"os\.environ|getenv|environ\s*\[|\$\{|process\.env|\benv\s*\(",
+    r"os\.environ|getenv\s*\(|environ\s*\[|\$\{|process\.env",
     re.IGNORECASE,
 )
 
@@ -117,9 +117,9 @@ _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(
-    r"(?:^|[\s(])"
+    r"(?:^|[\s(\"'])"
     r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
-    r"[A-Za-z0-9_.-]*\s*[=:]\s*",
+    r"[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
     re.IGNORECASE,
 )
 
@@ -177,8 +177,11 @@ _KEY_QUALIFIERS = frozenset({
 _KEY_SEPARATOR_PATTERN = re.compile(r"[^A-Za-z0-9]+")
 _CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
-#: An unquoted literal value — a compact token with no call/subscript punctuation.
-_LITERAL_VALUE_PATTERN = re.compile(r"^[A-Za-z0-9_./+=:@~-]{4,}$")
+#: An unquoted literal value: one token, no whitespace and no structural
+#: punctuation (quotes, parens, brackets, commas). Punctuation like ``!``,
+#: ``&``, ``%`` or ``#`` is *allowed* — ``DB_PASSWORD=Str0ng!Passw0rd!2026`` is
+#: exactly the shape this gate exists for.
+_LITERAL_VALUE_PATTERN = re.compile(r"^[^\s\"'`,;(){}\[\]<>]{4,}$")
 
 #: A quoted literal may carry arbitrary punctuation (``"P@ssw0rd!2026#Prod"``)
 #: but not whitespace: text with spaces is prose or a sliced expression, not a
@@ -601,15 +604,20 @@ def _decode_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def scan_file_credentials(path: Path) -> List[CredentialFinding]:
+def scan_file_credentials(
+    path: Path, skipped: Optional[List[SkippedPath]] = None
+) -> List[CredentialFinding]:
     """Classify every line of *path*, returning the non-clean findings.
 
-    UTF-16 text is decoded rather than mistaken for binary. Raises ``OSError``
-    when the file cannot be read: the caller decides whether that is a reported
-    skip or a hard error — never a silent "clean".
+    UTF-16 text is decoded rather than mistaken for binary; a file that is
+    binary after all is recorded in *skipped* instead of quietly returning an
+    empty result. Raises ``OSError`` when the file cannot be read: the caller
+    decides whether that is a reported skip or a hard error — never a silent
+    "clean".
     """
     text = _decode_text(path.read_bytes())
     if "\0" in text:
+        _record_skip(skipped, path, "binary content")
         return []
     findings: List[CredentialFinding] = []
     for lineno, line in enumerate(text.splitlines(), 1):
@@ -655,10 +663,13 @@ def credential_sweep(
             if path in seen:
                 continue
             seen.add(path)
-            if stats is not None:
-                stats["files"] = stats.get("files", 0) + 1
             try:
-                findings.extend(scan_file_credentials(path))
+                before = len(skipped)
+                findings.extend(scan_file_credentials(path, skipped=skipped))
+                # A file that turned out to be binary was not scanned, so it
+                # must not be counted as one (never both "skipped" and "scanned").
+                if stats is not None and len(skipped) == before:
+                    stats["files"] = stats.get("files", 0) + 1
             except OSError as exc:
                 _record_skip(skipped, path, _oserror_reason(exc))
     return findings
