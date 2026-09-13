@@ -1,0 +1,75 @@
+name: P0 Ledger Gate
+
+# Fails a pull request while an unresolved P0 in the org ledger covers its repo.
+#
+# Why: the 2026-09-10 workspace audit listed five P0s whose only carrier was a
+# report nobody was obliged to read, so bypassing them cost nothing. The ledger
+# (src/celestia_devtools/lint/p0_ledger.toml in this repo) turns each open entry
+# into a red check for the repos named in its `scope`.
+#
+# Centralised here (reusable workflow) instead of copied per repo: the ledger
+# must be read from `@master` so an outdated runner-side CLI can never gate
+# against a stale ledger. Repos call it with:
+#
+#   jobs:
+#     p0-gate:
+#       uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
+#
+# The escape hatch is deliberate and narrow: an open P0 stops blocking once a
+# human writes `P0-ACK: <id> [reason]` in the PR body (hence the `edited`
+# trigger — adding the acknowledgment must re-run the check), or once the ledger
+# entry is closed with the PR that closed it. Acknowledgments are echoed in the
+# run log; the gate never passes silently.
+
+on:
+  workflow_call: {}
+  # Runs on this repo's own PRs too, which is also how the workflow is verified
+  # before any caller adopts it.
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+
+concurrency:
+  group: p0-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: P0 Ledger Gate
+    # Fork PRs must not spend shared org runner time on untrusted content; they
+    # need maintainer approval anyway. The guard covers both the direct
+    # pull_request trigger and workflow_call callers (github.event then carries
+    # the caller's PR payload).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Python-stdlib-only and sub-second: it belongs with the other org checks on
+    # the self-hosted fleet. No GitHub-hosted job here — private repos must not
+    # add billed ubuntu-latest runs (AGENTS §8.2).
+    runs-on: [self-hosted, linux, x64, local]
+    permissions:
+      contents: read
+    steps:
+      # Only the ledger repo is checked out: the caller's repo is not needed
+      # (--repo names it explicitly), and checking out `@master` guarantees the
+      # gate reads the current ledger rather than whatever the runner has
+      # preinstalled.
+      - name: Checkout the ledger
+        uses: actions/checkout@v7
+        with:
+          repository: celestia-island/celestia-devtools
+          ref: master
+          path: .p0-ledger
+          fetch-depth: 1
+        # Defensive: the runner env rewrites github.com/celestia-island/* to
+        # local bare mirrors (per-repo exact-prefix rules) which may lag master.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Gate
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          PYTHONPATH="$GITHUB_WORKSPACE/.p0-ledger/src" python3 -m celestia_devtools p0-gate \
+            --repo "$REPO_NAME" \
+            --ledger "$GITHUB_WORKSPACE/.p0-ledger/src/celestia_devtools/lint/p0_ledger.toml" \
+            --pr-body-file "$RUNNER_TEMP/pr-body.md"

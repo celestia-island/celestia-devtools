@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.4.3
+# Version: 0.5.0
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -143,6 +143,23 @@ commit-msg-lint FILE:
 # checkout where init has already vendored the justfile.
 commit-msg-hook-install *ARGS='':
     {{ _devtools }} hook install {{ ARGS }}
+
+# ── P0 ledger gate ───────────────────────────────────────────────────────────
+
+# Fail when this repo is covered by an unresolved P0 in the org ledger
+# (shipped with celestia-devtools as lint/p0_ledger.toml; override with
+# $CELESTIA_P0_LEDGER or a repo-root p0-ledger.toml).
+#
+# An open entry blocks the repo until it is closed (closed_by = the PR that did
+# it) or explicitly acknowledged by a human — `--ack P0-X`, $CELESTIA_P0_ACK,
+# or a `P0-ACK: P0-X` line in the PR body (pass it with --pr-body-file). The
+# gate echoes every acknowledgment; it never passes silently.
+#
+#   just p0-gate                 check this repo
+#   just p0-gate --list          print the whole ledger, grouped by status
+#   just p0-gate --ack P0-A      acknowledge one open item (recorded in the log)
+p0-gate *ARGS='':
+    {{ _devtools }} p0-gate {{ARGS}}
 
 # ── Upstream fork sync ───────────────────────────────────────────────────────
 #

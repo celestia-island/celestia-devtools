@@ -137,6 +137,8 @@ For enforcement, enable branch protection on your default branch via GitHub Sett
 | `celestia-devtools pr-merge --subject "..." --squash` | Validate then merge (standalone) |
 | `celestia-devtools gh pr merge --subject "..."` | Transparent gh proxy |
 | `celestia-devtools gate` | Run the local CI gate (see below) |
+| `celestia-devtools gate credential-scan` | Sweep `.git/config` + source trees for literal secrets |
+| `celestia-devtools p0-gate` | Fail a repo covered by an unresolved P0 (see below) |
 
 ## Local Gate
 
@@ -167,6 +169,37 @@ celestia-devtools gate rust --coverage  # enable cargo tarpaulin coverage
 vs `origin/master` are grepped for `password|secret|token|api_key|BEGIN …
 PRIVATE KEY`, failing only on literal non-placeholder values (`CHANGE_ME`,
 `<your-password>`, `test-password`, `sk-xxx`, `192.0.2.x`, … are whitelisted).
+Two secret shapes carry no credential word and are matched directly: a token
+embedded in a URL's userinfo (the `.git/config` remote form
+`https://oauth2:gho_…@github.com/org/repo.git`) and a bare provider token
+(`gho_…` / `ghp_…` / `github_pat_…`).
+
+`celestia-devtools gate credential-scan` runs that same classifier over the
+surfaces no org workflow visits: each checkout's own `.git/config` and the
+source trees of the `langyo/*` business repos (`easy-hydro-*`). It reports —
+never rewrites a checkout.
+
+```bash
+celestia-devtools gate credential-scan --repo arona --repo easy-hydro-erp
+celestia-devtools gate credential-scan --all-langyo --scan-root /mnt/codespace
+celestia-devtools gate credential-scan --git-config-only   # remotes only
+celestia-devtools gate credential-scan --fail-on-skip      # an unreadable path fails
+```
+
+Paths the sweep cannot read (a root-owned `lost+found`, a broken symlink, a
+socket, a file the user cannot open) are never dropped silently: each is printed
+with its reason, and `--fail-on-skip` turns an incomplete sweep into a failure.
+`--git-config-only` and `--no-git-config` are mutually exclusive.
+
+A hit is a **violation** only when the value is a literal secret: a provider
+token shape (`gho_…`, `github_pat_…`, `glpat-…`, `sk-…`, `xox…`, `AKIA…`,
+`AIza…`, `cli_…`), a URL userinfo that is credential-shaped, or a
+credential-named key (`*_SECRET` / `*_TOKEN` / `*_PASSWORD` / `api_key` / …)
+whose value is a quoted literal, carries a digit, or is a long mixed blob.
+Identifiers, call expressions, control words (`write`), dependency names
+(`jsonwebtoken = "^10"`) and placeholders are reported, not failed — a scanner
+that flags `token = path.strip()` gets ignored, and an ignored scanner protects
+nothing.
 
 `celestia-devtools gate precheck` runs the safety diagnostics from the workspace
 postmortem follow-ups: NFS mount-point warnings (a `findmnt` scan for `_worktree`
@@ -175,6 +208,64 @@ paths at `rm -rf` risk) and a large-download heuristic scan (`hf_hub_download` /
 hints). Both are advisory warnings, never failures.
 
 Exit codes: `0` all steps passed, `1` any step failed, `2` usage error.
+
+## P0 Ledger Gate
+
+A finding that lives only in a report nobody is obliged to read costs nothing to
+bypass. `celestia-devtools p0-gate` turns unresolved P0 findings into a red
+check: the ledger (`src/celestia_devtools/lint/p0_ledger.toml`, shipped with the
+package) lists each finding with an `id`, `title`, `severity`, `scope` (the
+repos it covers), `status`, `opened_at`, `closed_by`, and a one-line `evidence`
+for the current status.
+
+```bash
+celestia-devtools p0-gate --repo entelecheia   # exit 1 while an open P0 covers it
+celestia-devtools p0-gate --list               # whole ledger, grouped by status
+celestia-devtools p0-gate --repo entelecheia --ack P0-A
+celestia-devtools p0-gate --repo arona --pr-body-file pr-body.md
+```
+
+- **Blocking** — any entry with `status = "open"` whose `scope` matches the repo
+  (fnmatch patterns such as `easy-hydro-*` are supported) exits non-zero and
+  prints `id` + `title` + `evidence`. Repo names are normalized, so
+  `owner/repo`, a full URL, `repo.git` or different casing all resolve to the
+  same check.
+- **Escape hatch** — an acknowledgment has to be written by someone: `--ack ID`,
+  `$CELESTIA_P0_ACK`, or a `P0-ACK: <id> [reason]` line in the PR body
+  (`--pr-body` / `--pr-body-file` / `$CELESTIA_P0_PR_BODY`). Acknowledged entries
+  are echoed to stderr with their source and stop blocking; unacknowledged ones
+  still fail. The gate never guesses, and never passes silently.
+- **Closing** — a `closed` entry must name the PR that closed it (`closed_by`);
+  an open entry must leave it empty.
+- **Fail-closed** — a missing, unreadable, unparsable, schema-invalid, or empty
+  ledger exits `2` instead of passing. Exit codes: `0` clear, `1` blocked by an
+  open P0, `2` usage/ledger error.
+
+The ledger ships inside the package, so any repo can adopt the check by adding a
+workflow step. Override it per checkout with `--ledger`, `$CELESTIA_P0_LEDGER`,
+or a `p0-ledger.toml` at the repo root.
+
+### Adopting the gate in a repo
+
+Call the org reusable workflow — it checks out the ledger from `@master`, so a
+stale runner-side CLI can never gate against an out-of-date ledger:
+
+```yaml
+name: P0 Ledger Gate
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+concurrency:
+  group: p0-gate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  p0-gate:
+    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
+```
+
+`edited` is required: adding a `P0-ACK:` line to the PR body has to re-run the
+check. An open P0 then blocks the repo's PRs until someone closes the ledger
+entry or writes the acknowledgment.
 
 ## License
 

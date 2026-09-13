@@ -1,0 +1,84 @@
+# P0 ledger — the machine-readable registry of unresolved P0 findings.
+#
+# Why this file exists: the 2026-09-10 workspace audit
+# (_reports/project-group-evaluation-2026-09-10.md) listed five P0s, but their
+# only carrier was a markdown report nobody was obliged to read — bypassing
+# them cost nothing. `celestia-devtools p0-gate` reads this ledger and fails
+# for any repo covered by an entry whose status is still "open", so an
+# unresolved P0 now blocks the repos it touches until someone either closes
+# the entry (closed_by = the PR that did it) or writes an explicit
+# acknowledgment: `--ack P0-X`, `$CELESTIA_P0_ACK`, or a `P0-ACK: P0-X` line
+# in the PR body.
+#
+# Schema — validated by celestia_devtools.lint.p0_gate; a missing, unreadable,
+# unparsable or schema-invalid ledger is an error, never a silent pass:
+#   id         stable identifier, unique (e.g. "P0-A")
+#   title      one-line description of the finding
+#   severity   "p0" | "p1"
+#   scope      repo names the finding covers; fnmatch patterns allowed
+#              (e.g. "easy-hydro-*") because some findings span a repo family
+#   status     "open" | "closed"
+#   opened_at  ISO date the finding was recorded (YYYY-MM-DD)
+#   closed_by  PR reference that closed it ("" while open, non-empty once closed)
+#   evidence   one line of review evidence for the current status
+#
+# Initial content = PLAN.md §1.2 item 18 (the 2026-09-13 backfill of the audit),
+# rows P0-A…P0-E with that table's 2026-09-13 statuses: P0-A / P0-B still
+# untouched, P0-C closed by easy-hydro-miniprogram #27, P0-D's work landed but
+# its closing PR is not merged yet (so the entry stays open until closed_by
+# names it), and P0-E re-scoped after its original numbers turned out to be
+# measured on rewritten master commits (AGENTS §8.3.7).
+
+version = 1
+updated_at = "2026-09-13"
+source = "_reports/project-group-evaluation-2026-09-10.md (backfilled as PLAN.md §1.2 item 18)"
+
+[[p0]]
+id = "P0-A"
+title = "Modbus TCP writes are confirmed by the echoed function code only, with no write-then-read-back"
+severity = "p0"
+scope = ["entelecheia"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13: entelecheia #285 implements write-then-read-back (fc03/fc01 over the written range, element-wise compare, fail-closed on mismatch/length/truncation/exception/mute/timeout) on ONE TCP connection — the failure matrix is genuinely covered (11 of 12 mutations turn the author's suite red). NOT yet closable: a second-round independent adversarial review showed the read-back is not bound to the slave it claims to verify — read_tcp_response discards the MBAP TID/PID and nothing anywhere compares frame[6] (unit id), so a response from unit id 9 is accepted for a write to station 7 (reproduced: confirmed:true), and a write-ack whose echoed address/count disagree is accepted too. Medium severity (no Modbus-TCP auth, so an active attacker can lie anyway; the real risk is cross-talk on a shared gateway / multi-drop bus). Closes when the unit-id + TID/PID + ack-echo guards land WITH discriminating tests (the existing TCP fixtures hardcode TID=0, so adding the check requires updating them)"
+
+[[p0]]
+id = "P0-B"
+title = "Industrial write approval is not bound to a device endpoint, so an approved (station, address) can be replayed at any IP"
+severity = "p0"
+scope = ["entelecheia"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13: entelecheia #285 delivers the POLICY layer only (optional per-entry `endpoint`, enforced when set, and carried inside the operator signature) — verified with a 12-mutation matrix. But a second-round independent adversarial review proved it is INERT on every delivered path: plana's IndustrialWriteApprovalPush has no endpoint field, the plana-types bindings have none, shittim-chest WriteApprovalDialog.tsx:70 does not send one, and scepter's params.get(\"endpoint\") is therefore always None — replaying an approved (station, address) from any IP is still Allowed (reproduced with the exact key set the chest dialog sends). DO NOT close this on #285. Remaining work: derive the endpoint server-side from the pending request in WriteApprovalRegistry (same fix also closes the pre-existing weakness that approveWrite trusts client-supplied station_id/address without cross-checking the registry)"
+
+[[p0]]
+id = "P0-C"
+title = "Live Feishu app secret and Bitable token were committed at HEAD in easy-hydro-miniprogram docs"
+severity = "p0"
+scope = ["easy-hydro-miniprogram"]
+status = "closed"
+opened_at = "2026-09-10"
+closed_by = "easy-hydro-miniprogram#27"
+evidence = "2026-09-13: PR #27 (ae55a915) replaced all three live values with placeholders; origin/master greps 0 hits. Rotating the exposed secret is still pending the user (AGENTS §10.1.6)"
+
+[[p0]]
+id = "P0-D"
+title = "Backups have tooling but no schedule, land on the same host, are never rehearsed, and arona has none"
+severity = "p0"
+scope = ["entelecheia", "arona"]
+status = "closed"
+opened_at = "2026-09-10"
+closed_by = "#284"
+evidence = "2026-09-13: closed by entelecheia #284 (squash 85e668df) after a second-round independent re-verification returned MERGEABLE — scripts fixed (the old ones targeted a docker-compose deployment that does not exist here, so both would have failed on first run), node-3 timers enabled, three off-host copies (node-3 local / node-1 mirror / daemon), restore drill PASSED from the off-machine copy with an exact row-prefix proof, and the round-1 'corrupted mirror reported as verified' defect reproduced against the old code and killed (report: _reports/backup-drill-2026-09-13.md)"
+
+[[p0]]
+id = "P0-E"
+title = "Master CI stays red on the main repos (code-level failures, not environment-only)"
+severity = "p0"
+scope = ["evernight"]
+status = "open"
+opened_at = "2026-09-10"
+closed_by = ""
+evidence = "2026-09-13 re-check: the original 5/19 + 4/27 numbers were measured on ghost commits (Squash Message Clean rewrote master with GITHUB_TOKEN; AGENTS §8.3.7) — entelecheia master is currently clean, evernight still fails on cargo deny"

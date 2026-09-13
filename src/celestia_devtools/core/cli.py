@@ -26,6 +26,7 @@ Commands::
     hook              Manage the celestia-devtools commit-msg hook lifecycle
     pr-merge          Validate subject and merge via gh pr merge.
     nav-lint          Gate navigation call sites against poisoned/off-origin targets
+    p0-gate           Fail a repo covered by an unresolved P0 finding (explicit ack to pass)
     gh                Transparent gh proxy — validates subject on pr merge, forwards everything else.
     sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
     gate              Run the local CI gate (modes + DAG ordering + job budget)
@@ -63,6 +64,7 @@ COMMANDS: dict[str, str] = {
     "hook": "celestia_devtools.vcs.hook",
     "pr-merge": "celestia_devtools.vcs.pr_merge",
     "nav-lint": "celestia_devtools.lint.nav_lint",
+    "p0-gate": "celestia_devtools.lint.p0_gate",
     "gh": "celestia_devtools.vcs.gh",
     "publish-crates": "celestia_devtools.publish.crates",
     "toml-sort": "celestia_devtools.repo.toml_sort",

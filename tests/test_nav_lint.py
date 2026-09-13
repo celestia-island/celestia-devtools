@@ -5,8 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 # Allow running the tests against a source checkout without a pip
 # install (PYTHONPATH-style); the CI venv install makes this a no-op.
 HERE = Path(__file__).resolve().parent
@@ -155,7 +153,7 @@ def test_history_two_arg_call_passes(tmp_path):
 
 def test_cli_exit_codes(tmp_path, capsys):
     good = write(tmp_path, 'router.push("/x");\n', "good.ts")
-    bad = write(tmp_path, "router.push(x);\n", "bad.ts")
+    write(tmp_path, "router.push(x);\n", "bad.ts")
     rc = nav_lint.main([str(tmp_path)])
     assert rc == 1
     out = capsys.readouterr().out
