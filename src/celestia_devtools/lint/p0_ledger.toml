@@ -41,7 +41,7 @@ scope = ["entelecheia"]
 status = "open"
 opened_at = "2026-09-10"
 closed_by = ""
-evidence = "2026-09-13 review: modbus_write.rs:285 still accepts resp.len() >= 9 && resp[7] == 0x10 as `confirmed`; only the RTU branch reads the value back"
+evidence = "2026-09-13: entelecheia #285 implements write-then-read-back (fc03/fc01 over the written range, element-wise compare, fail-closed on mismatch/length/truncation/exception/mute/timeout) on ONE TCP connection — the failure matrix is genuinely covered (11 of 12 mutations turn the author's suite red). NOT yet closable: a second-round independent adversarial review showed the read-back is not bound to the slave it claims to verify — read_tcp_response discards the MBAP TID/PID and nothing anywhere compares frame[6] (unit id), so a response from unit id 9 is accepted for a write to station 7 (reproduced: confirmed:true), and a write-ack whose echoed address/count disagree is accepted too. Medium severity (no Modbus-TCP auth, so an active attacker can lie anyway; the real risk is cross-talk on a shared gateway / multi-drop bus). Closes when the unit-id + TID/PID + ack-echo guards land WITH discriminating tests (the existing TCP fixtures hardcode TID=0, so adding the check requires updating them)"
 
 [[p0]]
 id = "P0-B"
@@ -51,7 +51,7 @@ scope = ["entelecheia"]
 status = "open"
 opened_at = "2026-09-10"
 closed_by = ""
-evidence = "2026-09-13 review: industrial_write_policy.rs:66-80 still matches station_id + protocol + address only; `endpoint` comes from the LLM tool arguments"
+evidence = "2026-09-13: entelecheia #285 delivers the POLICY layer only (optional per-entry `endpoint`, enforced when set, and carried inside the operator signature) — verified with a 12-mutation matrix. But a second-round independent adversarial review proved it is INERT on every delivered path: plana's IndustrialWriteApprovalPush has no endpoint field, the plana-types bindings have none, shittim-chest WriteApprovalDialog.tsx:70 does not send one, and scepter's params.get(\"endpoint\") is therefore always None — replaying an approved (station, address) from any IP is still Allowed (reproduced with the exact key set the chest dialog sends). DO NOT close this on #285. Remaining work: derive the endpoint server-side from the pending request in WriteApprovalRegistry (same fix also closes the pre-existing weakness that approveWrite trusts client-supplied station_id/address without cross-checking the registry)"
 
 [[p0]]
 id = "P0-C"
@@ -60,7 +60,7 @@ severity = "p0"
 scope = ["easy-hydro-miniprogram"]
 status = "closed"
 opened_at = "2026-09-10"
-closed_by = "#27"
+closed_by = "easy-hydro-miniprogram#27"
 evidence = "2026-09-13: PR #27 (ae55a915) replaced all three live values with placeholders; origin/master greps 0 hits. Rotating the exposed secret is still pending the user (AGENTS §10.1.6)"
 
 [[p0]]
@@ -68,10 +68,10 @@ id = "P0-D"
 title = "Backups have tooling but no schedule, land on the same host, are never rehearsed, and arona has none"
 severity = "p0"
 scope = ["entelecheia", "arona"]
-status = "open"
+status = "closed"
 opened_at = "2026-09-10"
-closed_by = ""
-evidence = "2026-09-13: work has landed (scripts fixed, node-3 timers enabled, three off-host copies, restore drill PASSED per _reports/backup-drill-2026-09-13.md) and PLAN §1.2 item 18 marks the row closed pending its PR — this entry stays open until closed_by names that merged PR"
+closed_by = "#284"
+evidence = "2026-09-13: closed by entelecheia #284 (squash 85e668df) after a second-round independent re-verification returned MERGEABLE — scripts fixed (the old ones targeted a docker-compose deployment that does not exist here, so both would have failed on first run), node-3 timers enabled, three off-host copies (node-3 local / node-1 mirror / daemon), restore drill PASSED from the off-machine copy with an exact row-prefix proof, and the round-1 'corrupted mirror reported as verified' defect reproduced against the old code and killed (report: _reports/backup-drill-2026-09-13.md)"
 
 [[p0]]
 id = "P0-E"
