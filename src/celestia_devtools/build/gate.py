@@ -118,16 +118,21 @@ _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(
     r"(?:^|[\s(\"'])"
-    r"[A-Za-z0-9_.-]*(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
-    r"[A-Za-z0-9_.-]*[\"']?\s*[=:]\s*",
+    r"[A-Za-z0-9_.-]{0,64}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
+    r"[A-Za-z0-9_.-]{0,64}[\"']?\s*[=:]\s*",
     re.IGNORECASE,
 )
 
 # A flag carrying a credential value, e.g. ``--target-pass s3cr3t-value`` or
 # ``--api-key=realvalue``.
+# The leading alphanumeric is what keeps this linear: a flag name starts with a
+# letter/digit right after its dashes, so a long run of dashes (a minified blob,
+# a separator line) fails at the first character instead of backtracking through
+# a bounded window at every position.
 _FLAG_PATTERN = re.compile(
-    r"--?[a-zA-Z0-9_-]*(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
-    r"[a-zA-Z0-9_-]*(?:\s|=)\s*",
+    r"--?[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
+    r"(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
+    r"[a-zA-Z0-9_-]{0,63}(?:\s|=)\s*",
     re.IGNORECASE,
 )
 
@@ -329,12 +334,6 @@ def _value_is_excused(value: str) -> bool:
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
 
 
-#: Lines longer than this are classified on their head only (plus a full-line
-#: provider-token scan): the assignment regexes backtrack on very long runs, so a
-#: minified bundle on one line could otherwise stall the sweep for minutes.
-_MAX_CLASSIFY_CHARS = 4096
-
-
 def classify_credential_line(line: str) -> str:
     """Classify one source line for the credential scan.
 
@@ -348,15 +347,6 @@ def classify_credential_line(line: str) -> str:
     remote form ``https://oauth2:gho_…@github.com/org/repo.git``), and a
     credential-keyed assignment whose value is a literal.
     """
-    if len(line) > _MAX_CLASSIFY_CHARS:
-        verdict = classify_credential_line(line[:_MAX_CLASSIFY_CHARS])
-        if verdict != "clean":
-            return verdict
-        tail_token = _PROVIDER_TOKEN_PATTERN.search(line)
-        if tail_token is not None and not _value_is_excused(tail_token.group(0)):
-            return "violation"
-        return "clean"
-
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)

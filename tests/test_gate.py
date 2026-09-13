@@ -872,15 +872,23 @@ class TestCredentialPrecision:
         assert not is_credential_key("token_count")
 
     def test_very_long_lines_are_classified_without_stalling(self):
-        """A minified single-line file must not cost minutes (head + tail scan).
+        """A minified single-line file must neither stall nor hide a secret.
 
-        The budget is deliberately loose (the capped path takes milliseconds, the
-        uncapped one tens of seconds) so it cannot flake on a loaded runner.
+        Nothing is truncated: the regexes are linear now (the flag pattern is
+        anchored on the alphanumeric that follows a flag's dashes), so a token or
+        an assignment at any offset is still found. The budget is loose enough
+        not to flake on a loaded runner (the real cost is milliseconds).
         """
         started = time.monotonic()
-        assert classify_credential_line("-" * 20000 + " token") in ("report", "clean")
+        assert classify_credential_line("-" * 20000 + " token") == "report"
         assert classify_credential_line("-" * 20000 + " gho_0123456789abcdefghij") == "violation"
-        assert time.monotonic() - started < 5.0
+        assert classify_credential_line(
+            "-" * 20000 + " DB_PASSWORD=Str0ng!Passw0rd!2026"
+        ) == "violation"
+        # 200k is where an unanchored (but bounded) flag pattern still costs
+        # seconds, while the anchored one stays in the tens of milliseconds
+        assert classify_credential_line("-" * 200000 + " token") == "report"
+        assert time.monotonic() - started < 2.0
 
     def test_unquoted_identifier_values_are_not_literals(self):
         assert not looks_like_literal("token = path.strip()", "path.strip()")
