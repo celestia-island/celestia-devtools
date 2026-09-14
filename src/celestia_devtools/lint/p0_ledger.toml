@@ -23,19 +23,29 @@
 #   evidence   one line of review evidence for the current status
 #
 # Initial content = PLAN.md §1.2 item 18 (the 2026-09-13 backfill of the audit).
-# Current rows (2026-09-13, latest revision): P0-A and P0-B stay OPEN — #285
-# implements the read-back and the endpoint policy, but a second-round review
-# found the read-back unbound to the slave it verifies (unit id / TID / PID /
-# ack range) and the endpoint binding inert, so closing either would be a false
-# close; P0-C is closed by langyo/easy-hydro-miniprogram#27 (secret rotation
-# still pends the user); P0-D is closed by celestia-island/entelecheia#284;
-# P0-E stays open, scoped to evernight, after its original master-CI numbers
-# turned out to be measured on rewritten commits (AGENTS §8.3.7).
+# Current rows (2026-09-14, latest revision): P0-A and P0-B are CLOSED by #285 —
+# after the second-round review described below, a further wave landed the read-back
+# bound to the addressed slave (unit id / TID / PID / ack range) and the endpoint
+# binding enforced at write time, each with discriminating tests, and four
+# independent adversarial rounds could not break them; the evidence fields below
+# carry both what was verified and what was deliberately left as a residual.
+# P0-C is closed by langyo/easy-hydro-miniprogram#27 (secret rotation still pends
+# the user); P0-D is closed by celestia-island/entelecheia#284; P0-E stays open,
+# scoped to evernight, after its original master-CI numbers turned out to be
+# measured on rewritten commits (AGENTS §8.3.7).
+#
+# 2026-09-14 correction (detail in P0-A's evidence): the closed-loop suite meant to
+# run alongside those guards was RED on master from #285 until #288 — #285's write
+# path began sending a read-back on the same connection while the in-test Modbus
+# slave still served one request per connection. Nothing in the product was broken,
+# but no CI run had verified #285 either: every `Test` run on that PR was cancelled
+# and the merge went ahead under an environmental exemption, which AGENTS §6.3 now
+# forbids.
 #
 # closed_by convention: <owner>/<repo>#<number>.
 
 version = 1
-updated_at = "2026-09-13"
+updated_at = "2026-09-14"
 source = "_reports/project-group-evaluation-2026-09-10.md (backfilled as PLAN.md §1.2 item 18)"
 
 [[p0]]
@@ -46,7 +56,7 @@ scope = ["entelecheia"]
 status = "closed"
 opened_at = "2026-09-10"
 closed_by = "celestia-island/entelecheia#285"
-evidence = "2026-09-14: CLOSED by celestia-island/entelecheia#285 (squash 4a3668f). Every guard the previous evidence asked for landed WITH discriminating tests, and three independent adversarial rounds could not break them: each response is envelope-checked against the addressed slave (protocol id 0, our transaction id, unit id == station), the 12-byte acknowledgement must echo the requested start+count, reads are frame-bounded (0 and >254 rejected fast, 254 accepted as the legal boundary), the read-back is compared element-wise over the full range and fails closed on mismatch/truncation/exception/mute/timeout, and the write and its read-back share ONE TCP connection (a test asserts the accept count is 1). Mutation evidence: every guard mutated across those rounds turned a named test red (12/12 then 13/13), with sha-verified restores. Raw byte-level socket shapes the author's harness cannot produce were tested independently: a frame split across 4 TCP segments still confirms, two coalesced frames do NOT desync the read-back, and an unsolicited frame ahead of the acknowledgement is refused. The RTU path's read-back was read in the pinned evernight source (0.3.4 @ 3817643d), not taken on trust."
+evidence = "2026-09-14: CLOSED by celestia-island/entelecheia#285 (squash 4a3668f). Every guard the previous evidence asked for landed WITH discriminating tests, and three independent adversarial rounds could not break them: each response is envelope-checked against the addressed slave (protocol id 0, our transaction id, unit id == station), the 12-byte acknowledgement must echo the requested start+count, reads are frame-bounded (0 and >254 rejected fast, 254 accepted as the legal boundary), the read-back is compared element-wise over the full range and fails closed on mismatch/truncation/exception/mute/timeout, and the write and its read-back share ONE TCP connection (a test asserts the accept count is 1). Mutation evidence: every guard mutated across those rounds turned a named test red (12/12 then 13/13), with sha-verified restores. Raw byte-level socket shapes the author's harness cannot produce were tested independently: a frame split across 4 TCP segments still confirms, two coalesced frames do NOT desync the read-back, and an unsolicited frame ahead of the acknowledgement is refused. The RTU path's read-back was read in the pinned evernight source (0.3.4 @ 3817643d),  2026-09-14 correction — what this evidence does NOT establish: the scepter closed-loop suite that drives the write path end-to-end was RED on master from #285 until #288, because the in-test Modbus slave still served one request per connection while #285 wrote its read-back onto the same connection (scenario_a/b/d and the alarm-approval audit failed with connection-closed-while-reading-the-read-back). The product guards above were not at fault, but no CI run had verified them either: every Test run on #285 was cancelled and the merge went ahead under an environmental exemption, which AGENTS §6.3 now forbids. #288 restores the suite (6/6 green; verified independently, including a not-fixed-then-red mutation). That verification also found the suite asserts only all_confirmed=true, so it can NOT observe a weakened or removed read-back — the read-backs discriminating coverage is the industrial_iot unit suite, not this one."
 
 [[p0]]
 id = "P0-B"
