@@ -69,18 +69,26 @@ class TestLedgerParsing:
         assert entries[0].scope == ("entelecheia",)
 
     def test_bundled_ledger_matches_plan_item_18(self):
-        """Content tracks PLAN.md §1.2 item 18 at its latest 2026-09-13 revision.
+        """Content tracks PLAN.md §1.2 item 18 at its 2026-09-14 revision.
 
-        P0-A / P0-B stay open (entelecheia #285 delivers the read-back and the
-        endpoint policy but a second-round review found them not yet binding);
+        P0-A and P0-B were closed by entelecheia #285 on 2026-09-14 after four
+        independent adversarial rounds — the last of which found the value binding
+        real and could not break the shared addressing. P0-B's evidence carries an
+        explicit residual list, so that "closed" is not read as "perfect".
         P0-C is closed by easy-hydro-miniprogram #27 and P0-D by entelecheia
-        #284; P0-E is scoped to evernight because its original master-CI numbers
-        were measured on rewritten commits (AGENTS §8.3.7).
+        #284; P0-E is still open and scoped to evernight because its original
+        master-CI numbers were measured on rewritten commits (AGENTS §8.3.7).
         """
         entries = load_ledger(bundled_ledger_path())
         by_id = {entry.id: entry for entry in entries}
         assert set(by_id) == {"P0-A", "P0-B", "P0-C", "P0-D", "P0-E"}
-        assert {entry.id for entry in entries if entry.is_open} == {"P0-A", "P0-B", "P0-E"}
+        assert {entry.id for entry in entries if entry.is_open} == {"P0-E"}
+        assert by_id["P0-A"].status == "closed"
+        assert by_id["P0-A"].closed_by == "celestia-island/entelecheia#285"
+        assert by_id["P0-B"].status == "closed"
+        assert by_id["P0-B"].closed_by == "celestia-island/entelecheia#285"
+        # A closed P0 must still say what it left behind.
+        assert "RESIDUALS" in by_id["P0-B"].evidence
         assert by_id["P0-C"].status == "closed"
         assert by_id["P0-C"].closed_by == "langyo/easy-hydro-miniprogram#27"
         assert by_id["P0-D"].status == "closed"
