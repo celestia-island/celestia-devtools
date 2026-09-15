@@ -1,0 +1,43 @@
+name: Workflow Audit
+
+# celestia-ci-audit over this repository's own workflows. This repo hosts the
+# reusable templates the whole org calls (commit-msg-lint / pr-title-check /
+# p0-gate), so a workflow here that GitHub would silently refuse to run — an
+# illegal caller key, a self-hosted job without timeout-minutes, a duplicate
+# mapping key, a hand-edited caller — breaks every dependent repository at once.
+# The audit CLI exists to make that loud; this job is what makes it automatic.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+    branches: [master]
+
+concurrency:
+  group: workflow-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit .github/workflows
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        env:
+          GIT_CONFIG_COUNT: "0"
+      # No actions/setup-python: it ships no Debian 12 builds and fails
+      # deterministically on the org's self-hosted runners (see ci.yml).
+      - name: Setup python
+        run: python3 -m venv .venv
+      - name: Install PyYAML
+        run: .venv/bin/pip install pyyaml
+      # PYTHONPATH instead of `pip install -e .`: the audit needs stdlib plus
+      # PyYAML only, and the gate should not depend on packaging extras.
+      - name: Audit
+        run: >
+          PYTHONPATH=src .venv/bin/python -c
+          "import sys; from celestia_devtools.ci.workflow_audit import main;
+          sys.exit(main(['.github/workflows']))"
