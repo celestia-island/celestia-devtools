@@ -721,18 +721,25 @@ def _summary_line(files: int, findings: Sequence[Finding], suppressed: int) -> s
 # ---------------------------------------------------------------------------
 
 
-class _WholeWordHelpFormatter(argparse.RawDescriptionHelpFormatter):
+class _WholeWordHelpFormatter(argparse.HelpFormatter):
     """Wrap option help without breaking words on hyphens.
 
     argparse wraps with ``break_on_hyphens=True``, so the ``--allow`` rule list renders as
     ``callee-missing-`` / ``timeout`` at the usual 80-column width — a reader copying a name
     out of ``--help`` gets half of one, and the rendered text no longer contains the rule
     name its own error message demands. The names come from :data:`RULE_NAMES`; this keeps
-    them whole at any width.
+    them whole at any width (``break_long_words=False`` covers a terminal narrower than the
+    longest name).
+
+    The base class stays the wrapping ``HelpFormatter`` on purpose: the
+    ``Raw*`` variants return the description unwrapped, which would trade a split rule name
+    for a 292-character single-line description.
     """
 
     def _split_lines(self, text: str, width: int) -> List[str]:
-        return textwrap.wrap(text, width, break_on_hyphens=False)
+        return textwrap.wrap(
+            text, width, break_on_hyphens=False, break_long_words=False
+        )
 
 
 def _build_parser() -> argparse.ArgumentParser:

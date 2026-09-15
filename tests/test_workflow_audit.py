@@ -727,18 +727,34 @@ class TestAllowList:
         for word in ("oneofthefour", "oneofthefive", "threerule", "fourrule"):
             assert word not in flat
 
-    @pytest.mark.parametrize("columns", ["80", "100", "120", "200"])
+    @pytest.mark.parametrize("columns", ["40", "80", "100", "120", "200"])
     def test_help_keeps_every_rule_name_whole(self, monkeypatch, columns):
         """渲染出来的 help 必须**逐字**含每个规则名（宽度无关）。
 
         默认 formatter 会在连字符处断词 ⇒ 80 列下打印成 `callee-missing-` + `timeout`：
         用户从 `--help` 复制的规则名是残的，而 argparse 报错里给的却是完整的（两处不一致）。
-        `_WholeWordHelpFormatter` 禁掉 hyphen 断词后，这条逐字判据在任何宽度都必须成立。
+        `_WholeWordHelpFormatter` 禁掉 hyphen / 长词断词后，这条逐字判据在任何宽度都必须成立。
         """
         monkeypatch.setenv("COLUMNS", columns)
         help_text = _build_parser().format_help()
         for name in RULE_NAMES:
             assert name in help_text, f"{name} 在 COLUMNS={columns} 下被折行切开"
+
+    def test_description_is_still_wrapped(self, monkeypatch):
+        """反向守卫：修 help 折行不得把 description 的换行一起关掉。
+
+        第一版 formatter 继承了 `RawDescriptionHelpFormatter`——它按定义原样返回 description，
+        292 字符挤成一行，比修复前更难读（独立验证者实测发现）。这里同时钉住"会折行"与"不超宽"。
+        """
+        monkeypatch.setenv("COLUMNS", "80")
+        help_text = _build_parser().format_help()
+        longest = max(len(line) for line in help_text.splitlines())
+        assert longest <= 80, f"help 有 {longest} 字符的长行，description 没折行"
+        assert "Fail GitHub Actions workflows" in help_text
+        assert "it belongs on the callee." in help_text
+        assert help_text.index("it belongs on the callee.") > help_text.index(
+            "Fail GitHub Actions workflows"
+        ) + 1, "description 仍挤在一行里"
 
     def test_module_docstring_rule_count_follows_the_table(self):
         """模块 docstring 里的条数必须等于 ``len(RULE_NAMES)``——它就是漂移的那一处。"""
