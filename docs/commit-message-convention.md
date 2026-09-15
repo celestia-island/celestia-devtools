@@ -57,11 +57,11 @@ The convention is enforced at three layers:
 2. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Add this job to your repo's `checks.yml`:
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Branch protection** — configure the `commit-msg` status check as required on the `master` branch in your GitHub repository settings.
+3. **Branch protection** — configure the `lint-commits / Lint commit messages` status check as required on the `master` branch in your GitHub repository settings.
 
 ## Bot repositories
 

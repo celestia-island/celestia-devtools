@@ -47,11 +47,11 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 2. **Проверка CI (PR)** — повторно используемый рабочий процесс `commit-msg-lint.yml` проверяет каждый коммит в pull request. Добавьте эту задачу в `checks.yml` вашего репозитория:
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Защита ветки** — настройте проверку статуса `commit-msg` как обязательную для ветки `master` в настройках вашего репозитория GitHub.
+3. **Защита ветки** — настройте проверку статуса `lint-commits / Lint commit messages` как обязательную для ветки `master` в настройках вашего репозитория GitHub.
 
 ## Репозитории ботов
 

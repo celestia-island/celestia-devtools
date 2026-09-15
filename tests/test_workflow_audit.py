@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for ``celestia_devtools.ci.workflow_audit`` (the ``celestia-ci-audit`` CLI).
 
-Covers the four rules and the false-positive guards that keep the gate usable:
+Covers the five rules and the false-positive guards that keep the gate usable:
 
 1. the 2026-09-15 accident shape — a reusable-workflow caller job carrying
    ``timeout-minutes`` — is reported, and the offending key is named;
@@ -25,12 +25,15 @@ import json
 
 import pytest
 
+from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT
 from celestia_devtools.ci.workflow_audit import (
     CALLER_LEGAL_KEYS,
     RULE_CALLEE_MISSING_TIMEOUT,
     RULE_INVALID_CALLER_KEY,
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
+    RULE_CALLER_NOT_CANONICAL,
     RULE_YAML_PARSE_ERROR,
+    RULE_NAMES,
     Finding,
     audit_text,
     has_failure,
@@ -511,9 +514,12 @@ class TestJsonContractAndExitCodes:
         assert summary["warnings"] == 0
         assert summary["suppressed"] == 0
         assert summary["failed"] is True
+        # 冻结的 JSON 契约：规则键集合 = RULE_NAMES（加规则是一次契约变更，必须同步这里）。
+        assert set(summary["rules"]) == set(RULE_NAMES)
         assert set(summary["rules"]) == {
             RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT,
             RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR,
+            RULE_CALLER_NOT_CANONICAL,
         }
         assert summary["rules"][RULE_INVALID_CALLER_KEY] == 1
 
@@ -797,6 +803,100 @@ class TestPathsAndCli:
         assert [finding.rule for finding in findings] == [RULE_INVALID_CALLER_KEY]
         assert findings[0].path == "ci.yml"
         assert findings[0].to_json().keys() == {"path", "line", "rule", "severity", "message"}
+
+
+class TestCanonicalCaller:
+    """Rule 5: the shared commit-lint caller must equal the generator's template bytes.
+
+    2026-09-15: the fleet was unified to one 273-byte caller. Nothing compared a repository
+    against that file, so a hand-edited variant (or one written by an older generator) kept
+    a shape whose required check never re-runs — the §8.3.6 deadlock — while every other
+    rule stayed green.
+    """
+
+    NAME = "commit-msg-lint.yml"
+
+    def test_canonical_file_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_missing_ready_for_review_is_reported(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "reopened, ready_for_review, synchronize", "reopened, synchronize"
+        )
+        _workflow(tmp_path, drifted, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["line"] == 1
+        assert finding["severity"] == "error"
+        assert "ready_for_review" in finding["message"]
+        assert "init --with-workflows --force" in finding["message"]
+        assert report["summary"]["rules"][RULE_CALLER_NOT_CANONICAL] == 1
+
+    def test_extra_concurrency_block_is_reported(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "\njobs:",
+            "\nconcurrency:\n  group: lint-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:",
+        )
+        _workflow(tmp_path, drifted, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_pure_whitespace_drift_is_reported(self, tmp_path, monkeypatch, capsys):
+        # 逐字节规则：多一个结尾换行也算漂移（它改变的是 git blob，不是语义）。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT + "\n", filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_callee_host_is_never_reported(self, tmp_path, monkeypatch, capsys):
+        # celestia-devtools 自己那个同名文件是 callee（作业带 runs-on/steps），不是 caller。
+        callee = (
+            "name: Commit Message Lint\n"
+            "on:\n"
+            "  workflow_call: {}\n"
+            "jobs:\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v7\n"
+        )
+        _workflow(tmp_path, callee, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_same_content_under_another_name_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        # 规则按文件名定位：别的文件里放一个 caller 作业是允许的（check 名只取决于作业 id）。
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "reopened, ready_for_review, synchronize", "reopened, synchronize"
+        )
+        _workflow(tmp_path, drifted, filename="checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_human_output_names_the_file_and_line(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT.rstrip("\n"), filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 1
+        out = capsys.readouterr().out
+        assert f"{self.NAME}:1" in out
+        assert RULE_CALLER_NOT_CANONICAL in out
+
+    def test_allowlist_can_exempt_a_repository(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT.rstrip("\n"), filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/{self.NAME}"]) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
 
 
 class TestEntryPointRegistered:

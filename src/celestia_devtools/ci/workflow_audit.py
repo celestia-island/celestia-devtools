@@ -15,7 +15,7 @@ This CLI makes that shape loud.
 only place an upper bound can live is the callee — the reusable workflow named by ``uses:``,
 on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has none.
 
-*Rules* (each finding carries ``path:line`` and a recomputable criterion; all four are
+*Rules* (each finding carries ``path:line`` and a recomputable criterion; all five are
 ``error`` severity today):
 
 ``invalid-caller-key``
@@ -25,6 +25,13 @@ on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has 
     includes ``workflow_call``, with no ``timeout-minutes``.
 ``self-hosted-missing-timeout``
     the same shape in a workflow that is not a ``workflow_call`` callee.
+``caller-not-canonical``
+    ``.github/workflows/commit-msg-lint.yml`` — the shared commit-lint caller — must be
+    **byte-identical** to the template ``celestia-devtools`` ships (``WORKFLOW_COMMIT_LINT``).
+    The fleet is uniform so that one audit answers for all 42 repositories, and a
+    hand-edited variant silently changes which check name a repository produces (a caller
+    without ``ready_for_review`` or without ``synchronize`` never re-runs the required
+    check, so the merge is refused — AGENTS §8.3.6).
 ``yaml-parse-error``
     the file cannot be parsed as YAML. This rule reports the **file** (with the first line
     quoted); it never skips it. ``sysl/.github/workflows/validate.yml`` is a real workflow
@@ -71,6 +78,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+# canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
+# （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
+from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT
+
 try:
     import yaml
     from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
@@ -91,15 +102,23 @@ RULE_INVALID_CALLER_KEY = "invalid-caller-key"
 RULE_CALLEE_MISSING_TIMEOUT = "callee-missing-timeout"
 RULE_SELF_HOSTED_MISSING_TIMEOUT = "self-hosted-missing-timeout"
 RULE_YAML_PARSE_ERROR = "yaml-parse-error"
+RULE_CALLER_NOT_CANONICAL = "caller-not-canonical"
 
 RULE_NAMES: Tuple[str, ...] = (
     RULE_INVALID_CALLER_KEY,
     RULE_CALLEE_MISSING_TIMEOUT,
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
     RULE_YAML_PARSE_ERROR,
+    RULE_CALLER_NOT_CANONICAL,
 )
 
-# 今天四条规则全是 error；severity 与 --strict 是留给将来 warning 级规则的机制
+#: The file every repository ships for the shared commit-lint caller.
+CANONICAL_CALLER_NAME = "commit-msg-lint.yml"
+
+#: Substring that identifies a job calling the shared commit-lint reusable workflow.
+SHARED_COMMIT_LINT_REF = "celestia-devtools/.github/workflows/commit-msg-lint.yml"
+
+# 今天五条规则全是 error；severity 与 --strict 是留给将来 warning 级规则的机制
 # （判据在 has_failure 里，测试用合成 finding 覆盖），不是死代码。
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
@@ -376,6 +395,45 @@ def _missing_timeout_finding(
     )
 
 
+def _calls_shared_commit_lint(jobs: MappingNode) -> bool:
+    """True when any job is a caller of the shared commit-lint reusable workflow."""
+    for _key_node, body in jobs.value:
+        if not isinstance(body, MappingNode):
+            continue
+        uses = _mapping_value(body, "uses")
+        if isinstance(uses, ScalarNode) and SHARED_COMMIT_LINT_REF in (uses.value or ""):
+            return True
+    return False
+
+
+def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
+    """Byte-compare the caller against the template the generator ships.
+
+    Only the committed template counts: ``celestia-devtools init --with-workflows`` writes
+    exactly these bytes, so a divergence means the file was hand-edited (or written by an
+    older generator) and the repository no longer matches the fleet.
+    """
+    if text == WORKFLOW_COMMIT_LINT:
+        return []
+    return [
+        Finding(
+            path=path,
+            line=1,
+            rule=RULE_CALLER_NOT_CANONICAL,
+            severity=SEVERITY_ERROR,
+            message=(
+                f"the shared commit-lint caller must be byte-identical to the canonical "
+                f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is "
+                f"{len(text.encode())} bytes. Regenerate it with "
+                f"`celestia-devtools init --with-workflows --force` instead of editing it by "
+                f"hand — a variant that drops `ready_for_review` or `synchronize` stops "
+                f"re-running the required check, and the PR then cannot be merged"
+            ),
+            excerpt="",
+        )
+    ]
+
+
 def audit_text(text: str, path: str) -> List[Finding]:
     """Audit one workflow's text; *path* is the already-resolved display path."""
     try:
@@ -395,6 +453,9 @@ def audit_text(text: str, path: str) -> List[Finding]:
     is_callee = _declares_workflow_call(_mapping_value(root, "on"))
     lines = text.split("\n")
     findings: List[Finding] = []
+
+    if Path(path).name == CANONICAL_CALLER_NAME and _calls_shared_commit_lint(jobs):
+        findings.extend(_canonical_caller_findings(text, path))
 
     for key_node, body in jobs.value:
         job_id = _scalar_text(key_node) or "<unnamed>"

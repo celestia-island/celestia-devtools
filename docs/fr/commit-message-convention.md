@@ -47,11 +47,11 @@ La convention est appliquée à trois niveaux :
 2. **Vérification CI (PR)** — le workflow réutilisable `commit-msg-lint.yml` valide chaque commit dans une pull request. Ajoutez ce job au `checks.yml` de votre dépôt :
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Protection de branche** — configurez la vérification de statut `commit-msg` comme requise sur la branche `master` dans les paramètres de votre dépôt GitHub.
+3. **Protection de branche** — configurez la vérification de statut `lint-commits / Lint commit messages` comme requise sur la branche `master` dans les paramètres de votre dépôt GitHub.
 
 ## Dépôts de bots
 

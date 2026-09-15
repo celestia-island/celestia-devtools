@@ -47,11 +47,11 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 2. **CI 检查（PR）** — 可复用工作流 `commit-msg-lint.yml` 验证拉取请求中的每条提交。将此作业添加到仓库的 `checks.yml`：
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **分支保护** — 在 GitHub 仓库设置中将 `commit-msg` 状态检查配置为 `master` 分支的必需检查。
+3. **分支保护** — 在 GitHub 仓库设置中将 `lint-commits / Lint commit messages` 状态检查配置为 `master` 分支的必需检查。
 
 ## 机器人仓库
 

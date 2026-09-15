@@ -47,11 +47,11 @@ La convención se aplica en tres niveles:
 2. **Verificación CI (PR)** — el flujo de trabajo reutilizable `commit-msg-lint.yml` valida cada commit en una pull request. Agregue este trabajo al `checks.yml` de su repositorio:
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Protección de rama** — configure la verificación de estado `commit-msg` como requerida en la rama `master` en la configuración de su repositorio de GitHub.
+3. **Protección de rama** — configure la verificación de estado `lint-commits / Lint commit messages` como requerida en la rama `master` en la configuración de su repositorio de GitHub.
 
 ## Repositorios de bots
 

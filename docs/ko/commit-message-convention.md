@@ -47,11 +47,11 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 2. **CI 검사(PR)** — 재사용 가능한 워크플로 `commit-msg-lint.yml`이 풀 리퀘스트의 모든 커밋을 검증합니다. 이 작업을 저장소의 `checks.yml`에 추가:
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **브랜치 보호** — GitHub 저장소 설정에서 `commit-msg` 상태 검사를 `master` 브랜치의 필수 검사로 구성합니다.
+3. **브랜치 보호** — GitHub 저장소 설정에서 `lint-commits / Lint commit messages` 상태 검사를 `master` 브랜치의 필수 검사로 구성합니다.
 
 ## 봇 저장소
 

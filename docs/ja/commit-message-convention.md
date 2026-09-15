@@ -47,11 +47,11 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 2. **CI チェック（PR）** — 再利用可能なワークフロー `commit-msg-lint.yml` がプルリクエスト内のすべてのコミットを検証します。このジョブをリポジトリの `checks.yml` に追加：
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **ブランチ保護** — GitHub リポジトリ設定で、`commit-msg` ステータスチェックを `master` ブランチの必須チェックとして設定します。
+3. **ブランチ保護** — GitHub リポジトリ設定で、`lint-commits / Lint commit messages` ステータスチェックを `master` ブランチの必須チェックとして設定します。
 
 ## ボットリポジトリ
 
