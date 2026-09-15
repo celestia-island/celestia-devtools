@@ -239,7 +239,7 @@ def main() -> int:
 # 规范形态（canonical）：全 org 42 个 caller **逐字节**相同，改这里等于改全部仓的模板。
 # 2026-09-15：此前这里缺 `ready_for_review`，导致 `init --force --with-workflows` 会把
 # 已统一的仓退回旧变体，而缺该类型正是 §8.3.6 的死锁形态（draft 转 ready 不触发 lint
-# ⇒ 必需 check 不出现 ⇒ 合并被判 BLOCKED）。模板变更必须同步 tests/test_repo_init.py 的钉死用例。
+# ⇒ 必需 check 不出现 ⇒ 合并被判 BLOCKED）。模板变更必须同步 tests/test_caller_template.py 的钉死用例。
 WORKFLOW_COMMIT_LINT = """\
 name: Commit Message Lint
 
