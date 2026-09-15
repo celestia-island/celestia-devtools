@@ -44,7 +44,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # 通过 just recipe
    ```
 
-2. **CI 检查（PR）** — 可复用工作流 `commit-msg-lint.yml` 验证拉取请求中的每条提交。将此作业添加到仓库的 `checks.yml`：
+2. **CI 检查（PR）** — 可复用工作流 `commit-msg-lint.yml` 验证拉取请求中的每条提交。请将此作业放在标准文件 `.github/workflows/commit-msg-lint.yml`（由 `celestia-devtools init --with-workflows` 生成）中；审计逐字节比对该路径，并报出任何换了文件名的副本：
 
    ```yaml
    lint-commits:

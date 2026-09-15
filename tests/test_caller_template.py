@@ -14,6 +14,7 @@ so these tests fail the moment the constant drifts.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import yaml
 
@@ -113,3 +114,43 @@ class TestGeneratedFile:
         target.write_text("name: mine\n", encoding="utf-8")
         _ensure_workflows(tmp_path)
         assert target.read_text(encoding="utf-8") == "name: mine\n"
+
+
+#: The callee this repository hosts: the reusable workflow the template's ``uses:`` resolves to.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CALLEE_PATH = REPO_ROOT / ".github" / "workflows" / "commit-msg-lint.yml"
+
+
+def _callee():
+    return yaml.safe_load(CALLEE_PATH.read_text(encoding="utf-8"))
+
+
+class TestCalleeMatchesTheTemplate:
+    """Two files must agree on the trigger: the caller (copied into 42 repositories) and the
+    callee this repository hosts.
+
+    Nothing compared them. The caller's template could gain an event — or the callee could
+    drop one — and the caller's jobs would simply never start, with the caller file still
+    byte-identical to the canonical bytes and every other guard green. Only the trigger has
+    to match: the callee additionally declares ``workflow_call`` and carries ``runs-on`` /
+    ``steps`` the caller must never have.
+    """
+
+    def test_callee_file_is_present(self):
+        assert CALLEE_PATH.is_file(), f"missing callee workflow: {CALLEE_PATH}"
+
+    def test_pull_request_types_match_the_template(self):
+        assert (
+            _on(_callee())["pull_request"]["types"]
+            == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["pull_request"]["types"]
+        )
+
+    def test_merge_group_types_match_the_template(self):
+        assert (
+            _on(_callee())["merge_group"]["types"]
+            == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["merge_group"]["types"]
+        )
+
+    def test_callee_declares_every_event_the_caller_waits_on(self):
+        caller_events = set(_on(yaml.safe_load(WORKFLOW_COMMIT_LINT)))
+        assert caller_events <= set(_on(_callee()))

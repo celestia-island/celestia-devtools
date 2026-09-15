@@ -54,7 +54,7 @@ The convention is enforced at three layers:
    just commit-msg-hook-install             # via just recipe
    ```
 
-2. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Add this job to your repo's `checks.yml`:
+2. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Put this job in the org-standard `.github/workflows/commit-msg-lint.yml` (created by `celestia-devtools init --with-workflows`); the audit byte-compares that path and flags a copy parked under any other name:
 
    ```yaml
    lint-commits:

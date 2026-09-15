@@ -31,7 +31,9 @@ on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has 
     The fleet is uniform so that one audit answers for all 42 repositories, and a
     hand-edited variant silently changes which check name a repository produces (a caller
     without ``ready_for_review`` or without ``synchronize`` never re-runs the required
-    check, so the merge is refused — AGENTS §8.3.6).
+    check, so the merge is refused — AGENTS §8.3.6). The comparison keys off the file name,
+    so a shared caller parked under **any other name** is reported too: it sits outside the
+    comparison and drifts unwatched.
 ``yaml-parse-error``
     the file cannot be parsed as YAML. This rule reports the **file** (with the first line
     quoted); it never skips it. ``sysl/.github/workflows/validate.yml`` is a real workflow
@@ -49,7 +51,8 @@ repository-relative paths) and absolute otherwise — so an org-wide run from th
 root reports ``sysl/.github/workflows/validate.yml`` and can match ``--allow ...=sysl/*``.
 
 *Allowlist:* ``--allow RULE=GLOB`` (repeatable) suppresses matching findings, where ``RULE``
-is one of the four rule names or ``*`` and ``GLOB`` is matched with :func:`fnmatch.fnmatchcase`
+is one of the rule names in :data:`RULE_NAMES` or ``*`` (a count spelled out in prose is what
+drifted when the fifth rule landed) and ``GLOB`` is matched with :func:`fnmatch.fnmatchcase`
 against the reported path (``*`` crosses ``/``). Suppressions are counted and echoed on
 stderr — an exemption is never silent — and an unknown rule name is a usage error rather
 than a silent pass.
@@ -434,6 +437,33 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
     ]
 
 
+def _mislocated_caller_findings(path: str) -> List[Finding]:
+    """Flag a shared caller that lives in a file other than :data:`CANONICAL_CALLER_NAME`.
+
+    The byte comparison keys off the file name, so a copy under ``checks.yml`` is never
+    compared: it can drop ``synchronize``/``ready_for_review`` and stay green forever. That
+    is exactly how the fleet ended up with two shapes — the check name depends only on the
+    job id, so the copy works well enough to survive, and the drift is invisible.
+    """
+    return [
+        Finding(
+            path=path,
+            line=1,
+            rule=RULE_CALLER_NOT_CANONICAL,
+            severity=SEVERITY_ERROR,
+            message=(
+                f"the shared commit-lint caller must live in `.github/workflows/"
+                f"{CANONICAL_CALLER_NAME}`; this copy is under another name, which puts it "
+                f"outside the byte comparison against the canonical template — it will drift "
+                f"silently and stop re-running the required check. Move it to "
+                f"`.github/workflows/{CANONICAL_CALLER_NAME}` (or regenerate that file with "
+                f"`celestia-devtools init --with-workflows --force`) and delete this one"
+            ),
+            excerpt="",
+        )
+    ]
+
+
 def audit_text(text: str, path: str) -> List[Finding]:
     """Audit one workflow's text; *path* is the already-resolved display path."""
     try:
@@ -454,8 +484,11 @@ def audit_text(text: str, path: str) -> List[Finding]:
     lines = text.split("\n")
     findings: List[Finding] = []
 
-    if Path(path).name == CANONICAL_CALLER_NAME and _calls_shared_commit_lint(jobs):
-        findings.extend(_canonical_caller_findings(text, path))
+    if _calls_shared_commit_lint(jobs):
+        if Path(path).name == CANONICAL_CALLER_NAME:
+            findings.extend(_canonical_caller_findings(text, path))
+        else:
+            findings.extend(_mislocated_caller_findings(path))
 
     for key_node, body in jobs.value:
         job_id = _scalar_text(key_node) or "<unnamed>"
@@ -722,7 +755,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="RULE=GLOB",
         help=(
             "suppress findings of RULE whose reported path matches GLOB "
-            "(RULE is one of the four rule names or *; repeatable)"
+            f"(RULE is one of {', '.join(RULE_NAMES)}, or *; repeatable)"
         ),
     )
     return parser

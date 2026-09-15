@@ -44,7 +44,7 @@ La convención se aplica en tres niveles:
    just commit-msg-hook-install             # a través de just recipe
    ```
 
-2. **Verificación CI (PR)** — el flujo de trabajo reutilizable `commit-msg-lint.yml` valida cada commit en una pull request. Agregue este trabajo al `checks.yml` de su repositorio:
+2. **Verificación CI (PR)** — el flujo de trabajo reutilizable `commit-msg-lint.yml` valida cada commit en una pull request. Coloque este trabajo en el archivo estándar `.github/workflows/commit-msg-lint.yml` (creado por `celestia-devtools init --with-workflows`); la auditoría compara esa ruta byte a byte y señala cualquier copia con otro nombre:
 
    ```yaml
    lint-commits:

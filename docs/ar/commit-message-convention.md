@@ -44,7 +44,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # عبر just recipe
    ```
 
-2. **فحص CI (طلبات السحب)** — سير العمل القابل لإعادة الاستخدام `commit-msg-lint.yml` يتحقق من صحة كل التزام في طلب السحب. أضف هذه المهمة إلى `checks.yml` لمستودعك:
+2. **فحص CI (طلبات السحب)** — سير العمل القابل لإعادة الاستخدام `commit-msg-lint.yml` يتحقق من صحة كل التزام في طلب السحب. ضع هذه المهمة في الملف القياسي `.github/workflows/commit-msg-lint.yml` (الذي ينشئه `celestia-devtools init --with-workflows`)؛ يقارن التدقيق ذلك المسار بايت-ببايت ويرصد أي نسخة باسم آخر:
 
    ```yaml
    lint-commits:

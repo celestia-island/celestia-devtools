@@ -44,7 +44,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # через just recipe
    ```
 
-2. **Проверка CI (PR)** — повторно используемый рабочий процесс `commit-msg-lint.yml` проверяет каждый коммит в pull request. Добавьте эту задачу в `checks.yml` вашего репозитория:
+2. **Проверка CI (PR)** — повторно используемый рабочий процесс `commit-msg-lint.yml` проверяет каждый коммит в pull request. Поместите эту задачу в стандартный файл `.github/workflows/commit-msg-lint.yml` (создаётся `celestia-devtools init --with-workflows`); аудит сравнивает этот путь побайтово и отмечает копию под другим именем:
 
    ```yaml
    lint-commits:
