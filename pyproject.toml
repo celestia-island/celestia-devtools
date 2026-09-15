@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "celestia-devtools"
-version = "0.5.0"
+version = "0.6.0"
 description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -46,9 +46,12 @@ commit-msg-lint = "celestia_devtools.vcs.commit_msg:main"
 publish-crates = "celestia_devtools.publish.crates:main"
 lint-separators = "celestia_devtools.lint.separator_lint:main"
 p0-gate = "celestia_devtools.lint.p0_gate:main"
+celestia-job-timeouts = "celestia_devtools.ci.job_timeouts:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.4"]
+# PyYAML is test-only: the job-timeouts tests cross-check that every inserted line keeps
+# the workflow valid YAML. Without it those assertions would silently stop running.
+dev = ["pytest>=7", "ruff>=0.4", "PyYAML>=6"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/celestia_devtools"]
