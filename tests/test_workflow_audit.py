@@ -727,6 +727,19 @@ class TestAllowList:
         for word in ("oneofthefour", "oneofthefive", "threerule", "fourrule"):
             assert word not in flat
 
+    @pytest.mark.parametrize("columns", ["80", "100", "120", "200"])
+    def test_help_keeps_every_rule_name_whole(self, monkeypatch, columns):
+        """渲染出来的 help 必须**逐字**含每个规则名（宽度无关）。
+
+        默认 formatter 会在连字符处断词 ⇒ 80 列下打印成 `callee-missing-` + `timeout`：
+        用户从 `--help` 复制的规则名是残的，而 argparse 报错里给的却是完整的（两处不一致）。
+        `_WholeWordHelpFormatter` 禁掉 hyphen 断词后，这条逐字判据在任何宽度都必须成立。
+        """
+        monkeypatch.setenv("COLUMNS", columns)
+        help_text = _build_parser().format_help()
+        for name in RULE_NAMES:
+            assert name in help_text, f"{name} 在 COLUMNS={columns} 下被折行切开"
+
     def test_module_docstring_rule_count_follows_the_table(self):
         """模块 docstring 里的条数必须等于 ``len(RULE_NAMES)``——它就是漂移的那一处。"""
         doc = workflow_audit.__doc__ or ""

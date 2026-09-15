@@ -77,6 +77,7 @@ import fnmatch
 import json
 import os
 import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -720,10 +721,25 @@ def _summary_line(files: int, findings: Sequence[Finding], suppressed: int) -> s
 # ---------------------------------------------------------------------------
 
 
+class _WholeWordHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """Wrap option help without breaking words on hyphens.
+
+    argparse wraps with ``break_on_hyphens=True``, so the ``--allow`` rule list renders as
+    ``callee-missing-`` / ``timeout`` at the usual 80-column width — a reader copying a name
+    out of ``--help`` gets half of one, and the rendered text no longer contains the rule
+    name its own error message demands. The names come from :data:`RULE_NAMES`; this keeps
+    them whole at any width.
+    """
+
+    def _split_lines(self, text: str, width: int) -> List[str]:
+        return textwrap.wrap(text, width, break_on_hyphens=False)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser."""
     parser = argparse.ArgumentParser(
         prog="celestia-ci-audit",
+        formatter_class=_WholeWordHelpFormatter,
         description=(
             "Fail GitHub Actions workflows that GitHub would silently refuse to run: "
             "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted "
