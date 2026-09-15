@@ -54,14 +54,14 @@ The convention is enforced at three layers:
    just commit-msg-hook-install             # via just recipe
    ```
 
-2. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Add this job to your repo's `checks.yml`:
+2. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Put this job in the org-standard `.github/workflows/commit-msg-lint.yml` (created by `celestia-devtools init --with-workflows`); the audit byte-compares that path and flags a copy parked under any other name:
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Branch protection** — configure the `commit-msg` status check as required on the `master` branch in your GitHub repository settings.
+3. **Branch protection** — configure the `lint-commits / Lint commit messages` status check as required on the `master` branch in your GitHub repository settings.
 
 ## Bot repositories
 

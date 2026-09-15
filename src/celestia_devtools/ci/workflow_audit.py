@@ -15,7 +15,7 @@ This CLI makes that shape loud.
 only place an upper bound can live is the callee — the reusable workflow named by ``uses:``,
 on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has none.
 
-*Rules* (each finding carries ``path:line`` and a recomputable criterion; all four are
+*Rules* (each finding carries ``path:line`` and a recomputable criterion; all five are
 ``error`` severity today):
 
 ``invalid-caller-key``
@@ -25,6 +25,15 @@ on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has 
     includes ``workflow_call``, with no ``timeout-minutes``.
 ``self-hosted-missing-timeout``
     the same shape in a workflow that is not a ``workflow_call`` callee.
+``caller-not-canonical``
+    ``.github/workflows/commit-msg-lint.yml`` — the shared commit-lint caller — must be
+    **byte-identical** to the template ``celestia-devtools`` ships (``WORKFLOW_COMMIT_LINT``).
+    The fleet is uniform so that one audit answers for all 42 repositories, and a
+    hand-edited variant silently changes which check name a repository produces (a caller
+    without ``ready_for_review`` or without ``synchronize`` never re-runs the required
+    check, so the merge is refused — AGENTS §8.3.6). The comparison keys off the file name,
+    so a shared caller parked under **any other name** is reported too: it sits outside the
+    comparison and drifts unwatched.
 ``yaml-parse-error``
     the file cannot be parsed as YAML. This rule reports the **file** (with the first line
     quoted); it never skips it. ``sysl/.github/workflows/validate.yml`` is a real workflow
@@ -42,7 +51,8 @@ repository-relative paths) and absolute otherwise — so an org-wide run from th
 root reports ``sysl/.github/workflows/validate.yml`` and can match ``--allow ...=sysl/*``.
 
 *Allowlist:* ``--allow RULE=GLOB`` (repeatable) suppresses matching findings, where ``RULE``
-is one of the four rule names or ``*`` and ``GLOB`` is matched with :func:`fnmatch.fnmatchcase`
+is one of the rule names in :data:`RULE_NAMES` or ``*`` (a count spelled out in prose is what
+drifted when the fifth rule landed) and ``GLOB`` is matched with :func:`fnmatch.fnmatchcase`
 against the reported path (``*`` crosses ``/``). Suppressions are counted and echoed on
 stderr — an exemption is never silent — and an unknown rule name is a usage error rather
 than a silent pass.
@@ -67,9 +77,14 @@ import fnmatch
 import json
 import os
 import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+# canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
+# （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
+from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT
 
 try:
     import yaml
@@ -91,15 +106,23 @@ RULE_INVALID_CALLER_KEY = "invalid-caller-key"
 RULE_CALLEE_MISSING_TIMEOUT = "callee-missing-timeout"
 RULE_SELF_HOSTED_MISSING_TIMEOUT = "self-hosted-missing-timeout"
 RULE_YAML_PARSE_ERROR = "yaml-parse-error"
+RULE_CALLER_NOT_CANONICAL = "caller-not-canonical"
 
 RULE_NAMES: Tuple[str, ...] = (
     RULE_INVALID_CALLER_KEY,
     RULE_CALLEE_MISSING_TIMEOUT,
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
     RULE_YAML_PARSE_ERROR,
+    RULE_CALLER_NOT_CANONICAL,
 )
 
-# 今天四条规则全是 error；severity 与 --strict 是留给将来 warning 级规则的机制
+#: The file every repository ships for the shared commit-lint caller.
+CANONICAL_CALLER_NAME = "commit-msg-lint.yml"
+
+#: Substring that identifies a job calling the shared commit-lint reusable workflow.
+SHARED_COMMIT_LINT_REF = "celestia-devtools/.github/workflows/commit-msg-lint.yml"
+
+# 今天五条规则全是 error；severity 与 --strict 是留给将来 warning 级规则的机制
 # （判据在 has_failure 里，测试用合成 finding 覆盖），不是死代码。
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
@@ -376,6 +399,72 @@ def _missing_timeout_finding(
     )
 
 
+def _calls_shared_commit_lint(jobs: MappingNode) -> bool:
+    """True when any job is a caller of the shared commit-lint reusable workflow."""
+    for _key_node, body in jobs.value:
+        if not isinstance(body, MappingNode):
+            continue
+        uses = _mapping_value(body, "uses")
+        if isinstance(uses, ScalarNode) and SHARED_COMMIT_LINT_REF in (uses.value or ""):
+            return True
+    return False
+
+
+def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
+    """Byte-compare the caller against the template the generator ships.
+
+    Only the committed template counts: ``celestia-devtools init --with-workflows`` writes
+    exactly these bytes, so a divergence means the file was hand-edited (or written by an
+    older generator) and the repository no longer matches the fleet.
+    """
+    if text == WORKFLOW_COMMIT_LINT:
+        return []
+    return [
+        Finding(
+            path=path,
+            line=1,
+            rule=RULE_CALLER_NOT_CANONICAL,
+            severity=SEVERITY_ERROR,
+            message=(
+                f"the shared commit-lint caller must be byte-identical to the canonical "
+                f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is "
+                f"{len(text.encode())} bytes. Regenerate it with "
+                f"`celestia-devtools init --with-workflows --force` instead of editing it by "
+                f"hand — a variant that drops `ready_for_review` or `synchronize` stops "
+                f"re-running the required check, and the PR then cannot be merged"
+            ),
+            excerpt="",
+        )
+    ]
+
+
+def _mislocated_caller_findings(path: str) -> List[Finding]:
+    """Flag a shared caller that lives in a file other than :data:`CANONICAL_CALLER_NAME`.
+
+    The byte comparison keys off the file name, so a copy under ``checks.yml`` is never
+    compared: it can drop ``synchronize``/``ready_for_review`` and stay green forever. That
+    is exactly how the fleet ended up with two shapes — the check name depends only on the
+    job id, so the copy works well enough to survive, and the drift is invisible.
+    """
+    return [
+        Finding(
+            path=path,
+            line=1,
+            rule=RULE_CALLER_NOT_CANONICAL,
+            severity=SEVERITY_ERROR,
+            message=(
+                f"the shared commit-lint caller must live in `.github/workflows/"
+                f"{CANONICAL_CALLER_NAME}`; this copy is under another name, which puts it "
+                f"outside the byte comparison against the canonical template — it will drift "
+                f"silently and stop re-running the required check. Move it to "
+                f"`.github/workflows/{CANONICAL_CALLER_NAME}` (or regenerate that file with "
+                f"`celestia-devtools init --with-workflows --force`) and delete this one"
+            ),
+            excerpt="",
+        )
+    ]
+
+
 def audit_text(text: str, path: str) -> List[Finding]:
     """Audit one workflow's text; *path* is the already-resolved display path."""
     try:
@@ -395,6 +484,12 @@ def audit_text(text: str, path: str) -> List[Finding]:
     is_callee = _declares_workflow_call(_mapping_value(root, "on"))
     lines = text.split("\n")
     findings: List[Finding] = []
+
+    if _calls_shared_commit_lint(jobs):
+        if Path(path).name == CANONICAL_CALLER_NAME:
+            findings.extend(_canonical_caller_findings(text, path))
+        else:
+            findings.extend(_mislocated_caller_findings(path))
 
     for key_node, body in jobs.value:
         job_id = _scalar_text(key_node) or "<unnamed>"
@@ -626,10 +721,32 @@ def _summary_line(files: int, findings: Sequence[Finding], suppressed: int) -> s
 # ---------------------------------------------------------------------------
 
 
+class _WholeWordHelpFormatter(argparse.HelpFormatter):
+    """Wrap option help without breaking words on hyphens.
+
+    argparse wraps with ``break_on_hyphens=True``, so the ``--allow`` rule list renders as
+    ``callee-missing-`` / ``timeout`` at the usual 80-column width — a reader copying a name
+    out of ``--help`` gets half of one, and the rendered text no longer contains the rule
+    name its own error message demands. The names come from :data:`RULE_NAMES`; this keeps
+    them whole at any width (``break_long_words=False`` covers a terminal narrower than the
+    longest name).
+
+    The base class stays the wrapping ``HelpFormatter`` on purpose: the
+    ``Raw*`` variants return the description unwrapped, which would trade a split rule name
+    for a 292-character single-line description.
+    """
+
+    def _split_lines(self, text: str, width: int) -> List[str]:
+        return textwrap.wrap(
+            text, width, break_on_hyphens=False, break_long_words=False
+        )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser."""
     parser = argparse.ArgumentParser(
         prog="celestia-ci-audit",
+        formatter_class=_WholeWordHelpFormatter,
         description=(
             "Fail GitHub Actions workflows that GitHub would silently refuse to run: "
             "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted "
@@ -661,7 +778,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="RULE=GLOB",
         help=(
             "suppress findings of RULE whose reported path matches GLOB "
-            "(RULE is one of the four rule names or *; repeatable)"
+            f"(RULE is one of {', '.join(RULE_NAMES)}, or *; repeatable)"
         ),
     )
     return parser

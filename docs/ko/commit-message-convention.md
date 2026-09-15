@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # just recipe를 통해
    ```
 
-2. **CI 검사(PR)** — 재사용 가능한 워크플로 `commit-msg-lint.yml`이 풀 리퀘스트의 모든 커밋을 검증합니다. 이 작업을 저장소의 `checks.yml`에 추가:
+2. **CI 검사(PR)** — 재사용 가능한 워크플로 `commit-msg-lint.yml`이 풀 리퀘스트의 모든 커밋을 검증합니다. 이 작업은 표준 파일 `.github/workflows/commit-msg-lint.yml`(`celestia-devtools init --with-workflows`가 생성)에 두세요. 감사는 이 경로를 바이트 단위로 비교하고 다른 이름의 복사본을 적발합니다:
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **브랜치 보호** — GitHub 저장소 설정에서 `commit-msg` 상태 검사를 `master` 브랜치의 필수 검사로 구성합니다.
+3. **브랜치 보호** — GitHub 저장소 설정에서 `lint-commits / Lint commit messages` 상태 검사를 `master` 브랜치의 필수 검사로 구성합니다.
 
 ## 봇 저장소
 

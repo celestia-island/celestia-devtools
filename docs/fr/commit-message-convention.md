@@ -44,14 +44,14 @@ La convention est appliquée à trois niveaux :
    just commit-msg-hook-install             # via la recette just
    ```
 
-2. **Vérification CI (PR)** — le workflow réutilisable `commit-msg-lint.yml` valide chaque commit dans une pull request. Ajoutez ce job au `checks.yml` de votre dépôt :
+2. **Vérification CI (PR)** — le workflow réutilisable `commit-msg-lint.yml` valide chaque commit dans une pull request. Placez ce job dans le fichier standard `.github/workflows/commit-msg-lint.yml` (créé par `celestia-devtools init --with-workflows`) ; l'audit compare ce chemin octet par octet et signale toute copie portant un autre nom :
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Protection de branche** — configurez la vérification de statut `commit-msg` comme requise sur la branche `master` dans les paramètres de votre dépôt GitHub.
+3. **Protection de branche** — configurez la vérification de statut `lint-commits / Lint commit messages` comme requise sur la branche `master` dans les paramètres de votre dépôt GitHub.
 
 ## Dépôts de bots
 

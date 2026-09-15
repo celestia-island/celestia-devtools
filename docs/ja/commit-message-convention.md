@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # just recipe 経由
    ```
 
-2. **CI チェック（PR）** — 再利用可能なワークフロー `commit-msg-lint.yml` がプルリクエスト内のすべてのコミットを検証します。このジョブをリポジトリの `checks.yml` に追加：
+2. **CI チェック（PR）** — 再利用可能なワークフロー `commit-msg-lint.yml` がプルリクエスト内のすべてのコミットを検証します。このジョブは標準ファイル `.github/workflows/commit-msg-lint.yml`（`celestia-devtools init --with-workflows` が生成）に置いてください。監査はこのパスをバイト単位で比較し、別名の複製を検出します：
 
    ```yaml
-   commit-msg:
+   lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **ブランチ保護** — GitHub リポジトリ設定で、`commit-msg` ステータスチェックを `master` ブランチの必須チェックとして設定します。
+3. **ブランチ保護** — GitHub リポジトリ設定で、`lint-commits / Lint commit messages` ステータスチェックを `master` ブランチの必須チェックとして設定します。
 
 ## ボットリポジトリ
 

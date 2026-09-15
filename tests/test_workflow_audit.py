@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for ``celestia_devtools.ci.workflow_audit`` (the ``celestia-ci-audit`` CLI).
 
-Covers the four rules and the false-positive guards that keep the gate usable:
+Covers the five rules and the false-positive guards that keep the gate usable:
 
 1. the 2026-09-15 accident shape — a reusable-workflow caller job carrying
    ``timeout-minutes`` — is reported, and the offending key is named;
@@ -25,13 +25,19 @@ import json
 
 import pytest
 
+from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT
+from celestia_devtools.ci import workflow_audit
 from celestia_devtools.ci.workflow_audit import (
     CALLER_LEGAL_KEYS,
+    CANONICAL_CALLER_NAME,
     RULE_CALLEE_MISSING_TIMEOUT,
     RULE_INVALID_CALLER_KEY,
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
+    RULE_CALLER_NOT_CANONICAL,
     RULE_YAML_PARSE_ERROR,
+    RULE_NAMES,
     Finding,
+    _build_parser,
     audit_text,
     has_failure,
     main,
@@ -95,13 +101,16 @@ ACCIDENT = (
 )
 
 #: A caller job carrying **only** the nine legal keys (every one of them, on purpose).
+#: The callee is deliberately *not* the shared lint workflow: rule 5 requires that caller to
+#: live in ``commit-msg-lint.yml``, so using it here would fold two rules into one fixture
+#: (变红时看不出是键集错还是位置错). Rule 5 has its own class below.
 LEGAL_CALLER = (
     "name: CI\n"
     "on: [push, workflow_dispatch]\n"
     "jobs:\n"
-    "  lint-commits:\n"
-    "    name: Lint commit messages\n"
-    "    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master\n"
+    "  verify-versions:\n"
+    "    name: Verify versions\n"
+    "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n"
     "    with:\n"
     "      fetch-depth: 0\n"
     "    secrets: inherit\n"
@@ -511,9 +520,12 @@ class TestJsonContractAndExitCodes:
         assert summary["warnings"] == 0
         assert summary["suppressed"] == 0
         assert summary["failed"] is True
+        # 冻结的 JSON 契约：规则键集合 = RULE_NAMES（加规则是一次契约变更，必须同步这里）。
+        assert set(summary["rules"]) == set(RULE_NAMES)
         assert set(summary["rules"]) == {
             RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT,
             RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR,
+            RULE_CALLER_NOT_CANONICAL,
         }
         assert summary["rules"][RULE_INVALID_CALLER_KEY] == 1
 
@@ -700,6 +712,57 @@ class TestAllowList:
         assert _rules(report["findings"]) == [RULE_SELF_HOSTED_MISSING_TIMEOUT]
         assert report["summary"]["suppressed"] == 1
 
+    def test_help_lists_every_rule_name_and_no_stale_count(self):
+        """``--allow`` 的 help 必须由 RULE_NAMES 生成。
+
+        漂移史：规则从四条长到五条时，docstring 与 help 里的「four rule names」没跟着改，
+        用户照着 help 敲 `--allow` 会以为只剩四条可用。数词一律不要写进散文。
+        """
+        help_text = _build_parser().format_help()
+        # argparse 按宽度折行，且会在连字符处断词（`callee-missing-\ntimeout`）：
+        # 比较前把所有空白都去掉，否则测试会被"折行位置"这种无关变化弄红。
+        flat = "".join(help_text.split())
+        assert ",".join(RULE_NAMES) in flat
+        assert len(RULE_NAMES) == 5
+        for word in ("oneofthefour", "oneofthefive", "threerule", "fourrule"):
+            assert word not in flat
+
+    @pytest.mark.parametrize("columns", ["40", "80", "100", "120", "200"])
+    def test_help_keeps_every_rule_name_whole(self, monkeypatch, columns):
+        """渲染出来的 help 必须**逐字**含每个规则名（宽度无关）。
+
+        默认 formatter 会在连字符处断词 ⇒ 80 列下打印成 `callee-missing-` + `timeout`：
+        用户从 `--help` 复制的规则名是残的，而 argparse 报错里给的却是完整的（两处不一致）。
+        `_WholeWordHelpFormatter` 禁掉 hyphen / 长词断词后，这条逐字判据在任何宽度都必须成立。
+        """
+        monkeypatch.setenv("COLUMNS", columns)
+        help_text = _build_parser().format_help()
+        for name in RULE_NAMES:
+            assert name in help_text, f"{name} 在 COLUMNS={columns} 下被折行切开"
+
+    def test_description_is_still_wrapped(self, monkeypatch):
+        """反向守卫：修 help 折行不得把 description 的换行一起关掉。
+
+        第一版 formatter 继承了 `RawDescriptionHelpFormatter`——它按定义原样返回 description，
+        292 字符挤成一行，比修复前更难读（独立验证者实测发现）。这里同时钉住"会折行"与"不超宽"。
+        """
+        monkeypatch.setenv("COLUMNS", "80")
+        help_text = _build_parser().format_help()
+        longest = max(len(line) for line in help_text.splitlines())
+        assert longest <= 80, f"help 有 {longest} 字符的长行，description 没折行"
+        assert "Fail GitHub Actions workflows" in help_text
+        assert "it belongs on the callee." in help_text
+        assert help_text.index("it belongs on the callee.") > help_text.index(
+            "Fail GitHub Actions workflows"
+        ) + 1, "description 仍挤在一行里"
+
+    def test_module_docstring_rule_count_follows_the_table(self):
+        """模块 docstring 里的条数必须等于 ``len(RULE_NAMES)``——它就是漂移的那一处。"""
+        doc = workflow_audit.__doc__ or ""
+        number = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}[len(RULE_NAMES)]
+        assert f"all {number} are" in doc
+        assert "one of the four rule names" not in doc
+
 
 # ── 路径解析与 CLI 约定 ─────────────────────────────────────────────────────
 
@@ -797,6 +860,127 @@ class TestPathsAndCli:
         assert [finding.rule for finding in findings] == [RULE_INVALID_CALLER_KEY]
         assert findings[0].path == "ci.yml"
         assert findings[0].to_json().keys() == {"path", "line", "rule", "severity", "message"}
+
+
+class TestCanonicalCaller:
+    """Rule 5: the shared commit-lint caller must equal the generator's template bytes.
+
+    2026-09-15: the fleet was unified to one 273-byte caller. Nothing compared a repository
+    against that file, so a hand-edited variant (or one written by an older generator) kept
+    a shape whose required check never re-runs — the §8.3.6 deadlock — while every other
+    rule stayed green.
+    """
+
+    NAME = "commit-msg-lint.yml"
+
+    def test_canonical_file_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_missing_ready_for_review_is_reported(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "reopened, ready_for_review, synchronize", "reopened, synchronize"
+        )
+        _workflow(tmp_path, drifted, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["line"] == 1
+        assert finding["severity"] == "error"
+        assert "ready_for_review" in finding["message"]
+        assert "init --with-workflows --force" in finding["message"]
+        assert report["summary"]["rules"][RULE_CALLER_NOT_CANONICAL] == 1
+
+    def test_extra_concurrency_block_is_reported(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "\njobs:",
+            "\nconcurrency:\n  group: lint-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:",
+        )
+        _workflow(tmp_path, drifted, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_pure_whitespace_drift_is_reported(self, tmp_path, monkeypatch, capsys):
+        # 逐字节规则：多一个结尾换行也算漂移（它改变的是 git blob，不是语义）。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT + "\n", filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_callee_host_is_never_reported(self, tmp_path, monkeypatch, capsys):
+        # celestia-devtools 自己那个同名文件是 callee（作业带 runs-on/steps），不是 caller。
+        callee = (
+            "name: Commit Message Lint\n"
+            "on:\n"
+            "  workflow_call: {}\n"
+            "jobs:\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v7\n"
+        )
+        _workflow(tmp_path, callee, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_same_content_under_another_name_is_reported(self, tmp_path, monkeypatch, capsys):
+        # 字节比对按文件名定位 ⇒ 换个文件名就等于跳出比对，漂移从此无人看管。
+        # 副本照样能跑（check 名只取决于作业 id），所以它能一直错下去：必须报「位置错」。
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "reopened, ready_for_review, synchronize", "reopened, synchronize"
+        )
+        _workflow(tmp_path, drifted, filename="checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["path"].endswith("checks.yml")
+        assert finding["line"] == 1
+        assert CANONICAL_CALLER_NAME in finding["message"]
+        assert "init --with-workflows --force" in finding["message"]
+        # 位置错的判据是文件名，不是字节：消息不能串到「字节不一致」那条。
+        assert "byte-identical" not in finding["message"]
+
+    def test_canonical_bytes_under_another_name_is_still_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # 变异哨兵：把「文件名判定」改坏（退回只认同名文件），本用例必须变红——
+        # 即使字节完全正确，位置错的副本依然逃出比对。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename="checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_mislocated_caller_can_be_allowlisted(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename="checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/checks.yml"]) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+
+    def test_human_output_names_the_file_and_line(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT.rstrip("\n"), filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 1
+        out = capsys.readouterr().out
+        assert f"{self.NAME}:1" in out
+        assert RULE_CALLER_NOT_CANONICAL in out
+
+    def test_allowlist_can_exempt_a_repository(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT.rstrip("\n"), filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/{self.NAME}"]) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
 
 
 class TestEntryPointRegistered:
