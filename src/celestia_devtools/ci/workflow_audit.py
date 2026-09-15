@@ -15,7 +15,7 @@ This CLI makes that shape loud.
 only place an upper bound can live is the callee — the reusable workflow named by ``uses:``,
 on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has none.
 
-*Rules* (each finding carries ``path:line`` and a recomputable criterion; all five are
+*Rules* (each finding carries ``path:line`` and a recomputable criterion; all six are
 ``error`` severity today):
 
 ``invalid-caller-key``
@@ -38,6 +38,11 @@ on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has 
     the file cannot be parsed as YAML. This rule reports the **file** (with the first line
     quoted); it never skips it. ``sysl/.github/workflows/validate.yml`` is a real workflow
     flattened onto one line, and every auditor that starts by parsing has been blind to it.
+``yaml-duplicate-key``
+    a mapping defines the same key twice, at any level. PyYAML keeps the last value
+    silently, so ``safe_load``-based auditors stay blind — GitHub's parser instead rejects
+    the whole file, zero jobs, nothing red (the ``dev.celestia.world`` job with two ``if:``
+    keys produced fourteen pseudo-runs).
 
 *Structure:* the workflow AST is composed with PyYAML (a declared runtime dependency), so
 line numbers come from node marks and validity comes from the composer itself — a file that
@@ -80,7 +85,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 # canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
@@ -107,6 +112,7 @@ RULE_CALLEE_MISSING_TIMEOUT = "callee-missing-timeout"
 RULE_SELF_HOSTED_MISSING_TIMEOUT = "self-hosted-missing-timeout"
 RULE_YAML_PARSE_ERROR = "yaml-parse-error"
 RULE_CALLER_NOT_CANONICAL = "caller-not-canonical"
+RULE_YAML_DUPLICATE_KEY = "yaml-duplicate-key"
 
 RULE_NAMES: Tuple[str, ...] = (
     RULE_INVALID_CALLER_KEY,
@@ -114,6 +120,7 @@ RULE_NAMES: Tuple[str, ...] = (
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
     RULE_YAML_PARSE_ERROR,
     RULE_CALLER_NOT_CANONICAL,
+    RULE_YAML_DUPLICATE_KEY,
 )
 
 #: The file every repository ships for the shared commit-lint caller.
@@ -465,6 +472,57 @@ def _mislocated_caller_findings(path: str) -> List[Finding]:
     ]
 
 
+def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List[Finding]:
+    """Flag a mapping that defines the same key twice, anywhere in the document.
+
+    PyYAML's ``safe_load`` silently keeps the *last* value, so every "parse it and look"
+    auditor stays blind — but GitHub's parser rejects the **whole file**, which means zero
+    jobs, no checks, and nothing red (the ``dev.celestia.world`` incident: a job with two
+    ``if:`` keys produced fourteen zero-job pseudo-runs). The composed tree keeps every
+    key, duplicates included, so the check is a plain walk.
+    """
+    findings: List[Finding] = []
+
+    def walk(node: Node, seen: Set[int]) -> None:
+        if id(node) in seen:  # recursive aliases must not recurse forever
+            return
+        seen.add(id(node))
+        if isinstance(node, MappingNode):
+            first_line: Dict[str, int] = {}
+            for key_node, value_node in node.value:
+                key = _scalar_text(key_node)
+                line = _line_of(key_node)
+                if key is not None:
+                    if key in first_line:
+                        findings.append(
+                            Finding(
+                                path=path,
+                                line=line,
+                                rule=RULE_YAML_DUPLICATE_KEY,
+                                severity=SEVERITY_ERROR,
+                                message=(
+                                    f"the same mapping key {key!r} is defined twice "
+                                    f"(this occurrence at line {line}, the first at line "
+                                    f"{first_line[key]}); PyYAML silently keeps the last "
+                                    f"value but GitHub's parser rejects the whole file and "
+                                    f"runs zero jobs — deduplicate, keeping one value"
+                                ),
+                                excerpt=_line_excerpt(lines, line),
+                            )
+                        )
+                    else:
+                        first_line[key] = line
+                walk(key_node, seen)
+                walk(value_node, seen)
+        elif isinstance(node, SequenceNode):
+            for item in node.value:
+                walk(item, seen)
+
+    if root is not None:
+        walk(root, set())
+    return findings
+
+
 def audit_text(text: str, path: str) -> List[Finding]:
     """Audit one workflow's text; *path* is the already-resolved display path."""
     try:
@@ -473,17 +531,20 @@ def audit_text(text: str, path: str) -> List[Finding]:
         # 规则 4 的意义就在这一条 except：解析失败必须变成 finding，绝不能 continue 跳过。
         return [_parse_error_finding(exc, text, path)]
 
+    lines = text.split("\n")
+    # 规则 6 在整棵树上走：重复键可以出现在任何层级（作业里、step 的 env 里），而且
+    # 就算没有 jobs 可查（其他规则都会早退），这个文件对 GitHub 仍然是非法的。
+    findings: List[Finding] = list(_duplicate_key_findings(root, path, lines))
+
     if not isinstance(root, MappingNode):
         # 空文档（compose 返回 None）或非映射根：没有 jobs 可查，也没有解析错误。
-        return []
+        return findings
 
     jobs = _mapping_value(root, "jobs")
     if not isinstance(jobs, MappingNode):
-        return []
+        return findings
 
     is_callee = _declares_workflow_call(_mapping_value(root, "on"))
-    lines = text.split("\n")
-    findings: List[Finding] = []
 
     if _calls_shared_commit_lint(jobs):
         if Path(path).name == CANONICAL_CALLER_NAME:

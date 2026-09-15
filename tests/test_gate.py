@@ -1035,13 +1035,26 @@ class TestCheckoutStaleness:
     """
 
     @staticmethod
+    def _git(*args):
+        """Run git with the org commit-msg hook disarmed.
+
+        node-1 installs ``core.hooksPath=/mnt/codespace/_hooks`` globally, so a fixture
+        commit like ``init`` fails the gitmoji lint and four tests here went red for an
+        environment reason that has nothing to do with the code under test (the hook
+        honours ``CELESTIA_COMMIT_MSG_SKIP``, AGENTS §11.1).
+        """
+        subprocess.run(
+            list(args), check=True, env=dict(os.environ, CELESTIA_COMMIT_MSG_SKIP="1")
+        )
+
+    @staticmethod
     def _repo(path):
         subprocess.run(["git", "init", "-q", str(path)], check=True)
         for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
             subprocess.run(["git", "-C", str(path), "config", key, value], check=True)
         (path / "f.txt").write_text("x", encoding="utf-8")
-        subprocess.run(["git", "-C", str(path), "add", "f.txt"], check=True)
-        subprocess.run(["git", "-C", str(path), "commit", "-qm", "init"], check=True)
+        TestCheckoutStaleness._git("git", "-C", str(path), "add", "f.txt")
+        TestCheckoutStaleness._git("git", "-C", str(path), "commit", "-qm", "init")
         return path
 
     @staticmethod
@@ -1067,7 +1080,7 @@ class TestCheckoutStaleness:
             pytest.skip("git not available")
         repo = self._repo(tmp_path / "behind")
         (repo / "f.txt").write_text("y", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repo), "commit", "-qam", "second"], check=True)
+        self._git("git", "-C", str(repo), "commit", "-qam", "second")
         subprocess.run(
             ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/master", self._head(repo)],
             check=True,
@@ -1087,7 +1100,7 @@ class TestCheckoutStaleness:
             check=True,
         )
         (repo / "f.txt").write_text("local", encoding="utf-8")
-        subprocess.run(["git", "-C", str(repo), "commit", "-qam", "local-only"], check=True)
+        self._git("git", "-C", str(repo), "commit", "-qam", "local-only")
         note = _checkout_staleness(repo)
         assert note is not None
         assert "ahead 1" in note and "behind 0" in note

@@ -34,6 +34,7 @@ from celestia_devtools.ci.workflow_audit import (
     RULE_INVALID_CALLER_KEY,
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
     RULE_CALLER_NOT_CANONICAL,
+    RULE_YAML_DUPLICATE_KEY,
     RULE_YAML_PARSE_ERROR,
     RULE_NAMES,
     Finding,
@@ -493,6 +494,127 @@ class TestYamlParseError:
         assert main([]) == 0
 
 
+class TestYamlDuplicateKey:
+    """Rule 6: a mapping that defines the same key twice is reported, never deduped away.
+
+    PyYAML's ``safe_load`` silently keeps the last value, so every load-then-look auditor is
+    blind to the exact shape that made GitHub reject ``dev.celestia.world``'s ``docker`` job
+    (two ``if:`` keys → the whole file invalid → fourteen zero-job pseudo-runs). The check
+    walks the composed tree, which keeps every key — duplicates included.
+    """
+
+    TWO_IFS = (
+        "name: CI\n"                                    # 1
+        "on:\n"                                         # 2
+        "  push:\n"                                     # 3
+        "    branches: [master]\n"                      # 4
+        "jobs:\n"                                       # 5
+        "  docker:\n"                                   # 6
+        "    runs-on: [self-hosted, linux]\n"           # 7
+        "    timeout-minutes: 30\n"                     # 8
+        "    if: github.event_name == 'push'\n"         # 9
+        "    if: github.event_name == 'pull_request'\n"  # 10
+        "    steps:\n"                                  # 11
+        "      - run: echo hi\n"                        # 12
+    )
+
+    def test_duplicate_job_key_is_reported_at_the_second_line(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_YAML_DUPLICATE_KEY]
+        finding = report["findings"][0]
+        assert finding["line"] == 10  # 第二个 `if:` 的行
+        assert finding["severity"] == "error"
+        assert report["summary"]["rules"][RULE_YAML_DUPLICATE_KEY] == 1
+
+    def test_message_names_the_key_and_both_lines(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "'if'" in message
+        assert "line 10" in message and "line 9" in message
+        assert "zero jobs" in message
+
+    def test_safe_load_keeps_the_last_value_is_why_the_rule_exists(self):
+        """The blindness demonstration: load-then-look sees one `if`, the walk sees two."""
+        import yaml as _yaml
+
+        doc = _yaml.safe_load(self.TWO_IFS)
+        assert list(doc["jobs"]["docker"]) .count("if") == 1  # load 视角：已静默去重
+        found = audit_text(self.TWO_IFS, ".github/workflows/ci.yml")
+        assert [f.rule for f in found] == [RULE_YAML_DUPLICATE_KEY]  # compose 视角：抓得到
+
+    def test_duplicate_top_level_key_is_reported(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "name: A\non: push\nname: B\n", filename="dup-top.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_YAML_DUPLICATE_KEY
+        assert finding["line"] == 3
+        assert "'name'" in finding["message"]
+
+    def test_duplicate_deep_in_a_step_env_is_reported(self, tmp_path, monkeypatch, capsys):
+        nested = (
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: [self-hosted, linux]\n"
+            "    timeout-minutes: 30\n"
+            "    steps:\n"
+            "      - run: cargo build\n"
+            "        env:\n"
+            "          RUSTFLAGS: -D warnings\n"
+            "          RUSTFLAGS: -C target-cpu=native\n"
+        )
+        _workflow(tmp_path, nested)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_YAML_DUPLICATE_KEY
+        assert "'RUSTFLAGS'" in finding["message"]
+        assert finding["line"] == 9
+
+    def test_deduplicating_turns_it_green_again(self, tmp_path, monkeypatch, capsys):
+        # 前向修复方向：删掉重复键即归零（工具不是无条件红）。
+        path = _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        assert _run([], capsys)[0] == 1
+        _replace(path, "    if: github.event_name == 'pull_request'\n", "")
+        assert _run([], capsys)[0] == 0
+
+    def test_canonical_caller_has_no_duplicates(self, tmp_path, monkeypatch, capsys):
+        # 防误报：规范 caller（flow 风格 `types: [...]`）不含重复键，规则 5、6 互不干扰。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename=CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_missing_jobs_still_reports_the_duplicate(self, tmp_path, monkeypatch, capsys):
+        # 其他规则都会在"没有 jobs"时早退；重复键必须仍然被抓到（文件对 GitHub 依旧非法）。
+        _workflow(tmp_path, "name: A\non: push\non: workflow_dispatch\n", filename="nojobs.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_YAML_DUPLICATE_KEY]
+
+    def test_allowlist_can_exempt_a_duplicate(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        argv = ["--json", f"--allow={RULE_YAML_DUPLICATE_KEY}=.github/workflows/ci.yml"]
+        assert main(argv) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+
+    def test_recursive_alias_does_not_recurse_forever(self, tmp_path, monkeypatch, capsys):
+        # `&x` 自引用的锚在 compose 里是环：walk 必须靠 seen 集合终止，而不是栈溢出。
+        _workflow(tmp_path, "a: &x\n  b: *x\n", filename="alias.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+
 # ── ⑥ --json 结构与退出码 ───────────────────────────────────────────────────
 
 
@@ -525,7 +647,7 @@ class TestJsonContractAndExitCodes:
         assert set(summary["rules"]) == {
             RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT,
             RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR,
-            RULE_CALLER_NOT_CANONICAL,
+            RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY,
         }
         assert summary["rules"][RULE_INVALID_CALLER_KEY] == 1
 
@@ -723,8 +845,11 @@ class TestAllowList:
         # 比较前把所有空白都去掉，否则测试会被"折行位置"这种无关变化弄红。
         flat = "".join(help_text.split())
         assert ",".join(RULE_NAMES) in flat
-        assert len(RULE_NAMES) == 5
-        for word in ("oneofthefour", "oneofthefive", "threerule", "fourrule"):
+        # 数词黑名单：条数变化时散文最容易烂掉（four→five 就烂过一次），一律不许写。
+        for word in (
+            "oneofthefour", "oneofthefive", "oneofthesix",
+            "threerule", "fourrule", "fiverule", "sixrule",
+        ):
             assert word not in flat
 
     @pytest.mark.parametrize("columns", ["40", "80", "100", "120", "200"])
