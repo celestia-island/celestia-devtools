@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.5.0
+# Version: 0.6.0
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.

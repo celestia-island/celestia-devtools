@@ -44,6 +44,7 @@ jobs:
     # the self-hosted fleet. No GitHub-hosted job here — private repos must not
     # add billed ubuntu-latest runs (AGENTS §8.2).
     runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
