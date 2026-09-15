@@ -769,6 +769,29 @@ class TestPathsAndCli:
         finally:
             os.chmod(locked, 0o755)
 
+    def test_unreadable_workflows_dir_itself_exits_2(self, tmp_path, monkeypatch, capsys):
+        """回归（2026-09-15 独立验证者反例）：仓库根可读、但 `.github/workflows` 自身 chmod 000。
+
+        旧实现用 `Path.glob` 枚举 —— 它**吞掉 EACCES** 返回空列表 ⇒ 报 "clean (0 files)" / exit 0，
+        即"把不可读当成没有 workflow"。现改用 os.scandir，让 OSError 冒泡到 exit 2。
+        """
+        import os
+
+        repo = tmp_path / "repo"
+        locked = repo / ".github" / "workflows"
+        locked.mkdir(parents=True)
+        _workflow(locked, PLAIN_NO_TIMEOUT)          # 真有一个"本该命中"的文件
+        os.chmod(locked, 0o000)
+        try:
+            if os.access(locked, os.R_OK):           # root 无视权限位
+                pytest.skip("running as root: permission bits are not enforced")
+            monkeypatch.chdir(tmp_path)
+            assert main([str(repo)]) == 2
+            err = capsys.readouterr().err
+            assert "workflows" in err and "clean" not in err
+        finally:
+            os.chmod(locked, 0o755)
+
     def test_audit_text_helper_is_usable_directly(self):
         findings = audit_text(ACCIDENT, "ci.yml")
         assert [finding.rule for finding in findings] == [RULE_INVALID_CALLER_KEY]

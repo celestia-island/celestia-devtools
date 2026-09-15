@@ -48,13 +48,15 @@ stderr — an exemption is never silent — and an unknown rule name is a usage 
 than a silent pass.
 
 *Exit codes:* ``0`` clean | ``1`` at least one error (or a warning under ``--strict``)
-| ``2`` usage or I/O error (a missing PATH, an unknown ``--allow`` rule).
+| ``2`` usage or I/O error (a missing PATH, an unknown ``--allow`` rule, or a
+directory that exists but cannot be listed — that case is **not** reported as
+"clean": unreadable means unknown, and unknown is not a pass).
 
 Usage::
 
     celestia-ci-audit
     celestia-ci-audit .github/workflows/ci.yml --json
-    celestia-ci-audit */ --strict
+    celestia-ci-audit .github/workflows --strict
     celestia-ci-audit --allow self-hosted-missing-timeout=sysl/*
 """
 
@@ -63,6 +65,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -447,11 +450,27 @@ def audit_file(path: Path, display: str) -> List[Finding]:
 
 
 def _yml_files(directory: Path) -> List[Path]:
-    """Sorted ``*.yml`` / ``*.yaml`` files directly inside *directory* (never recursive)."""
-    if not directory.is_dir():
+    """Sorted ``*.yml`` / ``*.yaml`` files directly inside *directory* (never recursive).
+
+    ``os.scandir`` instead of ``Path.glob`` is deliberate: ``glob`` **swallows EACCES** and
+    returns an empty list, which would turn "this directory cannot be listed" into "this
+    directory holds no workflows" — precisely the silent skip this tool exists to prevent
+    (verified counterexample 2026-09-15: ``.github/workflows`` readable-but-chmod-000
+    reported ``clean (0 workflow file(s) scanned)`` / exit 0). Here the ``OSError``
+    propagates and the caller turns it into exit 2.
+    """
+    if not directory.is_dir():          # EACCES on the path itself propagates too
         return []
-    found = [item for item in directory.glob("*.yml") if item.is_file()]
-    found += [item for item in directory.glob("*.yaml") if item.is_file()]
+    found: List[Path] = []
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if not entry.name.endswith((".yml", ".yaml")):
+                continue
+            try:
+                if entry.is_file():
+                    found.append(Path(entry.path))
+            except OSError:             # 单个条目竞态消失：跳过它即可，不掩盖整个目录
+                continue
     return sorted(found)
 
 
