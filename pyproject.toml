@@ -50,6 +50,7 @@ commit-msg-lint = "celestia_devtools.vcs.commit_msg:main"
 publish-crates = "celestia_devtools.publish.crates:main"
 lint-separators = "celestia_devtools.lint.separator_lint:main"
 p0-gate = "celestia_devtools.lint.p0_gate:main"
+celestia-rules-lint = "celestia_devtools.lint.rules_lint:main"
 celestia-job-timeouts = "celestia_devtools.ci.job_timeouts:main"
 celestia-ci-audit = "celestia_devtools.ci.workflow_audit:main"
 
