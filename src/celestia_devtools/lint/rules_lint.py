@@ -95,6 +95,44 @@ def is_placeholder(value: str) -> bool:
 MIN_SKILL_BODY_LINES = 5
 MIN_DUP_LINE_CHARS = 30
 
+# Structural pointer boilerplate, not rule text: every moved-out section carries the
+# same "moved to X" scaffold, so comparing it would only ever report the scaffold.
+POINTER_SCAFFOLD = re.compile(r"全文已移至(?:技能|目录层)")
+QUOTED_PATH = re.compile(r"`(/[^`\s]+)`")
+
+
+def content_start(lines: List[str]) -> int:
+    """Index of the first line that is rule content rather than generated scaffolding.
+
+    Skips YAML frontmatter, the H1 title, and a leading blockquote block (a skill's
+    provenance note, or the rules root's index of ledgers and skills). Those are
+    identical across files by construction, so comparing them would only ever report
+    the scaffolding — but a skill with no section heading must still be compared, so
+    this is an explicit prefix walk rather than "everything before the first `## `".
+    """
+    n = 0
+    if n < len(lines) and lines[n].startswith("---"):
+        n += 1
+        while n < len(lines) and lines[n].strip() != "---":
+            n += 1
+        n += 1
+    while n < len(lines) and not lines[n].strip():
+        n += 1
+    if n < len(lines) and lines[n].startswith("# "):
+        n += 1
+    # A blank line separates the title from the provenance block, so probe past blanks
+    # before deciding whether a leading blockquote is present.
+    probe = n
+    while probe < len(lines) and not lines[probe].strip():
+        probe += 1
+    if probe < len(lines) and lines[probe].lstrip().startswith(">"):
+        n = probe
+        while n < len(lines) and lines[n].lstrip().startswith(">"):
+            n += 1
+            while n < len(lines) and not lines[n].strip():
+                n += 1
+    return n
+
 
 @dataclass
 class Finding:
@@ -332,17 +370,31 @@ def check_ledger_schema(ctx: Context) -> None:
 
 
 def check_duplication(ctx: Context, allowlist: Iterable[str] = (), include_repo_local: bool = False) -> None:
-    """A rule sentence should live on exactly one surface."""
+    """A rule sentence should live on exactly one surface.
+
+    Only structural scaffolding is skipped — headings, table rows, and the pointer
+    boilerplate that names a moved-out target. Everything else participates,
+    **including blockquote and list lines**. An earlier version skipped every line
+    starting with ``>``, which is exactly where the split puts its condensed rule
+    restatements, so the check was blind to the duplication the split itself creates
+    (measured: one rule sentence had seven homes in the core file).
+    """
     seen: Dict[str, Tuple[Path, int]] = {}
     allowed = tuple(allowlist)
     for path in injected_surfaces(ctx.root):
         if not include_repo_local and is_repo_local(path, ctx.root):
             continue
-        for idx, raw in enumerate(_read(path), 1):
+        lines = _read(path)
+        start = content_start(lines)
+        for idx, raw in enumerate(lines, 1):
+            if idx <= start:
+                continue
             line = " ".join(raw.split())
             if len(line) < MIN_DUP_LINE_CHARS:
                 continue
-            if line.startswith((">", "|", "#", "-", "*", "1.", "2.", "3.")):
+            if line.startswith(("#", "|")):
+                continue
+            if POINTER_SCAFFOLD.search(line):
                 continue
             if any(token and token in line for token in allowed):
                 continue
@@ -358,6 +410,37 @@ def check_duplication(ctx: Context, allowlist: Iterable[str] = (), include_repo_
                 )
             else:
                 seen[line] = (path, idx)
+
+
+def check_stale_paths(ctx: Context, path_root: Optional[str] = None) -> None:
+    """Absolute paths quoted in an injected surface should exist.
+
+    A tooling migration that renames scripts leaves the rules pointing at files that no
+    longer exist — measured here: five `_tools/*.sh` references survived the move to
+    Python, so the rules told agents to run tools that were gone. Nothing caught it
+    until the references were audited by hand. Concrete paths only; templates such as
+    `<name>` or `<repo>` are skipped, and the root is opt-in because it is
+    deployment-specific.
+    """
+    if not path_root:
+        return
+    root = Path(path_root)
+    prefix = str(root).rstrip("/") + "/"
+    for path in injected_surfaces(ctx.root):
+        for idx, line in enumerate(_read(path), 1):
+            for ref in QUOTED_PATH.findall(line):
+                if not ref.startswith(prefix):
+                    continue
+                if any(ch in ref for ch in "<>*$?{}"):
+                    continue
+                ctx.checked += 1
+                if not Path(ref).exists():
+                    ctx.report(
+                        path,
+                        idx,
+                        "stale-path",
+                        "%s does not exist — a rename or migration left this reference behind" % ref,
+                    )
 
 
 def check_secrets(ctx: Context) -> None:
@@ -386,6 +469,7 @@ RULES = (
     ("ledger-schema", check_ledger_schema),
     ("secret-in-injected-surface", check_secrets),
     ("duplicate-rule", check_duplication),
+    ("stale-path", check_stale_paths),
 )
 
 
@@ -410,6 +494,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--include-repo-local", action="store_true",
                         help="also compare nested git checkouts; off by default because a repo-local "
                              "AGENTS.md is a standalone artifact that deliberately restates org rules")
+    parser.add_argument("--path-root", metavar="DIR",
+                        help="verify that absolute paths quoted under DIR exist (deployment-specific, "
+                             "so off by default)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -427,6 +514,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         if name == "duplicate-rule":
             fn(ctx, args.allow_duplicate, args.include_repo_local)  # type: ignore[call-arg]
+        elif name == "stale-path":
+            fn(ctx, args.path_root)  # type: ignore[call-arg]
         else:
             fn(ctx)
 

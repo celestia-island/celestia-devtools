@@ -199,6 +199,63 @@ def test_secret_shaped_value_in_injected_surface_is_an_error(tmp_path, bad):
     assert run(tmp_path) == 1
 
 
+def test_duplicate_rule_catches_blockquote_restatements(tmp_path):
+    """Regression: the split puts its condensed rule restatements in blockquotes, and
+    an earlier version skipped every line starting with `>`, so the check was blind to
+    the duplication the split itself creates (one sentence had seven homes)."""
+    core = DEFAULT_CORE + "\n## 9. Later\n\n> %s\n\n## 10. Even later\n\n> %s\n" % (
+        OTHER_LONG_LINE,
+        OTHER_LONG_LINE,
+    )
+    make_tree(tmp_path, core=core)
+    assert run(tmp_path, "--strict") == 1
+
+
+def test_duplicate_rule_catches_bullet_restatements(tmp_path):
+    core = DEFAULT_CORE + "\n## 9. Later\n\n- %s\n\n## 10. Even later\n\n- %s\n" % (
+        OTHER_LONG_LINE,
+        OTHER_LONG_LINE,
+    )
+    make_tree(tmp_path, core=core)
+    assert run(tmp_path, "--strict") == 1
+
+
+def test_preamble_scaffolding_is_not_duplication(tmp_path):
+    """Every skill carries the same provenance block and the rules root carries the
+    same index of ledgers and skills. Generated scaffolding is identical by
+    construction, so comparing it would only ever report the scaffolding."""
+    provenance = "> Shared provenance boilerplate, long enough to be compared."
+    make_tree(tmp_path, skill=skill_text("demo", body=provenance + "\n\n" + SKILL_BODY))
+    two = tmp_path / ".agents" / "skills" / "two"
+    two.mkdir(parents=True)
+    other_body = "\n".join("a different rule line %d" % i for i in range(6))
+    (two / "SKILL.md").write_text(
+        skill_text("two", body=provenance + "\n\n" + other_body), encoding="utf-8"
+    )
+    assert run(tmp_path, "--strict") == 0
+
+
+# ------------------------------------------------------------------- stale paths
+
+
+def test_stale_path_is_an_error_when_a_root_is_given(tmp_path):
+    missing = tmp_path / "_tools" / "gone.py"
+    core = DEFAULT_CORE + "\nRun `%s` to do the thing.\n" % missing
+    make_tree(tmp_path, core=core)
+    assert run(tmp_path) == 0, "no --path-root means no path checking"
+    assert run(tmp_path, "--path-root", str(tmp_path)) == 1
+    missing.parent.mkdir()
+    missing.write_text("# now it exists\n", encoding="utf-8")
+    assert run(tmp_path, "--path-root", str(tmp_path)) == 0
+
+
+def test_stale_path_skips_template_references(tmp_path):
+    core = DEFAULT_CORE + "\nSee `%s/<name>/SKILL.md` and `%s/${VAR}/y` for details.\n" % (tmp_path, tmp_path)
+    make_tree(tmp_path, core=core)
+    assert run(tmp_path, "--path-root", str(tmp_path)) == 0
+
+
+
 def test_documentation_addresses_are_allowed(tmp_path):
     make_tree(tmp_path, core=DEFAULT_CORE + "\nUse 192.0.2.x and 198.51.100.x placeholders.\n")
     assert run(tmp_path) == 0
