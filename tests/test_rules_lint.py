@@ -131,6 +131,26 @@ def test_short_skill_body_is_an_error(tmp_path):
     assert run(tmp_path) == 1
 
 
+def test_missing_pyyaml_is_tolerated_when_the_tree_has_no_skills(tmp_path, monkeypatch):
+    """A repository adopting this check usually has no skills and no PyYAML.
+    Failing for a dependency no skill needs would make the gate red for a tree it
+    never inspected — the failure mode this tool exists to prevent."""
+    # No `.agents/skills` at all, and a core with no pointer to one.
+    core = "# Rules\n\n## 1. Core\n\n%s\n" % LONG_LINE
+    make_tree(tmp_path, core=core)
+    import shutil
+
+    shutil.rmtree(tmp_path / ".agents")
+    monkeypatch.setattr(rules_lint, "yaml", None)
+    assert rules_lint.main([str(tmp_path)]) == 0
+
+
+def test_missing_pyyaml_is_an_error_when_skills_exist(tmp_path, monkeypatch):
+    make_tree(tmp_path)
+    monkeypatch.setattr(rules_lint, "yaml", None)
+    assert rules_lint.main([str(tmp_path)]) == 1
+
+
 # ------------------------------------------------------------------- pointers
 
 

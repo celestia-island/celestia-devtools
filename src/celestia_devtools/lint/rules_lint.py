@@ -231,10 +231,22 @@ def skill_body_lines(path: Path) -> int:
 
 
 def check_skill_frontmatter(ctx: Context) -> None:
-    if yaml is None:
-        ctx.report(ctx.root / SKILL_RELPATH, 0, "skill-frontmatter", "PyYAML unavailable; cannot validate skills")
+    skills = skill_bodies(ctx.root)
+    if not skills:
+        # A repository adopting this check usually has no skills and no PyYAML.
+        # Failing for a missing dependency that no skill needs would make the
+        # gate red for a tree it never inspected — the failure mode this whole
+        # tool exists to avoid.
         return
-    for name, path in skill_bodies(ctx.root).items():
+    if yaml is None:
+        ctx.report(
+            ctx.root / SKILL_RELPATH,
+            0,
+            "skill-frontmatter",
+            "PyYAML unavailable, so %d skill(s) cannot be validated" % len(skills),
+        )
+        return
+    for name, path in skills.items():
         ctx.checked += 1
         text = path.read_text(encoding="utf-8")
         split = split_frontmatter(text)
