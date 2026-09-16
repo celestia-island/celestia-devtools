@@ -20,9 +20,14 @@ Usage: ci-orphan-janitor.py [--grace SEC] [--dry-run]
 Exit 0 normally; exit 3 on internal error.
 """
 import os
+import re
 import sys
+import time
 import signal
+import socket
 import argparse
+import subprocess
+from datetime import datetime, timezone
 
 RUNNER_HOME = "/home/lab/actions-runner"
 WORK_DIR = os.path.join(RUNNER_HOME, "_work")
@@ -111,14 +116,119 @@ def repo_from_cwd(cwd):
     return None
 
 
+# ---------------------------------------------------------------------------
+# zombie-worker detection (unhonoured job cancellation)
+#
+# Symptom (2026-09-15/16 incidents): ci-reaper cancels stale runs GitHub-side,
+# the Listener logs "Job cancellation request ... received, cancellation
+# timeout 5 minutes", its own kill fires ("haven't exit within cancellation
+# timout, kill running worker") — but the Worker process survives, the runner
+# stays busy forever and the whole farm queue stalls behind a dead job.
+#
+# Rule: if the newest cancellation request is older than CANCEL_GRACE seconds
+# (2x the runner's own 5-minute timeout) and a Worker process alive right now
+# already existed when that request arrived, the runner ignored the
+# cancellation -> restart the runner unit.
+# ---------------------------------------------------------------------------
+
+CANCEL_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z[^\]]*\] "
+    r"Job cancellation request ([0-9a-f-]+) received"
+)
+
+
+def worker_pids():
+    return [p for p in all_pids()
+            if "Runner.Worker spawnclient" in read_cmdline(p)]
+
+
+def starttime_epoch(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        starttime_ticks = int(fields[19])
+        with open("/proc/uptime") as f:
+            uptime_s = float(f.read().split()[0])
+        boot = time.time() - uptime_s
+        return boot + starttime_ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError):
+        return 0.0
+
+
+def last_cancel_request(diag_dir):
+    """Newest 'Job cancellation request' epoch across the latest Runner logs."""
+    now = time.time()
+    best = 0.0
+    try:
+        logs = [os.path.join(diag_dir, n) for n in os.listdir(diag_dir)
+                if n.startswith("Runner_") and n.endswith(".log")]
+    except OSError:
+        return 0.0
+    for path in sorted(logs, key=os.path.getmtime, reverse=True)[:2]:
+        try:
+            with open(path, errors="replace") as f:
+                lines = f.readlines()[-500:]
+        except OSError:
+            continue
+        for line in lines:
+            m = CANCEL_RE.search(line)
+            if not m:
+                continue
+            try:
+                ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"
+                                       ).replace(tzinfo=timezone.utc).timestamp()
+            except ValueError:
+                continue
+            if now - ts > 86400:  # ignore stale rotated logs
+                continue
+            best = max(best, ts)
+    return best
+
+
+def zombie_worker_check(diag_dir, cancel_grace, dry_run, unit):
+    last_cancel = last_cancel_request(diag_dir)
+    if not last_cancel:
+        return False
+    age = time.time() - last_cancel
+    if age < cancel_grace:
+        return False
+    for pid in worker_pids():
+        st = starttime_epoch(pid)
+        if st and st < last_cancel:
+            print(f"janitor: zombie worker pid={pid} predates cancellation "
+                  f"request from {int(age)}s ago -> {'DRYRUN ' if dry_run else ''}"
+                  f"restart {unit}")
+            if not dry_run:
+                rc = subprocess.run(["systemctl", "restart", unit]).returncode
+                print(f"janitor: systemctl restart {unit} rc={rc}")
+            return True
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--grace", type=int, default=900,
                     help="minimum seconds alive before a candidate is killed")
+    ap.add_argument("--cancel-grace", type=int, default=600,
+                    help="seconds after an unacknowledged job cancellation "
+                         "before the runner unit is restarted")
+    ap.add_argument("--unit", default=None,
+                    help="runner systemd unit to restart (default: "
+                         "actions.runner.celestia-island.$(hostname).service)")
+    ap.add_argument("--diag-dir", default=os.path.join(RUNNER_HOME, "_diag"))
+    ap.add_argument("--skip-zombie", action="store_true")
+    ap.add_argument("--skip-orphans", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    active = active_job_repos()
+    if not args.skip_zombie:
+        unit = args.unit or ("actions.runner.celestia-island.%s.service"
+                             % socket.gethostname())
+        if zombie_worker_check(args.diag_dir, args.cancel_grace,
+                               args.dry_run, unit):
+            return 0
+
+    active = [] if args.skip_orphans else active_job_repos()
     victims = []
     for pid in all_pids():
         comm = read_comm(pid)
