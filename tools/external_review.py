@@ -23,7 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
 
@@ -117,7 +117,7 @@ USAGE_TEXT = """external-review.py — 半月度「外部视角」验证：把�
 """
 
 
-def die(message: str) -> "NoReturn":  # type: ignore[name-defined]
+def die(message: str):
     print(f"external-review: {message}", file=sys.stderr)
     raise SystemExit(EXIT_USAGE)
 
