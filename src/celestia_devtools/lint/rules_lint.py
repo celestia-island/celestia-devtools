@@ -66,8 +66,31 @@ SECRET_PATTERNS: Sequence[Tuple[str, re.Pattern]] = (
     ("private-ipv4", re.compile(r"(?<![\d.])192\.168\.\d{1,3}\.\d{1,3}(?![\d.])")),
     ("private-ipv4", re.compile(r"(?<![\d.])172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(?![\d.])")),
     ("long-hex-secret", re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{32,}(?![0-9a-fA-F])")),
-    ("inline-password", re.compile(r"(?i)\b(?:password|passwd|secret|token|api[_-]?key)\b\s*[=:]\s*[\"'][^\"'\s]{8,}[\"']")),
+    ("inline-password", re.compile(r"(?i)\b(?:password|passwd|secret|token|api[_-]?key)\b\s*[=:]\s*[\"']([^\"'\s]{8,})[\"']")),
 )
+
+# Placeholders and bare example words are not credentials. Without this filter the
+# inline pattern fires on documentation (`password: "Passcode"`,
+# `SSH_PASS="<your-password>"`), and a gate that cries wolf on every example stops
+# being read.
+PLACEHOLDER = re.compile(
+    r"(?i)^(?:"
+    r"<[^>]*>"
+    r"|change[_-]?me|placeholder|example|dummy|redacted|none|null|todo|password|passwd"
+    r"|secret|token|api[_-]?key"
+    r"|x{3,}|\*{3,}|\.{3,}|-{3,}"
+    r"|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"
+    r"|%[sd]"
+    r")$"
+)
+# A single alphabetic word of at most 12 characters reads as an example; real
+# credentials carry entropy (digits, symbols or mixed classes). Longer alphabetic
+# runs — passphrases — still report.
+WORD_EXAMPLE = re.compile(r"^[A-Za-z]{1,12}$")
+
+
+def is_placeholder(value: str) -> bool:
+    return bool(PLACEHOLDER.match(value) or WORD_EXAMPLE.match(value))
 
 MIN_SKILL_BODY_LINES = 5
 MIN_DUP_LINE_CHARS = 30
@@ -321,15 +344,19 @@ def check_secrets(ctx: Context) -> None:
     for path in injected_surfaces(ctx.root):
         for idx, line in enumerate(_read(path), 1):
             for label, pattern in SECRET_PATTERNS:
-                if pattern.search(line):
-                    ctx.checked += 1
-                    ctx.report(
-                        path,
-                        idx,
-                        "secret-in-injected-surface",
-                        "%s-shaped value in a surface injected into every agent and model request"
-                        % label,
-                    )
+                match = pattern.search(line)
+                if not match:
+                    continue
+                if match.groups() and is_placeholder(match.group(1)):
+                    continue
+                ctx.checked += 1
+                ctx.report(
+                    path,
+                    idx,
+                    "secret-in-injected-surface",
+                    "%s-shaped value in a surface injected into every agent and model request"
+                    % label,
+                )
 
 
 RULES = (

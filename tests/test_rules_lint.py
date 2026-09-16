@@ -204,6 +204,19 @@ def test_documentation_addresses_are_allowed(tmp_path):
     assert run(tmp_path) == 0
 
 
+@pytest.mark.parametrize("placeholder", ["<your-password>", "CHANGE_ME", "Passcode", "${MY_TOKEN}", "xxxxxxxx"])
+def test_placeholder_values_are_not_credentials(tmp_path, placeholder):
+    """A gate that fires on documentation examples stops being read."""
+    make_tree(tmp_path, core=DEFAULT_CORE + '\npassword: "%s"\n' % placeholder)
+    assert run(tmp_path) == 0
+
+
+@pytest.mark.parametrize("real", ["hunter2xyz", "correcthorsebatterystaple", "aB3$kL9mNp2q"])
+def test_entropy_bearing_inline_value_is_a_credential(tmp_path, real):
+    make_tree(tmp_path, core=DEFAULT_CORE + '\npassword: "%s"\n' % real)
+    assert run(tmp_path) == 1
+
+
 def test_repo_local_agents_file_is_scanned(tmp_path):
     make_tree(tmp_path)
     repo = tmp_path / "somerepo"
