@@ -1,0 +1,98 @@
+# Reusable rules-tree lint for repositories that carry an AGENTS.md.
+#
+# Why this exists: a repository's own AGENTS.md is injected into every agent that
+# works inside that repository, so a credential written there reaches the same
+# audience as the workspace-wide file — and a skill bundle whose frontmatter fails
+# to parse is dropped from the catalog silently while its pointer still claims the
+# rules are loaded. `celestia-rules-lint` reports both classes; this workflow makes
+# it run without every repository re-implementing the bootstrap.
+#
+# Usage (caller):
+#
+#   jobs:
+#     rules-lint:
+#       uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@master
+#       with:
+#         runs-on: '["ubuntu-latest"]'   # public repos only; see below
+#
+# Runner choice is the caller's, because it is a policy call the org has already
+# made elsewhere: AGENTS §8.2 allows GitHub-hosted jobs for **public** repositories
+# (and §8.3 keeps hosted for sub-minute, stdlib-only checks so a lint never sits
+# behind the self-hosted queue), while **private** repositories must not add hosted
+# jobs at all. The default is the org self-hosted fleet.
+
+name: Rules Lint
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: >-
+          JSON array of runner labels. Public repositories may pass
+          '["ubuntu-latest"]' (free, and no self-hosted queue); private
+          repositories must leave the default (§8.2 forbids new hosted jobs there).
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","local"]'
+      root:
+        description: Rules root to lint.
+        required: false
+        type: string
+        default: "."
+      disable:
+        description: Comma-separated rule names to skip.
+        required: false
+        type: string
+        default: "dead-reference"
+
+jobs:
+  rules-lint:
+    name: Lint the rules tree
+    # Fork PRs need maintainer approval anyway, and an untrusted tree must not
+    # consume shared runner time or execute inside the org's network.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+        # Defensive: the self-hosted runner env rewrites
+        # github.com/celestia-island/* to local bare mirrors that may lack fresh
+        # refs. A no-op on hosted runners, which rewrite nothing.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Ensure celestia-rules-lint
+        # Self-hosted nodes preinstall the CLI; hosted runners start empty. Same
+        # bootstrap shape as commit-msg-lint.yml, minus the pip-less fallback:
+        # this tool needs PyYAML, so a package install is the only working path.
+        run: |
+          if command -v celestia-rules-lint >/dev/null 2>&1; then
+            echo "celestia-rules-lint already available: $(command -v celestia-rules-lint)"
+            echo "RULES_LINT=celestia-rules-lint" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          python3 -m venv "$RUNNER_TEMP/dt-venv"
+          GIT_CONFIG_COUNT=0 "$RUNNER_TEMP/dt-venv/bin/pip" install --quiet \
+            "git+https://github.com/celestia-island/celestia-devtools.git@master"
+          echo "RULES_LINT=$RUNNER_TEMP/dt-venv/bin/celestia-rules-lint" >> "$GITHUB_ENV"
+
+      - name: Lint
+        # `dead-reference` is off by default: a repository-local AGENTS.md
+        # legitimately cites sections of the workspace-wide file (e.g. "per the
+        # workspace AGENTS.md (§5)"), and those numbers do not exist as headings
+        # in the repository's own file. The rule stays on for the workspace tree,
+        # where it is the point.
+        #
+        # No --strict: the remaining warnings (duplicated rule lines) are
+        # informational here, and a check that is red for reasons nobody acts on
+        # stops being read.
+        run: |
+          "$RULES_LINT" "$ROOT" --disable "$DISABLE"
+        env:
+          ROOT: ${{ inputs.root }}
+          DISABLE: ${{ inputs.disable }}
