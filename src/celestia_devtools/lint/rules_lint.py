@@ -146,6 +146,24 @@ def skill_bodies(root: Path) -> Dict[str, Path]:
     return out
 
 
+def is_repo_local(path: Path, root: Path) -> bool:
+    """True when `path` sits inside a nested git checkout.
+
+    Repo-local ``AGENTS.md`` files are **standalone artifacts**: someone who clones
+    only that repository reads them without ever seeing the rules root, so restating
+    org conventions there is deliberate (one such file even declares itself an
+    adaptation). Treating that as drift would fire on every repository and poison
+    ``--strict``, so duplication is only evaluated across workspace-owned surfaces
+    unless ``--include-repo-local`` asks otherwise.
+    """
+    for parent in path.parents:
+        if parent == root:
+            return False
+        if (parent / ".git").exists():
+            return True
+    return False
+
+
 def split_frontmatter(text: str) -> Optional[Tuple[str, str]]:
     if not text.startswith("---"):
         return None
@@ -313,11 +331,13 @@ def check_ledger_schema(ctx: Context) -> None:
             )
 
 
-def check_duplication(ctx: Context, allowlist: Iterable[str] = ()) -> None:
+def check_duplication(ctx: Context, allowlist: Iterable[str] = (), include_repo_local: bool = False) -> None:
     """A rule sentence should live on exactly one surface."""
     seen: Dict[str, Tuple[Path, int]] = {}
     allowed = tuple(allowlist)
     for path in injected_surfaces(ctx.root):
+        if not include_repo_local and is_repo_local(path, ctx.root):
+            continue
         for idx, raw in enumerate(_read(path), 1):
             line = " ".join(raw.split())
             if len(line) < MIN_DUP_LINE_CHARS:
@@ -387,6 +407,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--disable", action="append", default=[], metavar="RULE", help="skip a rule (repeatable)")
     parser.add_argument("--allow-duplicate", action="append", default=[], metavar="SUBSTRING",
                         help="substring whose duplicated lines are tolerated (repeatable)")
+    parser.add_argument("--include-repo-local", action="store_true",
+                        help="also compare nested git checkouts; off by default because a repo-local "
+                             "AGENTS.md is a standalone artifact that deliberately restates org rules")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -403,7 +426,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if name in disabled:
             continue
         if name == "duplicate-rule":
-            fn(ctx, args.allow_duplicate)  # type: ignore[call-arg]
+            fn(ctx, args.allow_duplicate, args.include_repo_local)  # type: ignore[call-arg]
         else:
             fn(ctx)
 

@@ -239,6 +239,27 @@ def test_allow_duplicate_suppresses_the_warning(tmp_path):
     assert run(tmp_path, "--strict", "--allow-duplicate", LONG_LINE) == 0
 
 
+def test_repo_local_files_are_excluded_from_duplication(tmp_path):
+    """A repo-local AGENTS.md is a standalone artifact: someone who clones only that
+    repository reads it without ever seeing the rules root, so restating a convention
+    there is deliberate rather than drift."""
+    # OTHER_LONG_LINE lives only in the skill, so the sole duplication is repo-local.
+    make_tree(tmp_path, skill=skill_text(body=SKILL_BODY + "\n" + OTHER_LONG_LINE))
+    repo = tmp_path / "somerepo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "AGENTS.md").write_text("# repo\n\n%s\n" % OTHER_LONG_LINE, encoding="utf-8")
+    assert run(tmp_path, "--strict") == 0, "repo-local restatement must not fail --strict"
+    assert run(tmp_path, "--strict", "--include-repo-local") == 1, "opt-in must expose it"
+
+
+def test_repo_local_files_are_still_scanned_for_secrets(tmp_path):
+    make_tree(tmp_path)
+    repo = tmp_path / "somerepo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "AGENTS.md").write_text("# repo\n\nhost = 10.9.9.9\n", encoding="utf-8")
+    assert run(tmp_path) == 1
+
+
 # ------------------------------------------------------------------- interface
 
 
