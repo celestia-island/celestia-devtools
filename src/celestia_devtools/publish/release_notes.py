@@ -108,8 +108,10 @@ for _heading, _emojis in _SECTIONS:
 # ── subject parsing ──────────────────────────────────────────────────────────
 
 # Squash subject suffix: "<title> (#123)". Titles never end in ")" + "#N"
-# before the reference, so a plain anchored regex is safe.
-_PR_SUFFIX_RE = re.compile(r"^(.*?)\s*\(#(\d+)\)\s*$", re.DOTALL)
+# before the reference, so a plain anchored regex is safe. A legacy variant
+# (aoba) appends the closing period after the reference — "… (#123)." — so
+# strip a trailing "." from the match tail when present.
+_PR_SUFFIX_RE = re.compile(r"^(.*?)\s*\(#(\d+)\)\s*(?:\.\s*)?$", re.DOTALL)
 _DEPENDABOT_RE = re.compile(r"^Bump\s")
 
 
