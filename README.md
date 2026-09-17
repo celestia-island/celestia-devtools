@@ -139,6 +139,7 @@ For enforcement, enable branch protection on your default branch via GitHub Sett
 | `celestia-devtools gate` | Run the local CI gate (see below) |
 | `celestia-devtools gate credential-scan` | Sweep `.git/config` + source trees for literal secrets |
 | `celestia-devtools p0-gate` | Fail a repo covered by an unresolved P0 (see below) |
+| `celestia-devtools release-notes` | Generate categorized GitHub release notes for a tag (see below) |
 
 ## Local Gate
 
@@ -266,6 +267,41 @@ jobs:
 `edited` is required: adding a `P0-ACK:` line to the PR body has to re-run the
 check. An open P0 then blocks the repo's PRs until someone closes the ledger
 entry or writes the acknowledgment.
+
+## Release Notes
+
+Every org repo squashes its PRs and lints their titles, so master history is
+already a changelog — `celestia-devtools release-notes` turns it into the
+standard release body: every merged PR since the previous tag, grouped by the
+leading gitmoji of its subject.
+
+```bash
+celestia-devtools release-notes --repo celestia-island/shun --tag v0.2.16   # print
+celestia-devtools release-notes --tag v0.2.16 --apply                       # upload (draft if new)
+```
+
+The previous tag auto-resolves as the highest semver tag below `--tag`
+(`prefix-vX.Y.Z` shapes count; floating tags like `res-latest` never match).
+Bundle several versions into one release with `--previous-tag v0.1.0`; list
+the full history with `--no-previous`. Commits without a `(#N)` squash
+reference (direct pushes, reverts) are skipped.
+
+Repos get this automatically on tag push through the shared reusable workflow
+— one job in the tag-triggered release workflow, after the artifacts upload:
+
+```yaml
+release-notes:
+  needs: release              # whatever job creates/uploads to the release
+  permissions:
+    contents: write
+  uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@master
+```
+
+The job patches the body onto the release the build job created (keeping its
+draft/published state); when no release exists it creates one as a draft so a
+human can curate before publishing. Because the categorization keys off the
+gitmoji, the notes are only as good as the PR titles — which is exactly the
+discipline the commit-msg governance already enforces.
 
 ## License
 
