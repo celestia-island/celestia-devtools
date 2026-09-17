@@ -70,3 +70,41 @@ skipped (the installed set is recorded in
 `<prefix>/.engine-pack-installed.json` and compared against `engine.meta`),
 the unit file is always re-rendered, and the service is reloaded, re-enabled
 and restarted, followed by a fresh health check.
+
+## CI farm heartbeat (`tools/ci_farm_heartbeat_referee.py` + `tools/ci_farm_heartbeat_receiver.py`)
+
+Self-hosted CI farm watchdog pair: dead-guest detection with automatic
+hypervisor snapshot rollback. Python 3.9+ stdlib only. Every node runs the
+same scripts; every site-specific value comes from environment variables
+(nothing hardcoded).
+
+- **receiver** (management node): HTTP endpoint recording guest heartbeats.
+  Guests hit `GET /beat/<name>` once a minute (systemd timer + curl);
+  the last-beat time is the mtime of `<beat-dir>/<name>`.
+  `GET /status` dumps the mtimes. Env: `CI_HB_PORT`, `CI_HB_BEAT_DIR`.
+- **referee** (management node, 1-minute timer): a guest whose beat is older
+  than `CI_HB_STALE_SEC` (default 300) for `CI_HB_STALE_ROUNDS` (default 2)
+  consecutive rounds is force-rolled-back on the hypervisor:
+  `power off → revert to the single baseline snapshot → power on`, then the
+  beat unit is re-installed (baselines predate the beat unit). Env:
+  `CI_HB_ESXI_HOST/_USER/_KEY_FILE`, `CI_HB_BEAT_DIR/_STATE_FILE/_LEDGER_FILE/
+  _LOCK_FILE/_INVENTORY`, `CI_HB_NODE1_ADDR` (receiver URL used in the
+  re-installed unit), `CI_HB_GUEST_USER/_PASSWORD_FILE`,
+  `CI_HB_STALE_SEC/_ROUNDS`, `CI_HB_REVERT_BUDGET_24H` (default 3),
+  `CI_HB_COOLDOWN_SEC` (default 900), `CI_HB_REARM_WAIT_SEC/_TRIES`,
+  `CI_HB_CONNECT_TIMEOUT`.
+- **beat** (guest side): keep it dead simple — a oneshot systemd service
+  `curl -fsS -m 10 http://<receiver>/beat/<guest-name>` on a 60s timer
+  (the referee's re-arm re-installs exactly this unit after a revert).
+
+Safety rails: first-beat registration (a node without a beat file is never
+touched), snapshot invariant (exactly one snapshot or refuse), 24h revert
+budget per guest, post-action cooldown, hypervisor-reachability probe with
+exponential backoff (probing with valid credentials DURING an account
+lockout refreshes the lock window — back off silently instead), flock.
+Hypervisor auth is SSH public key only: ESXi runs FIPS (ed25519 denied —
+use RSA) and password auth turns account lockout into a self-extending
+lock loop.
+
+Example guest beat units and the systemd units for both roles are in the
+receiver/referee module docstrings.
