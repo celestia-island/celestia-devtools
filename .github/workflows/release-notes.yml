@@ -1,0 +1,77 @@
+name: Release Notes
+
+# Generates the standard categorized release body for a pushed tag and
+# writes it to the GitHub release.
+#
+# Why: every org repo squashes its PRs, so master history *is* the changelog
+# (see celestia-devtools publish/release_notes.py). Repos should not have to
+# copy a notes generator per workflow; centralizing here means one place owns
+# the section taxonomy and it can improve without touching every repo.
+#
+# Repos adopt it with one job in their tag-triggered release workflow:
+#
+#   release-notes:
+#     needs: release              # after artifacts are uploaded
+#     permissions:
+#       contents: write
+#     uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@master
+#
+# The job edits the release the build job created (keeping its draft/published
+# state); when no release exists yet it creates one as a draft so a human can
+# curate before publishing. The body lists every merged PR grouped by the
+# leading gitmoji of its squash subject — which is exactly why the org lints
+# PR titles.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to annotate (defaults to the caller ref, i.e. the pushed tag).'
+        required: false
+        type: string
+      publish:
+        description: 'Create the release published instead of as a draft (existing releases keep their state either way).'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release-notes:
+    name: Categorized release notes
+    # Hosted runner: every current caller is a public repo, and the job is a
+    # handful of API calls that must run where python3 + network are reliable.
+    runs-on: ubuntu-latest
+    steps:
+      # Only celestia-devtools is checked out: the caller repo is not needed
+      # (all release data comes from the API). Checking out `@master`
+      # guarantees the taxonomy is current rather than whatever the runner
+      # has preinstalled — the same reasoning as p0-gate.yml.
+      - name: Checkout celestia-devtools
+        uses: actions/checkout@v7
+        with:
+          repository: celestia-island/celestia-devtools
+          ref: master
+          path: .celestia-devtools
+          fetch-depth: 1
+        # Defensive (mirrors p0-gate.yml): a runner env that rewrites
+        # github.com/celestia-island/* to bare mirrors could serve a stale
+        # clone; bypass the rewriting entirely.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Write categorized release notes
+        env:
+          # github.token inside a reusable workflow is the caller's token;
+          # the caller job must grant `permissions: contents: write`.
+          GH_TOKEN: ${{ github.token }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          TAG_NAME: ${{ inputs.tag || github.ref_name }}
+          PUBLISH_FLAG: ${{ inputs.publish == true && '--publish' || '' }}
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/.celestia-devtools/src" python3 -m celestia_devtools release-notes \
+            --repo "$REPO_FULL_NAME" \
+            --tag "$TAG_NAME" \
+            --apply $PUBLISH_FLAG

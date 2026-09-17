@@ -29,6 +29,7 @@ Commands::
     p0-gate           Fail a repo covered by an unresolved P0 finding (explicit ack to pass)
     rules-lint        Lint a split workspace-rules tree (core AGENTS.md + ledgers + skills)
     gh                Transparent gh proxy — validates subject on pr merge, forwards everything else.
+    release-notes     Generate categorized GitHub release notes from squash PR subjects
     sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
     gate              Run the local CI gate (modes + DAG ordering + job budget)
     verify-versions   Check cargo/npm version drift across a repository
@@ -69,6 +70,7 @@ COMMANDS: dict[str, str] = {
     "rules-lint": "celestia_devtools.lint.rules_lint",
     "gh": "celestia_devtools.vcs.gh",
     "publish-crates": "celestia_devtools.publish.crates",
+    "release-notes": "celestia_devtools.publish.release_notes",
     "toml-sort": "celestia_devtools.repo.toml_sort",
     "daemon": "celestia_devtools.env.daemon",
     "mock-start": "celestia_devtools.core.mock",
