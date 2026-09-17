@@ -22,6 +22,13 @@ def test_parse_subject_keeps_inner_parens():
         12, "🔧 Support :is() tokens.")
 
 
+def test_parse_subject_legacy_period_after_reference():
+    # aoba-era squash subjects end with the period AFTER the reference.
+    assert rn.parse_subject(
+        "💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup. (#128)."
+    ) == (128, "💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup.")
+
+
 # ── gitmoji classification ───────────────────────────────────────────────────
 
 @pytest.mark.parametrize("subject,expected", [
