@@ -73,6 +73,8 @@ def test_parse_subject_legacy_period_after_reference():
     ("🔗 Sync copilot settings. (#7)", "🔄 Sync"),
     ("🔄 Sync the ledger from master. (#9)", "🔄 Sync"),
     ("Replace hand-rolled JSON-RPC types with plana types (#117)", "Other Changes"),
+    ("💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup. (#128).",
+     "🐛 Fixes"),
     ("🙂 Unknown emoji. (#1)", "Other Changes"),
     ("Bump actions/checkout from 4 to 7 (#55)", "⬆️ Dependencies"),
 ])
