@@ -254,18 +254,40 @@ jobs:
     uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
 """
 
+# Canonical caller for the self-hosted cache gate: one line of wiring per repository, so the
+# rule cannot be quietly reintroduced by a later workflow edit. What the gate rejects, and
+# the measurements behind it, are documented in the callee and in
+# `celestia_devtools.ci.cache_policy`.
+WORKFLOW_CI_CACHE = """\
+name: CI Cache Policy
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  cache-policy:
+    uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master
+"""
+
 
 def _ensure_workflows(repo_root: Path, *, force: bool = False) -> None:
     workflows_dir = repo_root / ".github" / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
-    target = workflows_dir / "commit-msg-lint.yml"
 
-    if target.exists() and not force:
-        logger.info("commit-msg-lint workflow already exists — skipping (use --force to regenerate)")
-        return
+    for filename, template, label in (
+        ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
+        ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
+    ):
+        target = workflows_dir / filename
+        if target.exists() and not force:
+            logger.info(f"{filename} already exists — skipping (use --force to regenerate)")
+            continue
+        target.write_text(template, encoding="utf-8")
+        logger.ok(f"generated {label} workflow → {target}")
 
-    target.write_text(WORKFLOW_COMMIT_LINT, encoding="utf-8")
-    logger.ok(f"generated commit-msg lint workflow → {target}")
 
 def _check_justfile_import(name: str) -> None:
     """Print a hint if the repo's justfile doesn't import the staged files."""

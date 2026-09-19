@@ -18,7 +18,11 @@ from pathlib import Path
 
 import yaml
 
-from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT, _ensure_workflows
+from celestia_devtools.repo.init import (
+    WORKFLOW_CI_CACHE,
+    WORKFLOW_COMMIT_LINT,
+    _ensure_workflows,
+)
 
 #: sha256 of the canonical caller shipped in every celestia-island repository.
 CANONICAL_SHA256 = "106a93d0ca2bb1db223ef0fc82b72a53a58ea0ebcbd44bbd2eb8539be8b27342"
@@ -154,3 +158,59 @@ class TestCalleeMatchesTheTemplate:
     def test_callee_declares_every_event_the_caller_waits_on(self):
         caller_events = set(_on(yaml.safe_load(WORKFLOW_COMMIT_LINT)))
         assert caller_events <= set(_on(_callee()))
+
+
+class TestCachePolicyCallerTemplate:
+    """The second generated caller: same discipline as the commit-lint one.
+
+    It is written from the same generator (`init --with-workflows`), so it carries the same
+    regression risk -- a template nobody compares against the fleet silently reverts the
+    wiring on the next `--force` run. These pin the shape the gate needs, without pinning a
+    hash: the file is new, so there is no fleet of byte-identical copies to match yet.
+    """
+
+    def test_uses_the_shared_workflow_at_master(self):
+        doc = yaml.safe_load(WORKFLOW_CI_CACHE)
+        assert doc["jobs"]["cache-policy"]["uses"] == (
+            "celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master"
+        )
+
+    def test_synchronize_is_present(self):
+        """Without it a re-pushed head never re-runs the check: the §8.3.6 deadlock."""
+        types = _on(yaml.safe_load(WORKFLOW_CI_CACHE))["pull_request"]["types"]
+        assert "synchronize" in types
+
+    def test_ready_for_review_is_present(self):
+        types = _on(yaml.safe_load(WORKFLOW_CI_CACHE))["pull_request"]["types"]
+        assert "ready_for_review" in types
+
+    def test_merge_group_is_declared(self):
+        doc = yaml.safe_load(WORKFLOW_CI_CACHE)
+        assert _on(doc)["merge_group"]["types"] == ["checks_requested"]
+
+    def test_no_push_trigger(self):
+        assert "push" not in _on(yaml.safe_load(WORKFLOW_CI_CACHE))
+
+    def test_caller_job_carries_only_uses(self):
+        """A caller job accepts nine keys; anything else makes the whole file invalid.
+
+        `timeout-minutes` is the specific trap here: it is not a caller key, and adding it
+        makes GitHub reject the file without creating a job at all.
+        """
+        job = yaml.safe_load(WORKFLOW_CI_CACHE)["jobs"]["cache-policy"]
+        assert set(job) == {"uses"}
+
+    def test_generator_writes_both_callers(self, tmp_path: Path):
+        _ensure_workflows(tmp_path)
+        written = sorted(p.name for p in (tmp_path / ".github" / "workflows").iterdir())
+        assert written == ["ci-cache.yml", "commit-msg-lint.yml"]
+        assert (tmp_path / ".github" / "workflows" / "ci-cache.yml").read_text(
+            encoding="utf-8"
+        ) == WORKFLOW_CI_CACHE
+
+    def test_generator_does_not_overwrite_without_force(self, tmp_path: Path):
+        workflows = tmp_path / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        (workflows / "ci-cache.yml").write_text("hand-edited\n", encoding="utf-8")
+        _ensure_workflows(tmp_path)
+        assert (workflows / "ci-cache.yml").read_text(encoding="utf-8") == "hand-edited\n"

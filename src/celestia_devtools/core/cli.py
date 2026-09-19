@@ -81,6 +81,16 @@ COMMANDS: dict[str, str] = {
     "gate": "celestia_devtools.build.gate",
     "verify-versions": "celestia_devtools.repo.verify_versions",
     "protocol-bundle": "celestia_devtools.doc.protocol_bundle",
+    # Registered entry points that had no dispatcher command until 2026-09-20. The gap went
+    # unnoticed because the only test that notices (`test_all_commands_registered`) was
+    # already failing on master, so its output was not read: four tools installed by this
+    # package could not be reached through the unified CLI, while both `justfile` and the
+    # reusable workflows invoke commands as `celestia-devtools <cmd>`.
+    "cargo-cache-guard": "celestia_devtools.build.cache_guard",
+    "lint-separators": "celestia_devtools.lint.separator_lint",
+    "job-timeouts": "celestia_devtools.ci.job_timeouts",
+    "ci-audit": "celestia_devtools.ci.workflow_audit",
+    "ci-cache": "celestia_devtools.ci.cache_policy",
 }
 
 
