@@ -216,12 +216,12 @@ def test_pack_content_leak_gate(fake_ws: Path, monkeypatch, capsys):
     monkeypatch.setattr(
         external_review,
         "write_manifest",
-        lambda out: None,  # keep files, but inject a rule reference into 01-repos.md
+        lambda out, skipped=None: None,  # keep files, inject a rule ref into 01-repos.md
     )
     original = external_review.write_repos_table
 
-    def inject(ws, out):
-        original(ws, out)
+    def inject(repos, out):
+        original(repos, out)
         p = out / "01-repos.md"
         p.write_text(p.read_text(encoding="utf-8") + "see AGENTS.md\n", encoding="utf-8")
 
@@ -275,3 +275,102 @@ def test_help_and_unknown_subcommand(workspace: Path):
 def test_unknown_subcommand_message_parity(workspace: Path):
     proc = run_cli(["frobnicate"], workspace)
     assert "未知子命令" in proc.stderr
+
+
+# ── 目录不可读：崩溃回归（2026-09-20，首份外部视角验证被它挡下） ──────────────
+
+
+def _raise_for(monkey_target, predicate):
+    """把 ``predicate`` 命中的路径变成「不可读」——确定性注入，不靠权限位。
+
+    为什么不用 chmod 000：本工作区实测 ``Path('/tmp/.../lost+found').is_dir()``
+    对 0000 仍返回 True（挂载语义不挡 stat），而在 ``/mnt/codespace`` 上
+    ``lost+found``（root:root 0700）经 NFS 直返 EACCES。**权限位在两种挂载上
+    表现不同**，所以回归测试必须注入异常而不是摆权限——否则测试会在 /tmp 上
+    "通过"却完全没覆盖真实失败形态。
+    """
+    original = monkey_target
+
+    def patched(path: Path, *args, **kwargs):
+        if predicate(path):
+            raise PermissionError(13, "Permission denied", str(path))
+        return original(path, *args, **kwargs)
+
+    return patched
+
+
+def test_pack_survives_unreadable_workspace_entry(fake_ws: Path, monkeypatch, capsys):
+    """顶层条目不可读 ⇒ pack 不崩、不留半成品包，且跳过被写进包内。
+
+    2026-09-20 实测形态：``/mnt/codespace/lost+found`` 不可 stat ⇒
+    write_repos_table 抛 PermissionError ⇒ 目录已建、包为空、整包作废。
+    这里用补丁注入异常（不靠权限位——权限位在 /tmp 与 NFS 上表现不同，
+    实测 /tmp 上 0000 目录的 is_dir() 仍返回 True）。
+    """
+    (fake_ws / "lost+found").mkdir()  # 补丁按名字命中它
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir", _raise_for(real_is_dir, lambda p: p.name == "lost+found")
+    )
+    out = fake_ws / "pack"
+    rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert (out / "01-repos.md").is_file()
+    assert (out / "00-manifest.md").is_file()
+    # 被跳过的条目必须写进包内，而不是静默消失
+    manifest = (out / "00-manifest.md").read_text(encoding="utf-8")
+    repos = (out / "01-repos.md").read_text(encoding="utf-8")
+    assert "lost+found" in manifest + repos
+    assert "| entelecheia | 3 | 1 | 2026-09-14 |" in repos
+
+
+def test_unreadable_workspace_entry_is_explicit_not_silent(fake_ws: Path, monkeypatch, capsys):
+    """跳过必须**响亮**：包内点名声出条目，否则读包人以为工作区只有列出的那些仓。"""
+    (fake_ws / "lost+found").mkdir()
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(
+        Path, "is_dir", _raise_for(real_is_dir, lambda p: p.name == "lost+found")
+    )
+    out = fake_ws / "pack"
+    rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
+    assert rc == 0, capsys.readouterr().err
+    blob = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(out.glob("*.md"))  # 含 00-manifest.md：跳过清单就写在那里
+    )
+    assert "lost+found" in blob
+    assert "读不到" in blob or "跳过" in blob
+
+
+def test_repo_like_unreadable_entry_is_named_not_assumed_absent(fake_ws: Path, monkeypatch, capsys):
+    """一个**看起来像仓**的条目读不到时，也必须点名——不能读成「工作区里没有它」。"""
+    (fake_ws / "kirino").mkdir()  # 一个**看起来像仓**的顶层条目
+    real_listdir = os.listdir
+
+    def raising_listdir(path=None):
+        if path is not None and Path(path).name == "kirino":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", raising_listdir)
+    out = fake_ws / "pack"
+    rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
+    assert rc == 0, capsys.readouterr().err
+    manifest = (out / "00-manifest.md").read_text(encoding="utf-8")
+    assert "kirino" in manifest
+    assert "读不到" in manifest or "不可读" in manifest
+
+
+def test_pack_crash_leaves_no_partial_artifacts(fake_ws: Path, monkeypatch, capsys):
+    """任何中途失败都不得留下半成品包（这正是 09-20 的形状）。"""
+
+    def boom(ws, out):
+        raise RuntimeError("模拟中途失败")
+
+    monkeypatch.setattr(external_review, "write_recent_changes", boom)
+    out = fake_ws / "pack"
+    rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
+    assert rc == 1
+    assert not out.exists()
+    assert "打包失败" in capsys.readouterr().err

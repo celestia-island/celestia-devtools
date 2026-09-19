@@ -248,7 +248,63 @@ def cmd_due(args: argparse.Namespace) -> int:
 # ── 打包 ──────────────────────────────────────────────────────────────────────
 
 
-def write_repos_table(ws: Path, out: Path) -> None:
+def is_dir(path: Path) -> bool:
+    """`path.is_dir()` 的容错版：不可 stat（EACCES/EIO）按「不是目录」处理。
+
+    工作区根下存在不可读条目是**常态**而非异常：`/mnt/codespace/lost+found` 是
+    `root:root 0700`（ext4 产物，`_tools/top_audit.py` 早已把它列进 SPECIAL），
+    NFS 上 `stat` 直返 EACCES ⇒ 原实现抛 PermissionError ⇒ 整包作废——
+    2026-09-20 首份外部视角验证正是被它挡下的。与同文件 `git()` 包装的惯例一致：给哨兵，不抛。
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def has_git_dir(entry: Path) -> bool:
+    """`entry/.git` 是否存在——**用列举判定**，因为 `Path.exists()` 会吞掉 EACCES。
+
+    实测（2026-09-20）：`Path('/mnt/codespace/lost+found/.git').is_dir()` 抛
+    PermissionError，而 `exists()` 只是返回 False ⇒ 用 `exists()` 会把「读不到」
+    静默当成「不是仓」。这里保留异常，让调用方决定记录还是跳过。
+    """
+    try:
+        return ".git" in os.listdir(entry)
+    except FileNotFoundError:
+        return False
+    except NotADirectoryError:
+        return False
+    # PermissionError / OSError 向上抛：调用方必须显式处理
+
+
+def find_repos(ws: Path) -> "tuple[List[Path], List[str]]":
+    """返回 (仓库目录, 因不可访问而未纳入的条目名)。
+
+    第二项是**承重的**：跳过必须响亮——读包人若不知道有条目被跳过，会把
+    「包里的仓」误当成「工作区的全部」。调用方必须把它写进包内（见 manifest）。
+    """
+    repos: List[Path] = []
+    skipped: List[str] = []
+    try:
+        entries = sorted(ws.iterdir())
+    except OSError as exc:
+        die(f"无法列出工作区 {ws}：{exc}")
+        return repos, skipped
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+            if not has_git_dir(entry):
+                continue
+        except OSError:
+            skipped.append(entry.name)
+            continue
+        repos.append(entry)
+    return repos, skipped
+
+
+def write_repos_table(repos: "List[Path]", out: Path) -> None:
     lines = [
         "# 证据包：仓库清单与规模\n",
         "",
@@ -257,9 +313,7 @@ def write_repos_table(ws: Path, out: Path) -> None:
         "| 仓库 | 源文件 | 提交数 | 最后提交 |",
         "|---|---|---|---|",
     ]
-    for entry in sorted(ws.iterdir()):
-        if not entry.is_dir() or not (entry / ".git").is_dir():
-            continue
+    for entry in repos:
         n_files = git("ls-files", repo=entry)
         n_log = git("log", "--oneline", repo=entry)
         last = git("log", "-1", "--format=%ad", "--date=short", repo=entry)
@@ -274,7 +328,7 @@ def write_recent_changes(ws: Path, out: Path) -> None:
     lines = ["# 证据包：近期变更（提交标题，倒序）\n", "", "```"]
     for repo in LOG_REPOS:
         repo_dir = ws / repo
-        if not (repo_dir / ".git").is_dir():
+        if not is_dir(repo_dir / ".git"):
             continue
         lines.append(f"\n## {repo}")
         log = git("log", "-40", "--format=%ad %s", "--date=short", repo=repo_dir)
@@ -392,7 +446,7 @@ def isolation_violations(out: Path) -> List[str]:
     return problems
 
 
-def write_manifest(out: Path) -> None:
+def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
     code_files = sorted(
         str(p.relative_to(out)) for p in (out / "code").rglob("*") if p.is_file()
     )
@@ -415,8 +469,22 @@ def write_manifest(out: Path) -> None:
         "除上面列出的文件外都没有。\n",
         "- 测试只以'被抽样文件内部的 `#[cfg(test)]`'形式出现，没有单独的测试目录。\n",
         '请在结论里区分"本包没给"与"代码没做"，并写明你还需要哪些文件才能判定。\n',
-        "## 已知的内部引用（出现在逐字源码的注释里，请忽略）\n",
     ]
+    if skipped:
+        # 跳过必须是响亮的：否则读包人会把「包里的仓」当成「工作区的全部」
+        lines.append("## 工作区里**没有**进入本包的条目\n")
+        lines.append(
+            "下列顶层条目因**权限或 I/O 错误不可访问**而被跳过，"
+            "它们既未计入仓库表，也未出现在任何提交历史里：\n"
+        )
+        lines.append("```")
+        lines.extend(sorted(skipped))
+        lines.append("```\n")
+        lines.append(
+            "跳过理由是「读不到」（不是「不存在」、也不是「已排除」）——"
+            "但如果你的结论依赖某个具体的仓，请先确认它不在上面这串里。\n"
+        )
+    lines.append("## 已知的内部引用（出现在逐字源码的注释里，请忽略）\n")
     hits: List[str] = []
     for path in sorted((out / "code").rglob("*")):
         if not path.is_file():
@@ -451,21 +519,30 @@ def cmd_pack(args: argparse.Namespace) -> int:
 
     print(f"正在打证据包 → {out}")
 
-    write_repos_table(ws, out)
-    write_recent_changes(ws, out)
-    write_code_sample(ws, out)
-    (out / "REVIEWER-PROMPT.md").write_text(REVIEWER_PROMPT, encoding="utf-8")
-    write_live_surface(out)
+    repos, skipped = find_repos(ws)
+    try:
+        write_repos_table(repos, out)
+        write_recent_changes(ws, out)
+        write_code_sample(ws, out)
+        (out / "REVIEWER-PROMPT.md").write_text(REVIEWER_PROMPT, encoding="utf-8")
+        write_live_surface(out)
 
-    problems = isolation_violations(out)
-    if problems:
-        for problem in problems:
-            print(problem, file=sys.stderr)
-        print("证据包已作废（隔离性是硬门）。", file=sys.stderr)
+        problems = isolation_violations(out)
+        if problems:
+            for problem in problems:
+                print(problem, file=sys.stderr)
+            print("证据包已作废（隔离性是硬门）。", file=sys.stderr)
+            shutil.rmtree(out, ignore_errors=True)
+            return EXIT_FAILURE
+
+        write_manifest(out, skipped)
+    except Exception as exc:  # noqa: BLE001 — 任何中途失败都不得留下半成品包
         shutil.rmtree(out, ignore_errors=True)
+        print(f"❌ 打包失败，已清理 {out}：{type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_FAILURE
 
-    write_manifest(out)
+    if skipped:
+        print(f"   ⚠️  {len(skipped)} 个顶层条目不可读，已跳过并写进包内：{', '.join(sorted(skipped))}")
 
     print(f"✅ 证据包就绪：{out}")
     print("   隔离自检通过：无 AGENTS.md / PLAN.md / _reports / 归档 / 认领痕迹")
