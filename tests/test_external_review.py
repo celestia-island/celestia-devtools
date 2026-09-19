@@ -374,3 +374,27 @@ def test_pack_crash_leaves_no_partial_artifacts(fake_ws: Path, monkeypatch, caps
     assert rc == 1
     assert not out.exists()
     assert "打包失败" in capsys.readouterr().err
+
+
+# ── 内容硬门：自指 vs 泄漏（2026-09-20 第一次实跑后收紧） ─────────────────────
+
+
+def test_content_gate_allows_exclusion_list_declaration_only():
+    """排除清单声明是自指，不是泄漏；正文引用仍必须被拦。"""
+    decl = "<!-- 排除清单声明（自指，非泄漏）：SECOND_BRAIN_NAMES = AGENTS.md / PLAN.md / CLAUDE.md -->"
+    assert external_review._content_leak_hits(decl) == []
+    # 正文里出现文件名 —— 照拦
+    assert external_review._content_leak_hits("详见 AGENTS.md 第 3 节")
+    # 规则内容特征 —— 照拦
+    assert external_review._content_leak_hits("按 §6.4 认领")
+    assert external_review._content_leak_hits("归档在 _plan-archive/workspace/")
+
+
+def test_manifest_injection_note_does_not_trip_the_isolation_gate(fake_ws: Path, monkeypatch, capsys):
+    """manifest 必须能声明"验证者可能被注入规则"，且这不能让自己的硬门误杀整包。"""
+    out = fake_ws / "pack"
+    rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
+    assert rc == 0, capsys.readouterr().err  # 硬门没误杀
+    manifest = (out / "00-manifest.md").read_text(encoding="utf-8")
+    assert "自动注入" in manifest and "弱证据" in manifest
+    assert external_review._content_leak_hits(manifest) == []

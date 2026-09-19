@@ -36,8 +36,27 @@ SECONDS_PER_DAY = 86400
 # 硬性排除清单：证据包里**绝不允许**出现的东西（出现即视为打包失败）
 EXCLUDE_NAMES = ("AGENTS.md", "PLAN.md", "CLAUDE.md")
 EXCLUDE_DIRS = ("_plan-archive", "_reports", "_worktree", "_locks", "_hooks", "_backups")
-# 内容级（硬门）：本工具生成的叙述文件不得引用工作区规则
-CONTENT_LEAK_RE = re.compile(r"AGENTS\.md|§6\.4|认领|claim\.sh")
+# 内容级（硬门）：本工具生成的叙述文件不得引用工作区规则。
+#
+# 例外（2026-09-20，第一次实跑后收紧）：`SECOND_BRAIN_NAMES` 那样**整行只是给排除清单命名**
+# 的声明是自指，不是泄漏——包必须能说清"我不含什么"，否则读包人无法判断边界。
+# 硬门真正要拦的是**规则内容**（§ 编号、认领机制、归档目录）与任何**正文引用**这些文件名的地方。
+SECOND_BRAIN_NAMES = ("AGENTS.md", "PLAN.md", "CLAUDE.md")
+CONTENT_LEAK_RE = re.compile(r"AGENTS\.md|PLAN\.md|CLAUDE\.md|§6\.4|认领|claim\.sh|_plan-archive|_reports/")
+# 允许"清单式声明"那一行的形态；**只豁免带标记的那一行**，其余正文一律照拦
+_EXCLUDE_DECL_RE = re.compile(r"SECOND_BRAIN_NAMES\s*=")
+
+
+def _content_leak_hits(text: str) -> "List[str]":
+    """返回命中硬门的行（已剔除"排除清单声明"那一行）。"""
+    hits: List[str] = []
+    for line in text.splitlines():
+        if not CONTENT_LEAK_RE.search(line):
+            continue
+        if _EXCLUDE_DECL_RE.search(line):
+            continue
+        hits.append(line.strip())
+    return hits
 # 逐字源码里对内部文档的引用：只登记、不判失败
 CODE_REF_RE = re.compile(r"AGENTS\.md|PLAN\.md|§[0-9]")
 
@@ -441,8 +460,8 @@ def isolation_violations(out: Path) -> List[str]:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if CONTENT_LEAK_RE.search(text):
-            problems.append(f"❌ 隔离失败：生成的 {path.name} 引用了工作区规则")
+        for hit in _content_leak_hits(text):
+            problems.append(f"❌ 隔离失败：生成的 {path.name} 引用了工作区规则：{hit[:80]}")
     return problems
 
 
@@ -469,6 +488,15 @@ def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
         "除上面列出的文件外都没有。\n",
         "- 测试只以'被抽样文件内部的 `#[cfg(test)]`'形式出现，没有单独的测试目录。\n",
         '请在结论里区分"本包没给"与"代码没做"，并写明你还需要哪些文件才能判定。\n',
+        "## ⚠️ 本轮验证者的隔离性（2026-09-20 由第一次实跑的结果补写）\n",
+        "本工具能保证**包内**不含工作区规则，**保证不了验证者的运行环境**：任何在本工作区里\n"
+        "启动的 agent 都会在会话开始时被**自动注入**工作区规则文件全文（含架构、冻结清单、\n"
+        "事故史与验收线；该文件的身份见下行声明），而验证者无法选择不接受。第一次实跑\n"
+        "（2026-09-20）的验证者主动披露了这一点——它没有主动读取规则，但规则确实在它的上下文里。\n",
+        "<!-- 排除清单声明（自指，非泄漏）：SECOND_BRAIN_NAMES = AGENTS.md / PLAN.md / CLAUDE.md -->\n",
+        "⇒ **若验证者是在本工作区内启动的，请在结论里明确标注它是「被部分污染的」**，\n"
+        "并把本轮当作弱证据；真正的包外验证需要另一台机 / 另一个工具链 / 一个人。\n",
+        "⇒ 反之，**验证者若指出的结论与工作区内部共识相左，那是它没在复述的正面信号**。\n",
     ]
     if skipped:
         # 跳过必须是响亮的：否则读包人会把「包里的仓」当成「工作区的全部」
@@ -562,8 +590,11 @@ def cmd_record(args: argparse.Namespace) -> int:
     dst = reports / f"external-review-{today}.md"
     body = (
         f"# 外部视角验证记录（{today}）\n\n"
-        "> 由 `_tools/external-review.sh record` 收录。验证者**未接触**本工作区任何规则、\n"
-        f"> 计划或历史审计，输入仅为当日证据包（`_lens/{today}/`）。\n\n"
+        "> 由 `_tools/external-review.sh record` 收录。验证者的**输入**仅为当日证据包\n"
+        f"> （`_lens/{today}/`），包内不含本工作区任何规则、计划或历史审计。\n"
+        "> ⚠️ **但运行环境不受本工具控制**：若验证者是在本工作区内启动的 agent，它的上下文里\n"
+        "> 会被自动注入工作区规则文件（验证者无法拒绝）。2026-09-20 的第一次实跑即为此种情况，\n"
+        "> 验证者已主动披露；该轮按**弱证据**对待。严格包外验证需另一台机 / 另一个工具链 / 一个人。\n\n"
         "---\n\n" + src.read_text(encoding="utf-8", errors="replace")
     )
     dst.write_text(body, encoding="utf-8")
