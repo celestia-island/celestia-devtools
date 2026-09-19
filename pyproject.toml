@@ -54,7 +54,6 @@ p0-gate = "celestia_devtools.lint.p0_gate:main"
 celestia-rules-lint = "celestia_devtools.lint.rules_lint:main"
 celestia-job-timeouts = "celestia_devtools.ci.job_timeouts:main"
 celestia-ci-audit = "celestia_devtools.ci.workflow_audit:main"
-celestia-ci-cache = "celestia_devtools.ci.cache_policy:main"
 
 [project.optional-dependencies]
 # pytest + ruff only: PyYAML now ships as a runtime dependency (see above), which is also
