@@ -3,7 +3,11 @@
 # the pattern that consumer repos follow.
 
 set shell := ["bash", "-c"]
-set windows-shell := ["bash.exe", "-c"]
+# Windows: PowerShell (the 5.1 floor ships with every Windows; pwsh 7 is
+# NOT assumed). Linewise recipes must stay PS-5.1-safe: no `&&` chains,
+# `cd X; cmd` instead of `cd X && cmd`. Bash-only recipes use
+# [script('bash')] and need Git Bash (or WSL) when actually run.
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $PSDefaultParameterValues['*:Encoding']='utf8';"]
 # common.just's script recipes are empty [script] (no explicit interpreter);
 # pin them to bash here (consumer repos get this from .just/git-bash-interop.just).
 set script-interpreter := ["bash", "-eu"]
