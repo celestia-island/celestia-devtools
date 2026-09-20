@@ -332,9 +332,10 @@ package): it warns, asks consent, installs the **newest** available Python
 shim itself is held to Python 3.6 syntax with zero third-party imports -- its
 tests enforce that grammar floor.
 
-The remaining lifecycle subcommands (`deploy` bare wizard, `verify`, `backup`,
-`restore`, `upgrade`, `rollback`, `status`, `artifact`, `secrets`,
-`uninstall`) land with their own slices and fail loudly (exit 2) until then.
+The bare `deploy` wizard runs today and stops loudly (exit 2) at the first
+stage that belongs to a later slice — `verify`, `backup`, `restore`,
+`upgrade`, `rollback`, `status`, `secrets`, `uninstall` land with their own
+slices and fail loudly until then.
 
 ## License
 

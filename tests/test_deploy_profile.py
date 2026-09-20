@@ -46,6 +46,18 @@ class TestRoundTrip:
         with pytest.raises(ProfileError, match="host.nope"):
             DeployProfile.from_toml(text)
 
+    def test_read_rejects_wrong_types(self):
+        """R2-F2: hand-edited wrong types must be refused — a string "n" in
+        password_to_file would flip the print-once password semantics."""
+        p = _valid_profile()
+        text = p.to_toml().replace("listen = 3000", 'listen = "3000"')
+        with pytest.raises(ProfileError, match="host.listen"):
+            DeployProfile.from_toml(text)
+        text = p.to_toml().replace("password_to_file = false",
+                                   'password_to_file = "n"')
+        with pytest.raises(ProfileError, match="password_to_file"):
+            DeployProfile.from_toml(text)
+
     def test_read_rejects_invalid_embedded_values(self):
         p = _valid_profile()
         text = p.to_toml().replace('face = "chest"', 'face = "Bad Face!"')

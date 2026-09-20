@@ -6,9 +6,9 @@ the import succeed; everything else degrades to a plain numbered ``input()``
 loop over the *same* question table — the non-TTY path is the CI-tested path,
 so the fallback cannot rot. No f-string-TUI, no ANSI art of our own.
 
-Precedence (README-documented): env < profile.toml < CLI flags < asked
-answers. The caller seeds answers it already knows (flags/profile); the wizard
-only *asks* for what is still missing and records where each answer came from.
+Precedence in practice: a --profile seeds first, CLI flags override the
+seed, and the wizard only *asks* for what is still missing — each answer
+records where it came from. (No environment-variable seeding today.)
 """
 
 from __future__ import annotations

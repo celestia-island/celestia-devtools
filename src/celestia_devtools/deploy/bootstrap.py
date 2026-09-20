@@ -101,8 +101,14 @@ def stage_account(ctx: StageContext) -> StageResult:
     try:
         getpwnam(user)
     except KeyError:
-        ctx.run(["useradd", "--system", "--home-dir", str(root), "--shell",
-                 "/usr/sbin/nologin", user])
+        proc = ctx.run(["useradd", "--system", "--home-dir", str(root),
+                        "--shell", "/usr/sbin/nologin", user])
+        if getattr(proc, "returncode", 0) != 0:
+            return StageResult(
+                "account", FAILED,
+                "useradd {} failed (rc={}): {}".format(
+                    user, proc.returncode,
+                    (getattr(proc, "stderr", "") or "").strip()[:120]))
         changed = True
     # dirs are plain mkdir+chown+chmod: real filesystem side effects the
     # tests can verify, no executor round-trip needed for the common path
@@ -141,7 +147,7 @@ def stage_secrets(ctx: StageContext) -> StageResult:
                            "{} already present (never overwritten)".format(env_path))
     values = {key: pysecrets.token_urlsafe(32) for key in ENV_KEYS}
     if ctx.dry_run:
-        return StageResult("secrets", OK, "would generate {}".format(env_path), True)
+        return StageResult("secrets", OK, "would generate {}".format(env_path))
     env_path.parent.mkdir(parents=True, exist_ok=True)
     # write via 0600 temp + rename so a half-written file is never readable
     tmp = env_path.with_suffix(".env.tmp")

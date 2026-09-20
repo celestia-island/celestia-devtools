@@ -127,6 +127,26 @@ class TestSecretsStage:
         assert "refusing" in result.detail
 
 
+class TestAccountFailure:
+    def test_useradd_failure_is_a_clean_stage_failure(self, tmp_path):
+        """R2-F1: a failed useradd must come back as a FAILED stage result,
+        never escape as a KeyError from the later getpwnam."""
+        from types import SimpleNamespace
+        rec = _Recorder()
+
+        def failing(cmd, **kw):
+            rec.calls.append(list(cmd))
+            if cmd[0] == "useradd":
+                return SimpleNamespace(returncode=1, stderr="useradd: Permission denied")
+            return SimpleNamespace(returncode=0, stderr="")
+
+        ctx = _ctx(_profile(tmp_path), rec)
+        ctx.executor = failing
+        result = bootstrap.stage_account(ctx)
+        assert result.status == bootstrap.FAILED
+        assert "useradd" in result.detail and "rc=1" in result.detail
+
+
 class TestDryRun:
     def test_dry_run_touches_nothing_but_records_plan(self, tmp_path, capsys):
         rec = _Recorder()
