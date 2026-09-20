@@ -6,7 +6,10 @@ nothing, --json stdout is pure JSON, exit codes match the stage machine."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from celestia_devtools.deploy import cli as deploy_cli
 from celestia_devtools.deploy.profile import DeployProfile
@@ -50,6 +53,9 @@ class TestProfilePassthrough:
         after = sorted(p.name for p in tmp_path.rglob("*"))
         assert before == after, "dry-run must not create files"
 
+    @pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False,
+                        reason="as root, precheck passes and the stage would "
+                               "really useradd — this test pins the non-root refusal")
     def test_real_run_without_root_fails_loudly(
             self, tmp_path, monkeypatch, capsys):
         """A non-root real run must refuse at precheck (privileged stages),

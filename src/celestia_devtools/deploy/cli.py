@@ -105,7 +105,13 @@ def run_bootstrap(argv: list[str]) -> int:
     if args.dry_run:
         _note("dry-run: would write {}".format(prof.host.profile_path()))
     else:
-        prof.write(prof.host.profile_path())
+        try:
+            prof.write(prof.host.profile_path())
+        except PermissionError as exc:
+            print("error: cannot write {} ({}); re-run with sudo or point "
+                  "host.etc_base elsewhere".format(prof.host.profile_path(), exc),
+                  file=sys.stderr)
+            return 2
     real_stdout = sys.stdout
     if args.json:
         # the summary block goes to stderr so stdout stays pure JSON
