@@ -1,17 +1,15 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1"]
 build-backend = "hatchling.build"
 
 [project]
 name = "celestia-devtools"
-version = "0.10.0"
+version = "0.11.0"
 description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
-    # tomllib is 3.11+; the declared floor is 3.9.
-    "tomli>=2; python_version < '3.11'",
     # celestia-ci-audit composes the workflow AST: the composer both proves the file is
     # parseable (its `yaml-parse-error` rule reports what it cannot parse instead of
     # skipping it) and supplies the node line numbers. The job-timeouts tests also use it.
@@ -25,8 +23,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Build Tools",
@@ -69,7 +65,7 @@ packages = ["src/celestia_devtools"]
 "src/celestia_devtools/lint/p0_ledger.toml" = "celestia_devtools/lint/p0_ledger.toml"
 
 [tool.ruff]
-target-version = "py39"
+target-version = "py311"
 line-length = 100
 src = ["src", "tests"]
 

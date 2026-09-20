@@ -303,6 +303,40 @@ human can curate before publishing. Because the categorization keys off the
 gitmoji, the notes are only as good as the PR titles — which is exactly the
 discipline the commit-msg governance already enforces.
 
+## Deploy (production targets)
+
+`env/*` commands own **development** machines (foreground supervision,
+embedded PG, WSL/QEMU bring-up). The `deploy` group owns **production
+targets**: a fresh single-host box goes from zero to a systemd-resident
+service, then gets verified, backed up, upgraded. Deploy commands never hold a
+foreground process and never touch mock stacks; cross-host deployment scripts
+live in `deploy/` and only here.
+
+Current surface:
+
+```console
+$ celestia-devtools deploy doctor     # read-only: proxy / python deps / system tools
+```
+
+`doctor` reports, never installs (auto-install of missing system tools, when
+it arrives, stays behind an explicit consent flag). Proxy detection is a
+five-level cascade (env vars and git's own http.proxy -> loopback listeners ->
+default gateway -> DNS suffixes -> WPAD) with credentials redacted in every report line, and `NO_PROXY`
+always covers loopback plus RFC1918/ULA ranges so a same-LAN database never
+routes through an egress proxy.
+
+Boxes whose Python is older than 3.11 are rescued by `pyshim` (shipped in this
+package): it warns, asks consent, installs the **newest** available Python
+(uv -> python-build-standalone -> system packages, in that order), brings up
+`/opt/celestia-devtools/venv`, and re-execs the original command line. The
+shim itself is held to Python 3.6 syntax with zero third-party imports -- its
+tests enforce that grammar floor.
+
+The remaining lifecycle subcommands (`deploy` bare wizard, `verify`, `backup`,
+`restore`, `upgrade`, `rollback`, `status`, `artifact`, `secrets`,
+`uninstall`) land with their own slices and fail loudly (exit 2) until then.
+
 ## License
+
 
 Licensed under the [Synthetic Source License (SySL), Version 1.0](./LICENSE).
