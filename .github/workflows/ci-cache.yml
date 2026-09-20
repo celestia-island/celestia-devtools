@@ -30,11 +30,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        env:
-          # The org self-hosted runner env rewrites github.com/celestia-island/* to local
-          # bare mirrors; those may lack fresh refs. A no-op on hosted runners, correct if
-          # this job is ever pinned back.
-          GIT_CONFIG_COUNT: "0"
 
       - name: Checkout celestia-devtools (for the gate itself)
         uses: actions/checkout@v7
@@ -42,8 +37,6 @@ jobs:
           repository: celestia-island/celestia-devtools
           path: .devtools-gate
           ref: master
-          env:
-            GIT_CONFIG_COUNT: "0"
 
       - name: Set up Python
         uses: actions/setup-python@v6
