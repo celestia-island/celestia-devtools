@@ -24,6 +24,8 @@ from celestia_devtools.deploy.profile import (
     DeployProfile, FrontSection, HostSection,
 )
 
+_PY_FLOOR = "3.11"  # must track pyproject requires-python (R2 P3)
+
 
 class NonTty(io.StringIO):
     def isatty(self):
@@ -183,7 +185,7 @@ class TestDockerGatedE2E:
         )
         proc = subprocess.run(
             [*cmd, "run", "--rm", "-v", "{}:/a:ro".format(out),
-             "python:3.11-slim", "python", "-c", script,
+             "python:{}-slim".format(_PY_FLOOR), "python", "-c", script,
              "/a/" + entry.file, entry.sha256],
             capture_output=True, text=True, timeout=300)
         if proc.returncode == 125 and (
