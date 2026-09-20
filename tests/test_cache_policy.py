@@ -279,3 +279,58 @@ def test_discover_repos_accepts_a_parent_directory(tmp_path: Path):
     (tmp_path / "not-a-repo").mkdir()
     found = {path.name for path in cache_policy._discover_repos([str(tmp_path)])}
     assert found == {"one", "two"}
+
+
+# ── 退出码语义：error 决定成败，warning 只报告（对齐 rules_lint / workflow_audit） ──
+#
+# 事故背景：第一版 `main()` 对**任何** finding 都返回 1。于是 hikari 一接上 caller 就常红
+# ——它只剩 4 条 warning（`icons/mdi` 窄图标缓存的步骤级 timeout，本就不该删）。
+# **一个无法变绿的门禁会停止被阅读，接着 error 级发现也一起停止被阅读。**
+
+
+def test_warning_only_repo_exits_zero(tmp_path: Path, capsys):
+    repo = tmp_path / "narrow-cache"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    # 自托管、缓存窄子目录（非 target/、非 cargo home）⇒ 只触 warning
+    (repo / ".github" / "workflows" / "ci.yml").write_text(
+        """
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/cache@v6
+        with:
+          path: icons/mdi
+          key: k
+""",
+        encoding="utf-8",
+    )
+    assert cache_policy.main([str(repo)]) == 0
+    err = capsys.readouterr().err
+    assert "finding(s)" in err and "without-step-timeout" in err  # 仍然报告出来
+
+
+def test_warning_only_repo_fails_under_strict(tmp_path: Path):
+    repo = tmp_path / "narrow-cache-strict"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "ci.yml").write_text(
+        """
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/cache@v6
+        with:
+          path: icons/mdi
+          key: k
+""",
+        encoding="utf-8",
+    )
+    assert cache_policy.main([str(repo), "--strict"]) == 1
+
+
+def test_error_finding_still_fails_without_strict(tmp_path: Path):
+    repo = tmp_path / "big-cache"
+    (repo / ".github" / "workflows").mkdir(parents=True)
+    (repo / ".github" / "workflows" / "ci.yml").write_text(cache_step("target/"), encoding="utf-8")
+    assert cache_policy.main([str(repo)]) == 1
