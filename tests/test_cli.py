@@ -30,6 +30,9 @@ class TestCommandRegistry:
             # Also missing from this literal while present in COMMANDS: the release-notes
             # generator. The new reverse-direction test below is what pins the whole set.
             "release-notes",
+            # Added 2026-09-20: production-target lifecycle group (deploy doctor;
+            # the remaining subcommands land with their own slices and fail loudly).
+            "deploy",
         }
         assert set(COMMANDS.keys()) == expected
 

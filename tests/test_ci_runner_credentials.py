@@ -98,7 +98,7 @@ def test_strip_block_idempotent():
 def test_insteadof_rules_cover_exactly_five_private_repos():
     rules = crc.insteadof_rules()
     assert len(rules) == 5
-    for (key, value), repo in zip(rules, REPOS):
+    for (key, value), repo in zip(rules, REPOS, strict=True):
         assert key == f"url.gh-ci-{repo}:celestia-island/{repo}.git.insteadOf"
         assert value == f"https://github.com/celestia-island/{repo}.git"
     # no blanket github.com rewrite

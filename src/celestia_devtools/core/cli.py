@@ -73,6 +73,7 @@ COMMANDS: dict[str, str] = {
     "release-notes": "celestia_devtools.publish.release_notes",
     "toml-sort": "celestia_devtools.repo.toml_sort",
     "daemon": "celestia_devtools.env.daemon",
+    "deploy": "celestia_devtools.deploy.cli",
     "mock-start": "celestia_devtools.core.mock",
     "mock-stop": "celestia_devtools.core.mock",
     "mock-status": "celestia_devtools.core.mock",
