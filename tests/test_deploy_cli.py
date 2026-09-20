@@ -38,7 +38,10 @@ class TestProfilePassthrough:
         monkeypatch.setattr("sys.stdin", _NoTty())
         monkeypatch.setattr("sys.argv", ["deploy", "--profile", str(path),
                                          "--non-interactive", "--dry-run"])
-        assert deploy_cli.main() == 2  # pending slices, loudly
+        rc = deploy_cli.main()
+        # With full wiring, dry-run reaches database which fails (no PG URL)
+        # — exit 1 (NOT 2: that would mean stages are still pending)
+        assert rc == 1, f"wired CLI must run stages, got rc={rc}"
         out = capsys.readouterr().out
         assert str(tmp_path / "etc") in out
         assert "/etc/celestia" not in out
@@ -84,7 +87,7 @@ class TestJsonPurity:
         rc = deploy_cli.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)  # must parse the WHOLE stdout
-        assert data["exit"] == rc == 2
+        assert data["exit"] == rc == 1  # wired: database stage fails (no PG)
         assert {"precheck", "account", "secrets", "summary"} <= {
             s["name"] for s in data["stages"]}
         # R3 nit-2 pin: dry-run stages never report changed=True

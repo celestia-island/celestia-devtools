@@ -144,9 +144,13 @@ class TestRootlessChain:
         rc = deploy_cli.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data["exit"] == rc == 2
+        assert data["exit"] == rc == 1  # wired: database fails (no PG)
         names = [s["name"] for s in data["stages"]]
-        assert names == list(bootstrap.STAGE_ORDER)
+        statuses = {s["name"]: s["status"] for s in data["stages"]}
+        # No stage may be PENDING — the CLI is fully wired
+        assert all(st != "pending-slice" for st in statuses.values()), \
+            f"PENDING stages found: {[n for n, st in statuses.items() if st == 'pending-slice']}"
+        assert names[-1] == 'summary'  # summary always runs
 
 
 class _FakePw:

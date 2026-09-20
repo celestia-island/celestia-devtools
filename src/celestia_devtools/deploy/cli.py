@@ -20,9 +20,8 @@ from pathlib import Path
 from celestia_devtools.deploy import bootstrap, profile as profile_mod, wizard
 
 PLANNED = (
-    "verify / status (health/epoch/入驻判据/台账)   — wiring next",
     "backup / restore / upgrade / rollback — library landed (deploy.backup,",
-    "   deploy.lifecycle), CLI subcommands land with the wiring slice",
+    "   deploy.lifecycle), CLI subcommands land with a later slice",
     "secrets rotate|show-meta / uninstall            — later slice",
 )
 
@@ -66,6 +65,20 @@ def _seed_from_args(args, parsed_profile: profile_mod.DeployProfile | None) -> d
 
 
 def run_bootstrap(argv: list[str]) -> int:
+    # Complete the stage machine for actual deploys, restoring the
+    # pending-slice contract afterwards so tests importing this module
+    # are unaffected (same snapshot/restore as the wiring test fixture).
+    from celestia_devtools.deploy import stages_more
+    _saved = dict(bootstrap.STAGES)
+    stages_more.register_stages()
+    try:
+        return _run_bootstrap_inner(argv)
+    finally:
+        bootstrap.STAGES.clear()
+        bootstrap.STAGES.update(_saved)
+
+
+def _run_bootstrap_inner(argv: list[str]) -> int:
     args = _build_parser().parse_args(argv)
 
     parsed_profile = None
