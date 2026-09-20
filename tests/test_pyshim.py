@@ -20,21 +20,34 @@ from celestia_devtools import pyshim
 
 SHIM = Path(pyshim.__file__).read_text(encoding="utf-8")
 
+# The grammar floor is ONE constant shared by the gate and its self-proof.
+# R1 mutation c+ proved the danger of two literals: raising only the gate's
+# version to (3, 12) while keeping the self-proof's own (3, 6) left the whole
+# suite green with a real walrus in the shim. With a shared constant, raising
+# it disarms the gate AND arms the self-proof's failure in the same breath.
+PYSHIM_GRAMMAR_FLOOR = (3, 6)
+
+
+def _parse_floor(source: str):
+    """Parse under the shared floor, degrading one notch only if this
+    interpreter refuses the exact version (unsupported feature_version)."""
+    try:
+        return ast.parse(source, feature_version=PYSHIM_GRAMMAR_FLOOR)
+    except (ValueError, TypeError):
+        return ast.parse(source, feature_version=(PYSHIM_GRAMMAR_FLOOR[0],
+                                                   PYSHIM_GRAMMAR_FLOOR[1] + 1))
+
 
 class TestSyntaxFloor:
-    def test_parses_under_36_grammar(self):
-        try:
-            ast.parse(SHIM, feature_version=(3, 6))
-        except (ValueError, TypeError):
-            # Older feature versions may be unsupported by this interpreter;
-            # 3.7 must still work and still rejects the 3.8+ constructs.
-            ast.parse(SHIM, feature_version=(3, 7))
+    def test_parses_under_floor_grammar(self):
+        _parse_floor(SHIM)
 
     def test_gate_actually_rejects_newer_syntax(self):
-        # Self-proof (zero-hit rule): the gate must reject a walrus, else the
-        # test above proves nothing.
+        # Self-proof (zero-hit rule), sharing the gate's constant: if the
+        # floor is raised enough to accept a walrus, THIS test goes red —
+        # a disarmed gate can no longer pass silently.
         with pytest.raises(SyntaxError):
-            ast.parse("if (x := 1):\n    pass\n", feature_version=(3, 6))
+            _parse_floor("if (x := 1):\n    pass\n")
 
     def test_no_f_strings_or_future_annotations(self):
         # Belt next to braces: the shim promises .format() and no postponed
@@ -127,6 +140,43 @@ class TestRunGuards:
             pyshim.run([], assume_yes=False, dry_run=False,
                        version_info=(3, 6, 9, "final", 0))
         assert ei.value.code == 2
+
+
+class TestSafeExtract:
+    """R1-F6: validated extraction — no traversal, no links, no devices."""
+
+    def _tar_bytes(self, infos):
+        import io
+        import tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for info, data in infos:
+                tf.addfile(info, io.BytesIO(data) if data is not None else None)
+        buf.seek(0)
+        return tarfile.open(fileobj=buf, mode="r:gz")
+
+    def test_rejects_path_traversal(self, tmp_path):
+        import tarfile
+        with self._tar_bytes([(tarfile.TarInfo("../../evil.sh"), b"x")]) as tf:
+            with pytest.raises(IOError):
+                pyshim._safe_extract(tf, str(tmp_path))
+
+    def test_rejects_symlink_member(self, tmp_path):
+        import tarfile
+        info = tarfile.TarInfo("link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        with self._tar_bytes([(info, None)]) as tf:
+            with pytest.raises(IOError):
+                pyshim._safe_extract(tf, str(tmp_path))
+
+    def test_extracts_normal_file(self, tmp_path):
+        import tarfile
+        info = tarfile.TarInfo("bin/python3")
+        info.size = 2
+        with self._tar_bytes([(info, b"py")]) as tf:
+            pyshim._safe_extract(tf, str(tmp_path))
+        assert (tmp_path / "bin" / "python3").read_bytes() == b"py"
 
 
 class TestConsent:

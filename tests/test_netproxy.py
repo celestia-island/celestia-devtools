@@ -127,6 +127,38 @@ class TestNoProxyComposition:
             assert expected in cfg.no_proxy, joined
 
 
+class TestMalformedInput:
+    """R1-F2: a broken proxy value must degrade, never crash detect()."""
+
+    def test_bad_ipv6_bracket_env_falls_through(self):
+        cfg = netproxy.detect(env={"HTTPS_PROXY": "http://[bad"},
+                              dns_suffixes=(), listener_hosts=(), gateway_hosts=())
+        assert cfg.direct and cfg.source == "direct"
+
+    def test_out_of_range_port_env_falls_through(self):
+        cfg = netproxy.detect(env={"HTTPS_PROXY": "http://h.example:99999"},
+                              dns_suffixes=(), listener_hosts=(), gateway_hosts=())
+        assert cfg.direct
+
+    def test_redact_never_raises_on_garbage(self):
+        for junk in ("http://[bad", "http://u:p@h.example:99999", ":::", ""):
+            out = netproxy.redact(junk)
+            assert "@" not in out, out  # creds cannot survive even a failed parse
+
+
+class TestGitConfigOrder:
+    """R1-F3: a git http.proxy the user set themselves outranks all guessing."""
+
+    def test_git_outranks_live_listeners_and_wpad(self, monkeypatch):
+        monkeypatch.setattr(netproxy, "_git_config_proxy",
+                            lambda: "http://gitproxy.example.test:8080")
+        monkeypatch.setattr(netproxy, "_tcp_reachable", lambda *a, **k: True)
+        monkeypatch.setattr(netproxy, "_from_wpad", lambda *a, **k: None)
+        cfg = netproxy.detect(env={}, dns_suffixes=("test",))
+        assert cfg.source == "git:http.proxy"
+        assert cfg.display == "gitproxy.example.test:8080"
+
+
 class TestChildEnv:
     def test_sets_proxy_and_no_proxy(self):
         cfg = netproxy.ProxyConfig("http://user:pass@192.0.2.8:7890", "env:HTTPS_PROXY",
@@ -141,6 +173,16 @@ class TestChildEnv:
         env = netproxy.child_env(cfg, base={"HTTPS_PROXY": "http://stale.example:1",
                                             "http_proxy": "http://stale.example:2"})
         assert "HTTPS_PROXY" not in env and "http_proxy" not in env
+
+    def test_direct_also_clears_tool_aliases(self):
+        """R1-F4: flag:none must not leave PIP_PROXY routing pip behind
+        detect()'s back."""
+        cfg = netproxy.ProxyConfig(None, "flag:none")
+        env = netproxy.child_env(cfg, base={"PIP_PROXY": "http://stale.example:3",
+                                            "UV_HTTP_PROXY": "http://stale.example:4",
+                                            "npm_config_proxy": "http://stale.example:5"})
+        for name in ("PIP_PROXY", "UV_HTTP_PROXY", "npm_config_proxy"):
+            assert name not in env, name
 
     def test_display_never_carries_credentials(self):
         cfg = netproxy.ProxyConfig("http://user:pass@192.0.2.8:7890", "x")

@@ -9,7 +9,8 @@ environment variables is blind on exactly those machines, and the failure mode
 
 Detection is a five-level short-circuit cascade:
 
-1. environment variables (both cases + tool-specific aliases + git config);
+1. environment variables (both cases + tool-specific aliases, then git's
+   own ``http.proxy`` config);
 2. well-known ports on the loopback interface;
 3. the default gateway / resolver addresses (same port set);
 4. DNS-suffix guesses (``proxy.<domain>``, ``sing-box.<domain>``);
@@ -75,18 +76,30 @@ _DISABLE_ENV = "CELESTIA_NO_PROXY_DETECT"
 
 
 def redact(url: str) -> str:
-    """Return ``host:port`` (scheme kept, userinfo dropped) for safe logging."""
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.hostname is None:
-        return url
-    netloc = parsed.hostname
-    if parsed.port is not None:
-        netloc = "{}:{}".format(netloc, parsed.port)
-    return netloc
+    """Return ``host:port`` (userinfo dropped) for safe logging.
+
+    Never raises: a malformed URL is degraded to its post-``@`` tail so that
+    credentials can never survive into a log line even when parsing fails.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.hostname is None:
+            return _strip_userinfo(url)
+        netloc = parsed.hostname
+        if parsed.port is not None:
+            netloc = "{}:{}".format(netloc, parsed.port)
+        return netloc
+    except (ValueError, UnicodeError):
+        return _strip_userinfo(url)
+
+
+def _strip_userinfo(url: str) -> str:
+    return url.partition("@")[-1] if "@" in url else url
 
 
 def _net_or_none(url: str | None) -> str | None:
-    """Normalize a candidate URL: add scheme if bare, drop trailing junk."""
+    """Normalize a candidate URL; malformed input yields None (skipped level
+    hit), never an exception — detect() must not crash on a bad env var."""
     if not url:
         return None
     url = url.strip()
@@ -94,8 +107,12 @@ def _net_or_none(url: str | None) -> str | None:
         return None
     if "://" not in url:
         url = "http://" + url
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.hostname is None:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.hostname is None:
+            return None
+        _ = parsed.port  # range/shape errors mean the value is unusable
+    except (ValueError, UnicodeError):
         return None
     return url.rstrip("/")
 
@@ -266,6 +283,12 @@ def detect(
     if hit:
         return ProxyConfig(hit[0], hit[1], no_proxy)
 
+    # A git http.proxy the user configured themselves outranks any guessing
+    # (listeners / gateway / DNS / WPAD), so it belongs here at level 1.
+    git_url = _git_config_proxy()
+    if git_url:
+        return ProxyConfig(git_url, "git:http.proxy", no_proxy)
+
     for host in listener_hosts:  # level 2
         for port in ports:
             if _tcp_reachable(host, port, timeout):
@@ -291,9 +314,6 @@ def detect(
     if hit:
         return ProxyConfig(hit[0], hit[1], no_proxy)
 
-    git_url = _git_config_proxy()
-    if git_url:
-        return ProxyConfig(git_url, "git:http.proxy", no_proxy)
     return ProxyConfig(None, "direct", no_proxy)
 
 
@@ -319,8 +339,9 @@ def child_env(cfg: ProxyConfig, base: dict[str, str] | None = None) -> dict[str,
     environment still carries the detection result downstream.
     """
     out = dict(os.environ if base is None else base)
-    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
-                 "ALL_PROXY", "all_proxy"):
+    clear = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+             "ALL_PROXY", "all_proxy") + _TOOL_ENV
+    for name in clear:
         out.pop(name, None)
     if not cfg.direct:
         for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):

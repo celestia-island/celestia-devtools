@@ -33,25 +33,47 @@ class TestDispatch:
 
 
 class TestDoctor:
+    """R1-F5: hermetic by injection — no real detect(), no subprocess probes,
+    no WPAD web fetches on whatever machine runs the suite."""
+
+    def _fixture(self, monkeypatch, *, useradd_ok=True):
+        from celestia_devtools.core import deps, netproxy
+        monkeypatch.setattr(
+            netproxy, "detect",
+            lambda **kw: netproxy.ProxyConfig(
+                "http://user:pass@203.0.113.7:7890", "env:HTTPS_PROXY",
+                ("localhost", "198.18.0.0/15")))
+        monkeypatch.setattr(
+            deps, "ensure",
+            lambda *a, **k: [deps.EnsureResult("PyYAML", True, "present", "6.0.2")])
+        probes = [
+            probe.Probe("python", True, "3.11.2"),
+            probe.Probe("systemd", True, "255"),
+            probe.Probe("useradd", useradd_ok, "", hint="passwd package"),
+            probe.Probe("acme.sh", False, "", hint="curl https://get.acme.sh"),
+        ]
+        monkeypatch.setattr(probe, "all_probes", lambda: probes)
+
     def test_json_output_shape_and_redaction(self, monkeypatch, capsys):
+        self._fixture(monkeypatch)
         monkeypatch.setattr("sys.argv", ["deploy", "doctor", "--json"])
         rc = deploy_cli.main()
-        assert rc in (0, 1)  # doctor may legitimately report hard misses
+        assert rc == 0  # fixture has no hard miss
         data = json.loads(capsys.readouterr().out)
         assert set(data) >= {"proxy", "deps", "probes", "hard_missing"}
-        # Credentials must never ride along even if a proxy was detected.
-        assert "@" not in data["proxy"]["display"]
-        names = {p["name"] for p in data["probes"]}
-        assert {"python", "systemd", "nginx", "acme.sh"} <= names
+        assert data["proxy"]["display"] == "203.0.113.7:7890"  # creds redacted
+        assert "proxy_url" not in data["proxy"]  # the full URL never rides along
+        assert data["hard_missing"] == []
         soft = {p["name"] for p in data["probes"] if p["soft"]}
-        assert soft == probe.SOFT
+        assert soft == {"acme.sh"} and "acme.sh" in probe.SOFT
 
-    def test_human_output_mentions_conclusion(self, monkeypatch, capsys):
+    def test_hard_missing_drives_exit_code(self, monkeypatch, capsys):
+        self._fixture(monkeypatch, useradd_ok=False)
         monkeypatch.setattr("sys.argv", ["deploy", "doctor"])
         rc = deploy_cli.main()
         out = capsys.readouterr().out
-        assert rc in (0, 1)
-        assert "硬缺口" in out and "代理" in out
+        assert rc == 1
+        assert "硬缺口" in out and "useradd" in out and "代理" in out
 
 
 class TestProbes:

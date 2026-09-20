@@ -196,6 +196,10 @@ def pick_pbs_asset(names, machine, system):
 
 def _pbs_python(download_budget):
     index = PBS_FALLBACK_MIRROR or PBS_INDEX
+    if PBS_FALLBACK_MIRROR:
+        _log("WARNING: CELESTIA_PBS_MIRROR is set; release digests come from "
+             "the mirror itself (self-attested) - only transport corruption "
+             "is caught, not a compromised mirror")
     resp = _fetch(index)
     data = json.loads(resp.read().decode("utf-8", "replace"))
     assets = []
@@ -223,16 +227,53 @@ def _pbs_python(download_budget):
         if not os.path.isdir(root):
             os.makedirs(root)
         with tarfile.open(tarpath, "r:gz") as tf:
-            tf.extractall(dest_root)
+            _safe_extract(tf, dest_root)
     return binpath if os.path.exists(binpath) else None
+
+
+def _safe_extract(tf, dest):
+    """tarfile extraction with member validation (R1-F6).
+
+    Python 3.6 has no ``filter=`` parameter, so the checks are manual: no
+    absolute paths, no ``..`` traversal, and no link/device members — a
+    hostile archive cannot write outside dest or plant a symlink.
+    """
+    import os as _os
+    members = tf.getmembers()
+    for m in members:
+        name = m.name
+        if name.startswith("/") or name.startswith("\\"):
+            raise IOError("absolute path in archive: " + name)
+        parts = [pt for pt in name.replace("\\", "/").split("/") if pt]
+        if ".." in parts:
+            raise IOError("path traversal in archive: " + name)
+        if m.issym() or m.islnk():
+            raise IOError("link member in archive: " + name)
+        if m.isdev():
+            raise IOError("device member in archive: " + name)
+    for m in members:
+        tf.extract(m, dest)
+    _ = _os  # (kept for clarity: path logic above is pure string ops)
 
 
 # ── strategy c: system packages (may not be newest) ──────────────────────
 
+def _pkg_runner():
+    """Prefix system package commands with sudo -n when not root."""
+    prefix = []
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        prefix = ["sudo", "-n"]
+    return prefix
+
+
 def _pkg_python():
+    prefix = _pkg_runner()
+    if prefix and not shutil.which("sudo"):
+        _log("not root and no sudo available; system-package strategy will fail")
+        return None
     if shutil.which("apt-get"):
         for ver in ("3.12", "3.11"):
-            rc = subprocess.call(["apt-get", "install", "-y",
+            rc = subprocess.call(prefix + ["apt-get", "install", "-y",
                                   "python" + ver, "python" + ver + "-venv"])
             if rc == 0:
                 path = shutil.which("python" + ver)
@@ -240,7 +281,7 @@ def _pkg_python():
                     return path
     if shutil.which("dnf"):
         for ver in ("3.12", "3.11"):
-            rc = subprocess.call(["dnf", "install", "-y", "python" + ver])
+            rc = subprocess.call(prefix + ["dnf", "install", "-y", "python" + ver])
             if rc == 0:
                 path = shutil.which("python" + ver)
                 if path:
@@ -264,11 +305,14 @@ def _create_venv(python_bin, extra=()):
         _die("could not create venv with " + python_bin)
     pip = [venv_interpreter(), "-m", "pip", "install", "--no-input",
            "--disable-pip-version-check"]
+    env = dict(os.environ)
     proxy = _proxy_url()
     if proxy:
-        pip.append("--proxy=" + proxy)
+        # Via env, not argv: argv is world-readable in /proc, environ is not.
+        for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+            env[name] = proxy
     pkgs = ["celestia-devtools"] + list(extra)
-    rc = subprocess.call(pip + pkgs, timeout=NET_TIMEOUT * 2)
+    rc = subprocess.call(pip + pkgs, timeout=NET_TIMEOUT * 2, env=env)
     if rc != 0:
         _die("pip install celestia-devtools into the venv failed")
 

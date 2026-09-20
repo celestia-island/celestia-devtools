@@ -320,8 +320,8 @@ $ celestia-devtools deploy doctor     # read-only: proxy / python deps / system 
 
 `doctor` reports, never installs (auto-install of missing system tools, when
 it arrives, stays behind an explicit consent flag). Proxy detection is a
-five-level cascade (env vars -> loopback listeners -> default gateway -> DNS
-suffixes -> WPAD) with credentials redacted in every report line, and `NO_PROXY`
+five-level cascade (env vars and git's own http.proxy -> loopback listeners ->
+default gateway -> DNS suffixes -> WPAD) with credentials redacted in every report line, and `NO_PROXY`
 always covers loopback plus RFC1918/ULA ranges so a same-LAN database never
 routes through an egress proxy.
 

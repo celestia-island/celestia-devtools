@@ -80,7 +80,8 @@ class TestPolicyOnRealFile:
             pytest.skip("tomllib unavailable below 3.11")
         data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
         project = data["project"]
-        specs = list(project.get("dependencies", []))
+        specs = list(data.get("build-system", {}).get("requires", []))
+        specs += list(project.get("dependencies", []))
         for extra in project.get("optional-dependencies", {}).values():
             specs.extend(extra)
         assert specs, "extraction self-check: found dependency specs to police"
