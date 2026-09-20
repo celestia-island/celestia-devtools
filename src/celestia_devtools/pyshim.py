@@ -227,12 +227,14 @@ def _pbs_python(download_budget):
         if not os.path.isdir(root):
             os.makedirs(root)
         with tarfile.open(tarpath, "r:gz") as tf:
-            _safe_extract(tf, dest_root)
+            safe_extract(tf, dest_root)
     return binpath if os.path.exists(binpath) else None
 
 
-def _safe_extract(tf, dest):
+def safe_extract(tf, dest):
     """tarfile extraction with member validation (R1-F6).
+
+    Public name — deploy/artifact.py reuses this for fetched archives.
 
     Python 3.6 has no ``filter=`` parameter, so the checks are manual: no
     absolute paths, no ``..`` traversal, and no link/device members — a
@@ -426,3 +428,7 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# back-compat alias (D1 tests referenced the private name)
+_safe_extract = safe_extract
