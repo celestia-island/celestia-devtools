@@ -1,11 +1,82 @@
 name: CI Cache Policy
 
+# Reusable gate for `actions/cache` steps that cost a self-hosted runner more than they save.
+#
+# Why this rule exists, in one paragraph: all four self-hosted runners are VMs on a single
+# 8 TB spinning disk, and a runner's cargo home, its target/ tree and the cache archive it
+# writes share one root VMDK. The actions/cache post-job save therefore tars a tree that is
+# already on that disk -- measured, tar spent 45+ minutes at ~790 KB/s and ~1% CPU blocked on
+# 141,224 small files, with the job's own steps long finished. A job-level timeout-minutes
+# does not bound a post-job step, so the runner held its slot and the org queue starved.
+# The runners are not ephemeral, so those caches duplicate work persistence already does.
+
 on:
+  workflow_call:
+    inputs:
+      paths:
+        description: >-
+          Space-separated paths to audit. Defaults to '.', which scans the calling
+          repository. A repository whose workflows live outside the checkout root can pass
+          its own paths.
+        required: false
+        type: string
+        default: "."
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
   merge_group:
     types: [checks_requested]
 
 jobs:
-  cache-policy:
-    uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master
+  cache:
+    name: Cache policy
+    # Hosted, like the commit-message and PR-title checks: this is a sub-minute, stdlib-only
+    # analysis of YAML, and a queued lint that holds a PR behind real builds is the failure
+    # mode it exists to prevent. Public repos are free and unlimited here.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        env:
+          # The org self-hosted runner env rewrites github.com/celestia-island/* to local
+          # bare mirrors; those may lack fresh refs. A no-op on hosted runners, correct if
+          # this job is ever pinned back.
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Checkout celestia-devtools (for the gate itself)
+        uses: actions/checkout@v7
+        with:
+          repository: celestia-island/celestia-devtools
+          path: .devtools-gate
+          ref: master
+          env:
+            GIT_CONFIG_COUNT: "0"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install the gate
+        env:
+          PIP_NO_INPUT: "1"
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet PyYAML
+          export PYTHONPATH="$PWD/.devtools-gate/src"
+          python -c "import celestia_devtools.ci.cache_policy" \
+            || { echo "the gate module is missing from celestia-devtools@master"; exit 1; }
+
+      - name: Audit cache steps
+        env:
+          PYTHONPATH: "${{ github.workspace }}/.devtools-gate/src"
+          # `inputs.paths` is only meaningful for a `workflow_call`; this workflow also
+          # declares pull_request/merge_group triggers, where the context is absent, so the
+          # default is applied here rather than relying on the input declaration alone.
+          PATHS: ${{ inputs.paths || '.' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 — PATHS is a deliberate space-separated list
+          python -m celestia_devtools.ci.cache_policy ${PATHS:-.}
