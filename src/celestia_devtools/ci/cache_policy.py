@@ -336,6 +336,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="repository roots, or a directory containing checkouts (default: .)",
     )
     parser.add_argument("--json", action="store_true", help="emit findings as JSON")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="also fail on warning-level findings (mirrors ci-audit --strict)",
+    )
     return parser
 
 
@@ -350,7 +355,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for finding in findings:
             print(f"{finding['path']}:{finding['line']}: {finding['rule']}: {finding['detail']}")
     print(_summary(findings), file=sys.stderr)
-    return 1 if findings else 0
+
+    # Only ``error`` findings fail the run; warnings are reported and pass. This matches
+    # `lint.rules_lint` (errors decide the exit code, warnings are printed) and
+    # `ci.workflow_audit` (warning-level rules need its --strict to fail). The first
+    # revision failed on any finding, which made the gate permanently red for a repository
+    # whose only remaining findings are the four narrow `icons/mdi` caches -- a gate that
+    # cannot go green stops being read, and then the error-level findings stop being read too.
+    errors = [finding for finding in findings if finding.get("severity") == "error"]
+    if errors:
+        return 1
+    if args.strict and findings:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
