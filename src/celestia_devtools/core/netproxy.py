@@ -24,8 +24,8 @@ Security rules baked in:
 * credentials in a proxy URL (``http://user:pass@host:port``) are preserved for
   the actual child processes but **never** for logging — ``ProxyConfig.display``
   and ``redact()`` return ``host:port`` only;
-* ``NO_PROXY`` is composed independently and always includes loopback, this
-  host's addresses, RFC1918/ULA ranges, ``.local`` and the detected internal
+* ``NO_PROXY`` is composed independently and always includes loopback,
+  RFC1918/ULA ranges, ``.local`` and the detected internal
   DNS suffixes — a database on the same LAN must never be routed through an
   egress proxy;
 * ``sudo`` strips proxy variables by default, so callers should detect in the
@@ -243,7 +243,9 @@ def _from_wpad(suffixes: tuple[str, ...], timeout: float) -> tuple[str, str] | N
             continue
         m = pat.search(body)
         if m:
-            return _net_or_none(m.group(1)), "wpad:{}".format(suffix)
+            url = _net_or_none(m.group(1))
+            if url:  # a malformed PROXY line is a miss, not a cascade stopper
+                return url, "wpad:{}".format(suffix)
     return None
 
 

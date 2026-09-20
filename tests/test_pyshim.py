@@ -133,6 +133,19 @@ class TestRunGuards:
         assert "3.6.9" in out
         assert "uv" in out and "python-build-standalone" in out
 
+    def test_dry_run_never_asks_consent(self, monkeypatch):
+        """R2-P3-7: dry-run must not block on a consent prompt — it installs
+        nothing, so it owes nobody a question."""
+        monkeypatch.setattr(pyshim, "venv_python_bin", lambda: "/nonexistent/tool")
+        monkeypatch.setattr(pyshim, "_consent",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("dry-run must not ask consent")))
+        monkeypatch.setattr(pyshim, "_create_venv", _no_create)
+        monkeypatch.setattr(pyshim, "_reexec", _no_reexec)
+        rc = pyshim.run([], assume_yes=False, dry_run=True,
+                        version_info=(3, 6, 9, "final", 0))
+        assert rc == 0
+
     def test_declined_consent_exits_cleanly(self, monkeypatch):
         monkeypatch.setattr(pyshim, "venv_python_bin", lambda: "/nonexistent/tool")
         monkeypatch.setattr(pyshim, "_consent", lambda *a, **k: False)

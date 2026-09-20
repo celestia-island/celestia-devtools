@@ -94,7 +94,11 @@ def ensure(
     """Check each distribution; install within budget when allowed.
 
     ``runner`` is injectable for tests. Never raises — failures come back as
-    ``EnsureResult(action="failed")`` with a hint in ``detail``.
+    ``EnsureResult(action="failed")`` with a hint in ``detail``. The budget
+    (default 90s) is **shared across the whole call**: with several
+    requirements, an early dist that exhausts it leaves later ones
+    "budget exhausted" with zero attempts — pass one dist per call when you
+    want independent budgets.
     """
     results: list[EnsureResult] = []
     budget = timeout
