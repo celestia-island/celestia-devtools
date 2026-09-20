@@ -40,8 +40,8 @@ class TestProfilePassthrough:
                                          "--non-interactive", "--dry-run"])
         rc = deploy_cli.main()
         # With full wiring, dry-run reaches database which fails (no PG URL)
-        # — exit 1, but etc_base still rides through the output
-        assert rc in (1, 2)  # 2=pending (pre-wiring), 1=stage failure (wired)
+        # — exit 1 (NOT 2: that would mean stages are still pending)
+        assert rc == 1, f"wired CLI must run stages, got rc={rc}"
         out = capsys.readouterr().out
         assert str(tmp_path / "etc") in out
         assert "/etc/celestia" not in out
@@ -87,8 +87,7 @@ class TestJsonPurity:
         rc = deploy_cli.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)  # must parse the WHOLE stdout
-        assert data["exit"] == rc
-        assert rc in (1, 2)  # 2=pending (pre-wiring), 1=stage failure (wired)
+        assert data["exit"] == rc == 1  # wired: database stage fails (no PG)
         assert {"precheck", "account", "secrets", "summary"} <= {
             s["name"] for s in data["stages"]}
         # R3 nit-2 pin: dry-run stages never report changed=True

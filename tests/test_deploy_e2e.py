@@ -144,13 +144,12 @@ class TestRootlessChain:
         rc = deploy_cli.main()
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data["exit"] == rc
+        assert data["exit"] == rc == 1  # wired: database fails (no PG)
         names = [s["name"] for s in data["stages"]]
-        # The stage machine stops at the first failure and runs summary;
-        # verify names are a valid prefix of STAGE_ORDER + summary
-        all_names = list(bootstrap.STAGE_ORDER)
-        non_summary = [n for n in names if n != 'summary']
-        assert non_summary == all_names[:len(non_summary)]
+        statuses = {s["name"]: s["status"] for s in data["stages"]}
+        # No stage may be PENDING — the CLI is fully wired
+        assert all(st != "pending-slice" for st in statuses.values()), \
+            f"PENDING stages found: {[n for n, st in statuses.items() if st == 'pending-slice']}"
         assert names[-1] == 'summary'  # summary always runs
 
 
