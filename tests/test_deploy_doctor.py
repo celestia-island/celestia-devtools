@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import io
 import json
+
+
 
 from celestia_devtools.core import cli as core_cli
 from celestia_devtools.deploy import cli as deploy_cli, probe
+
+
+class NonTty(io.StringIO):
+    """stdin stand-in that isatty() is False on (the CI/cron reality)."""
+
+    def isatty(self):
+        return False
+
 
 
 class TestRegistry:
@@ -14,10 +25,14 @@ class TestRegistry:
 
 
 class TestDispatch:
-    def test_bare_deploy_exits_2_and_points_at_doctor(self, monkeypatch, capsys):
+    def test_bare_deploy_non_tty_aborts_with_pointer(self, monkeypatch, capsys):
+        """Bare `deploy` is the wizard now: without a TTY and without
+        --admin-email/--profile it must fail loudly, not hang on stdin."""
+        monkeypatch.setattr("sys.stdin", NonTty())
         monkeypatch.setattr("sys.argv", ["deploy"])
         assert deploy_cli.main() == 2
-        assert "doctor" in capsys.readouterr().out
+        err = capsys.readouterr().err
+        assert "admin.email" in err and "--admin-email" in err
 
     def test_help_flags_exit_0(self, monkeypatch, capsys):
         for flag in ("-h", "--help", "help"):

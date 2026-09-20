@@ -23,6 +23,7 @@ Usage::
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -61,13 +62,23 @@ def _installed(dist: str) -> str | None:
 
 
 def _pip_argv(dist: str, index: str | None, proxy_url: str | None) -> list[str]:
+    """pip command for one dist. The proxy deliberately rides the *env*
+    (`pip_env`), never argv: argv is world-readable in /proc (R1' P3-1),
+    environ is not — same fix pyshim already carries.
+    """
     argv = [sys.executable, "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
-    if proxy_url:
-        argv.append("--proxy={}".format(proxy_url))
     if index:
         argv.append("--index-url={}".format(index))
     argv.append(dist)
     return argv
+
+
+def pip_env(proxy_url: str | None, base: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    if proxy_url:
+        for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+            env[name] = proxy_url
+    return env
 
 
 def ensure(
@@ -106,7 +117,8 @@ def ensure(
             spend = max(1, budget // max(1, max(tries, 1) - attempt + 1))
             try:
                 r = runner(_pip_argv(dist, index, proxy_url),
-                           capture_output=True, text=True, timeout=spend)
+                           capture_output=True, text=True, timeout=spend,
+                           env=pip_env(proxy_url))
             except (OSError, subprocess.SubprocessError) as exc:
                 results.append(EnsureResult(dist, False, "failed",
                                             "pip error: {}".format(exc)))

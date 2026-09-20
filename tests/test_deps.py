@@ -33,19 +33,22 @@ class TestReportOnly:
         assert "report-only" in r.detail
 
 
-class TestPipArgv:
-    def test_proxy_and_index_flags(self):
-        argv = deps._pip_argv("foo", "https://mirror.simple", "http://p:7890")
+class TestPipInvocation:
+    def test_proxy_rides_env_never_argv(self):
+        """R1' P3-1: argv is world-readable in /proc; the proxy must ride env."""
+        argv = deps._pip_argv("foo", "https://mirror.simple", "http://user:pass@198.51.100.7:7890")
         assert argv[0].endswith("python") or argv[0].endswith("python3")
-        assert "--proxy=http://p:7890" in argv
+        assert not any("--proxy" in a for a in argv), argv
         assert "--index-url=https://mirror.simple" in argv
         assert argv[-1] == "foo"
-        assert "--no-input" in argv
+        env = deps.pip_env("http://user:pass@198.51.100.7:7890", base={"PATH": "/bin"})
+        assert env["HTTPS_PROXY"] == "http://user:pass@198.51.100.7:7890"
 
-    def test_flags_omitted_when_none(self):
+    def test_env_untouched_without_proxy(self):
         argv = deps._pip_argv("foo", None, None)
-        assert not any(a.startswith("--proxy") for a in argv)
-        assert not any(a.startswith("--index-url") for a in argv)
+        assert not any(a.startswith("--") and a != "--no-input" and not a.startswith("--disable") for a in argv)
+        env = deps.pip_env(None, base={"PATH": "/bin"})
+        assert "HTTPS_PROXY" not in env
 
 
 class TestBudget:

@@ -4,12 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "celestia-devtools"
-version = "0.11.0"
+version = "0.12.0"
 description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
+    # profile write path (read side is stdlib tomllib); zero transitive deps
+    "tomli-w>=1",
+    # deploy wizard prompts; pure Python (prompt_toolkit + wcwidth)
+    "questionary>=2",
     # celestia-ci-audit composes the workflow AST: the composer both proves the file is
     # parseable (its `yaml-parse-error` rule reports what it cannot parse instead of
     # skipping it) and supplies the node line numbers. The job-timeouts tests also use it.
