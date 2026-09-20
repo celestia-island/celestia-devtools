@@ -181,19 +181,37 @@ def collect(seed: dict[str, str], *, interactive: bool,
     return answers, provenance
 
 
-def build_profile(answers: dict[str, str]) -> DeployProfile:
-    profile = DeployProfile(
-        host=HostSection(face=answers["host.face"],
-                         level=answers["host.level"],
-                         listen=int(answers["host.listen"])),
-        artifact=ArtifactSection(channel=answers["artifact.channel"]),
-        database=DatabaseSection(mode="external"),
-        front=FrontSection(enabled=bool(answers.get("front.domain")),
-                           domain=answers.get("front.domain", ""),
-                           email=answers.get("front.email", "")),
-        admin=AdminSection(email=answers["admin.email"],
-                           password_to_file=answers["admin.password_to_file"] == "y"),
-    )
+def build_profile(answers: dict[str, str],
+                  base: DeployProfile | None = None) -> DeployProfile:
+    """Apply the table's answers onto `base` when given (a --profile carries
+    every field, including ones the table never asks about — srv_base,
+    etc_base, database.*, front.email — and those must ride through
+    untouched), else construct a fresh profile from the answers alone."""
+    if base is None:
+        profile = DeployProfile(
+            host=HostSection(face=answers["host.face"],
+                             level=answers["host.level"],
+                             listen=int(answers["host.listen"])),
+            artifact=ArtifactSection(channel=answers["artifact.channel"]),
+            database=DatabaseSection(mode="external"),
+            front=FrontSection(enabled=bool(answers.get("front.domain")),
+                               domain=answers.get("front.domain", ""),
+                               email=answers.get("front.email", "")),
+            admin=AdminSection(email=answers["admin.email"],
+                               password_to_file=answers["admin.password_to_file"] == "y"),
+        )
+    else:
+        profile = base
+        profile.host.face = answers["host.face"]
+        profile.host.level = answers["host.level"]
+        profile.host.listen = int(answers["host.listen"])
+        profile.artifact.channel = answers["artifact.channel"]
+        profile.front.domain = answers.get("front.domain", "")
+        profile.front.enabled = bool(profile.front.domain)
+        if answers.get("front.email"):
+            profile.front.email = answers["front.email"]
+        profile.admin.email = answers["admin.email"]
+        profile.admin.password_to_file = answers["admin.password_to_file"] == "y"
     errors = profile.validate()
     if errors:
         raise WizardAbort("; ".join(errors))

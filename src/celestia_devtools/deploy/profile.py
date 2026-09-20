@@ -131,6 +131,12 @@ class DeployProfile:
             raise ProfileError("tomllib unavailable (below 3.11)")
         doc = tomllib.loads(text)
         profile = cls()
+        known = {f.name for f in fields(profile)}
+        unknown_top = set(doc) - known
+        if unknown_top:
+            raise ProfileError(
+                "unknown top-level section(s): {} (typo?)".format(
+                    ", ".join(sorted(unknown_top))))
         for sec in fields(profile):
             incoming = doc.get(sec.name)
             if incoming is None:

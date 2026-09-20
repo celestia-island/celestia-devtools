@@ -82,13 +82,16 @@ def run_bootstrap(argv: list[str]) -> int:
 
     try:
         answers, provenance = wizard.collect(seed, interactive=interactive)
-        prof = wizard.build_profile(answers)
+        prof = wizard.build_profile(answers, base=parsed_profile)
     except wizard.WizardAbort as exc:
         print("error: {}".format(exc), file=sys.stderr)
         return 2
 
+    def _note(line: str) -> None:
+        print(line, file=sys.stderr if args.json else sys.stdout)
+
     for key in sorted(provenance):
-        print("  {:<24} = {:<28} {}".format(key, answers[key], provenance[key]))
+        _note("  {:<24} = {:<28} {}".format(key, answers[key], provenance[key]))
     if not args.yes and interactive and not args.dry_run:
         try:
             ok = input("\n确认执行以上配置？[y/N] ").strip().lower() in ("y", "yes")
@@ -100,11 +103,19 @@ def run_bootstrap(argv: list[str]) -> int:
 
     # dry-run changes nothing — the profile write itself is part of the plan
     if args.dry_run:
-        print("dry-run: would write {}".format(prof.host.profile_path()))
+        _note("dry-run: would write {}".format(prof.host.profile_path()))
     else:
         prof.write(prof.host.profile_path())
-    ctx = bootstrap.StageContext(profile=prof, assume_root=False, dry_run=args.dry_run)
-    code, results = bootstrap.run_stages(ctx)
+    real_stdout = sys.stdout
+    if args.json:
+        # the summary block goes to stderr so stdout stays pure JSON
+        sys.stdout = sys.stderr
+    try:
+        ctx = bootstrap.StageContext(profile=prof, assume_root=False,
+                                     dry_run=args.dry_run)
+        code, results = bootstrap.run_stages(ctx)
+    finally:
+        sys.stdout = real_stdout
     if args.json:
         import json
         print(json.dumps({"exit": code, "stages": [

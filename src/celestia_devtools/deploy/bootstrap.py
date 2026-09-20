@@ -208,10 +208,7 @@ def run_stages(ctx: StageContext) -> tuple[int, list[StageResult]]:
             pending_from = name
             results.append(StageResult(name, PENDING, "waiting for its slice"))
             continue
-        if name == "summary":
-            result = fn(ctx, results)
-        else:
-            result = fn(ctx)
+        result = fn(ctx, results) if name == "summary" else fn(ctx)
         results.append(result)
         if result.status == FAILED:
             # summary still runs so the operator sees the full picture
