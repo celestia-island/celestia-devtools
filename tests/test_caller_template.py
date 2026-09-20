@@ -21,6 +21,7 @@ import yaml
 from celestia_devtools.repo.init import (
     WORKFLOW_CI_CACHE,
     WORKFLOW_COMMIT_LINT,
+    WORKFLOW_PR_TITLE_CHECK,
     _ensure_workflows,
 )
 
@@ -203,7 +204,7 @@ class TestCachePolicyCallerTemplate:
     def test_generator_writes_both_callers(self, tmp_path: Path):
         _ensure_workflows(tmp_path)
         written = sorted(p.name for p in (tmp_path / ".github" / "workflows").iterdir())
-        assert written == ["ci-cache.yml", "commit-msg-lint.yml"]
+        assert written == ["ci-cache.yml", "commit-msg-lint.yml", "pr-title-check.yml"]
         assert (tmp_path / ".github" / "workflows" / "ci-cache.yml").read_text(
             encoding="utf-8"
         ) == WORKFLOW_CI_CACHE
@@ -214,3 +215,46 @@ class TestCachePolicyCallerTemplate:
         (workflows / "ci-cache.yml").write_text("hand-edited\n", encoding="utf-8")
         _ensure_workflows(tmp_path)
         assert (workflows / "ci-cache.yml").read_text(encoding="utf-8") == "hand-edited\n"
+
+
+class TestPrTitleCallerTemplate:
+    """The third generated caller, added 2026-09-20.
+
+    It had no template before that, which is why 21 repositories carried a hand-written copy
+    whose `types` omitted `synchronize`: a push to an existing PR never re-ran the title
+    check, and because it is a required check the merge then waited for a result that was
+    never produced.
+    """
+
+    def test_uses_the_shared_workflow_at_master(self):
+        doc = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)
+        assert doc["jobs"]["pr-title-check"]["uses"] == (
+            "celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master"
+        )
+
+    def test_synchronize_is_present(self):
+        types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
+        assert "synchronize" in types
+
+    def test_edited_is_present(self):
+        """Editing the title must re-run the check that validates it."""
+        types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
+        assert "edited" in types
+
+    def test_caller_job_carries_only_uses(self):
+        job = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)["jobs"]["pr-title-check"]
+        assert set(job) == {"uses"}
+
+    def test_callee_also_re_runs_on_synchronize(self):
+        """The reusable workflow's own trigger list must match, or the caller is useless."""
+        callee = yaml.safe_load(
+            (Path(__file__).resolve().parent.parent / ".github/workflows/pr-title-check.yml")
+            .read_text(encoding="utf-8")
+        )
+        types = _on(callee)["pull_request"]["types"]
+        assert "synchronize" in types
+
+    def test_generator_writes_all_three_callers(self, tmp_path: Path):
+        _ensure_workflows(tmp_path)
+        written = sorted(p.name for p in (tmp_path / ".github" / "workflows").iterdir())
+        assert written == ["ci-cache.yml", "commit-msg-lint.yml", "pr-title-check.yml"]
