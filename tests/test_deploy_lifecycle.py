@@ -62,6 +62,36 @@ class TestBackup:
         assert stat.S_IMODE(os.stat(env_copy).st_mode) == 0o600
         assert "密文永久解不开" in capsys.readouterr().out  # the warning must reach the operator
 
+    def test_restore_psql_stops_on_first_sql_error(self, tmp_path):
+        """R2-P2: psql exits 0 on script-level SQL errors unless told to
+        stop — a half-applied restore must never report 'db' as applied."""
+        prof = _profile(tmp_path)
+        _seed_face(prof)
+        result = backup_mod.backup(prof, tmp_path / "backups",
+                                   executor=_ok_executor)
+        # synthesize a db.dump + manifest entry to reach the psql branch
+        (result.path / "db.dump").write_text("INSERT broken sql;", encoding="utf-8")
+        import json as _json
+        manifest = _json.loads((result.path / "manifest.json").read_text())
+        import hashlib
+        digest = hashlib.sha256((result.path / "db.dump").read_bytes()).hexdigest()
+        manifest["entries"]["db.dump"] = digest
+        (result.path / "manifest.json").write_text(_json.dumps(manifest))
+        url_file = prof.host.etc_env().with_name(prof.host.face + "-db.url")
+        url_file.parent.mkdir(parents=True, exist_ok=True)
+        url_file.write_text("postgresql://u:p@198.51.100.9/db", encoding="utf-8")
+        seen = {}
+
+        def recorder(cmd, **kw):
+            seen["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        try:
+            backup_mod.restore(prof, result.path, executor=recorder)
+        except Exception:
+            pass  # psql "succeeded" here; the pin is the argv
+        assert "-v" in seen["cmd"] and "ON_ERROR_STOP=1" in seen["cmd"], seen["cmd"]
+
     def test_restore_round_trip_and_integrity_teeth(self, tmp_path):
         prof = _profile(tmp_path)
         _seed_face(prof)

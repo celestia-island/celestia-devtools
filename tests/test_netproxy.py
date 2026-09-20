@@ -162,14 +162,16 @@ class TestGitConfigOrder:
 class TestNoProxyDedup:
     def test_duplicate_sources_collapse_keeping_first(self):
         """R2 mutation-a was green: the dedup line had no teeth. Pin both the
-        no-duplicates invariant and the first-wins order."""
-        cfg = netproxy.detect(env={"NO_PROXY": "localhost,first.example,localhost"},
-                              dns_suffixes=("node.test", "node.test"),
-                              listener_hosts=(), gateway_hosts=())
-        assert cfg.no_proxy.count("localhost") == 1
-        assert cfg.no_proxy.index("first.example") < cfg.no_proxy.index("second") \
-            if "second" in cfg.no_proxy else True
-        # node.test appears once via suffix, and ".node.test" not duplicated
+        no-duplicates invariant and the first-wins order (a last-wins dedup
+        must go red here)."""
+        cfg = netproxy.detect(
+            env={"NO_PROXY": "first.example,second.example,first.example"},
+            dns_suffixes=("node.test", "node.test"),
+            listener_hosts=(), gateway_hosts=())
+        assert cfg.no_proxy.count("first.example") == 1
+        assert cfg.no_proxy.count("second.example") == 1
+        assert cfg.no_proxy.index("first.example") < \
+            cfg.no_proxy.index("second.example")
         assert sum(1 for x in cfg.no_proxy if x == ".node.test") == 1
 
 

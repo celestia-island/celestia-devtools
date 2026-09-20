@@ -115,6 +115,7 @@ def upgrade(profile: DeployProfile, source_base: str, channel: str, target: str,
     if current.exists():
         _install(current, prev_path(profile))
     _install(staged, current)
+    staged.unlink(missing_ok=True)  # keep incoming/ from accreting tarballs
 
     migrate = _migrate(profile, current, executor)
     if migrate.returncode != 0:

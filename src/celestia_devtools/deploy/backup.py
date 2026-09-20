@@ -122,8 +122,10 @@ def restore(profile: DeployProfile, backup_dir: Path,
             executor: Callable[..., subprocess.CompletedProcess] = _run) -> list[str]:
     """Restore data/env/db from a backup directory. Returns applied steps.
 
-    Callers own service stop/start around this (the upgrade path does both
-    explicitly); this function refuses nothing except integrity failures.
+    Callers own service stop/start around this (the upgrade path restarts
+    at the end; backups taken on a live service have a tear window between
+    the data tarball and the pg_dump snapshot — documented, accepted for
+    Phase 0). This function refuses nothing except integrity failures.
     """
     applied: list[str] = []
     manifest_path = Path(backup_dir) / "manifest.json"
@@ -159,7 +161,8 @@ def restore(profile: DeployProfile, backup_dir: Path,
         if not db_url:
             raise RuntimeError("db.dump present but no DB URL resolvable")
         proc = executor(["psql", "--quiet", "--file",
-                         str(Path(backup_dir) / "db.dump"), db_url], timeout=600)
+                         str(Path(backup_dir) / "db.dump"), db_url,
+                         "-v", "ON_ERROR_STOP=1"], timeout=600)
         if proc.returncode != 0:
             raise RuntimeError("psql restore failed: {}".format(
                 (proc.stderr or "").strip()[:200]))

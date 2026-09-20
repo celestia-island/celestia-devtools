@@ -20,10 +20,10 @@ from pathlib import Path
 from celestia_devtools.deploy import bootstrap, profile as profile_mod, wizard
 
 PLANNED = (
-    "verify / backup / restore / upgrade / rollback — slice D4",
-    "status (入驻判据 / 版本 / 迁移水位 / 台账)       — slice D4",
-    "secrets rotate|show-meta                        — slice D4",
-    "uninstall                                       — slice D4",
+    "verify / status (health/epoch/入驻判据/台账)   — wiring next",
+    "backup / restore / upgrade / rollback — library landed (deploy.backup,",
+    "   deploy.lifecycle), CLI subcommands land with the wiring slice",
+    "secrets rotate|show-meta / uninstall            — later slice",
 )
 
 
