@@ -87,6 +87,8 @@ class TestJsonPurity:
         assert data["exit"] == rc == 2
         assert {"precheck", "account", "secrets", "summary"} <= {
             s["name"] for s in data["stages"]}
+        # R3 nit-2 pin: dry-run stages never report changed=True
+        assert all(s["changed"] is False for s in data["stages"]), data["stages"]
         assert "── 部署进度" in captured.err  # human noise went to stderr
 
 

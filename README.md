@@ -333,9 +333,9 @@ shim itself is held to Python 3.6 syntax with zero third-party imports -- its
 tests enforce that grammar floor.
 
 The bare `deploy` wizard runs today and stops loudly (exit 2) at the first
-stage that belongs to a later slice — `verify`, `backup`, `restore`,
-`upgrade`, `rollback`, `status`, `secrets`, `uninstall` land with their own
-slices and fail loudly until then.
+stage that belongs to a later slice — `artifact`, `verify`, `backup`,
+`restore`, `upgrade`, `rollback`, `status`, `secrets`, `uninstall` land with
+their own slices and fail loudly until then.
 
 ## License
 
