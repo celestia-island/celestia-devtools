@@ -30,7 +30,9 @@ When the interpreter already meets the floor and the tool venv exists, it
 re-execs immediately (zero repeated installs).
 
 Budget discipline: at most 2 attempts per strategy, 90s per network call,
-at most 3 downloads total - a hostile network must fail fast, never look
+at most 3 PBS archive downloads total (the uv installer and the
+interpreter uv fetches are bounded by their own subprocess timeouts) - a
+hostile network must fail fast, never look
 like a hung install. Proxy levels 1/2/4 only (env vars, loopback listeners,
 DNS-suffix guesses); the full five-level cascade lives in core/netproxy.py.
 """
@@ -227,12 +229,14 @@ def _pbs_python(download_budget):
         if not os.path.isdir(root):
             os.makedirs(root)
         with tarfile.open(tarpath, "r:gz") as tf:
-            _safe_extract(tf, dest_root)
+            safe_extract(tf, dest_root)
     return binpath if os.path.exists(binpath) else None
 
 
-def _safe_extract(tf, dest):
+def safe_extract(tf, dest):
     """tarfile extraction with member validation (R1-F6).
+
+    Public name — deploy/artifact.py reuses this for fetched archives.
 
     Python 3.6 has no ``filter=`` parameter, so the checks are manual: no
     absolute paths, no ``..`` traversal, and no link/device members — a
@@ -357,7 +361,7 @@ def run(argv, assume_yes=False, dry_run=False, version_info=None):
     if info[:2] >= PY_FLOOR[:2]:
         question = ("Python {} is fine but the tool venv is missing; create {} "
                     "and install celestia-devtools?".format(current, VENV_DIR))
-        if not _consent(question, assume_yes):
+        if not dry_run and not _consent(question, assume_yes):
             _die("declined; create the venv manually or install celestia-devtools "
                  "with pip/pipx", 2)
         if dry_run:
@@ -373,8 +377,8 @@ def run(argv, assume_yes=False, dry_run=False, version_info=None):
           " (uv -> python-build-standalone -> system packages), then bring up"
           " the tool venv. Nothing is installed without your consent.")
     print("=" * 62)
-    if not _consent("Download and install a current Python (~tens of MB)?",
-                    assume_yes):
+    if not dry_run and not _consent(
+            "Download and install a current Python (~tens of MB)?", assume_yes):
         _die("declined; upgrade Python >= {}.{} and re-run".format(
             PY_FLOOR[0], PY_FLOOR[1]), 2)
 
@@ -426,3 +430,7 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# back-compat alias (D1 tests referenced the private name)
+_safe_extract = safe_extract

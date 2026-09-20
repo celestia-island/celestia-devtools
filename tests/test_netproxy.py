@@ -159,6 +159,22 @@ class TestGitConfigOrder:
         assert cfg.display == "gitproxy.example.test:8080"
 
 
+class TestNoProxyDedup:
+    def test_duplicate_sources_collapse_keeping_first(self):
+        """R2 mutation-a was green: the dedup line had no teeth. Pin both the
+        no-duplicates invariant and the first-wins order (a last-wins dedup
+        must go red here)."""
+        cfg = netproxy.detect(
+            env={"NO_PROXY": "first.example,second.example,first.example"},
+            dns_suffixes=("node.test", "node.test"),
+            listener_hosts=(), gateway_hosts=())
+        assert cfg.no_proxy.count("first.example") == 1
+        assert cfg.no_proxy.count("second.example") == 1
+        assert cfg.no_proxy.index("first.example") < \
+            cfg.no_proxy.index("second.example")
+        assert sum(1 for x in cfg.no_proxy if x == ".node.test") == 1
+
+
 class TestChildEnv:
     def test_sets_proxy_and_no_proxy(self):
         cfg = netproxy.ProxyConfig("http://user:pass@192.0.2.8:7890", "env:HTTPS_PROXY",
@@ -216,3 +232,28 @@ class TestWpad:
     def test_junk_body_returns_none(self, monkeypatch):
         self._fake_urlopen(monkeypatch, "you have no javascript engine here")
         assert netproxy._from_wpad(("corp.example",), timeout=1.0) is None
+
+    def test_malformed_proxy_line_is_a_miss_not_a_cascade_stop(self, monkeypatch):
+        """R2-P3: `PROXY h:99999` parses but _net_or_none rejects it — the
+        level must keep trying later suffixes instead of returning a
+        truthy (None, source) tuple that mislabels direct as wpad."""
+        bodies = {"http://wpad.bad.test/wpad.dat":
+                  'return "PROXY h:99999; DIRECT";',
+                  "http://wpad.good.test/wpad.dat":
+                  'return "PROXY ok.good.test:3128; DIRECT";'}
+
+        class FakeResp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_open(url, timeout=None):
+            return FakeResp(bodies[url].encode())
+
+        import urllib.request
+        monkeypatch.setattr(urllib.request, "urlopen", fake_open)
+        hit = netproxy._from_wpad(("bad.test", "good.test"), timeout=1.0)
+        assert hit is not None
+        assert hit[0] == "http://ok.good.test:3128"
