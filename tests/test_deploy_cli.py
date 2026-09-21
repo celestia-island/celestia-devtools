@@ -34,6 +34,7 @@ class TestProfilePassthrough:
         """R1 P2-1 regression pin: an etc_base outside /etc must survive the
         seed→build round trip — a whitelist rebuild used to silently redirect
         privileged writes back to /etc/celestia."""
+        monkeypatch.delenv("CHEST_DATABASE_URL", raising=False)
         path = _profile_file(tmp_path)
         monkeypatch.setattr("sys.stdin", _NoTty())
         monkeypatch.setattr("sys.argv", ["deploy", "--profile", str(path),
@@ -79,6 +80,7 @@ class TestJsonPurity:
     def test_json_stdout_is_pure(self, tmp_path, monkeypatch, capsys):
         """R1 P3: with --json, stdout must parse as one JSON document —
         provenance and the human summary belong on stderr."""
+        monkeypatch.delenv("CHEST_DATABASE_URL", raising=False)
         path = _profile_file(tmp_path)
         monkeypatch.setattr("sys.stdin", _NoTty())
         monkeypatch.setattr("sys.argv", ["deploy", "--profile", str(path),
