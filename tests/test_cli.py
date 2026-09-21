@@ -23,6 +23,10 @@ class TestCommandRegistry:
             "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
             "link-npm-siblings", "protocol-bundle", "nav-lint", "p0-gate",
             "rules-lint",
+            "fetch-just", "build-dispatch", "upstream-sync",
+            "worktree-create", "worktree-remove", "dev-watch",
+            "vite-build", "vite-serve", "vite-dev", "npm-release",
+            "release-notes",
         }
         assert set(COMMANDS.keys()) == expected
 

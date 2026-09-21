@@ -34,3 +34,7 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# celestia-devtools: staged-on-demand shared justfile recipes (celestia-devtools init / just fetch)
+/.just/
+/celestia-devtools.just

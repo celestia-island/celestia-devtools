@@ -1,11 +1,12 @@
 """Static regression tests for the embedded common.just recipe sources.
 
-`just` never forwards recipe parameters as shell positionals into
-``[script]`` bodies — ``$@`` / ``$#`` / ``$n`` are always empty there, so a
-recipe that reads them silently drops its arguments (the defect behind PR
-#67: ``link-npm-siblings --status`` applied overlays and ``npm-release``
-published the root dist package regardless of the packages passed). These
-tests pin the recipe-source invariants so that bug class cannot return.
+Since the 0.7.0 de-bash doctrine, common.just recipes are LINEWISE and
+shell-neutral single commands — valid under POSIX sh and Windows PowerShell
+5.1 alike, with no ``[script]`` bodies, no shebangs, and no bash/ps1 helper
+scripts. (``[script]`` bodies also never receive recipe parameters as shell
+positionals — ``$@``/``$#``/``$n`` are always empty there, the defect behind
+PR #67 — so removing them fixes that bug class by construction.) These tests
+pin those invariants so the bash crutch cannot creep back in.
 """
 
 import re
@@ -14,18 +15,19 @@ from pathlib import Path
 JUST = Path(__file__).resolve().parents[1] / "src" / "celestia_devtools" / "common.just"
 
 _HEADER_RE = re.compile(r"^([a-zA-Z_][\w-]*)((?:\s[^:]+)*):")
-_ATTR_RE = re.compile(r"^\[[a-z-]+\]$")
-_POSITIONAL_RE = re.compile(r"\$(?:@|[0-9#])")
-_VARIADIC_RE = re.compile(r"\*(\w+)")
+_ATTR_RE = re.compile(r"^\[[a-z-]+(?:\(.*\))?\]$")
 _VAR_RE = re.compile(r"^[\w-]+\s*:=")
-_COMMENT_RE = re.compile(r"\s#.*$")
+_SHEBANG_RE = re.compile(r"^\s*#!")
+
+# The ONLY recipe allowed to mention bash: wsl-run's `bash -lc` executes
+# INSIDE the Linux distro (the Linux side of the WSL boundary), never on the
+# Windows host.
+_BASH_ALLOWED_RECIPES = {"wsl-run"}
 
 
-def _script_recipes() -> dict[str, tuple[list[str], list[str]]]:
-    """Parse common.just into ``name -> (variadic param names, body lines)``
-    for the ``[script]`` recipes only (linewise recipes do receive positionals
-    and are out of scope)."""
-    recipes: dict[str, tuple[list[str], list[str]]] = {}
+def _recipes() -> dict[str, dict]:
+    """Parse common.just into ``name -> {attrs, body}`` for every recipe."""
+    recipes: dict[str, dict] = {}
     attrs: list[str] = []
     current: str | None = None
     in_var = False
@@ -34,7 +36,7 @@ def _script_recipes() -> dict[str, tuple[list[str], list[str]]]:
             continue  # bodies may contain blank lines
         if line[0].isspace():
             if current is not None:
-                recipes[current][1].append(line)
+                recipes[current]["body"].append(line)
             continue
         # Column-0 line: comment, attribute, variable assignment, or header.
         if in_var:
@@ -54,43 +56,58 @@ def _script_recipes() -> dict[str, tuple[list[str], list[str]]]:
             continue
         match = _HEADER_RE.match(line)
         assert match, f"unparsed column-0 line in common.just: {line!r}"
-        name, params = match.group(1), match.group(2)
-        if "[script]" in attrs:
-            recipes[name] = (_VARIADIC_RE.findall(params), [])
-            current = name
-        else:
-            current = None
+        name = match.group(1)
+        recipes[name] = {"attrs": attrs, "body": []}
+        current = name
         attrs = []
     return recipes
 
 
-def test_discovers_the_expected_script_recipes():
-    assert {
-        "_build", "dev", "dev-watch", "npm-dist", "npm-release",
-        "link-npm-siblings", "vite-build", "vite-serve", "vite-dev",
-    } <= set(_script_recipes())
+def test_common_just_has_no_script_recipes():
+    """No ``[script]`` / ``[script('bash')]`` recipes at all — interpreter-run
+    script bodies are the mechanism that required Git Bash on Windows and the
+    script-interceptor interop file. Logic belongs in the CLI instead."""
+    scripted = {
+        name: recipe["attrs"]
+        for name, recipe in _recipes().items()
+        if any(a.startswith("[script") for a in recipe["attrs"])
+    }
+    assert scripted == {}, (
+        "common.just grew [script] recipes again — move the logic into a "
+        f"celestia-devtools CLI subcommand (offenders: {sorted(scripted)})"
+    )
 
 
-def test_script_bodies_never_read_bare_positional_args():
-    """``$@``/``$#``/``$n`` are always empty inside [script] bodies — any
-    reference silently drops the recipe's arguments. Array variables such as
-    ``${pkgs[@]}`` are script-local and must stay allowed."""
+def test_common_just_has_no_shebangs():
     offenders = {
         name: line
-        for name, (_, body) in _script_recipes().items()
-        for line in body
-        if _POSITIONAL_RE.search(_COMMENT_RE.sub("", line))
+        for name, recipe in _recipes().items()
+        for line in recipe["body"]
+        if _SHEBANG_RE.match(line)
     }
     assert offenders == {}
 
 
-def test_variadic_script_params_are_interpolated():
-    """Every ``*PARAM`` of a [script] recipe must reach the body via
-    ``{{PARAM}}`` interpolation, never as a shell positional."""
-    missing = {
-        name: param
-        for name, (variadic, body) in _script_recipes().items()
-        for param in variadic
-        if f"{{{{{param}}}}}" not in "\n".join(body)
-    }
-    assert missing == {}
+def test_common_just_is_bash_free_on_the_windows_host():
+    """No recipe body may invoke bash or reference .sh/.ps1 helper scripts,
+    except the documented in-distro `bash -lc` of wsl-run."""
+    offenders = {}
+    for name, recipe in _recipes().items():
+        if name in _BASH_ALLOWED_RECIPES:
+            continue
+        for line in recipe["body"]:
+            if re.search(r"\bbash\b|\.sh\b|\.ps1\b", line):
+                offenders.setdefault(name, line)
+    assert offenders == {}
+
+
+def test_linewise_bodies_stay_in_the_two_shell_intersection():
+    """Linewise bodies run verbatim under POSIX sh AND PowerShell 5.1, so they
+    must not use shell operators or device paths that exist in only one."""
+    offenders = {}
+    for name, recipe in _recipes().items():
+        for line in recipe["body"]:
+            stripped = re.sub(r"\s#.*$", "", line)
+            if re.search(r"&&|\|\||\$\(|/dev/null|\bcommand -v\b", stripped):
+                offenders.setdefault(name, stripped)
+    assert offenders == {}
