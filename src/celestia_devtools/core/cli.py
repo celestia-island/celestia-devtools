@@ -35,6 +35,9 @@ Commands::
     verify-versions   Check cargo/npm version drift across a repository
     protocol-bundle   Vendor the five org protocol docs from docs.celestia.world
                       into packages/webui/.generated/protocols as lazy assets
+    e2e-sandbox       Run e2e/browser jobs in an isolated, always-cleaned TMPDIR
+                      sandbox; sweep stale sandbox dirs and orphan chromium
+                      profiles from /tmp (run | sweep | sweep-tmp)
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -92,6 +95,7 @@ COMMANDS: dict[str, str] = {
     "job-timeouts": "celestia_devtools.ci.job_timeouts",
     "ci-audit": "celestia_devtools.ci.workflow_audit",
     "ci-cache": "celestia_devtools.ci.cache_policy",
+    "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
 }
 
 
