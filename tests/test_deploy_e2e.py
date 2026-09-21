@@ -132,6 +132,7 @@ class TestRootlessChain:
         assert "data" in applied
 
     def test_cli_json_reports_the_whole_chain(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("CHEST_DATABASE_URL", raising=False)
         from celestia_devtools.deploy import cli as deploy_cli
         prof = _chain_profile(tmp_path)
         prof.admin.email = "ops@acme.example"
