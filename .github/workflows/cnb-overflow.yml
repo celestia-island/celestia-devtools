@@ -48,6 +48,10 @@ on:
         description: 'Supersession lane for cancellation, e.g. pr-1234 or push'
         type: string
         default: 'default'
+      queue_threshold:
+        description: 'Dispatch to CNB when queued runs in the caller repo >= this (0 = always)'
+        type: number
+        default: 3
       force_cnb:
         description: 'Bypass the saturation check and always dispatch to CNB (for testing)'
         type: boolean
@@ -81,6 +85,9 @@ on:
       lane:
         type: string
         default: 'manual'
+      queue_threshold:
+        type: number
+        default: 3
       force_cnb:
         description: 'Testing default: forced to true for manual runs'
         type: boolean
@@ -98,7 +105,7 @@ permissions:
 
 jobs:
   route:
-    runs-on: [self-hosted, linux, x64, local]
+    runs-on: [self-hosted, linux, x64, dispatcher]
     timeout-minutes: 5
     outputs:
       decision: ${{ steps.decide.outputs.decision }}
@@ -117,6 +124,7 @@ jobs:
             echo "CNB path forced"
             exit 0
           fi
+          THRESHOLD="${{ inputs.queue_threshold }}"
           queued=$(python3 - <<'PYEOF'
           import json, os, urllib.request
           req = urllib.request.Request(
@@ -131,7 +139,7 @@ jobs:
           echo "queued=$queued" >> "$GITHUB_OUTPUT"
           # All farm-bound work in this org runs on [self-hosted]; queued runs in the caller repo
           # mean the farm cannot take this SHA right now -> overflow to CNB.
-          if [ "$queued" -gt 0 ]; then
+          if [ "${THRESHOLD:-3}" = "0" ] || [ "$queued" -ge "${THRESHOLD:-3}" ]; then
             echo "decision=cnb" >> "$GITHUB_OUTPUT"
           else
             echo "decision=farm" >> "$GITHUB_OUTPUT"
@@ -140,7 +148,7 @@ jobs:
   cnb:
     needs: route
     if: needs.route.outputs.decision == 'cnb'
-    runs-on: [self-hosted, linux, x64, local]
+    runs-on: [self-hosted, linux, x64, dispatcher]
     timeout-minutes: 40
     concurrency:
       group: cnb-overflow-${{ inputs.target_repo }}-${{ inputs.lane }}
@@ -155,6 +163,7 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           TASK: ${{ inputs.task }}
           POLL_MINUTES: ${{ inputs.poll_minutes }}
+          QUEUE_THRESHOLD: ${{ inputs.queue_threshold }}
           CARGO_CHECK_ARGS: ${{ inputs.cargo_args }}
         run: |
           python3 - <<'PYEOF'

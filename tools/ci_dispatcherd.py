@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""ci-dispatcherd — org CI overflow scheduler for the dedicated dispatcher node (node-ci-1).
+
+Allocation policy (user directive 2026-09-22):
+  1. Local farm first: node-ci-2/3/4 (label `local`) take everything they can absorb.
+  2. When the local queue accumulates past DISPATCH_THRESHOLD queued farm runs in the
+     watched repos, the newest runs are speculatively dispatched to Tencent CNB cloud
+     (cargo-check via the ci-farm pipeline). If the CNB build goes green while the farm
+     run is STILL QUEUED, the farm run is cancelled to release slots; if the CNB build
+     fails, the farm run is left untouched so the author keeps the full CI signal.
+  3. GitHub-hosted runners: effectively never (org policy: no new ubuntu-latest jobs on
+     private repos).
+
+Credentials come from /etc/ci-dispatcher/env (600, root):
+  GH_TOKEN  — token with actions:read/write + statuses:write on celestia-island repos
+  CNB_TOKEN — cnb.cool access token (repo-cnb-trigger:rw)
+
+State: /var/lib/ci-dispatcher/state.json (survives restarts; tracked spills only).
+Safety: only QUEUED runs in WATCHED repos are ever cancelled, only ones this daemon
+dispatched a spill for, and only after the CNB build proved green.
+"""
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+WATCHED = [
+    "shittim-chest", "entelecheia", "arona", "malkuth",
+    "plana", "hikari", "kirino", "evernight",
+]
+CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_chest_tauri_mobile"}
+ORG = "celestia-island"
+THRESHOLD = int(os.environ.get("DISPATCH_THRESHOLD", "6"))
+POLL_SEC = int(os.environ.get("DISPATCH_POLL_SEC", "60"))
+SPILL_TTL_SEC = int(os.environ.get("DISPATCH_SPILL_TTL_SEC", "2700"))
+STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
+GH = os.environ.get("GH_TOKEN", "")
+CNB = os.environ.get("CNB_TOKEN", "")
+
+
+def log(msg):
+    print(time.strftime("[%FT%TZ] ") + msg, flush=True)
+
+
+def gh_api(path, data=None, method=None):
+    req = urllib.request.Request(
+        f"https://api.github.com{path}",
+        data=json.dumps(data).encode() if data is not None else None,
+        headers={"Authorization": "Bearer " + GH, "Accept": "application/vnd.github+json"},
+        method=method or ("POST" if data is not None else "GET"))
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = r.read()
+    return json.loads(body) if body else {}
+
+
+def cnb_api(path, data=None):
+    req = urllib.request.Request(
+        f"https://api.cnb.cool{path}",
+        data=json.dumps(data).encode() if data is not None else None,
+        headers={"Authorization": "Bearer " + CNB,
+                 "Content-Type": "application/json",
+                 "Accept": "application/vnd.cnb.api+json"},
+        method="POST" if data is not None else "GET")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = r.read()
+    return json.loads(body) if body else {}
+
+
+def census():
+    """Queued self-hosted runs across watched repos, newest first."""
+    runs = []
+    for repo in WATCHED:
+        try:
+            rr = gh_api(f"/repos/{ORG}/{repo}/actions/runs?status=queued&per_page=20").get("workflow_runs", [])
+        except Exception as e:
+            log(f"census {repo}: {e}")
+            continue
+        for run in rr:
+            if run.get("event") == "workflow_dispatch" and run.get("name", "").startswith("CNB"):
+                continue  # our own lane/router runs are not farm CI
+            try:
+                jobs = gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run['id']}/jobs?per_page=20").get("jobs", [])
+            except Exception:
+                continue
+            if not any("self-hosted" in (j.get("labels") or []) and j.get("status") == "queued" for j in jobs):
+                continue
+            runs.append({"repo": repo, "run_id": run["id"], "sha": run["head_sha"],
+                         "created": run["created_at"], "html": run.get("html_url", "")})
+    runs.sort(key=lambda x: x["created"], reverse=True)
+    return runs
+
+
+def load_state():
+    try:
+        return json.load(open(STATE_PATH))
+    except Exception:
+        return {}
+
+
+def save_state(st):
+    tmp = STATE_PATH + ".tmp"
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=1)
+    os.replace(tmp, STATE_PATH)
+
+
+def spill(entry, state):
+    repo, sha = entry["repo"], entry["sha"]
+    env = {"TARGET_REPO": repo, "TARGET_SHA": sha, "GH_REPO": f"{ORG}/{repo}", "TASK": "cargo-check"}
+    if repo in CARGO_ARGS:
+        env["CARGO_CHECK_ARGS"] = CARGO_ARGS[repo]
+    r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
+                {"event": "api_trigger_ci", "branch": "master",
+                 "title": f"daemon spill {repo} {sha[:10]}", "env": env})
+    state[str(entry["run_id"])] = {"sn": r["sn"], "repo": repo, "sha": sha,
+                                   "url": r.get("buildLogUrl", ""), "since": time.time()}
+    log(f"spill {repo} run {entry['run_id']} sha {sha[:10]} -> cnb {r['sn']}")
+
+
+def post_status(repo, sha, state_, url):
+    try:
+        gh_api(f"/repos/{ORG}/{repo}/statuses/{sha}",
+               {"state": state_, "context": "cnb/cargo-check", "target_url": url,
+                "description": "dispatcher spill result"})
+        log(f"status {repo} {sha[:10]} -> {state_}")
+    except Exception as e:
+        log(f"status post failed {repo}: {e}")
+
+
+def resolve(state):
+    for run_id, t in list(state.items()):
+        repo, sha, sn, url = t["repo"], t["sha"], t["sn"], t.get("url", "")
+        if time.time() - t["since"] > SPILL_TTL_SEC:
+            log(f"spill ttl exceeded {repo} run {run_id}; untracking (farm run untouched)")
+            del state[run_id]
+            continue
+        try:
+            st = cnb_api(f"/{ORG}/ci-farm/-/build/status/{sn}").get("status")
+        except Exception as e:
+            log(f"poll {sn}: {e}")
+            continue
+        if st == "success":
+            post_status(repo, sha, "success", url)
+            try:
+                run = gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}")
+                if run.get("status") == "queued":
+                    gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel", {}, method="POST")
+                    log(f"cancelled queued farm run {run_id} ({repo}) — cnb green")
+            except Exception as e:
+                log(f"cancel check {run_id}: {e}")
+            del state[run_id]
+        elif st in ("error", "cancel"):
+            post_status(repo, sha, "failure", url)
+            log(f"spill {repo} run {run_id} cnb {st}; farm run left untouched")
+            del state[run_id]
+
+
+def main():
+    if not GH or not CNB:
+        print("FATAL: GH_TOKEN / CNB_TOKEN missing", file=sys.stderr)
+        sys.exit(1)
+    log(f"ci-dispatcherd start: watched={len(WATCHED)} threshold={THRESHOLD} poll={POLL_SEC}s")
+    while True:
+        try:
+            state = load_state()
+            q = census()
+            tracked_shas = {t["sha"] for t in state.values()}
+            excess = len(q) - THRESHOLD
+            if excess > 0:
+                for entry in q[:excess]:
+                    if entry["sha"] in tracked_shas or str(entry["run_id"]) in state:
+                        continue
+                    spill(entry, state)
+                    save_state(state)
+            resolve(state)
+            save_state(state)
+            log(f"queued={len(q)} tracked={len(state)} threshold={THRESHOLD}")
+        except Exception as e:
+            log(f"loop error: {e}")
+        time.sleep(POLL_SEC)
+
+
+if __name__ == "__main__":
+    main()
