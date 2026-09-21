@@ -56,6 +56,10 @@ on:
         description: 'Max minutes to wait for the CNB build (clamped to 30); after that exit green with a pending status'
         type: number
         default: 30
+      cargo_args:
+        description: 'Extra cargo check args for the target repo (e.g. tauri excludes), passed through as CARGO_CHECK_ARGS'
+        type: string
+        default: ''
     secrets:
       CNB_TOKEN:
         required: true
@@ -84,6 +88,9 @@ on:
       poll_minutes:
         type: number
         default: 30
+      cargo_args:
+        type: string
+        default: ''
 
 permissions:
   statuses: write
@@ -148,6 +155,7 @@ jobs:
           TARGET_SHA: ${{ inputs.target_sha }}
           TASK: ${{ inputs.task }}
           POLL_MINUTES: ${{ inputs.poll_minutes }}
+          CARGO_CHECK_ARGS: ${{ inputs.cargo_args }}
         run: |
           python3 - <<'PYEOF'
           import json, os, sys, time, urllib.error, urllib.request
@@ -222,6 +230,8 @@ jobs:
 
           env = {"TARGET_REPO": repo, "TARGET_SHA": sha,
                  "GH_REPO": "celestia-island/" + repo, "TASK": task}
+          if os.environ.get("CARGO_CHECK_ARGS"):
+              env["CARGO_CHECK_ARGS"] = os.environ["CARGO_CHECK_ARGS"]
           if pat:
               env["GH_READ_PAT"] = pat
           try:
