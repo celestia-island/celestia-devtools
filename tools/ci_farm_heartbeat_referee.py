@@ -224,7 +224,7 @@ Description=CI farm heartbeat beat
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/curl -fsS -m 10 -o /dev/null http://{node1_addr}/beat/{name}
+ExecStart=/usr/bin/curl -fsS -m 10 -o /dev/null {receiver_url}/beat/{name}
 
 [Install]
 WantedBy=timers.target
@@ -276,9 +276,36 @@ def run_guest(guest_ip: str, remote_cmd: str, stdin_payload: Optional[str] = Non
         return False, ""
 
 
+def receiver_url() -> str:
+    """The receiver base URL, tolerant of the scheme being supplied either way.
+
+    ``CI_HB_NODE1_ADDR`` is documented as an address but the deployed referee unit carries
+    ``http://192.0.2.14:9120``, and the template used to prepend ``http://`` itself. The
+    two disagreed silently: on 2026-09-19 node-ci-3 was re-armed after a revert and got
+
+        ExecStart=... curl ... http://http://192.0.2.14:9120/beat/node-ci-3
+
+    curl exits 6 (cannot resolve host "http") in under a second, so the beat never reaches
+    the receiver -- and because the heartbeat is the referee's own liveness signal, the
+    referee then judged that node stale every minute, refused to revert it
+    (``revert-budget-exhausted 3/3``), and logged "needs human" indefinitely while the node
+    itself was healthy. **The self-heal wrote the breakage**: nodes whose unit predated the
+    environment change kept the correct line, which is why only one of four was affected.
+
+    Normalising here means both spellings work, and a future change to the environment
+    cannot reintroduce a doubled scheme.
+    """
+    value = NODE1_ADDR.strip()
+    for prefix in ("http://", "https://"):
+        if value.startswith(prefix):
+            value = value[len(prefix) :]
+            break
+    return "http://" + value.rstrip("/")
+
+
 def deploy_guest_beat_unit(guest_ip: str, name: str) -> Tuple[bool, str]:
     """把 beat 单元装进 guest 并启用（revert 后 baseline 里没有它）。"""
-    service = BEAT_SERVICE_TEMPLATE.format(node1_addr=NODE1_ADDR, name=name)
+    service = BEAT_SERVICE_TEMPLATE.format(receiver_url=receiver_url(), name=name)
     ok1, out1 = run_guest(
         guest_ip,
         "sudo -n tee /etc/systemd/system/ci-beat.service >/dev/null",

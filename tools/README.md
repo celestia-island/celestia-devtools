@@ -108,3 +108,35 @@ lock loop.
 
 Example guest beat units and the systemd units for both roles are in the
 receiver/referee module docstrings.
+
+## e2e-sandbox（统一 e2e 临时目录设施，2026-09-21）
+
+**背景**：全工作区验证作业的 Playwright/chromium profile 落在 `/tmp`，被 timeout/kill
+时无人清理——2026-09-21 实测累计 **43GB 残骸**把 node-1 根盘吃到 97%（ENOSPC 实错）。
+
+**用法**（agent 写 e2e 脚本时一行接线）：
+
+```bash
+# 包装任意命令（正常/失败/超时/SIGTERM 都清）
+celestia-devtools e2e-sandbox run --label my-e2e -- node probe.cjs
+
+# 调试时保留
+celestia-devtools e2e-sandbox run --keep -- node probe.cjs
+
+# 带超时
+celestia-devtools e2e-sandbox run --timeout 120 -- pytest -q tests/e2e
+
+# 兜底：清扫沙箱根下陈旧目录（默认 >6h）
+celestia-devtools e2e-sandbox sweep
+
+# 兜底：清扫 /tmp 里的孤儿 chromium profile（默认 >60min 未动、当前用户、名字形态匹配）
+celestia-devtools e2e-sandbox sweep-tmp
+```
+
+**机制**：chromium 与 Playwright 都尊重 `TMPDIR`（实测验证：`os.tmpdir()` →
+`pw-<hash>` 临时目录在 TMPDIR 下创建）。包装器把每个运行的 `TMPDIR`/`TMP`/`TEMP`
+指到 `/mnt/work/e2e-sandbox/<时间戳-PID-标签>/tmp`，结束用 `finally` 语义无条件清除。
+`sweep-tmp` 只删「≥20 位随机名 + 超过 max-age 未动 + 当前用户所有」的**目录**，
+不碰文件、不碰 systemd/X11 套接字、权限不足自动跳过。
+
+**建议**：e2e 作业的 cron / 农场看门狗定期跑 `sweep-tmp` 作为最后防线。

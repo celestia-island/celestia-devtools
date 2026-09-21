@@ -45,6 +45,9 @@ Commands::
     vite-serve        Serve the built dist/ with python http.server
     vite-dev          Build → serve → watch src/ (malkuth) rebuild loop
     npm-release       Publish staged npm packages from ./dist
+    e2e-sandbox       Run e2e/browser jobs in an isolated, always-cleaned TMPDIR
+                      sandbox; sweep stale sandbox dirs and orphan chromium
+                      profiles from /tmp (run | sweep | sweep-tmp)
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -83,6 +86,7 @@ COMMANDS: dict[str, str] = {
     "release-notes": "celestia_devtools.publish.release_notes",
     "toml-sort": "celestia_devtools.repo.toml_sort",
     "daemon": "celestia_devtools.env.daemon",
+    "deploy": "celestia_devtools.deploy.cli",
     "mock-start": "celestia_devtools.core.mock",
     "mock-stop": "celestia_devtools.core.mock",
     "mock-status": "celestia_devtools.core.mock",
@@ -101,6 +105,17 @@ COMMANDS: dict[str, str] = {
     "vite-serve": "celestia_devtools.env.vite",
     "vite-dev": "celestia_devtools.env.vite",
     "npm-release": "celestia_devtools.npm.release",
+    # Registered entry points that had no dispatcher command until 2026-09-20. The gap went
+    # unnoticed because the only test that notices (`test_all_commands_registered`) was
+    # already failing on master, so its output was not read: four tools installed by this
+    # package could not be reached through the unified CLI, while both `justfile` and the
+    # reusable workflows invoke commands as `celestia-devtools <cmd>`.
+    "cargo-cache-guard": "celestia_devtools.build.cache_guard",
+    "lint-separators": "celestia_devtools.lint.separator_lint",
+    "job-timeouts": "celestia_devtools.ci.job_timeouts",
+    "ci-audit": "celestia_devtools.ci.workflow_audit",
+    "ci-cache": "celestia_devtools.ci.cache_policy",
+    "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
 }
 
 

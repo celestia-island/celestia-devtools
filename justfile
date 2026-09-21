@@ -8,6 +8,12 @@ set shell := ["bash", "-c"]
 # no `> /dev/null` (PowerShell would write a literal file), one command
 # per line. No script-interpreter / [script] bodies — bash is banned.
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $PSDefaultParameterValues['*:Encoding']='utf8';"]
+# `cd X; cmd` instead of `cd X && cmd`. Bash-only recipes use
+# [script('bash')] and need Git Bash (or WSL) when actually run.
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $PSDefaultParameterValues['*:Encoding']='utf8';"]
+# common.just's script recipes are empty [script] (no explicit interpreter);
+# pin them to bash here (consumer repos get this from .just/git-bash-interop.just).
+set script-interpreter := ["bash", "-eu"]
 set unstable
 set lists
 

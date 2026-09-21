@@ -194,21 +194,61 @@ jobs:
     uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
 """
 
+# Canonical caller for the self-hosted cache gate: one line of wiring per repository, so the
+# rule cannot be quietly reintroduced by a later workflow edit. What the gate rejects, and
+# the measurements behind it, are documented in the callee and in
+# `celestia_devtools.ci.cache_policy`.
+WORKFLOW_CI_CACHE = """\
+name: CI Cache Policy
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  cache-policy:
+    uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master
+"""
+
+
+# Canonical caller for the org PR-title check. It had no template until 2026-09-20, which is
+# why 21 repositories carried a hand-written copy whose `types` omitted `synchronize` -- see
+# the constant above for what that omission costs.
+WORKFLOW_PR_TITLE_CHECK = """\
+name: PR Title Check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  pr-title-check:
+    uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master
+"""
+
 
 def _ensure_workflows(repo_root: Path, *, force: bool = False) -> None:
     workflows_dir = repo_root / ".github" / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
-    target = workflows_dir / "commit-msg-lint.yml"
 
-    if target.exists() and not force:
-        logger.info("commit-msg-lint workflow already exists — skipping (use --force to regenerate)")
-        return
-
-    # LF, not the platform newline: the caller file is pinned byte-for-byte
-    # across the fleet (273 B, 106a93d0…), and write_text's default
-    # newline=os.linesep would turn it into CRLF on Windows.
-    target.write_bytes(WORKFLOW_COMMIT_LINT.encode("utf-8"))
-    logger.ok(f"generated commit-msg lint workflow → {target}")
+    for filename, template, label in (
+        ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
+        ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
+        ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"),
+    ):
+        target = workflows_dir / filename
+        if target.exists() and not force:
+            logger.info(f"{filename} already exists — skipping (use --force to regenerate)")
+            continue
+        # write_bytes, not write_text: the generated callers are pinned
+        # byte-for-byte across the fleet, and write_text's default
+        # newline=os.linesep would turn their LF into CRLF on Windows.
+        target.write_bytes(template.encode("utf-8"))
+        logger.ok(f"generated {label} workflow → {target}")
 
 def _check_justfile_import(name: str) -> None:
     """Print a hint if the repo's justfile doesn't import the staged file."""

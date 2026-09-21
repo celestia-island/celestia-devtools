@@ -27,14 +27,57 @@ class TestCommandRegistry:
             "worktree-create", "worktree-remove", "dev-watch",
             "vite-build", "vite-serve", "vite-dev", "npm-release",
             "release-notes",
+            # Added 2026-09-20: these four shipped console scripts but had no
+            # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
+            "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit",
+            "ci-cache",
+            # Also missing from this literal while present in COMMANDS: the release-notes
+            # generator. The new reverse-direction test below is what pins the whole set.
+            "release-notes",
+            # Added 2026-09-20: production-target lifecycle group (deploy doctor;
+            # the remaining subcommands land with their own slices and fail loudly).
+            "deploy",
+            "e2e-sandbox",
         }
         assert set(COMMANDS.keys()) == expected
 
+    def test_every_console_script_has_a_dispatcher_command(self):
+        """The reverse direction: a console script nobody can reach through the CLI.
+
+        `test_all_commands_registered` catches removals from `COMMANDS`, but nothing caught
+        *omissions* — which is how four entry points sat unreachable. The convention below
+        (strip the `celestia-` prefix the package adds) is what the missing four follow.
+        """
+        import tomllib
+        from pathlib import Path
+
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        scripts = data["project"]["scripts"]
+        for name, target in scripts.items():
+            if name in ("celestia-devtools",):
+                continue
+            short = name[len("celestia-"):] if name.startswith("celestia-") else name
+            assert short in COMMANDS or name in COMMANDS, (
+                f"console script '{name}' ({target}) has no `celestia-devtools` command; "
+                "add it to COMMANDS in core/cli.py or the unified CLI cannot run it"
+            )
+
     @pytest.mark.parametrize("cmd,module_path", list(COMMANDS.items()))
     def test_command_modules_importable(self, cmd, module_path):
-        """Every registered command must resolve to an importable module with main()."""
+        """Every registered command must resolve to an importable module with main().
+
+        Some master-added commands are POSIX-only by design (deploy's bootstrap
+        imports `pwd`, e2e-sandbox relies on `signal.SIGKILL`); importing them
+        on Windows raises ModuleNotFoundError/AttributeError before main() is
+        ever reached, so the importability contract only applies on POSIX.
+        """
+        import sys
+
         from importlib import import_module
 
+        if sys.platform == "win32" and cmd in ("deploy", "e2e-sandbox"):
+            pytest.skip(f"{cmd} is POSIX-only (imports pwd / signal.SIGKILL)")
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
 
