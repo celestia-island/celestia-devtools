@@ -1,0 +1,257 @@
+# CNB Overflow Router — dispatches CI overflow to cnb.cool when the self-hosted farm is saturated.
+#
+# Design (see the originating PR description for the full architecture):
+#   - GitHub stays the canonical source; CNB mirrors (cnb.cool/celestia-island/*) are one-way sync
+#     targets refreshed by cnb-mirror-sync.yml + the ci_infra pipeline on CNB.
+#   - This reusable workflow is the per-repo overflow lane: it runs IN ADDITION to each repo's
+#     existing farm CI. When the caller repo has jobs queued for the self-hosted farm, new work
+#     is dispatched to the CNB ci-farm pipeline via OpenAPI (build/start with sha + env).
+#   - Cancellation for PR churn: JOB-level concurrency on the cnb job keyed by (target_repo,
+#     lane). Callers pass lane=pr-<number> (or 'push'); a newer commit in the same lane cancels
+#     the previous poller. CNB builds orphaned by that cancel are bounded by their own stage
+#     timeouts; a stop/{sn} reaper is a follow-up.
+#   - The dispatch passes GH_READ_PAT transiently so the CNB pipeline can fetch PR-head SHAs
+#     that are not on the mirror (deleted branches). Fork PRs get no secrets from Actions, so
+#     the fallback only applies to same-repo branches; fork PRs rely on the mirror.
+#
+# Caller contract:
+#   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@master
+#   with: {target_repo: <repo-name>, target_sha: ${{ github.event.pull_request.head.sha }},
+#          lane: pr-${{ github.event.pull_request.number }}}
+#   secrets: inherit
+#   Caller MUST define its own CNB_TOKEN (required) and GH_READ_PAT (optional) repo secrets —
+#   inherited secrets come from the caller, not from this repo — and grant
+#   `permissions: {statuses: write, actions: read}` (called workflows can only downgrade).
+#
+# Status reporting: posts a `cnb/<task>` commit status on the built SHA via the caller's
+# GITHUB_TOKEN — only when the caller repo IS the target repo (GITHUB_TOKEN cannot post
+# cross-repo). Cross-repo dispatches (manual tests) skip the status post by design.
+
+name: CNB Overflow Router
+
+on:
+  workflow_call:
+    inputs:
+      target_repo:
+        description: 'Repo name within celestia-island to build (e.g. shittim-chest)'
+        type: string
+        required: true
+      target_sha:
+        description: 'Commit SHA to check; empty = caller triggering SHA when target_repo is the caller, else resolved via GH_READ_PAT'
+        type: string
+        default: ''
+      task:
+        description: 'Task name; becomes the commit status context cnb/<task>'
+        type: string
+        default: 'cargo-check'
+      lane:
+        description: 'Supersession lane for cancellation, e.g. pr-1234 or push'
+        type: string
+        default: 'default'
+      force_cnb:
+        description: 'Bypass the saturation check and always dispatch to CNB (for testing)'
+        type: boolean
+        default: false
+      poll_minutes:
+        description: 'Max minutes to wait for the CNB build (clamped to 30); after that exit green with a pending status'
+        type: number
+        default: 30
+    secrets:
+      CNB_TOKEN:
+        required: true
+      GH_READ_PAT:
+        required: false
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Repo name within celestia-island to build'
+        type: string
+        required: true
+      target_sha:
+        description: 'Commit SHA (empty = resolved from the target repo default branch via GH_READ_PAT)'
+        type: string
+        default: ''
+      task:
+        type: string
+        default: 'cargo-check'
+      lane:
+        type: string
+        default: 'manual'
+      force_cnb:
+        description: 'Testing default: forced to true for manual runs'
+        type: boolean
+        default: true
+      poll_minutes:
+        type: number
+        default: 30
+
+permissions:
+  statuses: write
+  actions: read
+
+jobs:
+  route:
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 5
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+      queued: ${{ steps.decide.outputs.queued }}
+    steps:
+      - name: Decide farm vs CNB
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_CNB: ${{ inputs.force_cnb }}
+        run: |
+          set -e
+          if [ "$FORCE_CNB" = "true" ]; then
+            echo "decision=cnb" >> "$GITHUB_OUTPUT"
+            echo "queued=forced" >> "$GITHUB_OUTPUT"
+            echo "CNB path forced"
+            exit 0
+          fi
+          queued=$(python3 - <<'PYEOF'
+          import json, os, urllib.request
+          req = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs?status=queued&per_page=30",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              runs = json.load(r).get("workflow_runs", [])
+          print(len(runs))
+          PYEOF
+          )
+          echo "queued runs in caller repo: $queued"
+          echo "queued=$queued" >> "$GITHUB_OUTPUT"
+          # All farm-bound work in this org runs on [self-hosted]; queued runs in the caller repo
+          # mean the farm cannot take this SHA right now -> overflow to CNB.
+          if [ "$queued" -gt 0 ]; then
+            echo "decision=cnb" >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=farm" >> "$GITHUB_OUTPUT"
+          fi
+
+  cnb:
+    needs: route
+    if: needs.route.outputs.decision == 'cnb'
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 40
+    concurrency:
+      group: cnb-overflow-${{ inputs.target_repo }}-${{ inputs.lane }}
+      cancel-in-progress: true
+    steps:
+      - name: Dispatch to CNB ci-farm and poll
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          GH_READ_PAT: ${{ secrets.GH_READ_PAT }}
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          TASK: ${{ inputs.task }}
+          POLL_MINUTES: ${{ inputs.poll_minutes }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time, urllib.error, urllib.request
+
+          tok = os.environ.get("CNB_TOKEN", "")
+          pat = os.environ.get("GH_READ_PAT", "")
+          repo = os.environ["TARGET_REPO"]
+          task = os.environ.get("TASK", "cargo-check")
+          poll = min(int(float(os.environ.get("POLL_MINUTES", "30") or 30)), 30) * 60
+          caller_full = os.environ["GITHUB_REPOSITORY"]  # caller repo in workflow_call mode
+          same_repo = caller_full == f"celestia-island/{repo}"
+
+          def die(msg, sha=None):
+              print("FATAL:", msg)
+              if same_repo and sha:
+                  post_status(sha, "error", description=msg[:130])
+              sys.exit(1)
+
+          def post_status(sha, state, description="", url=""):
+              if not same_repo:
+                  print(f"status post skipped (cross-repo dispatch: {caller_full} != celestia-island/{repo})")
+                  return
+              body = {"state": state, "context": f"cnb/{task}",
+                      "target_url": url or "https://cnb.cool/celestia-island/ci-farm/-/build/logs",
+                      "description": (description or f"CNB overflow build")[:140]}
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{caller_full}/statuses/{sha}",
+                  data=json.dumps(body).encode(),
+                  headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                           "Accept": "application/vnd.github+json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      print("status post:", r.status, state)
+              except Exception as e:
+                  print("status post failed (job still proceeds):", e)
+
+          if not tok:
+              die("CNB_TOKEN secret missing/empty")
+
+          # Resolve SHA: explicit > caller SHA (same repo) > target default-branch head via PAT.
+          sha = os.environ.get("TARGET_SHA", "").strip()
+          if not sha:
+              if same_repo:
+                  sha = os.environ["GITHUB_SHA"]
+              elif pat:
+                  try:
+                      req = urllib.request.Request(
+                          f"https://api.github.com/repos/celestia-island/{repo}",
+                          headers={"Authorization": "Bearer " + pat, "Accept": "application/vnd.github+json"})
+                      with urllib.request.urlopen(req, timeout=30) as r:
+                          default = json.load(r)["default_branch"]
+                      req = urllib.request.Request(
+                          f"https://api.github.com/repos/celestia-island/{repo}/commits/{default}",
+                          headers={"Authorization": "Bearer " + pat, "Accept": "application/vnd.github+json"})
+                      with urllib.request.urlopen(req, timeout=30) as r:
+                          sha = json.load(r)["sha"]
+                  except Exception as e:
+                      die(f"could not resolve target_sha for {repo}: {e}")
+              else:
+                  die(f"target_sha required for cross-repo dispatch (no GH_READ_PAT to resolve it)")
+          print(f"target {repo} @ {sha[:12]} (lane task={task})")
+
+          def cnb(url, data=None):
+              req = urllib.request.Request(url,
+                  data=json.dumps(data).encode() if data is not None else None,
+                  headers={"Authorization": "Bearer " + tok,
+                           "Content-Type": "application/json",
+                           "Accept": "application/vnd.cnb.api+json"},
+                  method="POST" if data is not None else "GET")
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
+
+          env = {"TARGET_REPO": repo, "TARGET_SHA": sha,
+                 "GH_REPO": "celestia-island/" + repo, "TASK": task}
+          if pat:
+              env["GH_READ_PAT"] = pat
+          try:
+              r = cnb("https://api.cnb.cool/celestia-island/ci-farm/-/build/start",
+                      {"event": "api_trigger_ci", "branch": "master",
+                       "title": f"overflow {repo} {sha[:10]}", "env": env})
+              sn, url = r["sn"], r.get("buildLogUrl", "")
+          except Exception as e:
+              die(f"CNB dispatch failed: {e}", sha=sha)
+          print(f"dispatched sn={sn} url={url}")
+
+          state = None
+          deadline = time.time() + poll
+          while time.time() < deadline:
+              time.sleep(30)
+              try:
+                  st = cnb(f"https://api.cnb.cool/celestia-island/ci-farm/-/build/status/{sn}")["status"]
+              except Exception as e:
+                  print("poll error (continuing):", e)
+                  continue
+              print("cnb status:", st)
+              if st == "success":
+                  state = "success"; break
+              if st in ("error", "cancel"):
+                  state = "failure"; break
+
+          if state is None:
+              print("poll deadline reached; CNB build still running, leaving pending status")
+              post_status(sha, "pending", description=f"CNB build {sn} still running", url=url)
+              sys.exit(0)
+          post_status(sha, state, description=f"CNB overflow build {sn}", url=url)
+          sys.exit(0 if state == "success" else 1)
+          PYEOF

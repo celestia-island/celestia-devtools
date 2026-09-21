@@ -1,0 +1,83 @@
+# CNB Mirror Sync — keeps the one-way mirrors at cnb.cool/celestia-island/* in sync with GitHub.
+#
+# This is a DATA-SYNC job per the ci-ops note on sync workflows: it never pushes to GitHub,
+# so nothing it produces requires GitHub CI validation. The heavy lifting (clone/fetch/push of
+# 17 repos) runs on CNB compute via the ci_infra api_trigger_sync pipeline; this workflow only
+# triggers it and waits, passing GH_READ_PAT transiently (env of the dispatched build), so no
+# credential is ever stored on CNB. First run of the pipeline was measured at ~60s / 0.07
+# core-hours; the copy-on-write volume caches bare clones for subsequent runs.
+#
+# Overlap guard: before dispatching, any in_progress sync build on ci_infra makes this cycle
+# skip (exit green) instead of starting a second concurrent mirror push.
+
+name: CNB Mirror Sync
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: cnb-mirror-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 15
+    steps:
+      - name: Trigger ci_infra mirror sync on CNB and wait
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          GH_READ_PAT: ${{ secrets.GH_READ_PAT }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time, urllib.request
+
+          tok = os.environ.get("CNB_TOKEN", "")
+          pat = os.environ.get("GH_READ_PAT", "")
+          if not tok or not pat:
+              print("FATAL: CNB_TOKEN / GH_READ_PAT secrets missing"); sys.exit(1)
+
+          def cnb(url, data=None):
+              req = urllib.request.Request(url,
+                  data=json.dumps(data).encode() if data is not None else None,
+                  headers={"Authorization": "Bearer " + tok,
+                           "Content-Type": "application/json",
+                           "Accept": "application/vnd.cnb.api+json"},
+                  method="POST" if data is not None else "GET")
+              with urllib.request.urlopen(req, timeout=60) as r:
+                  return json.load(r)
+
+          # Overlap guard: skip this cycle if a sync build is already in flight on CNB.
+          # Response shape: {"total": "0", "data": [], "timestamp": ...} (total is a string).
+          try:
+              inflight = cnb("https://api.cnb.cool/celestia-island/ci_infra/-/build/logs"
+                             "?status=in_progress&page=1&page_size=5")
+              n = int(inflight.get("total", 0) or 0)
+              if n > 0 or inflight.get("data"):
+                  print(f"{n} in_progress sync build(s) already on CNB — skipping this cycle")
+                  sys.exit(0)
+          except Exception as e:
+              print("overlap preflight failed (proceeding):", e)
+
+          r = cnb("https://api.cnb.cool/celestia-island/ci_infra/-/build/start",
+                  {"event": "api_trigger_sync", "branch": "master",
+                   "title": "scheduled mirror sync", "env": {"GH_READ_PAT": pat}})
+          sn = r["sn"]
+          print("sync sn:", sn, r.get("buildLogUrl", ""))
+
+          deadline = time.time() + 12 * 60
+          while time.time() < deadline:
+              time.sleep(30)
+              try:
+                  st = cnb(f"https://api.cnb.cool/celestia-island/ci_infra/-/build/status/{sn}")["status"]
+              except Exception as e:
+                  print("poll error (continuing):", e)
+                  continue
+              print("status:", st)
+              if st in ("success", "error", "cancel"):
+                  print("FINAL:", st)
+                  sys.exit(0 if st == "success" else 1)
+          print("sync still running past 12min; leaving it running, check CNB build logs")
+          PYEOF
