@@ -158,3 +158,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sys.argv = [cmd, *rest]
     return int(entry() or 0)
+
+
+if __name__ == "__main__":
+    # Without this guard `python3 -m celestia_devtools.core.cli …` imports the
+    # module, exits 0, and does nothing — the silent no-op that made chest's
+    # protocols codegen step produce nothing while staying green
+    # (see chest #1028 and the known-env-issues ledger).
+    sys.exit(main())

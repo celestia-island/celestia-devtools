@@ -177,3 +177,47 @@ test = {{ path = \"{td}\" }}
             cleaned, warnings = _clean_stale_local_patches(config)
             assert len(warnings) == 0
             assert 'test' in cleaned
+
+
+class TestModuleMainGuard:
+    """`python3 -m celestia_devtools.core.cli …` must actually dispatch.
+
+    Before the `__main__` guard, `-m` imported the module, exited 0, and ran
+    nothing — the silent codegen no-op behind chest #1028 (see the
+    known-env-issues ledger). These tests pin both directions: a real command
+    produces output, and an unknown command fails loudly instead of exiting
+    green with nothing done.
+    """
+
+    def _run_module(self, *args):
+        import os
+        import subprocess
+        import sys
+        from pathlib import Path
+        # Resolve the module from THIS checkout (src/ layout), not whatever
+        # celestia_devtools happens to be pip-installed on the host — otherwise
+        # the test would exercise a stale copy and drift with it.
+        src = Path(__file__).resolve().parents[1] / "src"
+        env = dict(os.environ)
+        env["PYTHONPATH"] = (
+            f"{src}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(src)
+        )
+        return subprocess.run(
+            [sys.executable, "-m", "celestia_devtools.core.cli", *args],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+
+    def test_module_run_dispatches_a_real_command(self):
+        result = self._run_module("--version")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("celestia-devtools "), (
+            f"-m run produced no version output: stdout={result.stdout!r}"
+        )
+
+    def test_module_run_fails_loudly_on_unknown_command(self):
+        result = self._run_module("definitely-not-a-command")
+        assert result.returncode == 2, result.stderr
+        assert "unknown command" in result.stderr, result.stderr
