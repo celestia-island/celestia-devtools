@@ -1,0 +1,19 @@
+# Deploy on the dispatcher node (node-ci-1):
+#   sudo install -m 644 tools/ci-dispatcherd.service /etc/systemd/system/ci-dispatcherd.service
+#   sudo install -d /var/lib/ci-dispatcher
+#   sudo install -m 755 tools/ci_dispatcherd.py /opt/ci-dispatcher/ci_dispatcherd.py
+#   sudo install -m 600 <env file with GH_TOKEN= / CNB_TOKEN=> /etc/ci-dispatcher/env
+#   sudo systemctl enable --now ci-dispatcherd
+[Unit]
+Description=CI overflow dispatcher (allocates self-hosted CI between local farm and CNB)
+After=network-online.target
+
+[Service]
+User=lab
+EnvironmentFile=/etc/ci-dispatcher/env
+ExecStart=/usr/bin/python3 /opt/ci-dispatcher/ci_dispatcherd.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
