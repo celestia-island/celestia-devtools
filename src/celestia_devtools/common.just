@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.6.0
+# Version: 0.7.0
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -14,19 +14,22 @@
 # This file is intentionally free of `set` directives (shell, windows-shell,
 # unstable) so it composes cleanly with each repo's own header.
 #
-# Windows note: the importing justfile MUST set `set windows-shell := ["bash.exe", "-c"]`
-# and `set shell := ["bash", "-c"]`. Linewise recipes run through windows-shell;
-# multi-line recipes below use the empty `[script]` attribute (stable since
-# just 1.32.0), whose interpreter comes from `set script-interpreter` — supplied
-# by the staged `.just/git-bash-interop.just` (run `celestia-devtools init`).
+# ── SHELL DOCTRINE (0.7.0) ────────────────────────────────────────────────────
+# Every recipe below is a LINEWISE, shell-neutral single command: valid under
+# POSIX sh AND Windows PowerShell 5.1 alike. No bash, no `[script]` bodies, no
+# shebangs, no .sh/.ps1 helper scripts — multi-step logic lives in the
+# celestia-devtools CLI (pure Python) instead. The only Windows-side runtime
+# requirements are PowerShell + `python` + `curl`, all inbox or standard.
+# The former `.just/git-bash-interop.just` / `set script-interpreter` crutch
+# and the `windows-shell-check` WSL-hijack diagnostic are retired with it.
 #
-# WSL caveat: an explicit `[script('bash')]` would resolve `bash` via PATH, and
-# if `C:\Windows\System32` precedes Git, that hits the WSL launcher — which can't
-# see the Windows temp path just writes [script] bodies to. So these recipes use
-# empty `[script]` instead, letting the interop file pin them to the resolved Git
-# Bash absolute path. `celestia-devtools init` stages that file automatically.
-# The `windows-shell-check` recipe below still detects a residual hijack.
-#   [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+# The importing justfile MUST set (see any sibling repo for the exact bytes):
+#     set shell := ["bash", "-c"]
+#     set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile",
+#                           "-Command", "<UTF-8 prelude>"]
+# and keep its own linewise recipes inside the same two-shell intersection:
+# one command per line, no `&&`/`||`/`$()`/line-continuations. Bash-syntax
+# logic belongs in the CLI, or in a `[script('python')]` body at most.
 
 # ── Tool resolution ───────────────────────────────────────────────────────────
 
@@ -45,24 +48,11 @@ _devtools := if which("celestia-devtools") != "" { "celestia-devtools" } else { 
 
 # Ensure celestia-devtools is installed. Run once on a fresh checkout.
 # Override the install source with $CELESTIA_DEVTOOLS_INSTALL (e.g. a local path).
+# The conditional install is a `python -c` expression on purpose: a single
+# command that both sh and PowerShell can run verbatim — the old three-way
+# `||` pipeline was bash-only and crashed under PowerShell.
 ensure:
-    @command -v celestia-devtools >/dev/null 2>&1 || \
-        {{python_cmd}} -c "import celestia_devtools" 2>/dev/null || \
-        pip3 install "${CELESTIA_DEVTOOLS_INSTALL:-git+https://github.com/celestia-island/celestia-devtools.git}"
-
-# Fail fast on Windows if the importing justfile forgot `set windows-shell`,
-# OR if `bash` is shadowed by the WSL launcher (C:\Windows\System32\bash.exe).
-#
-# This recipe is LINewise (not [script]) on purpose: a [script] body is
-# written to a Windows temp path that WSL bash cannot see, so under WSL
-# shadowing the check itself would crash with "No such file or directory"
-# before it could report the problem. Linewise recipes run via windows-shell
-# (`bash.exe -c "<line>"`), which WSL bash can still execute, so the check
-# survives and can diagnose the hijack. No-op on non-Windows hosts.
-windows-shell-check:
-    @if [ "{{os_family()}}" != "windows" ]; then echo "windows-shell-check: non-Windows host, OK."; exit 0; fi
-    @_u="$(uname -o 2>/dev/null || echo unknown)"; if [ "$_u" = "GNU/Linux" ] || [ -z "${MSYSTEM:-}" ]; then echo "windows-shell-check: HIJACK — 'bash' resolves to WSL ($_u), not Git Bash." >&2; echo "  Every recipe using bash syntax or [script] will fail." >&2; echo "  FIX (PowerShell, one-time, then restart terminal):" >&2; echo "    [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + \$env:PATH,'User')" >&2; exit 1; fi
-    @echo "windows-shell-check: OK — Git Bash detected."
+    {{python_cmd}} -c "import importlib.util as u, os, subprocess as s, sys; s.call([sys.executable, '-m', 'pip', 'install', os.environ.get('CELESTIA_DEVTOOLS_INSTALL') or 'git+https://github.com/celestia-island/celestia-devtools.git']) if u.find_spec('celestia_devtools') is None else None"
 
 # ── Build helper ──────────────────────────────────────────────────────────────
 
@@ -71,21 +61,11 @@ windows-shell-check:
 #   just _build ":" "cargo build" "cargo build --release" {{FLAGS}}
 #   just _build "just cache-guard" "cargo build" "cargo build --release" --dev
 #
-# Flags (consumed from *FLAGS):
+# Flags (consumed by the `build-dispatch` CLI command):
 #   --dev    use the dev command instead of release
 #   --clean  cargo clean before building
-[script]
 _build always_pre dcmd rcmd *FLAGS='':
-    set -euo pipefail
-    profile=release
-    for a in {{FLAGS}}; do
-      case "$a" in
-        --dev)   profile=dev ;;
-        --clean) cargo clean ;;
-      esac
-    done
-    [ "X{{always_pre}}" != "X:" ] && {{always_pre}}
-    if [ "$profile" = dev ]; then {{dcmd}}; else {{rcmd}}; fi
+    {{ _devtools }} build-dispatch {{always_pre}} {{dcmd}} {{rcmd}} {{FLAGS}}
 
 # ── Cache management ──────────────────────────────────────────────────────────
 
@@ -168,26 +148,10 @@ p0-gate *ARGS='':
 # — this recipe never auto-merges.
 #
 # Prereqs: an `upstream` git remote. If absent it is added from $UPSTREAM_URL
-# (set it in your .env or shell); otherwise the recipe errors with guidance.
+# (set it in your .env or shell); otherwise the command errors with guidance.
 
 upstream-sync:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ! git remote get-url upstream >/dev/null 2>&1; then
-        if [ -z "${UPSTREAM_URL:-}" ]; then
-            echo "error: no 'upstream' remote and UPSTREAM_URL is unset." >&2
-            echo "  Add one with:  git remote add upstream <url>" >&2
-            echo "  or set UPSTREAM_URL in your .env and re-run." >&2
-            exit 1
-        fi
-        echo "[upstream-sync] adding 'upstream' -> ${UPSTREAM_URL}"
-        git remote add upstream "${UPSTREAM_URL}"
-    fi
-    echo "[upstream-sync] fetching upstream…"
-    git fetch upstream
-    echo "[upstream-sync] fetched. Inspect with:"
-    echo "  git log --oneline HEAD..upstream/<branch>"
-    echo "  then merge or rebase as you see fit."
+    {{ _devtools }} upstream-sync
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 
@@ -223,25 +187,14 @@ link-sibling crate:
 # auto-restart: notify v8 recursive watch, 400 ms debounce, kill+respawn.
 #
 # RECOMMENDED PATTERN: do NOT call `just dev-watch` from your repo's `dev`
-# recipe — that forks a child `just` process which breaks under WSL PATH
-# shadowing (the child `just` isn't on WSL bash's PATH). Instead, make your
-# `dev` a self-contained [script] that calls malkuth directly:
-#
-#   [script]
-#   dev:
-#       #!/usr/bin/env bash
-#       set -euo pipefail
-#       malkuth="{{malkuth_bin}}"
-#       # ... (resolve malkuth as shown in the dev-watch body below) ...
-#       exec "$malkuth" --watch src --watch docs --drain-secs 2 -- cargo run
-#
-# The `dev-watch` recipe below is kept as a reference implementation and for
-# ad-hoc use from the command line, but repos should inline it into their own
-# `dev` [script] recipe.
+# recipe — that forks a child `just` process. Make your `dev` recipe call
+# malkuth directly (linewise single command), or the CLI's supervision.
 #
 # Override the malkuth binary location with $MALKUTH_BIN or $MALKUTH_ROOT.
 
-# Resolve the malkuth binary path (env → PATH → sibling layout).
+# Resolve the malkuth binary path (env → PATH → sibling layout). Kept as a
+# just variable for repo recipes that embed it; `dev-watch` resolves it the
+# same way inside the CLI.
 malkuth_bin := if env("MALKUTH_BIN", "") != "" {
     env("MALKUTH_BIN", "")
 } else if env("MALKUTH_ROOT", "") != "" {
@@ -253,62 +206,13 @@ malkuth_bin := if env("MALKUTH_BIN", "") != "" {
 }
 
 # Always-valid sibling-repo fallback path (used when malkuth_bin resolves to a
-# bare name that isn't actually on the script's PATH at runtime).
+# bare name that isn't actually on PATH at runtime).
 malkuth_bin_rel := "../malkuth/target/release/" + if os_family() == "windows" { "malkuth.exe" } else { "malkuth" }
 
-[script]
-dev *ARGS='':
-    {{ _devtools }} daemon {{ARGS}}
-
-[script]
+# Supervise a command with malkuth: `just dev-watch src -- cargo run`.
+# Args split at `--`: watch paths before, supervised command after.
 dev-watch *ARGS:
-    set -eu
-    # Ensure MSYS /usr/bin is on PATH (just spawns bash.exe without /etc/profile,
-    # so /usr/bin may be absent — breaks uname/cargo/etc.). Bash builtin only.
-    case ":$PATH:" in
-      *":/usr/bin:"*) ;;
-      *) PATH="/usr/bin:$PATH" ;;
-    esac
-    # Split args at `--`: everything before = watch paths, after = command.
-    watch_paths=()
-    cmd=()
-    found_sep=0
-    for arg in {{ARGS}}; do
-      if [ "$arg" = "--" ]; then
-        found_sep=1
-        continue
-      fi
-      if [ "$found_sep" = "1" ]; then
-        cmd+=("$arg")
-      else
-        watch_paths+=("$arg")
-      fi
-    done
-    if [ "${#cmd[@]}" -eq 0 ]; then
-      echo "usage: just dev-watch <watch-paths...> -- <command...>" >&2
-      echo "  e.g.  just dev-watch src -- cargo run" >&2
-      exit 1
-    fi
-    # Resolve malkuth: prefer {{malkuth_bin}} (just-resolved), verify with bash
-    # builtins only (no uname/which), fall back to sibling-repo release path.
-    malkuth="{{malkuth_bin}}"
-    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
-      malkuth="{{ malkuth_bin_rel }}"
-    fi
-    if [ ! -f "$malkuth" ]; then
-      echo "[dev-watch] malkuth not found." >&2
-      echo "[dev-watch] Build it: cd ../malkuth && cargo build --release --features cli" >&2
-      echo "[dev-watch] Or set: export MALKUTH_BIN=/path/to/malkuth" >&2
-      exit 1
-    fi
-    # Build --watch flags.
-    watch_flags=()
-    for p in "${watch_paths[@]}"; do
-      watch_flags+=(--watch "$p")
-    done
-    echo "[dev-watch] supervising: ${cmd[*]}"
-    echo "[dev-watch] watching: ${watch_paths[*]}"
-    exec "$malkuth" "${watch_flags[@]}" --drain-secs 2 -- "${cmd[@]}"
+    {{ _devtools }} dev-watch {{ARGS}}
 
 # Auto-register celestia-island git deps as cargo [patch] entries in
 # ~/.cargo/config.toml. Runs `cargo metadata` to discover which celestia crates
@@ -341,22 +245,7 @@ register-patches *ARGS='':
 # Create a new worktree at ../<repo>-<name> from <base> (branch or commit).
 # After creation registers cargo patches for the new directory.
 worktree-create name base='dev':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    repo=$(basename "$(git rev-parse --show-toplevel)")
-    target="../${repo}-${name}"
-    if [ -d "$target" ]; then
-      echo "worktree already exists: $target"
-      exit 0
-    fi
-    # Ensure the base branch exists locally (fetch if only on remote).
-    git rev-parse --verify "refs/heads/${base}" >/dev/null 2>&1 || \
-      git rev-parse --verify "refs/remotes/origin/${base}" >/dev/null 2>&1 || \
-      { echo "branch '${base}' not found locally or on origin"; exit 1; }
-    echo "creating worktree ${target} from ${base}"
-    git worktree add -b "${name}" "${target}" "origin/${base}" 2>/dev/null || \
-      git worktree add "${target}" "${base}"
-    echo "worktree ready: ${target}"
+    {{ _devtools }} worktree-create {{name}} {{base}}
 
 # List all worktrees for this repo.
 worktree-list:
@@ -364,17 +253,7 @@ worktree-list:
 
 # Remove a worktree and prune its metadata.
 worktree-remove name:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    repo=$(basename "$(git rev-parse --show-toplevel)")
-    target="../${repo}-${name}"
-    if [ ! -d "$target" ]; then
-      echo "worktree not found: $target"
-      exit 1
-    fi
-    git worktree remove "$target" --force
-    git worktree prune
-    echo "removed worktree: $target"
+    {{ _devtools }} worktree-remove {{name}}
 
 # ── WSL2 dev environment ──────────────────────────────────────────────────────
 #
@@ -393,7 +272,9 @@ wsl-ensure *ARGS='':
 
 # Run a command inside the celestia-dev distro (cwd = this repo's root).
 # Example: just wsl-run cargo build --release
-wsl-run *CMD='echo "usage: just wsl-run <command>"':
+# The `bash -lc` executes INSIDE the Linux distro — that is the distro's own
+# shell on the Linux side of the boundary, not a Windows-host dependency.
+wsl-run *CMD='echo usage: just wsl-run <command>':
     wsl -d celestia-dev --cd "{{ justfile_directory() }}" -- bash -lc "{{ CMD }}"
 
 # Drop into an interactive shell in the distro at the repo root.
@@ -453,44 +334,15 @@ pglite *ARGS='':
 #
 # Per-platform subpackages are staged from CI (one matrix job per target),
 # then a final job reassembles the root. Actual `npm publish` runs in CI; this
-# recipe only stages + `npm pack --dry-run` so you can inspect the tarball.
-[script]
+# recipe stages + runs `npm pack --dry-run` so you can inspect the tarball.
 npm-dist name version='' binary='' target='':
-    set -euo pipefail
-    # Assemble the npm-dist CLI args. just params are not bash vars, so we test
-    # the substituted strings directly rather than relying on ${var:+}.
-    base=(--name "{{name}}" --out-dir dist)
-    [ -n "{{version}}" ] && base+=(--version "{{version}}")
-    if [ -n "{{binary}}" ]; then
-      if [ -z "{{target}}" ]; then
-        echo "npm-dist: --target required when --binary given" >&2
-        exit 1
-      fi
-      base+=(--binary "{{binary}}" --rust-target "{{target}}")
-    fi
-    {{ _devtools }} npm-dist "${base[@]}"
-    cd dist && npm pack --dry-run
+    {{ _devtools }} npm-dist --name {{name}} --out-dir dist --pack-dry-run {{ if version != "" { "--version " + version } else { "" } }} {{ if binary != "" { "--binary " + binary + " --rust-target " + target } else { "" } }}
 
 # Publish the staged packages to npm (requires NPM_TOKEN in the environment).
 # Intended for CI; prompts interactively for the OTP if 2FA is on.
 # Override the tag with NPM_DIST_TAG (default: latest).
-[script]
 npm-release *PKGS='':
-    set -euo pipefail
-    cd dist
-    tag="${NPM_DIST_TAG:-latest}"
-    # just does not forward recipe params as shell positionals into [script]
-    # bodies, so $#/"$@" are always empty here — interpolate {{PKGS}} instead
-    # (same defect class as the link-npm-siblings fix).
-    pkgs=()
-    for pkg in {{PKGS}}; do pkgs+=("$pkg"); done
-    if [ "${#pkgs[@]}" -eq 0 ]; then
-      npm publish --access public --tag "$tag"
-    else
-      for pkg in "${pkgs[@]}"; do
-        npm publish "$pkg" --access public --tag "$tag"
-      done
-    fi
+    {{ _devtools }} npm-release {{PKGS}}
 
 # Overlay local @celestia-island sibling checkouts into node_modules via
 # symlinks for local development (repo manifests stay registry-only).
@@ -498,9 +350,7 @@ npm-release *PKGS='':
 #   just link-npm-siblings --status    # inspect current state
 #   just link-npm-siblings --remove    # back to pure registry resolution
 # Run after every `pnpm install` — installs restore registry resolution.
-[script]
 link-npm-siblings *ARGS='':
-    set -euo pipefail
     {{ _devtools }} link-npm-siblings {{ARGS}}
 
 # ── Vite frontend build — no dev server, no HMR, no overlay noise ─────────────
@@ -510,91 +360,24 @@ link-npm-siblings *ARGS='':
 # Rebuilds are triggered by malkuth (or any file watcher) — the watcher owns
 # the terminal output, so build logs stay clean and under our control.
 #
-# Recipes:
 #   just vite-build               one-shot production build (vite build)
-#   just vite-build --mode mock    build with VITE_MODE=mock (env passthrough)
+#   just vite-build -- --mode mock    build with VITE_MODE=mock (env passthrough)
 #   just vite-serve                serve dist/ on port 5173 with python http.server
 #   just vite-serve --port 3000    serve on a custom port
 #   just vite-dev                  build → serve → watch src/ for rebuilds (malkuth)
 
 # One-shot build. Pass extra flags or env vars after `--`.
-#   just vite-build
-#   just vite-build -- --mode mock
-[script]
 vite-build *ARGS='':
-    set -euo pipefail
-    flags=()
-    for a in {{ARGS}}; do flags+=("$a"); done
-    pnpm vite build "${flags[@]}"
+    {{ _devtools }} vite-build {{ARGS}}
 
-# Serve the built dist/ output. Uses python3 http.server (zero JS deps, no npm).
-# Override the port with: just vite-serve --port 8080
-[script]
+# Serve the built dist/ output with python http.server (zero JS deps, no npm).
 vite-serve *ARGS='':
-    set -euo pipefail
-    port=5173
-    pending=""
-    # just params are not shell positionals in [script] bodies — walk {{ARGS}}
-    # words instead ($2/shift would see nothing and crash under set -u).
-    for a in {{ARGS}}; do
-      if [ -n "$pending" ]; then port="$a"; pending=""; continue; fi
-      case "$a" in
-        --port) pending=1 ;;
-        --port=*) port="${a#--port=}" ;;
-      esac
-    done
-    dist_dir=dist
-    if [ ! -d "$dist_dir" ]; then
-      dist_dir=../../dist/webui
-    fi
-    echo "[vite-serve] serving $dist_dir on http://localhost:$port"
-    cd "$dist_dir"
-    python3 -m http.server "$port"
+    {{ _devtools }} vite-serve {{ARGS}}
 
-# Full dev loop: build once, serve, then watch for changes with malkuth.
-# On file change in src/, re-runs vite build. The static server stays alive
-# and picks up the rebuilt dist/ automatically.
-#
-#   just vite-dev                default (port 5173)
-#   just vite-dev --port 8080    custom port
-[script]
+# Full dev loop: build once, serve, then watch src/ with malkuth. The static
+# server stays alive and picks up the rebuilt dist/ automatically.
 vite-dev *ARGS='':
-    set -euo pipefail
-    port=5173
-    pending=""
-    for a in {{ARGS}}; do
-      if [ -n "$pending" ]; then port="$a"; pending=""; continue; fi
-      case "$a" in
-        --port) pending=1 ;;
-        --port=*) port="${a#--port=}" ;;
-      esac
-    done
-    dist_dir=dist
-    if [ ! -d "$dist_dir" ]; then
-      dist_dir=../../dist/webui
-    fi
-    echo "[vite-dev] building frontend..."
-    pnpm vite build
-    echo "[vite-dev] starting static server on port $port"
-
-    # Start python http.server in background
-    (cd "$dist_dir" && python3 -m http.server "$port") &
-    server_pid=$!
-    trap "kill $server_pid 2>/dev/null || true" EXIT
-    sleep 1
-
-    echo "[vite-dev] watching src/ for changes (malkuth)..."
-    malkuth="{{malkuth_bin}}"
-    if ! command -v "$malkuth" >/dev/null 2>&1 && [ ! -f "$malkuth" ]; then
-      malkuth="{{ malkuth_bin_rel }}"
-    fi
-    if [ ! -f "$malkuth" ]; then
-      echo "[vite-dev] malkuth not found — install: cd ../malkuth && cargo build --release --features cli"
-      echo "[vite-dev] falling back to one-shot build; restart manually to pick up changes."
-      wait "$server_pid"
-    else
-      exec "$malkuth" --watch src --drain-secs 2 -- pnpm vite build
-    fi
+    {{ _devtools }} vite-dev {{ARGS}}
 
 # ── Mock server orchestration ─────────────────────────────────────────
 

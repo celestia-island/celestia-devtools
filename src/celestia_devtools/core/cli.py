@@ -35,6 +35,16 @@ Commands::
     verify-versions   Check cargo/npm version drift across a repository
     protocol-bundle   Vendor the five org protocol docs from docs.celestia.world
                       into packages/webui/.generated/protocols as lazy assets
+    fetch-just        Stage the bundled common.just into .just/ (just fetch core)
+    build-dispatch    Run pre/dev/release build commands for _build-style recipes
+    upstream-sync     Fetch the 'upstream' remote (adds it from $UPSTREAM_URL)
+    worktree-create   Create ../<repo>-<name> worktree + register cargo patches
+    worktree-remove   Remove a worktree and prune stale refs
+    dev-watch         Supervise a command with malkuth file watching
+    vite-build        One-shot production vite build
+    vite-serve        Serve the built dist/ with python http.server
+    vite-dev          Build → serve → watch src/ (malkuth) rebuild loop
+    npm-release       Publish staged npm packages from ./dist
     e2e-sandbox       Run e2e/browser jobs in an isolated, always-cleaned TMPDIR
                       sandbox; sweep stale sandbox dirs and orphan chromium
                       profiles from /tmp (run | sweep | sweep-tmp)
@@ -85,6 +95,16 @@ COMMANDS: dict[str, str] = {
     "gate": "celestia_devtools.build.gate",
     "verify-versions": "celestia_devtools.repo.verify_versions",
     "protocol-bundle": "celestia_devtools.doc.protocol_bundle",
+    "fetch-just": "celestia_devtools.repo.fetch_just",
+    "build-dispatch": "celestia_devtools.build.dispatch",
+    "upstream-sync": "celestia_devtools.vcs.upstream",
+    "worktree-create": "celestia_devtools.vcs.worktree",
+    "worktree-remove": "celestia_devtools.vcs.worktree",
+    "dev-watch": "celestia_devtools.env.dev_watch",
+    "vite-build": "celestia_devtools.env.vite",
+    "vite-serve": "celestia_devtools.env.vite",
+    "vite-dev": "celestia_devtools.env.vite",
+    "npm-release": "celestia_devtools.npm.release",
     # Registered entry points that had no dispatcher command until 2026-09-20. The gap went
     # unnoticed because the only test that notices (`test_all_commands_registered`) was
     # already failing on master, so its output was not read: four tools installed by this

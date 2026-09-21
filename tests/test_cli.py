@@ -23,6 +23,10 @@ class TestCommandRegistry:
             "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
             "link-npm-siblings", "protocol-bundle", "nav-lint", "p0-gate",
             "rules-lint",
+            "fetch-just", "build-dispatch", "upstream-sync",
+            "worktree-create", "worktree-remove", "dev-watch",
+            "vite-build", "vite-serve", "vite-dev", "npm-release",
+            "release-notes",
             # Added 2026-09-20: these four shipped console scripts but had no
             # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
             "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit",
@@ -61,9 +65,19 @@ class TestCommandRegistry:
 
     @pytest.mark.parametrize("cmd,module_path", list(COMMANDS.items()))
     def test_command_modules_importable(self, cmd, module_path):
-        """Every registered command must resolve to an importable module with main()."""
+        """Every registered command must resolve to an importable module with main().
+
+        Some master-added commands are POSIX-only by design (deploy's bootstrap
+        imports `pwd`, e2e-sandbox relies on `signal.SIGKILL`); importing them
+        on Windows raises ModuleNotFoundError/AttributeError before main() is
+        ever reached, so the importability contract only applies on POSIX.
+        """
+        import sys
+
         from importlib import import_module
 
+        if sys.platform == "win32" and cmd in ("deploy", "e2e-sandbox"):
+            pytest.skip(f"{cmd} is POSIX-only (imports pwd / signal.SIGKILL)")
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
 

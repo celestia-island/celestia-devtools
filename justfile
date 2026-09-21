@@ -5,6 +5,9 @@
 set shell := ["bash", "-c"]
 # Windows: PowerShell (the 5.1 floor ships with every Windows; pwsh 7 is
 # NOT assumed). Linewise recipes must stay PS-5.1-safe: no `&&` chains,
+# no `> /dev/null` (PowerShell would write a literal file), one command
+# per line. No script-interpreter / [script] bodies — bash is banned.
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $PSDefaultParameterValues['*:Encoding']='utf8';"]
 # `cd X; cmd` instead of `cd X && cmd`. Bash-only recipes use
 # [script('bash')] and need Git Bash (or WSL) when actually run.
 set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $PSDefaultParameterValues['*:Encoding']='utf8';"]
@@ -13,6 +16,10 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[C
 set script-interpreter := ["bash", "-eu"]
 set unstable
 set lists
+
+# Repo definitions override the shared template's (imported above).
+set allow-duplicate-recipes
+set allow-duplicate-variables
 
 import "./src/celestia_devtools/common.just"
 
@@ -25,18 +32,13 @@ install:
 
 # Verify all modules import and CLI responds, then run pytest.
 test:
-    {{python_cmd}} -c "from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate; from celestia_devtools.repo import locate, init; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; from celestia_devtools.lint import nav_lint, p0_gate, rules_lint; print('imports ok')"
-    {{ _devtools }} --help > /dev/null
+    {{python_cmd}} -c "from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate, dispatch; from celestia_devtools.repo import locate, init, fetch_just; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; from celestia_devtools.lint import nav_lint, p0_gate, rules_lint; from celestia_devtools.vcs import upstream, worktree; from celestia_devtools.env import dev_watch, vite; from celestia_devtools.npm import release; print('imports ok')"
+    {{ _devtools }} --help
     {{ _devtools }} --version
     {{ _devtools }} include-path
-    {{ _devtools }} gate --list > /dev/null
-    {{ _devtools }} p0-gate --list > /dev/null
+    {{ _devtools }} gate --list
+    {{ _devtools }} p0-gate --list
     {{python_cmd}} -m pytest tests/ -v
-
-# Fail when this repo is covered by an unresolved P0 (see lint/p0_ledger.toml).
-# Acknowledge a known-open item explicitly with: just p0-gate --ack P0-X
-p0-gate *ARGS='':
-    {{ _devtools }} p0-gate {{ARGS}}
 
 # Lint with ruff.
 lint:
@@ -45,8 +47,7 @@ lint:
 # Format Markdown + verify the bundled common.just is valid just syntax.
 fmt:
     {{ _devtools }} format-markdown .
-    just --evaluate _devtools > /dev/null
+    just --evaluate _devtools
 
 clean:
-    rm -rf build/ dist/ *.egg-info src/*.egg-info
-    find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    {{python_cmd}} -c "import shutil, pathlib; targets = [pathlib.Path('build'), pathlib.Path('dist'), *pathlib.Path('.').glob('*.egg-info'), *pathlib.Path('src').glob('*.egg-info')]; [shutil.rmtree(p, ignore_errors=True) for p in targets]; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path('.').rglob('__pycache__')]"

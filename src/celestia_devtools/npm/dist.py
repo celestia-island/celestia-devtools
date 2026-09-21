@@ -38,6 +38,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -226,6 +227,11 @@ def main() -> int:
         "--scope", default=DEFAULT_SCOPE,
         help=f"npm scope without @ (default: {DEFAULT_SCOPE})",
     )
+    parser.add_argument(
+        "--pack-dry-run", action="store_true",
+        help="after staging, run `npm pack --dry-run` in --out-dir to verify "
+             "(replaces the former bash `cd dist && npm pack --dry-run` step)",
+    )
     parser.add_argument("--description", default="", help="Package description")
     parser.add_argument("--license", default="SySL-1.0", help="SPDX license (default: SySL-1.0)")
     parser.add_argument("--repository", default=None, help="Repository URL")
@@ -303,7 +309,14 @@ def main() -> int:
             f"root {args.scope}/{args.name} @ {version} written with no platform "
             f"subpackages yet — re-run with --binary for each target."
         )
-    _info("next: cd %s && npm pack --dry-run   # verify; publish from CI" % out_dir)
+    if args.pack_dry_run:
+        packed = subprocess.run(
+            ["npm", "pack", "--dry-run"], cwd=out_dir
+        )
+        if packed.returncode != 0:
+            return packed.returncode
+    else:
+        _info("next: cd %s && npm pack --dry-run   # verify; publish from CI" % out_dir)
     return 0
 
 
