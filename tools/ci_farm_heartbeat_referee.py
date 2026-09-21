@@ -280,10 +280,10 @@ def receiver_url() -> str:
     """The receiver base URL, tolerant of the scheme being supplied either way.
 
     ``CI_HB_NODE1_ADDR`` is documented as an address but the deployed referee unit carries
-    ``http://192.168.2.74:9120``, and the template used to prepend ``http://`` itself. The
+    ``http://192.0.2.14:9120``, and the template used to prepend ``http://`` itself. The
     two disagreed silently: on 2026-09-19 node-ci-3 was re-armed after a revert and got
 
-        ExecStart=... curl ... http://http://192.168.2.74:9120/beat/node-ci-3
+        ExecStart=... curl ... http://http://192.0.2.14:9120/beat/node-ci-3
 
     curl exits 6 (cannot resolve host "http") in under a second, so the beat never reaches
     the receiver -- and because the heartbeat is the referee's own liveness signal, the

@@ -255,7 +255,7 @@ def test_referee_probe_failure_backs_off(farm, tmp_path, monkeypatch):
 # ── 心跳单元 URL 归一化（2026-09-20 事故回归） ────────────────────────────────
 #
 # 事故：node-ci-3 revert 后自动 re-arm，写出的单元是
-#   ExecStart=... http://http://192.168.2.74:9120/beat/node-ci-3
+#   ExecStart=... http://http://192.0.2.14:9120/beat/node-ci-3
 # curl 退出码 6（无法解析主机 "http"），beat 一分钟都没成功过 ⇒ 心跳文件停在旧时间戳
 # ⇒ 裁判每分钟判该节点 stale，又被 24h 预算挡住（3/3）⇒ 一直打印 needs human。
 # 而节点本身是健康的：文件里那个 `http://` 是模板加的，环境变量里**也已经有一个**。
@@ -265,16 +265,16 @@ def test_referee_probe_failure_backs_off(farm, tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "configured",
     [
-        "http://192.168.2.74:9120",   # 已部署单元的真实取值
-        "192.168.2.74:9120",          # 旧形态（只是地址）
-        "https://192.168.2.74:9120",  # 换 scheme 也不该叠加
-        "http://192.168.2.74:9120/",  # 尾斜杠不该产生 //
-        "  192.168.2.74:9120  ",      # 容错两侧空白
+        "http://192.0.2.14:9120",   # 已部署单元的真实取值
+        "192.0.2.14:9120",          # 旧形态（只是地址）
+        "https://192.0.2.14:9120",  # 换 scheme 也不该叠加
+        "http://192.0.2.14:9120/",  # 尾斜杠不该产生 //
+        "  192.0.2.14:9120  ",      # 容错两侧空白
     ],
 )
 def test_receiver_url_normalises_every_configured_spelling(monkeypatch, configured):
     monkeypatch.setattr(ref, "NODE1_ADDR", configured)
-    assert ref.receiver_url() == "http://192.168.2.74:9120"
+    assert ref.receiver_url() == "http://192.0.2.14:9120"
 
 
 def test_beat_unit_contains_exactly_one_scheme(monkeypatch):
@@ -283,7 +283,7 @@ def test_beat_unit_contains_exactly_one_scheme(monkeypatch):
     只断言 `receiver_url()` 会漏掉模板那一侧 —— 缺陷正是"两边各加一次"，
     所以这里断言**最终单元文本**。
     """
-    monkeypatch.setattr(ref, "NODE1_ADDR", "http://192.168.2.74:9120")
+    monkeypatch.setattr(ref, "NODE1_ADDR", "http://192.0.2.14:9120")
     unit = ref.BEAT_SERVICE_TEMPLATE.format(receiver_url=ref.receiver_url(), name="node-ci-3")
     exec_line = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
     assert exec_line.count("http://") == 1, exec_line
@@ -293,7 +293,7 @@ def test_beat_unit_contains_exactly_one_scheme(monkeypatch):
 
 def test_deploy_writes_a_working_url(monkeypatch):
     """端到端：装出来的单元必须能被 curl 直接解析（把两处拼接都走一遍）。"""
-    monkeypatch.setattr(ref, "NODE1_ADDR", "http://192.168.2.74:9120")
+    monkeypatch.setattr(ref, "NODE1_ADDR", "http://192.0.2.14:9120")
     sent: list[str] = []
 
     def fake_run_guest(guest_ip, remote_cmd, stdin_payload=None):
@@ -302,8 +302,8 @@ def test_deploy_writes_a_working_url(monkeypatch):
         return True, ""
 
     monkeypatch.setattr(ref, "run_guest", fake_run_guest)
-    ok, _ = ref.deploy_guest_beat_unit("192.168.2.19", "node-ci-3")
+    ok, _ = ref.deploy_guest_beat_unit("192.0.2.109", "node-ci-3")
     assert ok
     unit = next(payload for payload in sent if "ExecStart=" in payload)
-    assert "http://192.168.2.74:9120/beat/node-ci-3" in unit
+    assert "http://192.0.2.14:9120/beat/node-ci-3" in unit
     assert unit.count("http://") == 1
