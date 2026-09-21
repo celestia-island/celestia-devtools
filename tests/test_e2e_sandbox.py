@@ -134,3 +134,35 @@ def test_never_touch_prefixes_are_excluded():
 def test_cli_dispatch_lists_command():
     from celestia_devtools.core.cli import COMMANDS
     assert COMMANDS["e2e-sandbox"] == "celestia_devtools.env.e2e_sandbox"
+
+
+def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
+    """SIGTERM must go through the finally path (S1's NO-GO finding):
+    the sandbox is removed AND the child process tree is killed."""
+    import signal as signal_mod
+    import subprocess
+    root = tmp_path / "sandbox-root"
+    # A wrapper script that we can signal from outside
+    wrapper_code = (
+        "import sys, os, signal, time, subprocess\n"
+        "sys.path.insert(0, os.environ['SB_SRC'])\n"
+        "from celestia_devtools.env import e2e_sandbox as sb\n"
+        "os.environ['E2E_SANDBOX_ROOT'] = " + repr(str(root)) + "\n"
+        "rc = sb.main(['run', '--', sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print(f'rc={rc}')\n"
+    )
+    env = dict(os.environ, SB_SRC=str(Path(__file__).parents[1] / "src"))
+    proc = subprocess.Popen(
+        [sys.executable, "-c", wrapper_code],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    time.sleep(2)  # let the sandbox and child spawn
+    proc.send_signal(signal_mod.SIGTERM)
+    try:
+        out, err = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        assert False, "wrapper did not exit after SIGTERM"
+    # sandbox must be gone
+    assert not root.exists() or not any(root.iterdir()), \
+        f"SIGTERM leaked sandbox: {list(root.iterdir()) if root.exists() else 'gone'}"

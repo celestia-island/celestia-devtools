@@ -56,6 +56,19 @@ _NEVER_TOUCH = {
 }
 
 
+def _kill_tree(child: subprocess.Popen | None, sig: int = signal.SIGKILL) -> None:
+    """Signal the child's whole process group (start_new_session put it alone)."""
+    if child is None or child.poll() is not None:
+        return
+    try:
+        os.killpg(child.pid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            child.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
 def sandbox_root() -> Path:
     return Path(os.environ.get("E2E_SANDBOX_ROOT", DEFAULT_ROOT))
 
@@ -66,6 +79,21 @@ def _new_sandbox(label: str) -> Path:
     box = root / f"{stamp}-{os.getpid()}-{re.sub(r'[^0-9A-Za-z_.-]', '_', label)[:40] or 'run'}"
     (box / "tmp").mkdir(parents=True, exist_ok=True)
     return box
+
+
+class _Terminated(BaseException):
+    """Raised by SIGTERM/SIGHUP so the finally-cleanup path runs (2026-09-21:
+    without this, a SIGTERM from CI's `timeout` command killed the wrapper
+    outright, the finally never ran, the sandbox leaked, and the child became
+    an orphan — exactly the incident this facility exists to prevent)."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _term_handler(signum: int, frame) -> None:  # noqa: ARG001
+    raise _Terminated(signum)
 
 
 def cmd_run(argv: Sequence[str]) -> int:
@@ -98,28 +126,43 @@ def cmd_run(argv: Sequence[str]) -> int:
 
     child = None
     rc: int | None = None
+    old_handlers: dict[int, object] = {}
     try:
-        child = subprocess.Popen(args.cmd, env=env)
+        # SIGTERM/SIGHUP must go through the exception path so `finally` runs.
+        # SIGINT already arrives as KeyboardInterrupt; SIGKILL cannot be caught
+        # (the `sweep` subcommand is the backstop for that).
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                old_handlers[sig] = signal.signal(sig, _term_handler)
+            except (ValueError, OSError):
+                pass  # not in main thread — sweep is the backstop
+        # New session: the child (and any grandchildren) form their own process
+        # group, so we can kill the whole tree without signaling ourselves.
+        child = subprocess.Popen(args.cmd, env=env, start_new_session=True)
         if args.timeout > 0:
             try:
                 rc = child.wait(timeout=args.timeout)
             except subprocess.TimeoutExpired:
-                child.kill()
+                _kill_tree(child)
                 rc = child.wait()
                 print(f"e2e-sandbox: timed out after {args.timeout}s, killed", file=sys.stderr)
                 rc = rc if rc is not None else 124
         else:
             rc = child.wait()
     except KeyboardInterrupt:
-        if child and child.poll() is None:
-            child.send_signal(signal.SIGINT)
-            try:
-                rc = child.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                rc = child.wait()
-        rc = rc if rc is not None else 130
+        _kill_tree(child, signal.SIGINT)
+        rc = child.wait() if child else 130
+        rc = rc if rc >= 0 else 130
+    except _Terminated as exc:
+        _kill_tree(child, exc.signum)
+        rc = child.wait() if child else 128 + exc.signum
+        rc = rc if rc >= 0 else 128 + exc.signum
     finally:
+        for sig, old in old_handlers.items():
+            try:
+                signal.signal(sig, old)  # type: ignore[arg-type]
+            except (ValueError, OSError):
+                pass
         if args.keep:
             print(f"e2e-sandbox: kept {box}")
         else:

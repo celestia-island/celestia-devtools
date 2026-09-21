@@ -33,6 +33,7 @@ class TestCommandRegistry:
             # Added 2026-09-20: production-target lifecycle group (deploy doctor;
             # the remaining subcommands land with their own slices and fail loudly).
             "deploy",
+            "e2e-sandbox",
         }
         assert set(COMMANDS.keys()) == expected
 
