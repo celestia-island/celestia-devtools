@@ -51,8 +51,14 @@ DEFAULT_ROOT = "/mnt/work/e2e-sandbox"
 _CHROMIUM_DIR_SHAPE = re.compile(r"^[0-9A-Za-z_-]{20,}$")
 # 永不匹配的名字（双保险；形态正则本身已排除带前缀/点号的名字）
 _NEVER_TOUCH = {
-    "systemd-private-", ".X11-unix", ".ICE-unix", ".font-unix", ".Test-unix",
-    ".XIM-unix", "snap-private-tmp", ".X0-lock",
+    "systemd-private-",
+    ".X11-unix",
+    ".ICE-unix",
+    ".font-unix",
+    ".Test-unix",
+    ".XIM-unix",
+    "snap-private-tmp",
+    ".X0-lock",
 }
 
 
@@ -101,15 +107,21 @@ def cmd_run(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="e2e-sandbox run",
         description="Run a command with TMPDIR isolated to a per-run sandbox "
-                    "under /mnt/work; the sandbox is removed unconditionally "
-                    "after the command exits (unless --keep).")
+        "under /mnt/work; the sandbox is removed unconditionally "
+        "after the command exits (unless --keep).",
+    )
     parser.add_argument("--label", default="", help="short label for the sandbox dir name")
-    parser.add_argument("--keep", action="store_true",
-                        help="keep the sandbox for debugging (prints its path)")
-    parser.add_argument("--timeout", type=float, default=0, metavar="SECONDS",
-                        help="kill the child after SECONDS (0 = no timeout)")
-    parser.add_argument("cmd", nargs=argparse.REMAINDER,
-                        help="command to run (after --)")
+    parser.add_argument(
+        "--keep", action="store_true", help="keep the sandbox for debugging (prints its path)"
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=0,
+        metavar="SECONDS",
+        help="kill the child after SECONDS (0 = no timeout)",
+    )
+    parser.add_argument("cmd", nargs=argparse.REMAINDER, help="command to run (after --)")
     args = parser.parse_args(argv)
     if not args.cmd or args.cmd[0] == "--":
         args.cmd = args.cmd[1:] if args.cmd else []
@@ -174,9 +186,15 @@ def cmd_sweep(argv: Sequence[str]) -> int:
     """Remove stale sandbox dirs under the sandbox root."""
     parser = argparse.ArgumentParser(
         prog="e2e-sandbox sweep",
-        description="Remove sandbox directories older than --max-age hours.")
-    parser.add_argument("--max-age", type=float, default=6.0, metavar="HOURS",
-                        help="age threshold in hours (default 6)")
+        description="Remove sandbox directories older than --max-age hours.",
+    )
+    parser.add_argument(
+        "--max-age",
+        type=float,
+        default=6.0,
+        metavar="HOURS",
+        help="age threshold in hours (default 6)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="list, do not delete")
     args = parser.parse_args(argv)
 
@@ -205,8 +223,10 @@ def cmd_sweep(argv: Sequence[str]) -> int:
         shutil.rmtree(entry, ignore_errors=True)
         freed_bytes += size
         removed += 1
-    print(f"e2e-sandbox: swept {removed}, kept {kept}"
-          + (f", freed {freed_bytes / 1e6:.0f} MB" if freed_bytes else ""))
+    print(
+        f"e2e-sandbox: swept {removed}, kept {kept}"
+        + (f", freed {freed_bytes / 1e6:.0f} MB" if freed_bytes else "")
+    )
     return 0
 
 
@@ -219,9 +239,15 @@ def cmd_sweep_tmp(argv: Sequence[str]) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="e2e-sandbox sweep-tmp",
-        description="Backstop: remove orphan chromium profile dirs from /tmp.")
-    parser.add_argument("--max-age", type=float, default=60.0, metavar="MINUTES",
-                        help="age threshold in minutes (default 60)")
+        description="Backstop: remove orphan chromium profile dirs from /tmp.",
+    )
+    parser.add_argument(
+        "--max-age",
+        type=float,
+        default=60.0,
+        metavar="MINUTES",
+        help="age threshold in minutes (default 60)",
+    )
     parser.add_argument("--tmp-dir", default="/tmp", help="temp dir to sweep (default /tmp)")
     parser.add_argument("--dry-run", action="store_true", help="list, do not delete")
     args = parser.parse_args(argv)
@@ -253,8 +279,10 @@ def cmd_sweep_tmp(argv: Sequence[str]) -> int:
             continue
         shutil.rmtree(entry, ignore_errors=True)
         removed += 1
-    print(f"e2e-sandbox: sweep-tmp removed {removed}"
-          + (f", skipped(not ours) {skipped}" if skipped else ""))
+    print(
+        f"e2e-sandbox: sweep-tmp removed {removed}"
+        + (f", skipped(not ours) {skipped}" if skipped else "")
+    )
     return 0
 
 

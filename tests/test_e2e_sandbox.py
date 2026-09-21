@@ -4,10 +4,8 @@
 from __future__ import annotations
 
 import os
-import stat
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from unittest import mock
@@ -38,10 +36,7 @@ def test_run_sets_tmpdir_for_child(tmp_path):
     marker = tmp_path / "marker"
     with mock.patch.dict(os.environ, {"E2E_SANDBOX_ROOT": str(root)}):
         # The child writes its TMPDIR to a file outside the sandbox.
-        code = (
-            "import os, pathlib; "
-            f"pathlib.Path({str(marker)!r}).write_text(os.environ['TMPDIR'])"
-        )
+        code = f"import os, pathlib; pathlib.Path({str(marker)!r}).write_text(os.environ['TMPDIR'])"
         rc = sb.main(["run", "--", sys.executable, "-c", code])
         assert rc == 0
         child_tmp = marker.read_text()
@@ -55,14 +50,17 @@ def test_run_keep_preserves_sandbox(tmp_path):
         rc = sb.main(["run", "--keep", "--label", "dbg", "--", "true"])
         assert rc == 0
         boxes = list(root.iterdir())
-        assert len(boxes) == 1 and boxes[0].name.endswith("-dbg"), "sandbox must be kept with --keep"
+        assert len(boxes) == 1 and boxes[0].name.endswith("-dbg"), (
+            "sandbox must be kept with --keep"
+        )
 
 
 def test_run_timeout_kills_and_cleans(tmp_path):
     root = tmp_path / "sandbox-root"
     with mock.patch.dict(os.environ, {"E2E_SANDBOX_ROOT": str(root)}):
-        rc = sb.main(["run", "--timeout", "1", "--",
-                      sys.executable, "-c", "import time; time.sleep(60)"])
+        rc = sb.main(
+            ["run", "--timeout", "1", "--", sys.executable, "-c", "import time; time.sleep(60)"]
+        )
         assert rc != 0, "timed-out child must yield a non-zero exit"
         assert not root.exists() or not any(root.iterdir()), "timeout must still clean"
 
@@ -112,7 +110,9 @@ def test_sweep_tmp_removes_shaped_stale_dirs(tmp_path):
     assert not stale.exists()
     assert fresh.exists(), "recently-touched dirs must never be removed"
     # system-shaped name survives: it does not match the 20+ random-char shape
-    assert notshaped.name.startswith("systemd-")  # and it was skipped (has '-' but also letters < 20 random)
+    assert notshaped.name.startswith(
+        "systemd-"
+    )  # and it was skipped (has '-' but also letters < 20 random)
 
 
 def test_sweep_tmp_skips_files_and_foreign_owners(tmp_path):
@@ -128,11 +128,14 @@ def test_sweep_tmp_skips_files_and_foreign_owners(tmp_path):
 
 def test_never_touch_prefixes_are_excluded():
     for name in ("systemd-private-abc", ".X11-unix", ".ICE-unix", "snap-private-tmp"):
-        assert any(name.startswith(p) for p in sb._NEVER_TOUCH) or not sb._CHROMIUM_DIR_SHAPE.match(name)
+        assert any(name.startswith(p) for p in sb._NEVER_TOUCH) or not sb._CHROMIUM_DIR_SHAPE.match(
+            name
+        )
 
 
 def test_cli_dispatch_lists_command():
     from celestia_devtools.core.cli import COMMANDS
+
     assert COMMANDS["e2e-sandbox"] == "celestia_devtools.env.e2e_sandbox"
 
 
@@ -140,7 +143,7 @@ def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
     """SIGTERM must go through the finally path (S1's NO-GO finding):
     the sandbox is removed AND the child process tree is killed."""
     import signal as signal_mod
-    import subprocess
+
     root = tmp_path / "sandbox-root"
     # A wrapper script that we can signal from outside
     wrapper_code = (
@@ -154,7 +157,11 @@ def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
     env = dict(os.environ, SB_SRC=str(Path(__file__).parents[1] / "src"))
     proc = subprocess.Popen(
         [sys.executable, "-c", wrapper_code],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
     time.sleep(2)  # let the sandbox and child spawn
     proc.send_signal(signal_mod.SIGTERM)
     try:
@@ -162,7 +169,8 @@ def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
     except subprocess.TimeoutExpired:
         proc.kill()
         out, err = proc.communicate()
-        assert False, "wrapper did not exit after SIGTERM"
+        raise AssertionError("wrapper did not exit after SIGTERM") from None
     # sandbox must be gone
-    assert not root.exists() or not any(root.iterdir()), \
+    assert not root.exists() or not any(root.iterdir()), (
         f"SIGTERM leaked sandbox: {list(root.iterdir()) if root.exists() else 'gone'}"
+    )
