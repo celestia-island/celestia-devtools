@@ -32,6 +32,8 @@ WATCHED = [
     "plana", "hikari", "kirino", "evernight",
 ]
 CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_chest_tauri_mobile"}
+APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev",
+                "plana": "libgtk-3-dev pkg-config libssl-dev"}
 ORG = "celestia-island"
 THRESHOLD = int(os.environ.get("DISPATCH_THRESHOLD", "6"))
 POLL_SEC = int(os.environ.get("DISPATCH_POLL_SEC", "60"))
@@ -115,6 +117,8 @@ def spill(entry, state):
         env["GH_READ_PAT"] = GH  # same token: private repo read for SHA fallback fetch
     if repo in CARGO_ARGS:
         env["CARGO_CHECK_ARGS"] = CARGO_ARGS[repo]
+    if repo in APT_PACKAGES:
+        env["APT_PACKAGES"] = APT_PACKAGES[repo]
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
                 {"event": "api_trigger_ci", "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
