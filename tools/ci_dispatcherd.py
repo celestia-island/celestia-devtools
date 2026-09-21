@@ -168,13 +168,14 @@ def main():
         try:
             state = load_state()
             q = census()
-            tracked_shas = {t["sha"] for t in state.values()}
+            spilled_shas = {t["sha"] for t in state.values()}
             excess = len(q) - THRESHOLD
             if excess > 0:
                 for entry in q[:excess]:
-                    if entry["sha"] in tracked_shas or str(entry["run_id"]) in state:
+                    if entry["sha"] in spilled_shas or str(entry["run_id"]) in state:
                         continue
                     spill(entry, state)
+                    spilled_shas.add(entry["sha"])
                     save_state(state)
             resolve(state)
             save_state(state)
