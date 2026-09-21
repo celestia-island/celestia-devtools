@@ -111,6 +111,8 @@ def save_state(st):
 def spill(entry, state):
     repo, sha = entry["repo"], entry["sha"]
     env = {"TARGET_REPO": repo, "TARGET_SHA": sha, "GH_REPO": f"{ORG}/{repo}", "TASK": "cargo-check"}
+    if GH:
+        env["GH_READ_PAT"] = GH  # same token: private repo read for SHA fallback fetch
     if repo in CARGO_ARGS:
         env["CARGO_CHECK_ARGS"] = CARGO_ARGS[repo]
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
