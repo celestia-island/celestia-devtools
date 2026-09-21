@@ -61,7 +61,7 @@ def test_run_timeout_kills_and_cleans(tmp_path):
         rc = sb.main(
             ["run", "--timeout", "1", "--", sys.executable, "-c", "import time; time.sleep(60)"]
         )
-        assert rc != 0, "timed-out child must yield a non-zero exit"
+        assert rc == 124, "timeout must report the GNU timeout convention (124)"
         assert not root.exists() or not any(root.iterdir()), "timeout must still clean"
 
 

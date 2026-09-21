@@ -156,9 +156,13 @@ def cmd_run(argv: Sequence[str]) -> int:
                 rc = child.wait(timeout=args.timeout)
             except subprocess.TimeoutExpired:
                 _kill_tree(child)
-                rc = child.wait()
+                child.wait()
                 print(f"e2e-sandbox: timed out after {args.timeout}s, killed", file=sys.stderr)
-                rc = rc if rc is not None else 124
+                # GNU timeout convention: 124 means "the command timed out".
+                # The killed child's own wait() result (-9 & 0xFF = 247) would
+                # leak the SIGKILL mask and is indistinguishable from the child
+                # dying of signal 127, so report 124 unconditionally.
+                rc = 124
         else:
             rc = child.wait()
     except KeyboardInterrupt:
