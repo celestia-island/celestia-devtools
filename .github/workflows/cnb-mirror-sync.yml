@@ -1,0 +1,61 @@
+# CNB Mirror Sync — keeps the one-way mirrors at cnb.cool/celestia-island/* in sync with GitHub.
+#
+# This is a DATA-SYNC job per the ci-ops note on sync workflows: it never pushes to GitHub,
+# so nothing it produces requires GitHub CI validation. The heavy lifting (clone/fetch/push of
+# 17 repos) runs on CNB compute via the ci_infra api_trigger_sync pipeline; this workflow only
+# triggers it and waits, passing GH_READ_PAT transiently (env of the dispatched build), so no
+# credential is ever stored on CNB. First run of the pipeline was measured at ~60s / 0.07
+# core-hours; the copy-on-write volume caches bare clones for subsequent runs.
+
+name: CNB Mirror Sync
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: cnb-mirror-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 15
+    steps:
+      - name: Trigger ci_infra mirror sync on CNB and wait
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          GH_READ_PAT: ${{ secrets.GH_READ_PAT }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, time, urllib.request
+
+          tok = os.environ["CNB_TOKEN"]
+
+          def cnb(url, data=None):
+              req = urllib.request.Request(url,
+                  data=json.dumps(data).encode() if data is not None else None,
+                  headers={"Authorization": "Bearer " + tok,
+                           "Content-Type": "application/json",
+                           "Accept": "application/vnd.cnb.api+json"},
+                  method="POST" if data is not None else "GET")
+              return json.load(urllib.request.urlopen(req))
+
+          r = cnb("https://api.cnb.cool/celestia-island/ci_infra/-/build/start",
+                  {"event": "api_trigger_sync", "branch": "master",
+                   "title": "scheduled mirror sync",
+                   "env": {"GH_READ_PAT": os.environ["GH_READ_PAT"]}})
+          sn = r["sn"]
+          print("sync sn:", sn, r.get("buildLogUrl", ""))
+
+          deadline = time.time() + 12 * 60
+          while time.time() < deadline:
+              time.sleep(30)
+              st = cnb(f"https://api.cnb.cool/celestia-island/ci_infra/-/build/status/{sn}")["status"]
+              print("status:", st)
+              if st in ("success", "error", "cancel"):
+                  print("FINAL:", st)
+                  sys.exit(0 if st == "success" else 1)
+          print("sync still running past 12min; leaving it running, check CNB build logs")
+          PYEOF
