@@ -40,6 +40,7 @@ POLL_SEC = int(os.environ.get("DISPATCH_POLL_SEC", "60"))
 SPILL_TTL_SEC = int(os.environ.get("DISPATCH_SPILL_TTL_SEC", "2700"))
 STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
 GH = os.environ.get("GH_TOKEN", "")
+FETCH = os.environ.get("GH_FETCH", "")
 CNB = os.environ.get("CNB_TOKEN", "")
 
 
@@ -113,8 +114,8 @@ def save_state(st):
 def spill(entry, state):
     repo, sha = entry["repo"], entry["sha"]
     env = {"TARGET_REPO": repo, "TARGET_SHA": sha, "GH_REPO": f"{ORG}/{repo}", "TASK": "cargo-check"}
-    if GH:
-        env["GH_READ_PAT"] = GH  # same token: private repo read for SHA fallback fetch
+    if FETCH:
+        env["GH_READ_PAT"] = FETCH  # dedicated read PAT (contents:read) for SHA fallback fetch
     if repo in CARGO_ARGS:
         env["CARGO_CHECK_ARGS"] = CARGO_ARGS[repo]
     if repo in APT_PACKAGES:
@@ -166,8 +167,8 @@ def resolve(state):
 
 
 def main():
-    if not GH or not CNB:
-        print("FATAL: GH_TOKEN / CNB_TOKEN missing", file=sys.stderr)
+    if not GH or not CNB or not FETCH:
+        print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file=sys.stderr)
         sys.exit(1)
     log(f"ci-dispatcherd start: watched={len(WATCHED)} threshold={THRESHOLD} poll={POLL_SEC}s")
     while True:
