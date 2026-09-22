@@ -30,7 +30,10 @@ import urllib.request
 WATCHED = [
     "shittim-chest", "entelecheia", "arona", "malkuth",
     "plana", "hikari", "kirino", "evernight",
+    "celestia-devtools", "evernight-appliance",
 ]
+TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-check"}
+EVENTS = {"cargo-check": "api_trigger_ci", "python-check": "api_trigger_py", "webui-check": "api_trigger_web"}
 CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_chest_tauri_mobile"}
 APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev",
                 "plana": "libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev pkg-config libssl-dev"}
@@ -128,15 +131,18 @@ def save_state(st):
 
 def spill(entry, state):
     repo, sha = entry["repo"], entry["sha"]
-    env = {"TARGET_REPO": repo, "TARGET_SHA": sha, "GH_REPO": f"{ORG}/{repo}", "TASK": "cargo-check"}
+    task = TASKS.get(repo, "cargo-check")
+    env = {"TARGET_REPO": repo, "TARGET_SHA": sha, "GH_REPO": f"{ORG}/{repo}", "TASK": task}
     if FETCH:
         env["GH_READ_PAT"] = FETCH  # dedicated read PAT (contents:read) for SHA fallback fetch
     if repo in CARGO_ARGS:
         env["CARGO_CHECK_ARGS"] = CARGO_ARGS[repo]
     if repo in APT_PACKAGES:
         env["APT_PACKAGES"] = APT_PACKAGES[repo]
+    if repo == "celestia-devtools":
+        env["NEED_NODE"] = "1"
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
-                {"event": "api_trigger_ci", "branch": "master",
+                {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
     state[str(entry["run_id"])] = {"sn": r["sn"], "repo": repo, "sha": sha,
                                    "url": r.get("buildLogUrl", ""), "since": time.time()}
