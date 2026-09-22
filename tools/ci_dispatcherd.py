@@ -33,6 +33,10 @@ WATCHED = [
     "celestia-devtools", "evernight-appliance",
 ]
 TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-check"}
+DEV_QUOTA = {"shittim-chest", "evernight", "arona"}
+WS_CHECK_STAGE = "cargo-check"
+GITCACHE = os.environ.get("DISPATCH_GITCACHE", "/var/lib/ci-dispatcher/git")
+GIT_PROXY = os.environ.get("DISPATCH_GIT_PROXY", "http://daemon.node.local:7890")
 EVENTS = {"cargo-check": "api_trigger_ci", "python-check": "api_trigger_py", "webui-check": "api_trigger_web"}
 CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_chest_tauri_mobile"}
 APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev",
@@ -45,6 +49,7 @@ STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json
 GH = os.environ.get("GH_TOKEN", "")
 FETCH = os.environ.get("GH_FETCH", "")
 CNB = os.environ.get("CNB_TOKEN", "")
+CNB_WS = os.environ.get("CNB_WS_TOKEN", "")
 
 
 def log(msg):
@@ -129,6 +134,29 @@ def save_state(st):
     os.replace(tmp, STATE_PATH)
 
 
+def ensure_sha_on_mirror(repo, sha):
+    import subprocess
+    d = f"{GITCACHE}/{repo}.git"
+    os.makedirs(GITCACHE, exist_ok=True)
+    if not os.path.isdir(d):
+        subprocess.run(["git", "init", "-q", "--bare", d], check=True)
+    env_gh = dict(os.environ, HTTPS_PROXY=GIT_PROXY, NO_PROXY="127.0.0.1,localhost,192.168.0.0/16")
+    subprocess.run(["git", "-C", d, "fetch", "-q", f"https://langyo:{FETCH}@github.com/{ORG}/{repo}.git", sha],
+                   check=True, env=env_gh, timeout=300)
+    env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+    subprocess.run(["git", "-C", d, "push", "-q", f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git",
+                    f"{sha}:refs/heads/spill/{sha[:10]}"], check=True, env=env_cnb, timeout=300)
+
+
+def ws_stop(sn):
+    req = urllib.request.Request("https://api.cnb.cool/workspace/stop",
+        data=json.dumps({"pipelineId": f"{sn}-001"}).encode(),
+        headers={"Authorization": "Bearer " + CNB_WS, "Content-Type": "application/json",
+                 "Accept": "application/vnd.cnb.api+json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read() or b"{}")
+
+
 def spill(entry, state):
     repo, sha = entry["repo"], entry["sha"]
     task = TASKS.get(repo, "cargo-check")
@@ -142,10 +170,20 @@ def spill(entry, state):
     if repo == "celestia-devtools":
         env["NEED_NODE"] = "1"
         env["PY_IGNORE"] = "tests/test_ci_orphan_janitor.py tests/test_deploy_e2e.py"
+    if repo in DEV_QUOTA and CNB_WS:
+        try:
+            ensure_sha_on_mirror(repo, sha)
+            r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": sha})
+            state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
+                                           "url": r.get("buildLogUrl", ""), "since": time.time()}
+            log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
+            return
+        except Exception as e:
+            log(f"ws-spill {repo} failed ({e}); falling back to build lane")
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
                 {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
-    state[str(entry["run_id"])] = {"sn": r["sn"], "repo": repo, "sha": sha,
+    state[str(entry["run_id"])] = {"mode": "build", "sn": r["sn"], "repo": repo, "sha": sha,
                                    "url": r.get("buildLogUrl", ""), "since": time.time()}
     log(f"spill {repo} run {entry['run_id']} sha {sha[:10]} -> cnb {r['sn']}")
 
@@ -168,7 +206,20 @@ def resolve(state):
             del state[run_id]
             continue
         try:
-            st = cnb_api(f"/{ORG}/ci-farm/-/build/status/{sn}").get("status")
+            if t.get("mode") == "ws":
+                d = cnb_api(f"/{ORG}/{t['repo']}/-/build/status/{sn}")
+                stages = list(d.get("pipelinesStatus", {}).values())[0].get("stages", [])
+                cs = next((s for s in stages if s.get("name") == WS_CHECK_STAGE), None)
+                st = None
+                if cs and cs.get("status") in ("success", "error", "cancel"):
+                    st = "success" if cs["status"] == "success" else "error"
+                    try:
+                        ws_stop(sn)
+                        log(f"ws {sn} stopped after check {cs['status']}")
+                    except Exception as e:
+                        log(f"ws stop {sn} failed: {e}")
+            else:
+                st = cnb_api(f"/{ORG}/ci-farm/-/build/status/{sn}").get("status")
         except Exception as e:
             log(f"poll {sn}: {e}")
             continue
@@ -192,6 +243,11 @@ def resolve(state):
 
 def main():
     if not GH or not CNB or not FETCH:
+        print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file=sys.stderr)
+        sys.exit(1)
+    if not CNB_WS:
+        print("WARN: CNB_WS_TOKEN missing — dev-quota lane disabled", file=sys.stderr)
+    if False:
         print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file=sys.stderr)
         sys.exit(1)
     log(f"ci-dispatcherd start: watched={len(WATCHED)} threshold={THRESHOLD} poll={POLL_SEC}s")
