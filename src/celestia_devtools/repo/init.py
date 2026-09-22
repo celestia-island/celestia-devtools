@@ -271,7 +271,7 @@ def _check_justfile_import(name: str) -> None:
     if has_recipes:
         logger.info(f"justfile already imports {DEST_DIR}/{name}")
     else:
-        logger.info(f"add near the top of your justfile:")
+        logger.info("add near the top of your justfile:")
         print(f"\n    {recipe_import}\n")
 
 
