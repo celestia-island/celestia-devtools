@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "celestia-devtools"
-version = "0.14.1"
+dynamic = ["version"]
 description = "Shared build/devtool scripts for the celestia-island ecosystem"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -60,6 +60,12 @@ celestia-ci-cache = "celestia_devtools.ci.cache_policy:main"
 # pytest + ruff only: PyYAML now ships as a runtime dependency (see above), which is also
 # what the job-timeouts tests need for their "still valid YAML" cross-checks.
 dev = ["pytest>=7", "ruff>=0.4"]
+
+[tool.hatch.version]
+# Single source of truth for the package version: the wheel/sdist metadata
+# derives from src/celestia_devtools/__init__.py, so the two can never drift
+# (they used to: 0.9.0 vs 0.14.1). Guarded by tests/test_version_single_source.py.
+path = "src/celestia_devtools/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/celestia_devtools"]
