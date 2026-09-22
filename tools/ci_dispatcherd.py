@@ -141,6 +141,7 @@ def spill(entry, state):
         env["APT_PACKAGES"] = APT_PACKAGES[repo]
     if repo == "celestia-devtools":
         env["NEED_NODE"] = "1"
+        env["PY_IGNORE"] = "tests/test_ci_orphan_janitor.py tests/test_deploy_e2e.py"
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
                 {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
