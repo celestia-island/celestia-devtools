@@ -31,9 +31,8 @@ class TestCommandRegistry:
             # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
             "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit",
             "ci-cache",
-            # Also missing from this literal while present in COMMANDS: the release-notes
-            # generator. The new reverse-direction test below is what pins the whole set.
-            "release-notes",
+            # release-notes is already listed above (line 29); the
+            # reverse-direction test below pins the whole set either way.
             # Added 2026-09-20: production-target lifecycle group (deploy doctor;
             # the remaining subcommands land with their own slices and fail loudly).
             "deploy",
