@@ -33,7 +33,7 @@ WATCHED = [
 ]
 CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_chest_tauri_mobile"}
 APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev",
-                "plana": "libgtk-3-dev pkg-config libssl-dev"}
+                "plana": "libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev pkg-config libssl-dev"}
 ORG = "celestia-island"
 THRESHOLD = int(os.environ.get("DISPATCH_THRESHOLD", "6"))
 POLL_SEC = int(os.environ.get("DISPATCH_POLL_SEC", "60"))
