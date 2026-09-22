@@ -96,11 +96,26 @@ def census():
     return runs
 
 
+RECENT_TTL_SEC = int(os.environ.get("DISPATCH_RECENT_TTL_SEC", "2700"))
+
+
 def load_state():
     try:
-        return json.load(open(STATE_PATH))
+        st = json.load(open(STATE_PATH))
     except Exception:
         return {}
+    if not isinstance(st.get("_recent"), dict):
+        st["_recent"] = {}
+    return st
+
+
+def remember(st, sha):
+    recent = st.setdefault("_recent", {})
+    recent[sha] = time.time()
+    now = time.time()
+    for s, ts in list(recent.items()):
+        if now - ts > RECENT_TTL_SEC:
+            del recent[s]
 
 
 def save_state(st):
@@ -150,6 +165,8 @@ def resolve(state):
         except Exception as e:
             log(f"poll {sn}: {e}")
             continue
+        if st in ("success", "error", "cancel"):
+            remember(state, sha)
         if st == "success":
             post_status(repo, sha, "success", url)
             try:
@@ -178,9 +195,14 @@ def main():
             spilled_shas = {t["sha"] for t in state.values()}
             excess = len(q) - THRESHOLD
             if excess > 0:
+                now = time.time()
+                recent = state.get("_recent", {})
                 for entry in q[:excess]:
                     if entry["sha"] in spilled_shas or str(entry["run_id"]) in state:
                         continue
+                    ts = recent.get(entry["sha"])
+                    if ts and now - ts < RECENT_TTL_SEC:
+                        continue  # recently resolved on CNB; skip re-spill
                     spill(entry, state)
                     spilled_shas.add(entry["sha"])
                     save_state(state)
