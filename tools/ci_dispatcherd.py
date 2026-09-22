@@ -209,6 +209,8 @@ def post_status(repo, sha, state_, url):
 
 def resolve(state):
     for run_id, t in list(state.items()):
+        if run_id == "_recent":
+            continue  # bookkeeping dict, not a spill record
         repo, sha, sn, url = t["repo"], t["sha"], t["sn"], t.get("url", "")
         if time.time() - t["since"] > SPILL_TTL_SEC:
             log(f"spill ttl exceeded {repo} run {run_id}; untracking (farm run untouched)")
@@ -264,7 +266,10 @@ def main():
         try:
             state = load_state()
             q = census()
-            spilled_shas = {t["sha"] for t in state.values()}
+            # state also carries the `_recent` bookkeeping dict — skip it or
+            # the comprehension raises KeyError('sha') on every loop and the
+            # daemon never spills (nor persists) anything again.
+            spilled_shas = {t["sha"] for k, t in state.items() if k != "_recent"}
             excess = len(q) - THRESHOLD
             if excess > 0:
                 now = time.time()
