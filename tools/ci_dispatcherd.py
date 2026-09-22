@@ -141,11 +141,20 @@ def ensure_sha_on_mirror(repo, sha):
     if not os.path.isdir(d):
         subprocess.run(["git", "init", "-q", "--bare", d], check=True)
     env_gh = dict(os.environ, HTTPS_PROXY=GIT_PROXY, NO_PROXY="127.0.0.1,localhost,192.168.0.0/16")
-    subprocess.run(["git", "-C", d, "fetch", "-q", f"https://langyo:{FETCH}@github.com/{ORG}/{repo}.git", sha],
-                   check=True, env=env_gh, timeout=300)
+    subprocess.run(["git", "-C", d, "fetch", "-q", f"https://langyo:{FETCH}@github.com/{ORG}/{repo}.git",
+                    "+refs/heads/master:refs/heads/master", sha], check=True, env=env_gh, timeout=300)
+    tree = subprocess.run(["git", "-C", d, "merge-tree", "--write-tree", "--no-messages", "master", sha],
+                          capture_output=True, text=True, timeout=120)
+    tree_sha = tree.stdout.split(chr(10), 1)[0].strip()
+    if tree.returncode != 0 or not tree_sha:
+        raise RuntimeError(f"merge-tree conflict for {sha[:10]}")
+    merge = subprocess.run(["git", "-C", d, "commit-tree", tree_sha, "-p", "master", "-p", sha],
+                           input="spill merge" + chr(10), text=True, capture_output=True, check=True, timeout=60)
+    msha = merge.stdout.strip()
     env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
     subprocess.run(["git", "-C", d, "push", "-q", f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git",
-                    f"{sha}:refs/heads/spill/{sha[:10]}"], check=True, env=env_cnb, timeout=300)
+                    f"{msha}:refs/heads/spill/{sha[:10]}"], check=True, env=env_cnb, timeout=300)
+    return msha
 
 
 def ws_stop(sn):
@@ -172,8 +181,8 @@ def spill(entry, state):
         env["PY_IGNORE"] = "tests/test_ci_orphan_janitor.py tests/test_deploy_e2e.py"
     if repo in DEV_QUOTA and CNB_WS:
         try:
-            ensure_sha_on_mirror(repo, sha)
-            r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": sha})
+            wsha = ensure_sha_on_mirror(repo, sha)
+            r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": wsha})
             state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
                                            "url": r.get("buildLogUrl", ""), "since": time.time()}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
