@@ -47,6 +47,13 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # leaks a dev-quota slot until WS_STAGE_GRACE_SEC and starves the other dev-quota
 # repos into build-lane fallbacks. Verified by simulation against the real resolve().
 DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari"}
+# Each dev-quota repo is validated by a CNB-side lane host (`ci-infra-<repo>`, a repo that
+# exists only on cnb.cool) rather than by a pipeline file in the GitHub repo: the dispatcher
+# pushes `spill/<sha10>` into the host, CNB runs the host's own `.cnb.yml`, and that pipeline
+# clones the target's spilled merge from the org mirror. CNB allows one workspace per
+# repository, so one host per repo also keeps the four lanes concurrent — consolidating them
+# into a single host would serialise the whole dev pool.
+LANE_HOST = os.environ.get("DISPATCH_LANE_HOST", "ci-infra-{repo}")
 WS_CHECK_STAGE = "cargo-check"
 
 
@@ -297,23 +304,44 @@ def ensure_sha_on_mirror(repo, sha):
     return msha
 
 
-def mirror_has_cnb_yml(repo, sha):
-    """True when the spilled tree carries the repo's dev-quota pipeline.
+def publish_lane_ref(repo, sha):
+    """Publish `spill/<sha10>` into the repo's CNB-side lane host.
 
-    A repo in DEV_QUOTA whose tree has no `.cnb.yml` (master missed it, or a PR deleted
-    it) would start a workspace that runs CNB's default environment: no `cargo-check`
-    stage ever appears, nothing is posted and no farm run is cancelled — the slot just
-    burns until the grace release. Checking the tree here costs one local `git cat-file`
-    and turns the deploy-time ordering rule into an invariant. Fails closed to the build
-    lane on any error.
+    Returns (branch, host_has_pipeline). The branch points at the *host's* own master, so the
+    tree CNB checks out is the host's and the host's `.cnb.yml` is what runs; the pipeline then
+    clones the target's spilled merge (which `ensure_sha_on_mirror` keeps on the org mirror
+    under the same ref name). Fails closed: any git error propagates so `spill()` falls back to
+    the build lane instead of starting a workspace that can never reach the gated stage.
     """
     import subprocess
-    d = f"{GITCACHE}/{repo}.git"
-    try:
-        return subprocess.run(["git", "-C", d, "cat-file", "-e", f"{sha}:.cnb.yml"],
-                              capture_output=True, timeout=60).returncode == 0
-    except Exception:  # noqa: BLE001 — any doubt means "use the build lane"
-        return False
+    host = LANE_HOST.format(repo=repo)
+    d = f"{GITCACHE}/{host}.git"
+    os.makedirs(GITCACHE, exist_ok=True)
+    if not os.path.isdir(d):
+        subprocess.run(["git", "init", "-q", "--bare", d], check=True)
+    # cnb.cool must be reached directly (the proxy throttles it to ~13 KB/s)
+    env_cnb = {k: v for k, v in os.environ.items()
+               if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+    cnb_url = f"https://cnb:{CNB}@cnb.cool/{ORG}/{host}.git"
+    subprocess.run(["git", "-C", d, "fetch", "-q", "--force", cnb_url,
+                    "+refs/heads/master:refs/heads/master"], check=True, env=env_cnb, timeout=300)
+    has_pipeline = subprocess.run(["git", "-C", d, "cat-file", "-e", "master:.cnb.yml"],
+                                  capture_output=True).returncode == 0
+    ref = f"refs/heads/spill/{sha[:10]}"
+    if not has_pipeline:
+        # Do not leave a stray branch behind on a host that cannot run the lane.
+        log(f"lane host {host} carries no .cnb.yml — not publishing {ref}")
+        return f"spill/{sha[:10]}", False
+    # Same one-shot-ref caution as the mirror push: a stale ref from a previous spill of the
+    # same sha makes a plain push non-fast-forward, and a bare --force-with-lease is a no-op
+    # without tracking refs, so pin the expected value explicitly.
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, ref],
+                         capture_output=True, text=True, check=True, env=env_cnb, timeout=60)
+    remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
+    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={ref}:{remote_val}",
+                    cnb_url, f"master:{ref}"], check=True, env=env_cnb, timeout=300)
+    log(f"lane ref {host} spill/{sha[:10]} pipeline={'yes' if has_pipeline else 'NO'}")
+    return f"spill/{sha[:10]}", has_pipeline
 
 
 def ws_stop(sn):
@@ -342,7 +370,9 @@ def ws_start(repo, ref, attempts=None, delay=None):
     for i in range(attempts):
         if i:
             time.sleep(delay)
-        r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": ref})
+        # Only `branch` is accepted here: passing a symbolic `ref` alongside `branch: master`
+        # made CNB check out master instead (measured), and `branch` is required by the API.
+        r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": ref})
         if r.get("sn"):
             return r
         last = RuntimeError(f"workspace/start returned no sn (attempt {i + 1}/{attempts}): "
@@ -364,12 +394,26 @@ def spill(entry, state):
         env["NEED_NODE"] = "1"
         env["PY_IGNORE"] = "tests/test_ci_orphan_janitor.py tests/test_deploy_e2e.py"
     if repo in DEV_QUOTA and CNB_WS:
+        # CNB allows one workspace per repository, so a second spill for a repo whose workspace
+        # is still running cannot succeed: it would burn the whole retry budget and then fall
+        # back to the build lane — spending exactly the pool this lane exists to save. Defer it
+        # to the next poll instead (no record, so the census re-offers it).
+        if any(t.get("mode") == "ws" and t.get("repo") == repo
+               for k, t in state.items() if k != "_recent"):
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — {repo} already holds a workspace")
+            return False
         try:
-            wsha = ensure_sha_on_mirror(repo, sha)
-            if not mirror_has_cnb_yml(repo, wsha):
-                raise RuntimeError(f"{repo}: spilled tree carries no .cnb.yml — build lane")
-            r = ws_start(repo, wsha)
-            state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
+            ensure_sha_on_mirror(repo, sha)
+            branch, has_pipeline = publish_lane_ref(repo, sha)
+            if not has_pipeline:
+                raise RuntimeError(f"{LANE_HOST.format(repo=repo)}: no .cnb.yml on master")
+            host = LANE_HOST.format(repo=repo)
+            r = ws_start(host, branch)
+            # `build/status/{sn}` is scoped to the repo the pipeline belongs to, and since the
+            # lane moved to the host that is NOT the target repo any more: polling the target
+            # returned "Failed to retrieve pipeline", so `cs` stayed None and the run was
+            # released at the grace window without ever posting a status or cancelling it.
+            state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha,
                                            "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
@@ -414,7 +458,8 @@ def resolve(state):
             continue
         try:
             if t.get("mode") == "ws":
-                d = cnb_api(f"/{ORG}/{t['repo']}/-/build/status/{sn}")
+                # records written before the lane moved to the host carry no "host" key
+                d = cnb_api(f"/{ORG}/{t.get('host') or t['repo']}/-/build/status/{sn}")
                 pipelines = list(d.get("pipelinesStatus", {}).values())
                 stages = pipelines[0].get("stages", []) if pipelines else []
                 cs = next((s for s in stages if s.get("name") == WS_CHECK_STAGE), None)
@@ -508,7 +553,8 @@ def main():
                     ts = recent.get(entry["sha"])
                     if ts and now - ts < RECENT_TTL_SEC:
                         continue  # recently resolved on CNB; skip re-spill
-                    spill(entry, state)
+                    if spill(entry, state) is False:
+                        continue           # deferred: do not spend the batch budget
                     started += 1
                     spilled_shas.add(entry["sha"])
                     save_state(state)
