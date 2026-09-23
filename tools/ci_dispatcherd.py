@@ -61,15 +61,16 @@ def log(msg):
 # fetch/push URLs carry the tokens inline (https://user:<PAT>@host/...). Those
 # errors land in journald via the exception log lines below, so every message
 # that may contain an exception goes through redact() first.
-URL_CRED_RE = re.compile(r"(https?://[^/\s:@]+:)([^@\s]+)@")
+URL_CRED_RE = re.compile(r"(https?://[^/\s:@]+:)([^@\s/]+)@")
 
 
 def redact(text):
-    text = URL_CRED_RE.sub(r"\1***@", text)
+    # bare-value pass first: tokens containing "@" would otherwise be split by
+    # the URL pass and only partially masked
     for secret in (GH, FETCH, CNB, CNB_WS):
         if secret:
             text = text.replace(secret, "***")
-    return text
+    return URL_CRED_RE.sub(r"\1***@", text)
 
 
 def gh_api(path, data=None, method=None):
@@ -230,7 +231,7 @@ def spill(entry, state):
             wsha = ensure_sha_on_mirror(repo, sha)
             r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": wsha})
             state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
-                                           "url": r.get("buildLogUrl", ""), "since": time.time()}
+                                           "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
         except Exception as e:
@@ -239,7 +240,7 @@ def spill(entry, state):
                 {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
     state[str(entry["run_id"])] = {"mode": "build", "sn": r["sn"], "repo": repo, "sha": sha,
-                                   "url": r.get("buildLogUrl", ""), "since": time.time()}
+                                   "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
     log(f"spill {repo} run {entry['run_id']} sha {sha[:10]} -> cnb {r['sn']}")
 
 

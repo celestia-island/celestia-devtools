@@ -157,3 +157,29 @@ def test_spill_merge_tree_conflict_carries_detail(tmp_path, no_git_identity):
         dsp.spill_merge_tree(repo, master, pr)
     assert "merge-tree conflict" in str(ei.value)
     assert "CONFLICT (content): Merge conflict in f.txt" in str(ei.value)
+
+
+def test_redact_masks_token_containing_at(monkeypatch):
+    """Bare-value pass must run before the URL pass or '@'-bearing tokens leak."""
+    token = "abc@def"
+    monkeypatch.setattr(dsp, "FETCH", token)
+    out = dsp.redact(f"git fetch -q https://langyo:{token}@github.com/o/r.git")
+    assert token not in out
+    assert "https://langyo:***@github.com/o/r.git" in out
+
+
+def test_redact_leaves_port_urls_alone():
+    url = "see http://127.0.0.1:3080/notes@team for details"
+    assert dsp.redact(url) == url
+
+
+def test_all_exception_log_lines_are_redacted():
+    """Guard every exception log site, not just the one covered behaviorally."""
+    src = open(TOOL, encoding="utf-8").read().splitlines()
+    through_redact = [ln for ln in src if "log(" in ln and "str(e)" in ln]
+    # self-test the finder: the seven existing sites must be found
+    assert len(through_redact) >= 7, f"finder pattern broke: matched {len(through_redact)}"
+    for ln in through_redact:
+        assert "redact(" in ln, f"str(e) logged without redact: {ln.strip()}"
+    raw_e = [ln for ln in src if "log(" in ln and "{e}" in ln]
+    assert raw_e == [], f"raw exception interpolation in log lines: {raw_e}"
