@@ -976,3 +976,27 @@ def test_ws_success_reports_and_cancels_on_the_target_repo(monkeypatch):
     assert gh == [("/repos/celestia-island/hikari/actions/runs/4242", None),
                   ("/repos/celestia-island/hikari/actions/runs/4242/cancel", "POST")]
     assert state["_recent"]["a" * 40] == 1_000_000.0
+
+
+def test_ws_failure_keeps_the_farm_run(monkeypatch):
+    """A failed gated stage must post a failure on the TARGET repo and leave the queued farm run
+    untouched — the daemon promises it never posts a green it did not earn, and cancelling on a
+    failure would drop the very signal the author needs."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "error",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "error"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    stopped, posted, gh = [], [], []
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    monkeypatch.setattr(dsp, "post_status",
+                        lambda repo, sha, state_, url: posted.append((repo, sha, state_)))
+    monkeypatch.setattr(dsp, "gh_api", lambda path, data=None, method=None: gh.append((path, method)))
+    state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
+                      "sha": "a" * 40, "url": "u", "since": 999_999.0}}
+    dsp.resolve(state)
+    assert posted == [("hikari", "a" * 40, "failure")]
+    assert gh == []                       # no run lookup, no cancel
+    assert stopped == ["sn-1"]
+    assert "4242" not in state
