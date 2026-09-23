@@ -41,9 +41,11 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # the 33 build dispatches in the 4.8 h after the #132/#133/#134 deploy = 70%), so
 # it moved here once the ws lane proved healthy (90% after that deploy).
 # Ordering precondition: a repo only qualifies while master already carries
-# `.cnb.yml` — the spill ref is a merge of master and the PR head, and a tree
-# without that file lands the workspace in CNB's default empty environment, whose
-# instant "success" would cancel farm runs on a false green.
+# `.cnb.yml`. The spill ref merges master with the PR head; a tree without the file
+# runs CNB's default environment, which exposes no `cargo-check` stage at all — so the
+# spill never reaches a terminal state: no cancel (no false green), but the workspace
+# leaks a dev-quota slot until WS_STAGE_GRACE_SEC and starves the other dev-quota
+# repos into build-lane fallbacks. Verified by simulation against the real resolve().
 DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari"}
 WS_CHECK_STAGE = "cargo-check"
 
