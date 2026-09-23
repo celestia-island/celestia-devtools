@@ -346,20 +346,19 @@ def test_dev_quota_members_are_watched():
     assert dsp.DEV_QUOTA <= set(dsp.WATCHED)
 
 
-def test_dev_quota_repos_route_to_workspace(monkeypatch):
-    """hikari must leave the build lane; other WATCHED repos keep spilling to ci-farm."""
+def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
+    """hikari is validated by its CNB-side host; other WATCHED repos keep spilling to ci-farm."""
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
-    merged = "e" * 40
-    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: merged)
-    monkeypatch.setattr(dsp, "mirror_has_cnb_yml", lambda repo, sha: True)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: (f"spill/{sha[:10]}", True))
     started = []
     monkeypatch.setattr(dsp, "ws_start",
                         lambda repo, ref: (started.append((repo, ref)), {"sn": "sn-ws"})[1])
     state = {}
     dsp.spill({"repo": "hikari", "run_id": 11, "sha": "b" * 40}, state)
     assert state["11"]["mode"] == "ws"
-    assert started == [("hikari", merged)]
+    assert started == [("ci-infra-hikari", "spill/" + "b" * 10)]
 
     paths = []
     monkeypatch.setattr(dsp, "cnb_api",
@@ -367,6 +366,41 @@ def test_dev_quota_repos_route_to_workspace(monkeypatch):
     dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
     assert state["12"]["mode"] == "build"
     assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
+
+
+def test_lane_host_without_a_pipeline_falls_back_to_the_build_lane(monkeypatch):
+    """A host whose master carries no .cnb.yml cannot reach the gated stage, so the spill must
+    go to the build lane instead of holding a workspace slot."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: (f"spill/{sha[:10]}", False))
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(ref), {"sn": "sn-ws"})[1])
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 31, "sha": "b" * 40}, state)
+    assert state["31"]["mode"] == "build"
+    assert started == []
+
+
+def test_same_repo_workspace_defers_instead_of_burning_the_budget(monkeypatch):
+    """CNB allows one workspace per repository: a second same-repo spill must wait for the next
+    poll rather than exhaust the retry budget and drop to the build lane."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    touched = []
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: touched.append("mirror") or "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: touched.append("lane") or ("spill/x", True))
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: touched.append("build") or {"sn": "s"})
+    monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: touched.append("ws") or {"sn": "sn"})
+    state = {"9": {"mode": "ws", "sn": "sn-running", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": 0.0}}
+    dsp.spill({"repo": "hikari", "run_id": 41, "sha": "b" * 40}, state)
+    assert touched == []          # neither a workspace nor a build-lane dispatch
+    assert "41" not in state      # no record: the census re-offers it next poll
+    dsp.spill({"repo": "arona", "run_id": 42, "sha": "c" * 40}, state)
+    assert state["42"]["mode"] == "ws"
 
 
 def test_ws_start_budget_reads_the_service_env():
@@ -679,49 +713,68 @@ def test_grace_window_is_clamped_inside_the_spill_ttl():
     assert ttl == 300 and 60 <= grace < ttl - poll
 
 
-def test_spilled_tree_without_the_lane_config_uses_the_build_lane(monkeypatch):
-    """A dev-quota repo whose spill tree carries no .cnb.yml must not start a workspace: it
-    would run CNB's default environment, never reach the gated stage and just burn that
-    repo's workspace slot (R3 blocker 1, recommended by two independent reviewers)."""
-    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
-    monkeypatch.setattr(dsp, "log", lambda *_: None)
-    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "mirror_has_cnb_yml", lambda repo, sha: False)
-    started = []
-    monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(ref), {"sn": "sn-ws"})[1])
-    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
-    state = {}
-    dsp.spill({"repo": "hikari", "run_id": 31, "sha": "b" * 40}, state)
-    assert state["31"]["mode"] == "build"
-    assert started == []
 
 
-def test_mirror_has_cnb_yml_reads_the_tree_and_fails_closed(monkeypatch, tmp_path):
-    repo = tmp_path / "r.git"
-    subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
-    work = tmp_path / "w"
-    work.mkdir()
-    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
-    subprocess.run(["git", "-C", str(work), "init", "-q"], check=True)
-    (work / ".cnb.yml").write_text("$:\n")
-    subprocess.run(["git", "-C", str(work), *ident, "add", ".cnb.yml"], check=True)
-    subprocess.run(["git", "-C", str(work), *ident, "commit", "-q", "--no-verify", "-m", "x"],
-                   check=True)
-    sha = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
-                         capture_output=True, text=True).stdout.strip()
-    subprocess.run(["git", "-C", str(work), "push", "-q", str(repo), f"{sha}:refs/heads/master"], check=True)
+def test_publish_lane_ref_pushes_the_spill_branch_into_the_host(monkeypatch, tmp_path):
+    """The pushed refspec must be the one-shot `spill/<sha10>` branch of the lane host, pinned
+    with an explicit force-with-lease (a bare lease is a no-op without tracking refs)."""
+    calls = []
+
+    class _Done:
+        def __init__(self, out="", rc=0):
+            self.stdout, self.returncode = out, rc
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if "cat-file" in argv:
+            return _Done(rc=0)
+        return _Done()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
-    assert dsp.mirror_has_cnb_yml("r", sha) is True
-    assert dsp.mirror_has_cnb_yml("r", "b" * 40) is False
-    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path / "missing"))
-    assert dsp.mirror_has_cnb_yml("r", sha) is False
+    sha = "d4e7ada83ca7fb50b79daf83446acee1814d12fb"
+    branch, has_pipeline = dsp.publish_lane_ref("hikari", sha)
+    assert branch == "spill/d4e7ada83c" and has_pipeline is True
+    push = next(c for c in calls if "push" in c)
+    assert "master:refs/heads/spill/d4e7ada83c" in push
+    assert any(a.startswith("--force-with-lease=refs/heads/spill/d4e7ada83c:") for a in push)
+    assert any("ci-infra-hikari.git" in a for a in push)
 
 
-def test_mirror_has_cnb_yml_fails_closed_on_error(monkeypatch):
-    """Any error while inspecting the tree (git missing, timeout, corrupt repo) must fall
-    back to the build lane — never assume the lane config is there."""
-    def boom(*a, **k):
-        raise OSError("git exploded")
+def test_publish_lane_ref_reports_a_host_without_the_pipeline(monkeypatch, tmp_path):
+    class _P:
+        def __init__(self, rc=0, out=""):
+            self.returncode, self.stdout = rc, out
+
+    def fake_run(argv, **kw):
+        if "cat-file" in argv:
+            return _P(rc=1)
+        return _P()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    _, has_pipeline = dsp.publish_lane_ref("hikari", "a" * 40)
+    assert has_pipeline is False
+
+
+def test_ws_start_posts_the_branch_only_body(monkeypatch):
+    """Measured against CNB: `branch` is required and passing `ref` alongside `branch: master`
+    made the workspace check out master instead of the requested ref, so the body must carry the
+    branch and nothing else."""
+    seen = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append((path, data)), {"sn": "sn-1"})[1])
+    dsp.ws_start("ci-infra-hikari", "spill/abc1234567")
+    assert seen == [("/celestia-island/ci-infra-hikari/-/workspace/start",
+                     {"branch": "spill/abc1234567"})]
+
+
+def test_publish_lane_ref_propagates_git_failures(monkeypatch, tmp_path):
+    """Publishing must fail closed: an error has to reach spill() so the run goes to the build
+    lane, never a workspace that cannot reach the gated stage."""
+    def boom(argv, **kw):
+        raise subprocess.CalledProcessError(128, argv)
 
     monkeypatch.setattr(subprocess, "run", boom)
-    assert dsp.mirror_has_cnb_yml("hikari", "a" * 40) is False
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    with pytest.raises(subprocess.CalledProcessError):
+        dsp.publish_lane_ref("hikari", "a" * 40)
