@@ -202,13 +202,21 @@ def ensure_sha_on_mirror(repo, sha):
     tree_sha = spill_merge_tree(d, "master", sha)
     msha = spill_merge_commit(d, tree_sha, "master", sha)
     env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+    cnb_url = f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git"
+    spill_ref = f"refs/heads/spill/{sha[:10]}"
     # spill/<sha> refs are one-shot synthetic merge commits owned by this daemon;
     # a stale ref from a previous spill of the same sha makes a plain push fail
     # with non-fast-forward and doom the ws lane to its build-lane fallback.
-    # --force-with-lease (never bare --force) overwrites exactly that disposable ref.
-    subprocess.run(["git", "-C", d, "push", "--force-with-lease", "-q",
-                    f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git",
-                    f"{msha}:refs/heads/spill/{sha[:10]}"], check=True, env=env_cnb, timeout=300)
+    # A bare --force-with-lease is a no-op here: the gitcache bare repo has no
+    # remote-tracking refs to lease against, so git rejects the push with
+    # "stale info" exactly like a plain push. Pin the lease explicitly instead:
+    # ls-remote the current value and require the push to land on exactly that
+    # value (empty expect = ref must not exist yet). Never bare --force.
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, spill_ref],
+                         capture_output=True, text=True, check=True, env=env_cnb, timeout=60)
+    remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
+    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={spill_ref}:{remote_val}",
+                    cnb_url, f"{msha}:{spill_ref}"], check=True, env=env_cnb, timeout=300)
     return msha
 
 
