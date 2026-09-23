@@ -54,7 +54,10 @@ CNB_WS = os.environ.get("CNB_WS_TOKEN", "")
 
 
 def log(msg):
-    print(time.strftime("[%FT%TZ] ") + msg, flush=True)
+    # choke point: even if a call site misses redact(), or logging itself fails
+    # inside an except block (Python would print the raw __context__ chain),
+    # nothing reaches journald unredacted. redact() is idempotent.
+    print(time.strftime("[%FT%TZ] ") + redact(msg), flush=True)
 
 
 # subprocess raises CalledProcessError whose str() embeds the full argv, and the

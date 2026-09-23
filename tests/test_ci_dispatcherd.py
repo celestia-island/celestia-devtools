@@ -183,3 +183,12 @@ def test_all_exception_log_lines_are_redacted():
         assert "redact(" in ln, f"str(e) logged without redact: {ln.strip()}"
     raw_e = [ln for ln in src if "log(" in ln and "{e}" in ln]
     assert raw_e == [], f"raw exception interpolation in log lines: {raw_e}"
+
+
+def test_log_choke_point_redacts_everything(monkeypatch, capsys):
+    """Even a call site that forgot redact() cannot leak through log()."""
+    monkeypatch.setattr(dsp, "FETCH", FETCH_TOKEN)
+    dsp.log(f"boom https://langyo:{FETCH_TOKEN}@github.com/o/r.git")
+    out = capsys.readouterr().out
+    assert FETCH_TOKEN not in out
+    assert "langyo:***@github.com" in out
