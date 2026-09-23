@@ -366,3 +366,162 @@ def test_dev_quota_repos_route_to_workspace(monkeypatch):
     dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
     assert state["12"]["mode"] == "build"
     assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
+
+
+def test_ws_start_budget_reads_the_service_env():
+    """The knobs must come from the service env (systemd EnvironmentFile), not be
+    hardcoded — the previous assertion only compared module attributes to each other."""
+    script = (
+        "import importlib.util;"
+        f"spec=importlib.util.spec_from_file_location('d', {os.path.abspath(TOOL)!r});"
+        "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
+        "print(m.WS_START_ATTEMPTS, m.WS_START_RETRY_SEC, m.SPILL_BATCH_PER_LOOP, m.WS_STAGE_GRACE_SEC)"
+    )
+    env = dict(os.environ, DISPATCH_WS_ATTEMPTS="2", DISPATCH_WS_RETRY_SEC="7",
+               DISPATCH_SPILL_BATCH="5", DISPATCH_WS_STAGE_GRACE_SEC="120")
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["2", "7", "5", "120"]
+
+
+def test_env_int_rejects_garbage_and_out_of_range(monkeypatch, capsys):
+    """A bad env value must fall back to the default instead of crashing the daemon at
+    import time (systemd Restart=always would turn a typo into a crash loop)."""
+    monkeypatch.setenv("DSP_TEST_KNOB", "abc")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    monkeypatch.setenv("DSP_TEST_KNOB", "0")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    monkeypatch.setenv("DSP_TEST_KNOB", "99")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    monkeypatch.setenv("DSP_TEST_KNOB", "4")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 4
+    monkeypatch.delenv("DSP_TEST_KNOB")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    assert capsys.readouterr().err.count("WARN") == 3
+
+
+def _raise_ws_start(monkeypatch, body):
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: body)
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError) as ei:
+        dsp.ws_start("evernight", "c" * 40)
+    return str(ei.value)
+
+
+def test_ws_start_redacts_before_truncating(monkeypatch):
+    """Truncation must happen after redaction: the message is cut at 200 bytes, so a
+    secret straddling that cut would otherwise survive as a readable prefix."""
+    secret = "SECRETSTART" + "z" * 40
+    monkeypatch.setattr(dsp, "FETCH", secret)
+    head = len('workspace/start returned no sn (attempt 1/3): {"error": "')
+    # land the secret at byte 180 of the message: a cut at 200 keeps 20 bytes of it
+    msg = _raise_ws_start(monkeypatch, {"error": "y" * (180 - head) + " " + secret})
+    assert secret not in msg
+    assert "SECRETSTART" not in msg
+    assert len(msg) < 400
+
+
+def test_ws_start_redacts_escaped_secret(monkeypatch):
+    """json.dumps escapes quotes, so a bare-value pass over the dumped text misses a
+    secret containing one; redacting the decoded values first keeps it out."""
+    weird = 'ab"cd' + "9" * 20
+    monkeypatch.setattr(dsp, "FETCH", weird)
+    msg = _raise_ws_start(monkeypatch, {"error": f"denied {weird}"})
+    assert weird not in msg
+    assert weird.replace('"', '\\"') not in msg
+
+
+def test_dev_quota_repo_uses_build_lane_without_ws_token(monkeypatch):
+    """No workspace token means the dev-quota lane is off — it must not be attempted."""
+    monkeypatch.setattr(dsp, "CNB_WS", "")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    touched = []
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror",
+                        lambda repo, sha: (touched.append(repo), "e" * 40)[1])
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 21, "sha": "b" * 40}, state)
+    assert state["21"]["mode"] == "build"
+    assert touched == []
+
+
+def _resolve_fixture(monkeypatch, now, since, stages):
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending", "pipelinesStatus": {"p1": {"stages": stages}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    stopped, logs = [], []
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": since}}
+    return state, stopped, logs
+
+
+def test_resolve_releases_workspace_without_the_check_stage(monkeypatch):
+    """`.cnb.yml` missing on master (or a renamed stage) would otherwise hold a
+    dev-quota slot until SPILL_TTL_SEC and starve the other dev-quota repos."""
+    now = 1_000_000.0
+    state, stopped, logs = _resolve_fixture(monkeypatch, now, now - dsp.WS_STAGE_GRACE_SEC - 1,
+                                            [{"name": "verify-ref", "status": "success"}])
+    dsp.resolve(state)
+    assert stopped == ["sn-ws"]
+    assert "7" not in state
+    assert any(f"no {dsp.WS_CHECK_STAGE} stage" in m for m in logs)
+
+
+def test_resolve_leaves_workspace_without_stage_inside_the_grace_window(monkeypatch):
+    now = 1_000_000.0
+    state, stopped, logs = _resolve_fixture(monkeypatch, now, now - 30,
+                                            [{"name": "verify-ref", "status": "success"}])
+    dsp.resolve(state)
+    assert stopped == []
+    assert "7" in state and logs == []
+
+
+def test_spill_batch_is_capped_per_loop(monkeypatch):
+    """resolve() (cancel-green) runs after the spill loop; an unbounded batch would
+    delay those cancellations behind up to ~180 s of ws retry each."""
+
+    class _Stop(BaseException):
+        pass
+
+    entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in range(1, 11)]
+    monkeypatch.setattr(dsp, "GH", "g")
+    monkeypatch.setattr(dsp, "CNB", "c")
+    monkeypatch.setattr(dsp, "FETCH", "f")
+    monkeypatch.setattr(dsp, "CNB_WS", "w")
+    monkeypatch.setattr(dsp, "load_state", lambda: {"_recent": {}})
+    monkeypatch.setattr(dsp, "census", lambda: entries)
+    monkeypatch.setattr(dsp, "save_state", lambda st: None)
+    monkeypatch.setattr(dsp, "resolve", lambda st: None)
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    spilled = []
+    monkeypatch.setattr(dsp, "spill", lambda entry, state: spilled.append(entry["run_id"]))
+
+    def boom(_):
+        raise _Stop()
+
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(boom),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(_Stop):
+        dsp.main()
+    assert spilled == [1, 2, 3]
+    assert dsp.SPILL_BATCH_PER_LOOP == 3
+
+
+def test_resolve_survives_empty_pipeline_status(monkeypatch):
+    """An empty pipelinesStatus must not blow up the poll (the old code indexed [0]
+    and the IndexError was swallowed into a noisy `poll ...: list index out of range`)."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"status": "pending", "pipelinesStatus": {}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    logs = []
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": now - 5}}
+    dsp.resolve(state)
+    assert "7" in state
+    assert logs == []  # the old [0] indexing logged "poll sn-ws: list index out of range"

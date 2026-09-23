@@ -46,14 +46,48 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # instant "success" would cancel farm runs on a false green.
 DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari"}
 WS_CHECK_STAGE = "cargo-check"
+
+
+def _env_int(name, default, low, high):
+    """Bounded integer knob from the service env, falling back to the default.
+
+    A typo in the env file must not take the daemon down at import time — systemd
+    Restart=always would turn `DISPATCH_WS_ATTEMPTS=abc` into a crash loop that stops
+    the whole overflow layer — and a zero/negative value must not silently disable the
+    dev-quota lane (0 attempts raises without ever calling workspace/start).
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        print(f"WARN: {name}={raw!r} is not an integer — using {default}", file=sys.stderr)
+        return default
+    if not low <= val <= high:
+        print(f"WARN: {name}={val} outside [{low}, {high}] — using {default}", file=sys.stderr)
+        return default
+    return val
+
+
 # Bounded retry budget for workspace/start: CNB answers 200 without `sn` while the
 # dev-quota concurrency cap is fully occupied (transient — slots free up as running
 # checks settle). Two attempts 30 s apart still missed twice on 2026-09-23
-# (22:02/22:10) and each miss costs a build-lane dispatch; three attempts 45 s
-# apart cover ~90 s of contention and stay short enough that the single-threaded
-# poll loop never stalls behind it.
-WS_START_ATTEMPTS = int(os.environ.get("DISPATCH_WS_ATTEMPTS", "3"))
-WS_START_RETRY_SEC = int(os.environ.get("DISPATCH_WS_RETRY_SEC", "45"))
+# (22:02/22:10) and each miss costs a build-lane dispatch, so the budget is three
+# attempts 45 s apart. It does block the single-threaded loop for up to ~180 s
+# (3 x 30 s HTTP timeout + 90 s of sleep) — which is why the per-loop spill batch is
+# capped below: leftovers wait for the next poll instead of delaying resolve(), whose
+# cancel-green step is what actually frees farm slots.
+WS_START_ATTEMPTS = _env_int("DISPATCH_WS_ATTEMPTS", 3, 1, 10)
+WS_START_RETRY_SEC = _env_int("DISPATCH_WS_RETRY_SEC", 45, 0, 300)
+# Spills started per loop iteration (see the blocking note above).
+SPILL_BATCH_PER_LOOP = _env_int("DISPATCH_SPILL_BATCH", 3, 1, 50)
+# How long a dev-quota workspace may run without ever showing a terminal
+# `WS_CHECK_STAGE` before the daemon assumes the ref carries no such stage and
+# releases it. A repo whose master lacks `.cnb.yml` would otherwise hold a dev-quota
+# slot until SPILL_TTL_SEC and starve every other dev-quota repo into build-lane
+# fallbacks — the exact opposite of what this lane is for.
+WS_STAGE_GRACE_SEC = _env_int("DISPATCH_WS_STAGE_GRACE_SEC", 900, 60, 3600)
 GITCACHE = os.environ.get("DISPATCH_GITCACHE", "/var/lib/ci-dispatcher/git")
 GIT_PROXY = os.environ.get("DISPATCH_GIT_PROXY", "http://daemon.node.local:7890")
 EVENTS = {"cargo-check": "api_trigger_ci", "python-check": "api_trigger_py", "webui-check": "api_trigger_web"}
@@ -92,6 +126,22 @@ def redact(text):
         if secret:
             text = text.replace(secret, "***")
     return URL_CRED_RE.sub(r"\1***@", text)
+
+
+def redact_obj(obj):
+    """Redact every string inside a decoded JSON value before it is re-serialized.
+
+    `redact(json.dumps(r))` is not enough: a secret containing `"` or `\\` is escaped
+    by json.dumps, so the bare-value pass no longer matches it and the escaped form
+    reaches the log intact. Redacting the values first closes that hole.
+    """
+    if isinstance(obj, str):
+        return redact(obj)
+    if isinstance(obj, dict):
+        return {k: redact_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_obj(v) for v in obj]
+    return obj
 
 
 def gh_api(path, data=None, method=None):
@@ -268,7 +318,7 @@ def ws_start(repo, ref, attempts=None, delay=None):
         if r.get("sn"):
             return r
         last = RuntimeError(f"workspace/start returned no sn (attempt {i + 1}/{attempts}): "
-                            f"{redact(json.dumps(r))[:200]}")
+                            f"{redact(json.dumps(redact_obj(r)))[:200]}")
     raise last
 
 
@@ -325,7 +375,8 @@ def resolve(state):
         try:
             if t.get("mode") == "ws":
                 d = cnb_api(f"/{ORG}/{t['repo']}/-/build/status/{sn}")
-                stages = list(d.get("pipelinesStatus", {}).values())[0].get("stages", [])
+                pipelines = list(d.get("pipelinesStatus", {}).values())
+                stages = pipelines[0].get("stages", []) if pipelines else []
                 cs = next((s for s in stages if s.get("name") == WS_CHECK_STAGE), None)
                 st = None
                 if cs and cs.get("status") in ("success", "error", "cancel"):
@@ -335,6 +386,21 @@ def resolve(state):
                         log(f"ws {sn} stopped after check {cs['status']}")
                     except Exception as e:
                         log(f"ws stop {sn} failed: {redact(str(e))}")
+                elif time.time() - t["since"] > WS_STAGE_GRACE_SEC:
+                    # No `WS_CHECK_STAGE` in sight: the spilled ref almost certainly
+                    # carries no dev-quota pipeline (e.g. the repo's master has no
+                    # .cnb.yml yet). This would otherwise never reach a terminal state
+                    # — the workspace leaks until SPILL_TTL_SEC holds a dev-quota slot
+                    # and starves the other dev-quota repos into build-lane fallbacks.
+                    # Fail closed: release the slot, post no status, leave the farm run.
+                    log(f"ws {sn} ({repo}) has no {WS_CHECK_STAGE} stage after "
+                        f"{WS_STAGE_GRACE_SEC}s — stopping workspace, farm run untouched")
+                    try:
+                        ws_stop(sn)
+                    except Exception as e:
+                        log(f"ws stop {sn} failed: {redact(str(e))}")
+                    del state[run_id]
+                    continue
             else:
                 st = cnb_api(f"/{ORG}/ci-farm/-/build/status/{sn}").get("status")
         except Exception as e:
@@ -377,7 +443,13 @@ def main():
             if excess > 0:
                 now = time.time()
                 recent = state.get("_recent", {})
-                for entry in q[:excess]:
+                # Capped batch: resolve() — whose cancel-green step is what actually
+                # frees farm slots — runs after this loop, and a spill whose
+                # workspace/start misses the dev-quota cap blocks up to ~180 s. An
+                # unbounded batch (the queue can hold ~200 runs) would delay those
+                # cancellations for minutes and spend the very build-pool core-hours
+                # this lane exists to save. Leftovers are picked up next poll.
+                for entry in q[:min(excess, SPILL_BATCH_PER_LOOP)]:
                     if entry["sha"] in spilled_shas or str(entry["run_id"]) in state:
                         continue
                     ts = recent.get(entry["sha"])
