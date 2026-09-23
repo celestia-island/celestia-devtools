@@ -375,13 +375,16 @@ def test_ws_start_budget_reads_the_service_env():
         "import importlib.util;"
         f"spec=importlib.util.spec_from_file_location('d', {os.path.abspath(TOOL)!r});"
         "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
-        "print(m.WS_START_ATTEMPTS, m.WS_START_RETRY_SEC, m.SPILL_BATCH_PER_LOOP, m.WS_STAGE_GRACE_SEC)"
+        "print(m.WS_START_ATTEMPTS, m.WS_START_RETRY_SEC, m.SPILL_BATCH_PER_LOOP, m.WS_STAGE_GRACE_SEC,"
+        "m.THRESHOLD, m.POLL_SEC)"
     )
     env = dict(os.environ, DISPATCH_WS_ATTEMPTS="2", DISPATCH_WS_RETRY_SEC="7",
-               DISPATCH_SPILL_BATCH="5", DISPATCH_WS_STAGE_GRACE_SEC="120")
+               DISPATCH_SPILL_BATCH="5", DISPATCH_WS_STAGE_GRACE_SEC="120",
+               DISPATCH_THRESHOLD="abc", DISPATCH_POLL_SEC="0")
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.split() == ["2", "7", "5", "120"]
+    # the malformed pre-existing knobs fall back instead of crashing the import
+    assert out.stdout.split() == ["2", "7", "5", "120", "6", "60"]
 
 
 def test_env_int_rejects_garbage_and_out_of_range(monkeypatch, capsys):
@@ -409,17 +412,23 @@ def _raise_ws_start(monkeypatch, body):
     return str(ei.value)
 
 
-def test_ws_start_redacts_before_truncating(monkeypatch):
-    """Truncation must happen after redaction: the message is cut at 200 bytes, so a
-    secret straddling that cut would otherwise survive as a readable prefix."""
-    secret = "SECRETSTART" + "z" * 40
-    monkeypatch.setattr(dsp, "FETCH", secret)
+def test_ws_start_message_never_leaks_a_secret_through_escaping_or_truncation(monkeypatch):
+    """Redaction happens on the decoded values/keys *before* json.dumps, so neither the
+    dump's escaping nor the 200-byte cut can expose a secret. (An earlier version of this
+    test asserted the truncate-after-redact order, which became unobservable once
+    redact_obj moved redaction ahead of serialization — R2 review.)"""
+    key_secret = 'KEY"SECRET' + "k" * 30
+    monkeypatch.setattr(dsp, "FETCH", key_secret)
+    msg = _raise_ws_start(monkeypatch, {key_secret: "v"})
+    assert key_secret not in msg
+    assert key_secret.replace('"', '\\"') not in msg
+
+    val_secret = "VALSECRET" + "v" * 40
+    monkeypatch.setattr(dsp, "FETCH", val_secret)
     head = len('workspace/start returned no sn (attempt 1/3): {"error": "')
-    # land the secret at byte 180 of the message: a cut at 200 keeps 20 bytes of it
-    msg = _raise_ws_start(monkeypatch, {"error": "y" * (180 - head) + " " + secret})
-    assert secret not in msg
-    assert "SECRETSTART" not in msg
-    assert len(msg) < 400
+    # land the secret at byte 180: a cut at 200 would keep 20 bytes of it
+    msg = _raise_ws_start(monkeypatch, {"error": "y" * (180 - head) + " " + val_secret})
+    assert val_secret not in msg and "VALSECRET" not in msg and len(msg) < 400
 
 
 def test_ws_start_redacts_escaped_secret(monkeypatch):
@@ -525,3 +534,67 @@ def test_resolve_survives_empty_pipeline_status(monkeypatch):
     dsp.resolve(state)
     assert "7" in state
     assert logs == []  # the old [0] indexing logged "poll sn-ws: list index out of range"
+
+
+def test_resolve_never_cuts_a_running_check_stage(monkeypatch):
+    """The grace guard is for a *missing* stage, not for slowness: a check that is still
+    running past the grace window is healthy and must be left alone (R2 found the old
+    condition cut a 901 s `running` stage in half, without posting anything)."""
+    now = 1_000_000.0
+    state, stopped, logs = _resolve_fixture(monkeypatch, now, now - dsp.WS_STAGE_GRACE_SEC - 1,
+                                            [{"name": dsp.WS_CHECK_STAGE, "status": "running"}])
+    dsp.resolve(state)
+    assert stopped == []
+    assert "7" in state
+    assert logs == []
+
+
+def test_grace_release_remembers_the_sha(monkeypatch):
+    """Releasing a workspace whose ref has no pipeline must not resurface the same run on
+    the next poll (R2 measured a 15-minute churn loop that also ate the spill budget)."""
+    now = 1_000_000.0
+    state, _, _ = _resolve_fixture(monkeypatch, now, now - dsp.WS_STAGE_GRACE_SEC - 1,
+                                   [{"name": "verify-ref", "status": "success"}])
+    dsp.resolve(state)
+    assert state["_recent"]["a" * 40] == now
+
+
+def _loop_fixture(monkeypatch, entries, state, threshold=1):
+    class _Stop(BaseException):
+        pass
+
+    monkeypatch.setattr(dsp, "THRESHOLD", threshold)
+
+    monkeypatch.setattr(dsp, "GH", "g")
+    monkeypatch.setattr(dsp, "CNB", "c")
+    monkeypatch.setattr(dsp, "FETCH", "f")
+    monkeypatch.setattr(dsp, "CNB_WS", "w")
+    monkeypatch.setattr(dsp, "load_state", lambda: state)
+    monkeypatch.setattr(dsp, "census", lambda: entries)
+    monkeypatch.setattr(dsp, "save_state", lambda st: None)
+    monkeypatch.setattr(dsp, "resolve", lambda st: None)
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    spilled = []
+    monkeypatch.setattr(dsp, "spill", lambda entry, st: spilled.append(entry["run_id"]))
+
+    def boom(_):
+        raise _Stop()
+
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(boom),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    return spilled, _Stop
+
+
+def test_tracked_entries_do_not_eat_the_spill_budget(monkeypatch):
+    """The cap counts started spills: runs already tracked at the head of the queue must
+    not starve the untracked ones behind them (R2's saturated-queue case: 6 queued, the
+    first 3 tracked, and the old slice spilled nothing for three polls)."""
+    entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in range(1, 7)]
+    state = {"_recent": {}}
+    for e in entries[:3]:
+        state[str(e["run_id"])] = {"mode": "build", "sn": "sn-x", "repo": "hikari",
+                                   "sha": e["sha"], "url": "", "since": 0.0}
+    spilled, stop = _loop_fixture(monkeypatch, entries, state, threshold=0)
+    with pytest.raises(stop):
+        dsp.main()
+    assert spilled == [4, 5, 6]

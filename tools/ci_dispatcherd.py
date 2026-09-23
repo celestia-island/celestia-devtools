@@ -97,9 +97,9 @@ CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_
 APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev",
                 "plana": "libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev pkg-config libssl-dev"}
 ORG = "celestia-island"
-THRESHOLD = int(os.environ.get("DISPATCH_THRESHOLD", "6"))
-POLL_SEC = int(os.environ.get("DISPATCH_POLL_SEC", "60"))
-SPILL_TTL_SEC = int(os.environ.get("DISPATCH_SPILL_TTL_SEC", "2700"))
+THRESHOLD = _env_int("DISPATCH_THRESHOLD", 6, 0, 100)
+POLL_SEC = _env_int("DISPATCH_POLL_SEC", 60, 5, 3600)
+SPILL_TTL_SEC = _env_int("DISPATCH_SPILL_TTL_SEC", 2700, 60, 86400)
 STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
 GH = os.environ.get("GH_TOKEN", "")
 FETCH = os.environ.get("GH_FETCH", "")
@@ -140,7 +140,7 @@ def redact_obj(obj):
     if isinstance(obj, str):
         return redact(obj)
     if isinstance(obj, dict):
-        return {k: redact_obj(v) for k, v in obj.items()}
+        return {redact(k): redact_obj(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [redact_obj(v) for v in obj]
     return obj
@@ -194,7 +194,7 @@ def census():
     return runs
 
 
-RECENT_TTL_SEC = int(os.environ.get("DISPATCH_RECENT_TTL_SEC", "2700"))
+RECENT_TTL_SEC = _env_int("DISPATCH_RECENT_TTL_SEC", 2700, 60, 86400)
 
 
 def load_state():
@@ -388,19 +388,24 @@ def resolve(state):
                         log(f"ws {sn} stopped after check {cs['status']}")
                     except Exception as e:
                         log(f"ws stop {sn} failed: {redact(str(e))}")
-                elif time.time() - t["since"] > WS_STAGE_GRACE_SEC:
-                    # No `WS_CHECK_STAGE` in sight: the spilled ref almost certainly
-                    # carries no dev-quota pipeline (e.g. the repo's master has no
-                    # .cnb.yml yet). This would otherwise never reach a terminal state
-                    # — the workspace leaks until SPILL_TTL_SEC holds a dev-quota slot
-                    # and starves the other dev-quota repos into build-lane fallbacks.
-                    # Fail closed: release the slot, post no status, leave the farm run.
+                elif cs is None and time.time() - t["since"] > WS_STAGE_GRACE_SEC:
+                    # The stage is *absent*, so the spilled ref carries no dev-quota
+                    # pipeline at all (e.g. the repo's master has no .cnb.yml yet): this
+                    # would never reach a terminal state and the workspace would hold a
+                    # dev-quota slot until SPILL_TTL_SEC, starving the other dev-quota
+                    # repos into build-lane fallbacks. Fail closed: release the slot,
+                    # post no status, leave the farm run. A stage that merely exists and
+                    # is still running is healthy and must never be cut short here.
                     log(f"ws {sn} ({repo}) has no {WS_CHECK_STAGE} stage after "
                         f"{WS_STAGE_GRACE_SEC}s — stopping workspace, farm run untouched")
                     try:
                         ws_stop(sn)
                     except Exception as e:
                         log(f"ws stop {sn} failed: {redact(str(e))}")
+                    # Without this the record is dropped and the same run is re-spilled
+                    # on the very next poll (verified: a 15-minute churn loop that also
+                    # ate the per-loop batch).
+                    remember(state, sha)
                     del state[run_id]
                     continue
             else:
@@ -450,14 +455,20 @@ def main():
                 # workspace/start misses the dev-quota cap blocks up to ~180 s. An
                 # unbounded batch (the queue can hold ~200 runs) would delay those
                 # cancellations for minutes and spend the very build-pool core-hours
-                # this lane exists to save. Leftovers are picked up next poll.
-                for entry in q[:min(excess, SPILL_BATCH_PER_LOOP)]:
+                # this lane exists to save. The cap counts *started spills*, not scanned
+                # entries: already-tracked runs at the head of the queue must not eat the
+                # budget and starve everything behind them in a saturated queue.
+                started = 0
+                for entry in q[:excess]:
+                    if started >= SPILL_BATCH_PER_LOOP:
+                        break
                     if entry["sha"] in spilled_shas or str(entry["run_id"]) in state:
                         continue
                     ts = recent.get(entry["sha"])
                     if ts and now - ts < RECENT_TTL_SEC:
                         continue  # recently resolved on CNB; skip re-spill
                     spill(entry, state)
+                    started += 1
                     spilled_shas.add(entry["sha"])
                     save_state(state)
             resolve(state)
