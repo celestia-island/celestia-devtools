@@ -328,6 +328,10 @@ def publish_lane_ref(repo, sha):
     has_pipeline = subprocess.run(["git", "-C", d, "cat-file", "-e", "master:.cnb.yml"],
                                   capture_output=True).returncode == 0
     ref = f"refs/heads/spill/{sha[:10]}"
+    if not has_pipeline:
+        # Do not leave a stray branch behind on a host that cannot run the lane.
+        log(f"lane host {host} carries no .cnb.yml — not publishing {ref}")
+        return f"spill/{sha[:10]}", False
     # Same one-shot-ref caution as the mirror push: a stale ref from a previous spill of the
     # same sha makes a plain push non-fast-forward, and a bare --force-with-lease is a no-op
     # without tracking refs, so pin the expected value explicitly.
@@ -397,14 +401,19 @@ def spill(entry, state):
         if any(t.get("mode") == "ws" and t.get("repo") == repo
                for k, t in state.items() if k != "_recent"):
             log(f"ws-spill {repo} run {entry['run_id']} deferred — {repo} already holds a workspace")
-            return
+            return False
         try:
             ensure_sha_on_mirror(repo, sha)
             branch, has_pipeline = publish_lane_ref(repo, sha)
             if not has_pipeline:
                 raise RuntimeError(f"{LANE_HOST.format(repo=repo)}: no .cnb.yml on master")
-            r = ws_start(LANE_HOST.format(repo=repo), branch)
-            state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
+            host = LANE_HOST.format(repo=repo)
+            r = ws_start(host, branch)
+            # `build/status/{sn}` is scoped to the repo the pipeline belongs to, and since the
+            # lane moved to the host that is NOT the target repo any more: polling the target
+            # returned "Failed to retrieve pipeline", so `cs` stayed None and the run was
+            # released at the grace window without ever posting a status or cancelling it.
+            state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha,
                                            "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
@@ -449,7 +458,8 @@ def resolve(state):
             continue
         try:
             if t.get("mode") == "ws":
-                d = cnb_api(f"/{ORG}/{t['repo']}/-/build/status/{sn}")
+                # records written before the lane moved to the host carry no "host" key
+                d = cnb_api(f"/{ORG}/{t.get('host') or t['repo']}/-/build/status/{sn}")
                 pipelines = list(d.get("pipelinesStatus", {}).values())
                 stages = pipelines[0].get("stages", []) if pipelines else []
                 cs = next((s for s in stages if s.get("name") == WS_CHECK_STAGE), None)
@@ -543,7 +553,8 @@ def main():
                     ts = recent.get(entry["sha"])
                     if ts and now - ts < RECENT_TTL_SEC:
                         continue  # recently resolved on CNB; skip re-spill
-                    spill(entry, state)
+                    if spill(entry, state) is False:
+                        continue           # deferred: do not spend the batch budget
                     started += 1
                     spilled_shas.add(entry["sha"])
                     save_state(state)

@@ -778,3 +778,142 @@ def test_publish_lane_ref_propagates_git_failures(monkeypatch, tmp_path):
     monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
     with pytest.raises(subprocess.CalledProcessError):
         dsp.publish_lane_ref("hikari", "a" * 40)
+
+
+class _P:
+    def __init__(self, rc=0, out=""):
+        self.returncode, self.stdout = rc, out
+
+
+def _lane_probe(monkeypatch, tmp_path, ls_out="", cat_rc=0, fail_on=None, calls=None):
+    """Drive publish_lane_ref with a fake git, recording every argv."""
+    calls = calls if calls is not None else []
+
+    def fake_run(argv, **kw):
+        calls.append((argv, kw))
+        if fail_on and fail_on in argv:
+            raise subprocess.CalledProcessError(128, argv)
+        if "cat-file" in argv:
+            return _P(rc=cat_rc)
+        if "ls-remote" in argv:
+            return _P(out=ls_out)
+        return _P()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    return calls
+
+
+def test_publish_lane_ref_pins_the_lease_value(monkeypatch, tmp_path):
+    """A bare --force-with-lease is inert in this topology (#134), so the expected remote value
+    must be the one ls-remote just reported — not an empty string."""
+    calls = _lane_probe(monkeypatch, tmp_path, ls_out="f583087fcba3deadbeef\trefs/heads/spill/x\n")
+    dsp.publish_lane_ref("hikari", "d4e7ada83ca7fb50b79daf83446acee1814d12fb")
+    push = next(argv for argv, _ in calls if "push" in argv)
+    assert any(a == "--force-with-lease=refs/heads/spill/d4e7ada83c:f583087fcba3deadbeef"
+               for a in push), push
+
+
+def test_publish_lane_ref_fetches_before_checking_the_pipeline(monkeypatch, tmp_path):
+    """has_pipeline reads master, so the fetch has to come first or a fresh host is misread."""
+    calls = _lane_probe(monkeypatch, tmp_path)
+    dsp.publish_lane_ref("hikari", "a" * 40)
+    order = [next((k for k in argv if k in ("fetch", "cat-file", "push")), None) for argv, _ in calls]
+    assert order.index("fetch") < order.index("cat-file") < order.index("push")
+
+
+def test_publish_lane_ref_strips_the_proxy(monkeypatch, tmp_path):
+    """cnb.cool must be reached directly (the proxy throttles it to ~13 KB/s)."""
+    calls = _lane_probe(monkeypatch, tmp_path)
+    monkeypatch.setenv("HTTPS_PROXY", "http://daemon.node.local:7890")
+    dsp.publish_lane_ref("hikari", "a" * 40)
+    for argv, kw in calls:
+        if "push" in argv or "fetch" in argv:
+            env = kw.get("env") or {}
+            assert "HTTPS_PROXY" not in env and "https_proxy" not in env
+
+
+def test_publish_lane_ref_propagates_push_failures(monkeypatch, tmp_path):
+    """A failed publish must reach spill() so the run goes to the build lane."""
+    _lane_probe(monkeypatch, tmp_path, fail_on="push")
+    with pytest.raises(subprocess.CalledProcessError):
+        dsp.publish_lane_ref("hikari", "a" * 40)
+
+
+def test_publish_lane_ref_leaves_no_ref_without_a_pipeline(monkeypatch, tmp_path):
+    """No pipeline on the host means the lane cannot run, so nothing may be pushed — a stray
+    branch would accumulate on every spill."""
+    calls = _lane_probe(monkeypatch, tmp_path, cat_rc=1)
+    branch, has_pipeline = dsp.publish_lane_ref("hikari", "a" * 40)
+    assert (branch, has_pipeline) == ("spill/" + "a" * 10, False)
+    assert not any("push" in argv for argv, _ in calls)
+
+
+def test_resolve_polls_the_lane_host(monkeypatch):
+    """The workspace lives on the host repo and build/status is repo-scoped, so polling the
+    target repo returned "Failed to retrieve pipeline" and the run was released unseen."""
+    polled = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (
+        polled.append(path), {"status": "running",
+                              "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE,
+                                                                    "status": "running"}]}}})[1])
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    state = {"7": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
+                   "sha": "a" * 40, "url": "", "since": 999_999.0}}
+    dsp.resolve(state)
+    assert polled == ["/celestia-island/ci-infra-hikari/-/build/status/sn-1"]
+
+
+def test_deferral_does_not_spend_the_batch_budget(monkeypatch):
+    """Deferrals used to count as started spills, so a queue head full of already-has-workspace
+    repos could burn the whole per-loop budget and starve every other repo."""
+    class _Stop(BaseException):
+        pass
+
+    entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in (1, 2, 3)]
+    entries += [{"repo": "arona", "run_id": 4, "sha": "d" * 40},
+                {"repo": "evernight", "run_id": 5, "sha": "e" * 40}]
+    state = {"_recent": {}, "9": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-run",
+                                  "repo": "hikari", "sha": "f" * 40, "url": "", "since": 0.0}}
+    monkeypatch.setattr(dsp, "THRESHOLD", 0)
+    monkeypatch.setattr(dsp, "GH", "g")
+    monkeypatch.setattr(dsp, "CNB", "c")
+    monkeypatch.setattr(dsp, "FETCH", "f")
+    monkeypatch.setattr(dsp, "CNB_WS", "w")
+    monkeypatch.setattr(dsp, "load_state", lambda: state)
+    monkeypatch.setattr(dsp, "census", lambda: entries)
+    monkeypatch.setattr(dsp, "save_state", lambda st: None)
+    monkeypatch.setattr(dsp, "resolve", lambda st: None)
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    spilled = []
+
+    def fake_spill(entry, st):
+        if entry["repo"] == "hikari":
+            return False          # the real contract: False = deferred, do not spend the budget
+        spilled.append(entry["run_id"])
+        return True
+
+    monkeypatch.setattr(dsp, "spill", fake_spill)
+    monkeypatch.setattr(dsp, "time", type("T", (), {
+        "sleep": staticmethod(lambda s: (_ for _ in ()).throw(_Stop())),
+        "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(_Stop):
+        dsp.main()
+    # 3 hikari deferrals (spill() -> None) must not consume the budget of 3: arona + evernight land
+    assert [i for i in spilled if i][:2] == [4, 5]
+
+
+def test_a_build_record_does_not_defer_a_workspace_spill(monkeypatch):
+    """The deferral key is an *active workspace*, not just any record for the repo."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: ("spill/" + sha[:10], True))
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(repo), {"sn": "s"})[1])
+    state = {"9": {"mode": "build", "sn": "cnb-x", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": 0.0}}
+    dsp.spill({"repo": "hikari", "run_id": 51, "sha": "b" * 40}, state)
+    assert started == ["ci-infra-hikari"]
