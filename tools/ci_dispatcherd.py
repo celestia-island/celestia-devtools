@@ -76,10 +76,11 @@ def _env_int(name, default, low, high):
 # dev-quota concurrency cap is fully occupied (transient — slots free up as running
 # checks settle). Two attempts 30 s apart still missed twice on 2026-09-23
 # (22:02/22:10) and each miss costs a build-lane dispatch, so the budget is three
-# attempts 45 s apart. It does block the single-threaded loop for up to ~180 s
-# (3 x 30 s HTTP timeout + 90 s of sleep) — which is why the per-loop spill batch is
-# capped below: leftovers wait for the next poll instead of delaying resolve(), whose
-# cancel-green step is what actually frees farm slots.
+# attempts 45 s apart (ws_start alone blocks up to 3 x 30 s HTTP + 90 s of sleep = 180 s;
+# a whole spill adds the mirror budget — fetch 300 + merge 120 + ls-remote 60 + push 300 —
+# and the build-lane call, so budget ~990 s per spill and ~2970 s per loop at the default
+# batch of 3). That is why the per-loop spill batch is capped below: leftovers wait for the
+# next poll instead of delaying resolve(), whose cancel-green step is what frees farm slots.
 WS_START_ATTEMPTS = _env_int("DISPATCH_WS_ATTEMPTS", 3, 1, 10)
 WS_START_RETRY_SEC = _env_int("DISPATCH_WS_RETRY_SEC", 45, 0, 300)
 # Spills started per loop iteration (see the blocking note above).
@@ -100,6 +101,12 @@ ORG = "celestia-island"
 THRESHOLD = _env_int("DISPATCH_THRESHOLD", 6, 0, 100)
 POLL_SEC = _env_int("DISPATCH_POLL_SEC", 60, 5, 3600)
 SPILL_TTL_SEC = _env_int("DISPATCH_SPILL_TTL_SEC", 2700, 60, 86400)
+
+if WS_STAGE_GRACE_SEC >= SPILL_TTL_SEC - POLL_SEC:
+    _fixed = max(60, min(WS_STAGE_GRACE_SEC, (SPILL_TTL_SEC - POLL_SEC) // 2))
+    print(f"WARN: DISPATCH_WS_STAGE_GRACE_SEC={WS_STAGE_GRACE_SEC} leaves no room inside "
+          f"DISPATCH_SPILL_TTL_SEC={SPILL_TTL_SEC} — using {_fixed}", file=sys.stderr)
+    WS_STAGE_GRACE_SEC = _fixed
 STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
 GH = os.environ.get("GH_TOKEN", "")
 FETCH = os.environ.get("GH_FETCH", "")
@@ -290,6 +297,25 @@ def ensure_sha_on_mirror(repo, sha):
     return msha
 
 
+def mirror_has_cnb_yml(repo, sha):
+    """True when the spilled tree carries the repo's dev-quota pipeline.
+
+    A repo in DEV_QUOTA whose tree has no `.cnb.yml` (master missed it, or a PR deleted
+    it) would start a workspace that runs CNB's default environment: no `cargo-check`
+    stage ever appears, nothing is posted and no farm run is cancelled — the slot just
+    burns until the grace release. Checking the tree here costs one local `git cat-file`
+    and turns the deploy-time ordering rule into an invariant. Fails closed to the build
+    lane on any error.
+    """
+    import subprocess
+    d = f"{GITCACHE}/{repo}.git"
+    try:
+        return subprocess.run(["git", "-C", d, "cat-file", "-e", f"{sha}:.cnb.yml"],
+                              capture_output=True, timeout=60).returncode == 0
+    except Exception:  # noqa: BLE001 — any doubt means "use the build lane"
+        return False
+
+
 def ws_stop(sn):
     req = urllib.request.Request("https://api.cnb.cool/workspace/stop",
         data=json.dumps({"pipelineId": f"{sn}-001"}).encode(),
@@ -340,6 +366,8 @@ def spill(entry, state):
     if repo in DEV_QUOTA and CNB_WS:
         try:
             wsha = ensure_sha_on_mirror(repo, sha)
+            if not mirror_has_cnb_yml(repo, wsha):
+                raise RuntimeError(f"{repo}: spilled tree carries no .cnb.yml — build lane")
             r = ws_start(repo, wsha)
             state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
                                            "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
@@ -371,7 +399,17 @@ def resolve(state):
             continue  # bookkeeping dict, not a spill record
         repo, sha, sn, url = t["repo"], t["sha"], t["sn"], t.get("url", "")
         if time.time() - t["since"] > SPILL_TTL_SEC:
+            # Same class as the grace release below: dropping the record without stopping
+            # the workspace abandons a dev-quota slot, and without remember() the run is
+            # re-spilled on the next poll (three workspace/start calls for one run, R3 T5).
             log(f"spill ttl exceeded {repo} run {run_id}; untracking (farm run untouched)")
+            if t.get("mode") == "ws":
+                try:
+                    ws_stop(sn)
+                    log(f"ws {sn} stopped after ttl expiry")
+                except Exception as e:
+                    log(f"ws stop {sn} failed: {redact(str(e))}")
+            remember(state, sha)
             del state[run_id]
             continue
         try:
@@ -401,7 +439,10 @@ def resolve(state):
                     try:
                         ws_stop(sn)
                     except Exception as e:
-                        log(f"ws stop {sn} failed: {redact(str(e))}")
+                        # Keep tracking: the slot is still held, and dropping the record
+                        # here would abandon it with nothing left to retry (R3 T4).
+                        log(f"ws stop {sn} failed: {redact(str(e))}; keeping the record")
+                        continue
                     # Without this the record is dropped and the same run is re-spilled
                     # on the very next poll (verified: a 15-minute churn loop that also
                     # ate the per-loop batch).
@@ -452,10 +493,10 @@ def main():
                 recent = state.get("_recent", {})
                 # Capped batch: resolve() — whose cancel-green step is what actually
                 # frees farm slots — runs after this loop, and a spill whose
-                # workspace/start misses the dev-quota cap blocks up to ~180 s. An
-                # unbounded batch (the queue can hold ~200 runs) would delay those
-                # cancellations for minutes and spend the very build-pool core-hours
-                # this lane exists to save. The cap counts *started spills*, not scanned
+                # workspace/start misses the dev-quota cap blocks up to ~180 s, and a
+                # whole spill ~990 s including the mirror budget. An unbounded batch (the
+                # queue can hold ~200 runs) would delay those cancellations for hours and
+                # spend the very build-pool core-hours this lane exists to save. The cap counts *started spills*, not scanned
                 # entries: already-tracked runs at the head of the queue must not eat the
                 # budget and starve everything behind them in a saturated queue.
                 started = 0

@@ -352,6 +352,7 @@ def test_dev_quota_repos_route_to_workspace(monkeypatch):
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     merged = "e" * 40
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: merged)
+    monkeypatch.setattr(dsp, "mirror_has_cnb_yml", lambda repo, sha: True)
     started = []
     monkeypatch.setattr(dsp, "ws_start",
                         lambda repo, ref: (started.append((repo, ref)), {"sn": "sn-ws"})[1])
@@ -376,15 +377,17 @@ def test_ws_start_budget_reads_the_service_env():
         f"spec=importlib.util.spec_from_file_location('d', {os.path.abspath(TOOL)!r});"
         "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
         "print(m.WS_START_ATTEMPTS, m.WS_START_RETRY_SEC, m.SPILL_BATCH_PER_LOOP, m.WS_STAGE_GRACE_SEC,"
-        "m.THRESHOLD, m.POLL_SEC)"
+        "m.THRESHOLD, m.POLL_SEC, m.SPILL_TTL_SEC)"
     )
     env = dict(os.environ, DISPATCH_WS_ATTEMPTS="2", DISPATCH_WS_RETRY_SEC="7",
                DISPATCH_SPILL_BATCH="5", DISPATCH_WS_STAGE_GRACE_SEC="120",
-               DISPATCH_THRESHOLD="abc", DISPATCH_POLL_SEC="0")
+               DISPATCH_THRESHOLD="abc", DISPATCH_POLL_SEC="0",
+               DISPATCH_SPILL_TTL_SEC="1500")
     out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
     assert out.returncode == 0, out.stderr
     # the malformed pre-existing knobs fall back instead of crashing the import
-    assert out.stdout.split() == ["2", "7", "5", "120", "6", "60"]
+    # a valid non-default proves the knob is actually read, not a hardcoded 6/60
+    assert out.stdout.split() == ["2", "7", "5", "120", "6", "60", "1500"]
 
 
 def test_env_int_rejects_garbage_and_out_of_range(monkeypatch, capsys):
@@ -598,3 +601,127 @@ def test_tracked_entries_do_not_eat_the_spill_budget(monkeypatch):
     with pytest.raises(stop):
         dsp.main()
     assert spilled == [4, 5, 6]
+
+
+def test_ws_start_explicit_budget_overrides_the_env_constants(monkeypatch):
+    """preflight-ws.py calls ws_start(attempts=1, delay=0); that contract must not silently
+    become the env budget (R3 H1)."""
+    monkeypatch.setattr(dsp, "WS_START_ATTEMPTS", 5)
+    monkeypatch.setattr(dsp, "WS_START_RETRY_SEC", 99)
+    calls, sleeps = [], []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (calls.append(path), {"error": "cap"})[1])
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError):
+        dsp.ws_start("hikari", "c" * 40, attempts=1, delay=0)
+    assert len(calls) == 1 and sleeps == []
+
+
+def test_ttl_release_stops_the_workspace_and_remembers(monkeypatch):
+    """The TTL branch carried the same defect class as the grace release: it dropped the
+    record without stopping the workspace (leaking a dev-quota slot) and without remember()
+    (R3 T5: three workspace/start calls for a single run)."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "running"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    stopped, logs = [], []
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": now - dsp.SPILL_TTL_SEC - 1}}
+    dsp.resolve(state)
+    assert stopped == ["sn-ws"]
+    assert "7" not in state
+    assert state["_recent"]["a" * 40] == now
+
+
+def test_grace_release_keeps_the_record_when_ws_stop_fails(monkeypatch):
+    """A failed ws_stop means the slot is still held — dropping the record would abandon it
+    with nothing left to retry (R3 T4)."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending",
+        "pipelinesStatus": {"p1": {"stages": [{"name": "verify-ref", "status": "success"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    logs = []
+
+    def boom(sn):
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(dsp, "ws_stop", boom)
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": now - dsp.WS_STAGE_GRACE_SEC - 1}}
+    dsp.resolve(state)
+    assert "7" in state
+    assert "_recent" not in state
+    assert any("keeping the record" in m for m in logs)
+
+
+def test_grace_window_is_clamped_inside_the_spill_ttl():
+    """A grace window that cannot fit inside the TTL would make every ws record die on the
+    TTL row instead (R3 T9: 60 s TTL + 3600 s grace was accepted)."""
+    script = (
+        "import importlib.util;"
+        f"spec=importlib.util.spec_from_file_location('d', {os.path.abspath(TOOL)!r});"
+        "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
+        "print(m.SPILL_TTL_SEC, m.WS_STAGE_GRACE_SEC, m.POLL_SEC)"
+    )
+    env = dict(os.environ, DISPATCH_SPILL_TTL_SEC="300", DISPATCH_WS_STAGE_GRACE_SEC="3600",
+               DISPATCH_POLL_SEC="45")
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    ttl, grace, poll = (int(x) for x in out.stdout.split())
+    assert ttl == 300 and 60 <= grace < ttl - poll
+
+
+def test_spilled_tree_without_the_lane_config_uses_the_build_lane(monkeypatch):
+    """A dev-quota repo whose spill tree carries no .cnb.yml must not start a workspace: it
+    would run CNB's default environment, never reach the gated stage and just burn that
+    repo's workspace slot (R3 blocker 1, recommended by two independent reviewers)."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "mirror_has_cnb_yml", lambda repo, sha: False)
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(ref), {"sn": "sn-ws"})[1])
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 31, "sha": "b" * 40}, state)
+    assert state["31"]["mode"] == "build"
+    assert started == []
+
+
+def test_mirror_has_cnb_yml_reads_the_tree_and_fails_closed(monkeypatch, tmp_path):
+    repo = tmp_path / "r.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
+    work = tmp_path / "w"
+    work.mkdir()
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run(["git", "-C", str(work), "init", "-q"], check=True)
+    (work / ".cnb.yml").write_text("$:\n")
+    subprocess.run(["git", "-C", str(work), *ident, "add", ".cnb.yml"], check=True)
+    subprocess.run(["git", "-C", str(work), *ident, "commit", "-q", "--no-verify", "-m", "x"],
+                   check=True)
+    sha = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(work), "push", "-q", str(repo), f"{sha}:refs/heads/master"], check=True)
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    assert dsp.mirror_has_cnb_yml("r", sha) is True
+    assert dsp.mirror_has_cnb_yml("r", "b" * 40) is False
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path / "missing"))
+    assert dsp.mirror_has_cnb_yml("r", sha) is False
+
+
+def test_mirror_has_cnb_yml_fails_closed_on_error(monkeypatch):
+    """Any error while inspecting the tree (git missing, timeout, corrupt repo) must fall
+    back to the build lane — never assume the lane config is there."""
+    def boom(*a, **k):
+        raise OSError("git exploded")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert dsp.mirror_has_cnb_yml("hikari", "a" * 40) is False
