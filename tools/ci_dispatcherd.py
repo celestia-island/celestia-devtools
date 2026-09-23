@@ -111,7 +111,7 @@ def load_state():
     try:
         st = json.load(open(STATE_PATH))
     except Exception:
-        return {}
+        return {"_recent": {}}
     if not isinstance(st.get("_recent"), dict):
         st["_recent"] = {}
     return st
@@ -134,6 +134,25 @@ def save_state(st):
     os.replace(tmp, STATE_PATH)
 
 
+# commit-tree refuses to run without an author identity (exit 128, "Author
+# identity unknown") and the service env / gitcache bare repos carry none, which
+# made every ws-spill fall back to the build lane. Pass a fixed synthetic
+# identity explicitly so the spill merge commit never depends on ambient config.
+SPILL_COMMIT_IDENTITY = (
+    "-c", "user.name=ci-dispatcher",
+    "-c", "user.email=ci-dispatcher@users.noreply.github.com",
+)
+
+
+def spill_merge_commit(d, tree_sha, parent_a, parent_b):
+    import subprocess
+    merge = subprocess.run(["git", "-C", d, *SPILL_COMMIT_IDENTITY, "commit-tree", tree_sha,
+                            "-p", parent_a, "-p", parent_b],
+                           input="spill merge" + chr(10), text=True, capture_output=True,
+                           check=True, timeout=60)
+    return merge.stdout.strip()
+
+
 def ensure_sha_on_mirror(repo, sha):
     import subprocess
     d = f"{GITCACHE}/{repo}.git"
@@ -148,9 +167,7 @@ def ensure_sha_on_mirror(repo, sha):
     tree_sha = tree.stdout.split(chr(10), 1)[0].strip()
     if tree.returncode != 0 or not tree_sha:
         raise RuntimeError(f"merge-tree conflict for {sha[:10]}")
-    merge = subprocess.run(["git", "-C", d, "commit-tree", tree_sha, "-p", "master", "-p", sha],
-                           input="spill merge" + chr(10), text=True, capture_output=True, check=True, timeout=60)
-    msha = merge.stdout.strip()
+    msha = spill_merge_commit(d, tree_sha, "master", sha)
     env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
     subprocess.run(["git", "-C", d, "push", "-q", f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git",
                     f"{msha}:refs/heads/spill/{sha[:10]}"], check=True, env=env_cnb, timeout=300)
@@ -258,9 +275,6 @@ def main():
         sys.exit(1)
     if not CNB_WS:
         print("WARN: CNB_WS_TOKEN missing — dev-quota lane disabled", file=sys.stderr)
-    if False:
-        print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file=sys.stderr)
-        sys.exit(1)
     log(f"ci-dispatcherd start: watched={len(WATCHED)} threshold={THRESHOLD} poll={POLL_SEC}s")
     while True:
         try:
@@ -285,7 +299,7 @@ def main():
                     save_state(state)
             resolve(state)
             save_state(state)
-            log(f"queued={len(q)} tracked={len(state)} threshold={THRESHOLD}")
+            log(f"queued={len(q)} tracked={len(state) - 1} threshold={THRESHOLD}")
         except Exception as e:
             log(f"loop error: {e}")
         time.sleep(POLL_SEC)
