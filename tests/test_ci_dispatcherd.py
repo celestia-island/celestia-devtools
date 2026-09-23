@@ -358,6 +358,7 @@ def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
     state = {}
     dsp.spill({"repo": "hikari", "run_id": 11, "sha": "b" * 40}, state)
     assert state["11"]["mode"] == "ws"
+    assert state["11"]["host"] == "ci-infra-hikari"   # resolve() polls this, not the target repo
     assert started == [("ci-infra-hikari", "spill/" + "b" * 10)]
 
     paths = []
@@ -828,9 +829,9 @@ def test_publish_lane_ref_strips_the_proxy(monkeypatch, tmp_path):
     monkeypatch.setenv("HTTPS_PROXY", "http://daemon.node.local:7890")
     dsp.publish_lane_ref("hikari", "a" * 40)
     for argv, kw in calls:
-        if "push" in argv or "fetch" in argv:
-            env = kw.get("env") or {}
-            assert "HTTPS_PROXY" not in env and "https_proxy" not in env
+        if "push" in argv or "fetch" in argv or "ls-remote" in argv:
+            assert "env" in kw, f"{argv[3]} must pass an explicit env so the proxy is stripped"
+            assert not ({"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} & set(kw["env"]))
 
 
 def test_publish_lane_ref_propagates_push_failures(monkeypatch, tmp_path):
@@ -917,3 +918,61 @@ def test_a_build_record_does_not_defer_a_workspace_spill(monkeypatch):
                    "url": "", "since": 0.0}}
     dsp.spill({"repo": "hikari", "run_id": 51, "sha": "b" * 40}, state)
     assert started == ["ci-infra-hikari"]
+
+
+def test_real_spill_returns_false_when_it_defers(monkeypatch):
+    """The main loop keys on `spill(...) is False`, so the real function — not a stub — has to
+    return that value, otherwise a deferral silently spends a batch slot again."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "publish_lane_ref",
+                        lambda repo, sha: pytest.fail("a deferral must not touch the lane host"))
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: pytest.fail("no build-lane dispatch"))
+    state = {"9": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-running", "repo": "hikari",
+                   "sha": "a" * 40, "url": "", "since": 0.0}}
+    assert dsp.spill({"repo": "hikari", "run_id": 61, "sha": "b" * 40}, state) is False
+
+
+def test_resolve_falls_back_to_the_target_repo_for_legacy_records(monkeypatch):
+    """Records written before the lane moved to a host carry no `host` key; they must keep
+    polling the repo the workspace really ran on rather than a path built from None."""
+    polled = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (
+        polled.append(path),
+        {"status": "running",
+         "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "running"}]}}})[1])
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    state = {"7": {"mode": "ws", "sn": "sn-legacy", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": 999_999.0}}
+    dsp.resolve(state)
+    assert polled == ["/celestia-island/hikari/-/build/status/sn-legacy"]
+
+
+def test_ws_success_reports_and_cancels_on_the_target_repo(monkeypatch):
+    """The verdict belongs to the target repo's SHA even though the workspace ran on the host:
+    posting to the host (or cancelling there) would be invisible where it matters."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "success",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "success"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    stopped, posted, gh = [], [], []
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    monkeypatch.setattr(dsp, "post_status", lambda repo, sha, state_, url: posted.append((repo, sha, state_)))
+
+    def fake_gh(path, data=None, method=None):
+        gh.append((path, method))
+        return {"status": "queued"} if method is None else {}
+
+    monkeypatch.setattr(dsp, "gh_api", fake_gh)
+    state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
+                      "sha": "a" * 40, "url": "u", "since": 999_999.0}}
+    dsp.resolve(state)
+    assert posted == [("hikari", "a" * 40, "success")]
+    assert stopped == ["sn-1"]
+    assert gh == [("/repos/celestia-island/hikari/actions/runs/4242", None),
+                  ("/repos/celestia-island/hikari/actions/runs/4242/cancel", "POST")]
+    assert state["_recent"]["a" * 40] == 1_000_000.0
