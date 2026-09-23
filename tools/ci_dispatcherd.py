@@ -111,7 +111,7 @@ def load_state():
     try:
         st = json.load(open(STATE_PATH))
     except Exception:
-        return {}
+        return {"_recent": {}}
     if not isinstance(st.get("_recent"), dict):
         st["_recent"] = {}
     return st
@@ -275,9 +275,6 @@ def main():
         sys.exit(1)
     if not CNB_WS:
         print("WARN: CNB_WS_TOKEN missing — dev-quota lane disabled", file=sys.stderr)
-    if False:
-        print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file=sys.stderr)
-        sys.exit(1)
     log(f"ci-dispatcherd start: watched={len(WATCHED)} threshold={THRESHOLD} poll={POLL_SEC}s")
     while True:
         try:

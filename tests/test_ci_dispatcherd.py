@@ -63,4 +63,5 @@ def test_spill_merge_commit_works_without_ambient_identity(tmp_path, no_git_iden
         capture_output=True, text=True, check=True).stdout.strip().splitlines()
     assert out[0] == "ci-dispatcher"
     assert out[1].endswith("@users.noreply.github.com")
-    assert set(out[2].split()) == {p1, p2}
+    # parent order must stay (master-side parent first, spilled sha second)
+    assert out[2].split() == [p1, p2]
