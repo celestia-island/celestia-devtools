@@ -34,8 +34,26 @@ WATCHED = [
     "celestia-devtools", "evernight-appliance",
 ]
 TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-check"}
-DEV_QUOTA = {"shittim-chest", "evernight", "arona"}
+# Repos whose spills run in a CNB dev-quota workspace (the repo's own `.cnb.yml`
+# `$: vscode:` pipeline) instead of the ci-farm build lane: the dev pool carries
+# 1600 free core-hours/month against the build pool's 160, and build-pool burn is
+# the binding constraint. hikari is the single biggest build-lane consumer (23 of
+# the 33 build dispatches in the 4.8 h after the #132/#133/#134 deploy = 70%), so
+# it moved here once the ws lane proved healthy (90% after that deploy).
+# Ordering precondition: a repo only qualifies while master already carries
+# `.cnb.yml` — the spill ref is a merge of master and the PR head, and a tree
+# without that file lands the workspace in CNB's default empty environment, whose
+# instant "success" would cancel farm runs on a false green.
+DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari"}
 WS_CHECK_STAGE = "cargo-check"
+# Bounded retry budget for workspace/start: CNB answers 200 without `sn` while the
+# dev-quota concurrency cap is fully occupied (transient — slots free up as running
+# checks settle). Two attempts 30 s apart still missed twice on 2026-09-23
+# (22:02/22:10) and each miss costs a build-lane dispatch; three attempts 45 s
+# apart cover ~90 s of contention and stay short enough that the single-threaded
+# poll loop never stalls behind it.
+WS_START_ATTEMPTS = int(os.environ.get("DISPATCH_WS_ATTEMPTS", "3"))
+WS_START_RETRY_SEC = int(os.environ.get("DISPATCH_WS_RETRY_SEC", "45"))
 GITCACHE = os.environ.get("DISPATCH_GITCACHE", "/var/lib/ci-dispatcher/git")
 GIT_PROXY = os.environ.get("DISPATCH_GIT_PROXY", "http://daemon.node.local:7890")
 EVENTS = {"cargo-check": "api_trigger_ci", "python-check": "api_trigger_py", "webui-check": "api_trigger_web"}
@@ -229,16 +247,19 @@ def ws_stop(sn):
         return json.loads(r.read() or b"{}")
 
 
-def ws_start(repo, ref, attempts=2, delay=30):
-    """Start a dev-quota workspace, retrying when the response carries no `sn`.
+def ws_start(repo, ref, attempts=None, delay=None):
+    """Start a dev-quota workspace, retrying while the response carries no `sn`.
 
     CNB's workspace/start intermittently returns 200 without `sn` when the
     dev-quota concurrency cap is already occupied; that is transient (slots free
-    up when running checks settle and stop), so retry once before giving up and
-    falling back to the build lane. Blocks at most `delay` extra seconds per
-    attempt — kept well under the poll cadence so the single-threaded loop
-    never stalls behind it.
+    up when running checks settle and stop), so spend the bounded retry budget
+    before giving up and falling back to the build lane — every fallback spends
+    the 160-core-hour build pool instead of the 1600-core-hour dev pool.
+    Defaults come from DISPATCH_WS_ATTEMPTS / DISPATCH_WS_RETRY_SEC so the budget
+    can be tuned in the service env without a redeploy.
     """
+    attempts = WS_START_ATTEMPTS if attempts is None else attempts
+    delay = WS_START_RETRY_SEC if delay is None else delay
     last = RuntimeError("workspace/start failed: no attempts made")
     for i in range(attempts):
         if i:

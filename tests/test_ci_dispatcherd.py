@@ -269,7 +269,7 @@ def test_spill_push_lease_empty_expect_for_new_ref(monkeypatch, tmp_path):
 
 
 def test_ws_start_retries_when_sn_missing(monkeypatch):
-    """First start without `sn` (dev-quota cap) is transient: retry once, succeed."""
+    """A `sn`-less start (dev-quota cap) is transient: retry, then succeed."""
     responses = [{}, {"sn": "sn-9", "buildLogUrl": "https://cnb.cool/x"}]
     seen = []
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append(path), responses[len(seen) - 1])[1])
@@ -279,18 +279,42 @@ def test_ws_start_retries_when_sn_missing(monkeypatch):
     r = dsp.ws_start("evernight", "c" * 40)
     assert r["sn"] == "sn-9"
     assert len(seen) == 2
-    assert sleeps == [30]
+    assert sleeps == [dsp.WS_START_RETRY_SEC]
 
 
 def test_ws_start_gives_up_after_exhausted_retries(monkeypatch):
-    """Both attempts missing `sn` must raise (caller falls back to build lane)."""
+    """Every attempt missing `sn` must raise (caller falls back to build lane)."""
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"error": "cap"})
     monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
                                                     "time": staticmethod(lambda: 0.0)}))
     with pytest.raises(RuntimeError) as ei:
         dsp.ws_start("evernight", "c" * 40)
-    assert "no sn (attempt 2/2)" in str(ei.value)
+    assert f"no sn (attempt {dsp.WS_START_ATTEMPTS}/{dsp.WS_START_ATTEMPTS})" in str(ei.value)
     assert "cap" in str(ei.value)
+
+
+def test_ws_start_default_budget_beats_measured_contention():
+    """The default budget is evidence-backed, not arbitrary: two attempts 30 s apart
+    still missed the dev-quota cap twice in production (2026-09-23 22:02 / 22:10),
+    and every miss spends the 160-core-hour build pool instead of the dev pool.
+    A silent rollback below that measured floor must fail here."""
+    assert dsp.WS_START_ATTEMPTS >= 3
+    assert dsp.WS_START_RETRY_SEC >= 45
+
+
+def test_ws_start_budget_is_env_tunable(monkeypatch):
+    """The retry budget must be readable from the service env, not hardcoded."""
+    monkeypatch.setattr(dsp, "WS_START_ATTEMPTS", 4)
+    monkeypatch.setattr(dsp, "WS_START_RETRY_SEC", 7)
+    calls = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (calls.append(path), {"error": "cap"})[1])
+    sleeps = []
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError):
+        dsp.ws_start("hikari", "c" * 40)
+    assert len(calls) == 4
+    assert sleeps == [7, 7, 7]
 
 
 def test_ws_start_failure_message_redacts_credentials(monkeypatch):
@@ -315,3 +339,30 @@ def test_ws_start_no_retry_on_first_success(monkeypatch):
                                                     "time": staticmethod(lambda: 0.0)}))
     assert dsp.ws_start("evernight", "c" * 40)["sn"] == "sn-1"
     assert len(seen) == 1 and sleeps == []
+
+
+def test_dev_quota_members_are_watched():
+    """A dev-quota repo the census does not watch would never be spilled at all."""
+    assert dsp.DEV_QUOTA <= set(dsp.WATCHED)
+
+
+def test_dev_quota_repos_route_to_workspace(monkeypatch):
+    """hikari must leave the build lane; other WATCHED repos keep spilling to ci-farm."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    merged = "e" * 40
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: merged)
+    started = []
+    monkeypatch.setattr(dsp, "ws_start",
+                        lambda repo, ref: (started.append((repo, ref)), {"sn": "sn-ws"})[1])
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 11, "sha": "b" * 40}, state)
+    assert state["11"]["mode"] == "ws"
+    assert started == [("hikari", merged)]
+
+    paths = []
+    monkeypatch.setattr(dsp, "cnb_api",
+                        lambda path, data=None: (paths.append(path), {"sn": "sn-build"})[1])
+    dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
+    assert state["12"]["mode"] == "build"
+    assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
