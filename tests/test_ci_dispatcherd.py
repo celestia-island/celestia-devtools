@@ -238,7 +238,6 @@ def test_spill_push_uses_force_with_lease(monkeypatch, tmp_path):
     assert leases == [f"--force-with-lease={spill_ref}:{stale}"], \
         f"explicit lease pinned to the stale value required, got {leases}"
     assert "--force" not in argv, "bare --force must never appear"
-    assert "--force-with-lease " not in argv, "bare --force-with-lease is inert here"
     refspecs = [a for a in argv if ":" in a and a.startswith("c" * 40)]
     assert refspecs == [f"{'c' * 40}:{spill_ref}"], \
         f"refspec destination must stay pinned to the spill ref, got {refspecs}"
