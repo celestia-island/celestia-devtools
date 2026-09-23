@@ -269,7 +269,7 @@ def test_spill_push_lease_empty_expect_for_new_ref(monkeypatch, tmp_path):
 
 
 def test_ws_start_retries_when_sn_missing(monkeypatch):
-    """First start without `sn` (dev-quota cap) is transient: retry once, succeed."""
+    """A `sn`-less start (dev-quota cap) is transient: retry, then succeed."""
     responses = [{}, {"sn": "sn-9", "buildLogUrl": "https://cnb.cool/x"}]
     seen = []
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append(path), responses[len(seen) - 1])[1])
@@ -279,18 +279,42 @@ def test_ws_start_retries_when_sn_missing(monkeypatch):
     r = dsp.ws_start("evernight", "c" * 40)
     assert r["sn"] == "sn-9"
     assert len(seen) == 2
-    assert sleeps == [30]
+    assert sleeps == [dsp.WS_START_RETRY_SEC]
 
 
 def test_ws_start_gives_up_after_exhausted_retries(monkeypatch):
-    """Both attempts missing `sn` must raise (caller falls back to build lane)."""
+    """Every attempt missing `sn` must raise (caller falls back to build lane)."""
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"error": "cap"})
     monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
                                                     "time": staticmethod(lambda: 0.0)}))
     with pytest.raises(RuntimeError) as ei:
         dsp.ws_start("evernight", "c" * 40)
-    assert "no sn (attempt 2/2)" in str(ei.value)
+    assert f"no sn (attempt {dsp.WS_START_ATTEMPTS}/{dsp.WS_START_ATTEMPTS})" in str(ei.value)
     assert "cap" in str(ei.value)
+
+
+def test_ws_start_default_budget_beats_measured_contention():
+    """The default budget is evidence-backed, not arbitrary: two attempts 30 s apart
+    still missed the dev-quota cap twice in production (2026-09-23 22:02 / 22:10),
+    and every miss spends the 160-core-hour build pool instead of the dev pool.
+    A silent rollback below that measured floor must fail here."""
+    assert dsp.WS_START_ATTEMPTS >= 3
+    assert dsp.WS_START_RETRY_SEC >= 45
+
+
+def test_ws_start_budget_is_env_tunable(monkeypatch):
+    """The retry budget must be readable from the service env, not hardcoded."""
+    monkeypatch.setattr(dsp, "WS_START_ATTEMPTS", 4)
+    monkeypatch.setattr(dsp, "WS_START_RETRY_SEC", 7)
+    calls = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (calls.append(path), {"error": "cap"})[1])
+    sleeps = []
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError):
+        dsp.ws_start("hikari", "c" * 40)
+    assert len(calls) == 4
+    assert sleeps == [7, 7, 7]
 
 
 def test_ws_start_failure_message_redacts_credentials(monkeypatch):
@@ -315,3 +339,389 @@ def test_ws_start_no_retry_on_first_success(monkeypatch):
                                                     "time": staticmethod(lambda: 0.0)}))
     assert dsp.ws_start("evernight", "c" * 40)["sn"] == "sn-1"
     assert len(seen) == 1 and sleeps == []
+
+
+def test_dev_quota_members_are_watched():
+    """A dev-quota repo the census does not watch would never be spilled at all."""
+    assert dsp.DEV_QUOTA <= set(dsp.WATCHED)
+
+
+def test_dev_quota_repos_route_to_workspace(monkeypatch):
+    """hikari must leave the build lane; other WATCHED repos keep spilling to ci-farm."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    merged = "e" * 40
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: merged)
+    monkeypatch.setattr(dsp, "mirror_has_cnb_yml", lambda repo, sha: True)
+    started = []
+    monkeypatch.setattr(dsp, "ws_start",
+                        lambda repo, ref: (started.append((repo, ref)), {"sn": "sn-ws"})[1])
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 11, "sha": "b" * 40}, state)
+    assert state["11"]["mode"] == "ws"
+    assert started == [("hikari", merged)]
+
+    paths = []
+    monkeypatch.setattr(dsp, "cnb_api",
+                        lambda path, data=None: (paths.append(path), {"sn": "sn-build"})[1])
+    dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
+    assert state["12"]["mode"] == "build"
+    assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
+
+
+def test_ws_start_budget_reads_the_service_env():
+    """The knobs must come from the service env (systemd EnvironmentFile), not be
+    hardcoded — the previous assertion only compared module attributes to each other."""
+    script = (
+        "import importlib.util;"
+        f"spec=importlib.util.spec_from_file_location('d', {os.path.abspath(TOOL)!r});"
+        "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
+        "print(m.WS_START_ATTEMPTS, m.WS_START_RETRY_SEC, m.SPILL_BATCH_PER_LOOP, m.WS_STAGE_GRACE_SEC,"
+        "m.THRESHOLD, m.POLL_SEC, m.SPILL_TTL_SEC)"
+    )
+    env = dict(os.environ, DISPATCH_WS_ATTEMPTS="2", DISPATCH_WS_RETRY_SEC="7",
+               DISPATCH_SPILL_BATCH="5", DISPATCH_WS_STAGE_GRACE_SEC="120",
+               DISPATCH_THRESHOLD="abc", DISPATCH_POLL_SEC="0",
+               DISPATCH_SPILL_TTL_SEC="1500")
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    # the malformed pre-existing knobs fall back instead of crashing the import
+    # a valid non-default proves the knob is actually read, not a hardcoded 6/60
+    assert out.stdout.split() == ["2", "7", "5", "120", "6", "60", "1500"]
+
+
+def test_env_int_rejects_garbage_and_out_of_range(monkeypatch, capsys):
+    """A bad env value must fall back to the default instead of crashing the daemon at
+    import time (systemd Restart=always would turn a typo into a crash loop)."""
+    monkeypatch.setenv("DSP_TEST_KNOB", "abc")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    monkeypatch.setenv("DSP_TEST_KNOB", "0")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    monkeypatch.setenv("DSP_TEST_KNOB", "99")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    monkeypatch.setenv("DSP_TEST_KNOB", "4")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 4
+    monkeypatch.delenv("DSP_TEST_KNOB")
+    assert dsp._env_int("DSP_TEST_KNOB", 3, 1, 10) == 3
+    assert capsys.readouterr().err.count("WARN") == 3
+
+
+def _raise_ws_start(monkeypatch, body):
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: body)
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError) as ei:
+        dsp.ws_start("evernight", "c" * 40)
+    return str(ei.value)
+
+
+def test_ws_start_message_never_leaks_a_secret_through_escaping_or_truncation(monkeypatch):
+    """Redaction happens on the decoded values/keys *before* json.dumps, so neither the
+    dump's escaping nor the 200-byte cut can expose a secret. (An earlier version of this
+    test asserted the truncate-after-redact order, which became unobservable once
+    redact_obj moved redaction ahead of serialization — R2 review.)"""
+    key_secret = 'KEY"SECRET' + "k" * 30
+    monkeypatch.setattr(dsp, "FETCH", key_secret)
+    msg = _raise_ws_start(monkeypatch, {key_secret: "v"})
+    assert key_secret not in msg
+    assert key_secret.replace('"', '\\"') not in msg
+
+    val_secret = "VALSECRET" + "v" * 40
+    monkeypatch.setattr(dsp, "FETCH", val_secret)
+    head = len('workspace/start returned no sn (attempt 1/3): {"error": "')
+    # land the secret at byte 180: a cut at 200 would keep 20 bytes of it
+    msg = _raise_ws_start(monkeypatch, {"error": "y" * (180 - head) + " " + val_secret})
+    assert val_secret not in msg and "VALSECRET" not in msg and len(msg) < 400
+
+
+def test_ws_start_redacts_escaped_secret(monkeypatch):
+    """json.dumps escapes quotes, so a bare-value pass over the dumped text misses a
+    secret containing one; redacting the decoded values first keeps it out."""
+    weird = 'ab"cd' + "9" * 20
+    monkeypatch.setattr(dsp, "FETCH", weird)
+    msg = _raise_ws_start(monkeypatch, {"error": f"denied {weird}"})
+    assert weird not in msg
+    assert weird.replace('"', '\\"') not in msg
+
+
+def test_dev_quota_repo_uses_build_lane_without_ws_token(monkeypatch):
+    """No workspace token means the dev-quota lane is off — it must not be attempted."""
+    monkeypatch.setattr(dsp, "CNB_WS", "")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    touched = []
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror",
+                        lambda repo, sha: (touched.append(repo), "e" * 40)[1])
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 21, "sha": "b" * 40}, state)
+    assert state["21"]["mode"] == "build"
+    assert touched == []
+
+
+def _resolve_fixture(monkeypatch, now, since, stages):
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending", "pipelinesStatus": {"p1": {"stages": stages}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    stopped, logs = [], []
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": since}}
+    return state, stopped, logs
+
+
+def test_resolve_releases_workspace_without_the_check_stage(monkeypatch):
+    """`.cnb.yml` missing on master (or a renamed stage) would otherwise hold a
+    dev-quota slot until SPILL_TTL_SEC and starve the other dev-quota repos."""
+    now = 1_000_000.0
+    state, stopped, logs = _resolve_fixture(monkeypatch, now, now - dsp.WS_STAGE_GRACE_SEC - 1,
+                                            [{"name": "verify-ref", "status": "success"}])
+    dsp.resolve(state)
+    assert stopped == ["sn-ws"]
+    assert "7" not in state
+    assert any(f"no {dsp.WS_CHECK_STAGE} stage" in m for m in logs)
+
+
+def test_resolve_leaves_workspace_without_stage_inside_the_grace_window(monkeypatch):
+    now = 1_000_000.0
+    state, stopped, logs = _resolve_fixture(monkeypatch, now, now - 30,
+                                            [{"name": "verify-ref", "status": "success"}])
+    dsp.resolve(state)
+    assert stopped == []
+    assert "7" in state and logs == []
+
+
+def test_spill_batch_is_capped_per_loop(monkeypatch):
+    """resolve() (cancel-green) runs after the spill loop; an unbounded batch would
+    delay those cancellations behind up to ~180 s of ws retry each."""
+
+    class _Stop(BaseException):
+        pass
+
+    entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in range(1, 11)]
+    monkeypatch.setattr(dsp, "GH", "g")
+    monkeypatch.setattr(dsp, "CNB", "c")
+    monkeypatch.setattr(dsp, "FETCH", "f")
+    monkeypatch.setattr(dsp, "CNB_WS", "w")
+    monkeypatch.setattr(dsp, "load_state", lambda: {"_recent": {}})
+    monkeypatch.setattr(dsp, "census", lambda: entries)
+    monkeypatch.setattr(dsp, "save_state", lambda st: None)
+    monkeypatch.setattr(dsp, "resolve", lambda st: None)
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    spilled = []
+    monkeypatch.setattr(dsp, "spill", lambda entry, state: spilled.append(entry["run_id"]))
+
+    def boom(_):
+        raise _Stop()
+
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(boom),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(_Stop):
+        dsp.main()
+    assert spilled == [1, 2, 3]
+    assert dsp.SPILL_BATCH_PER_LOOP == 3
+
+
+def test_resolve_survives_empty_pipeline_status(monkeypatch):
+    """An empty pipelinesStatus must not blow up the poll (the old code indexed [0]
+    and the IndexError was swallowed into a noisy `poll ...: list index out of range`)."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"status": "pending", "pipelinesStatus": {}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    logs = []
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": now - 5}}
+    dsp.resolve(state)
+    assert "7" in state
+    assert logs == []  # the old [0] indexing logged "poll sn-ws: list index out of range"
+
+
+def test_resolve_never_cuts_a_running_check_stage(monkeypatch):
+    """The grace guard is for a *missing* stage, not for slowness: a check that is still
+    running past the grace window is healthy and must be left alone (R2 found the old
+    condition cut a 901 s `running` stage in half, without posting anything)."""
+    now = 1_000_000.0
+    state, stopped, logs = _resolve_fixture(monkeypatch, now, now - dsp.WS_STAGE_GRACE_SEC - 1,
+                                            [{"name": dsp.WS_CHECK_STAGE, "status": "running"}])
+    dsp.resolve(state)
+    assert stopped == []
+    assert "7" in state
+    assert logs == []
+
+
+def test_grace_release_remembers_the_sha(monkeypatch):
+    """Releasing a workspace whose ref has no pipeline must not resurface the same run on
+    the next poll (R2 measured a 15-minute churn loop that also ate the spill budget)."""
+    now = 1_000_000.0
+    state, _, _ = _resolve_fixture(monkeypatch, now, now - dsp.WS_STAGE_GRACE_SEC - 1,
+                                   [{"name": "verify-ref", "status": "success"}])
+    dsp.resolve(state)
+    assert state["_recent"]["a" * 40] == now
+
+
+def _loop_fixture(monkeypatch, entries, state, threshold=1):
+    class _Stop(BaseException):
+        pass
+
+    monkeypatch.setattr(dsp, "THRESHOLD", threshold)
+
+    monkeypatch.setattr(dsp, "GH", "g")
+    monkeypatch.setattr(dsp, "CNB", "c")
+    monkeypatch.setattr(dsp, "FETCH", "f")
+    monkeypatch.setattr(dsp, "CNB_WS", "w")
+    monkeypatch.setattr(dsp, "load_state", lambda: state)
+    monkeypatch.setattr(dsp, "census", lambda: entries)
+    monkeypatch.setattr(dsp, "save_state", lambda st: None)
+    monkeypatch.setattr(dsp, "resolve", lambda st: None)
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    spilled = []
+    monkeypatch.setattr(dsp, "spill", lambda entry, st: spilled.append(entry["run_id"]))
+
+    def boom(_):
+        raise _Stop()
+
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(boom),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    return spilled, _Stop
+
+
+def test_tracked_entries_do_not_eat_the_spill_budget(monkeypatch):
+    """The cap counts started spills: runs already tracked at the head of the queue must
+    not starve the untracked ones behind them (R2's saturated-queue case: 6 queued, the
+    first 3 tracked, and the old slice spilled nothing for three polls)."""
+    entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in range(1, 7)]
+    state = {"_recent": {}}
+    for e in entries[:3]:
+        state[str(e["run_id"])] = {"mode": "build", "sn": "sn-x", "repo": "hikari",
+                                   "sha": e["sha"], "url": "", "since": 0.0}
+    spilled, stop = _loop_fixture(monkeypatch, entries, state, threshold=0)
+    with pytest.raises(stop):
+        dsp.main()
+    assert spilled == [4, 5, 6]
+
+
+def test_ws_start_explicit_budget_overrides_the_env_constants(monkeypatch):
+    """preflight-ws.py calls ws_start(attempts=1, delay=0); that contract must not silently
+    become the env budget (R3 H1)."""
+    monkeypatch.setattr(dsp, "WS_START_ATTEMPTS", 5)
+    monkeypatch.setattr(dsp, "WS_START_RETRY_SEC", 99)
+    calls, sleeps = [], []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (calls.append(path), {"error": "cap"})[1])
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError):
+        dsp.ws_start("hikari", "c" * 40, attempts=1, delay=0)
+    assert len(calls) == 1 and sleeps == []
+
+
+def test_ttl_release_stops_the_workspace_and_remembers(monkeypatch):
+    """The TTL branch carried the same defect class as the grace release: it dropped the
+    record without stopping the workspace (leaking a dev-quota slot) and without remember()
+    (R3 T5: three workspace/start calls for a single run)."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "running"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    stopped, logs = [], []
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": now - dsp.SPILL_TTL_SEC - 1}}
+    dsp.resolve(state)
+    assert stopped == ["sn-ws"]
+    assert "7" not in state
+    assert state["_recent"]["a" * 40] == now
+
+
+def test_grace_release_keeps_the_record_when_ws_stop_fails(monkeypatch):
+    """A failed ws_stop means the slot is still held — dropping the record would abandon it
+    with nothing left to retry (R3 T4)."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending",
+        "pipelinesStatus": {"p1": {"stages": [{"name": "verify-ref", "status": "success"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    logs = []
+
+    def boom(sn):
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(dsp, "ws_stop", boom)
+    monkeypatch.setattr(dsp, "log", logs.append)
+    state = {"7": {"mode": "ws", "sn": "sn-ws", "repo": "hikari", "sha": "a" * 40,
+                   "url": "", "since": now - dsp.WS_STAGE_GRACE_SEC - 1}}
+    dsp.resolve(state)
+    assert "7" in state
+    assert "_recent" not in state
+    assert any("keeping the record" in m for m in logs)
+
+
+def test_grace_window_is_clamped_inside_the_spill_ttl():
+    """A grace window that cannot fit inside the TTL would make every ws record die on the
+    TTL row instead (R3 T9: 60 s TTL + 3600 s grace was accepted)."""
+    script = (
+        "import importlib.util;"
+        f"spec=importlib.util.spec_from_file_location('d', {os.path.abspath(TOOL)!r});"
+        "m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);"
+        "print(m.SPILL_TTL_SEC, m.WS_STAGE_GRACE_SEC, m.POLL_SEC)"
+    )
+    env = dict(os.environ, DISPATCH_SPILL_TTL_SEC="300", DISPATCH_WS_STAGE_GRACE_SEC="3600",
+               DISPATCH_POLL_SEC="45")
+    out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+    assert out.returncode == 0, out.stderr
+    ttl, grace, poll = (int(x) for x in out.stdout.split())
+    assert ttl == 300 and 60 <= grace < ttl - poll
+
+
+def test_spilled_tree_without_the_lane_config_uses_the_build_lane(monkeypatch):
+    """A dev-quota repo whose spill tree carries no .cnb.yml must not start a workspace: it
+    would run CNB's default environment, never reach the gated stage and just burn that
+    repo's workspace slot (R3 blocker 1, recommended by two independent reviewers)."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "mirror_has_cnb_yml", lambda repo, sha: False)
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(ref), {"sn": "sn-ws"})[1])
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    state = {}
+    dsp.spill({"repo": "hikari", "run_id": 31, "sha": "b" * 40}, state)
+    assert state["31"]["mode"] == "build"
+    assert started == []
+
+
+def test_mirror_has_cnb_yml_reads_the_tree_and_fails_closed(monkeypatch, tmp_path):
+    repo = tmp_path / "r.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(repo)], check=True)
+    work = tmp_path / "w"
+    work.mkdir()
+    ident = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run(["git", "-C", str(work), "init", "-q"], check=True)
+    (work / ".cnb.yml").write_text("$:\n")
+    subprocess.run(["git", "-C", str(work), *ident, "add", ".cnb.yml"], check=True)
+    subprocess.run(["git", "-C", str(work), *ident, "commit", "-q", "--no-verify", "-m", "x"],
+                   check=True)
+    sha = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"],
+                         capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(work), "push", "-q", str(repo), f"{sha}:refs/heads/master"], check=True)
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    assert dsp.mirror_has_cnb_yml("r", sha) is True
+    assert dsp.mirror_has_cnb_yml("r", "b" * 40) is False
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path / "missing"))
+    assert dsp.mirror_has_cnb_yml("r", sha) is False
+
+
+def test_mirror_has_cnb_yml_fails_closed_on_error(monkeypatch):
+    """Any error while inspecting the tree (git missing, timeout, corrupt repo) must fall
+    back to the build lane — never assume the lane config is there."""
+    def boom(*a, **k):
+        raise OSError("git exploded")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert dsp.mirror_has_cnb_yml("hikari", "a" * 40) is False
