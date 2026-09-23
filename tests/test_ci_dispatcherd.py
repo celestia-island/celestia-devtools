@@ -192,3 +192,76 @@ def test_log_choke_point_redacts_everything(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert FETCH_TOKEN not in out
     assert "langyo:***@github.com" in out
+
+
+class _FakeCompleted:
+    def __init__(self, stdout=""):
+        self.returncode = 0
+        self.stdout = stdout
+        self.stderr = ""
+
+
+def test_spill_push_uses_force_with_lease(monkeypatch, tmp_path):
+    """The spill ref push must carry --force-with-lease (never bare --force).
+
+    Mutation guard: reverting the flag in ensure_sha_on_mirror makes the plain
+    push fail non-fast-forward against a stale spill/<sha> ref, and this test
+    red-flags the missing argument.
+    """
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    monkeypatch.setattr(dsp, "FETCH", "fetch-token-x")
+    monkeypatch.setattr(dsp, "CNB", CNB_TOKEN)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if "merge-tree" in argv:
+            return _FakeCompleted("a" * 40 + "\n")
+        if "commit-tree" in argv:
+            return _FakeCompleted("c" * 40 + "\n")
+        return _FakeCompleted("")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    msha = dsp.ensure_sha_on_mirror("shittim-chest", "b" * 40)
+    assert msha == "c" * 40
+    push_calls = [c for c in calls if "push" in c]
+    assert len(push_calls) == 1, f"expected exactly one push, got {push_calls}"
+    argv = push_calls[0]
+    assert "--force-with-lease" in argv, f"push argv lacks --force-with-lease: {argv}"
+    assert "--force" not in argv, "bare --force must never appear"
+
+
+def test_ws_start_retries_when_sn_missing(monkeypatch):
+    """First start without `sn` (dev-quota cap) is transient: retry once, succeed."""
+    responses = [{}, {"sn": "sn-9", "buildLogUrl": "https://cnb.cool/x"}]
+    seen = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append(path), responses[len(seen) - 1])[1])
+    sleeps = []
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    r = dsp.ws_start("evernight", "c" * 40)
+    assert r["sn"] == "sn-9"
+    assert len(seen) == 2
+    assert sleeps == [30]
+
+
+def test_ws_start_gives_up_after_exhausted_retries(monkeypatch):
+    """Both attempts missing `sn` must raise (caller falls back to build lane)."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"error": "cap"})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError) as ei:
+        dsp.ws_start("evernight", "c" * 40)
+    assert "no sn (attempt 2/2)" in str(ei.value)
+    assert "cap" in str(ei.value)
+
+
+def test_ws_start_no_retry_on_first_success(monkeypatch):
+    """A healthy first response must not pay the retry delay."""
+    seen = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append(path), {"sn": "sn-1"})[1])
+    sleeps = []
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    assert dsp.ws_start("evernight", "c" * 40)["sn"] == "sn-1"
+    assert len(seen) == 1 and sleeps == []
