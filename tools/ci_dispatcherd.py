@@ -22,6 +22,7 @@ dispatched a spill for, and only after the CNB build proved green.
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -56,6 +57,21 @@ def log(msg):
     print(time.strftime("[%FT%TZ] ") + msg, flush=True)
 
 
+# subprocess raises CalledProcessError whose str() embeds the full argv, and the
+# fetch/push URLs carry the tokens inline (https://user:<PAT>@host/...). Those
+# errors land in journald via the exception log lines below, so every message
+# that may contain an exception goes through redact() first.
+URL_CRED_RE = re.compile(r"(https?://[^/\s:@]+:)([^@\s]+)@")
+
+
+def redact(text):
+    text = URL_CRED_RE.sub(r"\1***@", text)
+    for secret in (GH, FETCH, CNB, CNB_WS):
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
 def gh_api(path, data=None, method=None):
     req = urllib.request.Request(
         f"https://api.github.com{path}",
@@ -87,7 +103,7 @@ def census():
         try:
             rr = gh_api(f"/repos/{ORG}/{repo}/actions/runs?status=queued&per_page=20").get("workflow_runs", [])
         except Exception as e:
-            log(f"census {repo}: {e}")
+            log(f"census {repo}: {redact(str(e))}")
             continue
         for run in rr:
             if run.get("event") == "workflow_dispatch" and run.get("name", "").startswith("CNB"):
@@ -153,6 +169,23 @@ def spill_merge_commit(d, tree_sha, parent_a, parent_b):
     return merge.stdout.strip()
 
 
+def spill_merge_tree(d, ours, theirs):
+    """merge-tree the spilled sha onto master; raise (with conflict files) on conflict."""
+    import subprocess
+    tree = subprocess.run(["git", "-C", d, "merge-tree", "--write-tree", ours, theirs],
+                          capture_output=True, text=True, timeout=120)
+    tree_sha = tree.stdout.split(chr(10), 1)[0].strip()
+    if tree.returncode != 0 or not tree_sha:
+        # git puts conflict detail on stdout (after the tree line), not stderr
+        conflicts = [ln.strip() for ln in tree.stdout.splitlines()[1:] if "CONFLICT" in ln]
+        detail = conflicts or [ln.strip() for ln in (tree.stderr or "").splitlines() if ln.strip()]
+        msg = f"merge-tree conflict for {theirs[:10]}"
+        if detail:
+            msg += ": " + "; ".join(detail[:3])[:300]
+        raise RuntimeError(msg)
+    return tree_sha
+
+
 def ensure_sha_on_mirror(repo, sha):
     import subprocess
     d = f"{GITCACHE}/{repo}.git"
@@ -162,11 +195,7 @@ def ensure_sha_on_mirror(repo, sha):
     env_gh = dict(os.environ, HTTPS_PROXY=GIT_PROXY, NO_PROXY="127.0.0.1,localhost,192.168.0.0/16")
     subprocess.run(["git", "-C", d, "fetch", "-q", f"https://langyo:{FETCH}@github.com/{ORG}/{repo}.git",
                     "+refs/heads/master:refs/heads/master", sha], check=True, env=env_gh, timeout=300)
-    tree = subprocess.run(["git", "-C", d, "merge-tree", "--write-tree", "--no-messages", "master", sha],
-                          capture_output=True, text=True, timeout=120)
-    tree_sha = tree.stdout.split(chr(10), 1)[0].strip()
-    if tree.returncode != 0 or not tree_sha:
-        raise RuntimeError(f"merge-tree conflict for {sha[:10]}")
+    tree_sha = spill_merge_tree(d, "master", sha)
     msha = spill_merge_commit(d, tree_sha, "master", sha)
     env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
     subprocess.run(["git", "-C", d, "push", "-q", f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git",
@@ -205,7 +234,7 @@ def spill(entry, state):
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
         except Exception as e:
-            log(f"ws-spill {repo} failed ({e}); falling back to build lane")
+            log(f"ws-spill {repo} failed ({redact(str(e))}); falling back to build lane")
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
                 {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
@@ -221,7 +250,7 @@ def post_status(repo, sha, state_, url):
                 "description": "dispatcher spill result"})
         log(f"status {repo} {sha[:10]} -> {state_}")
     except Exception as e:
-        log(f"status post failed {repo}: {e}")
+        log(f"status post failed {repo}: {redact(str(e))}")
 
 
 def resolve(state):
@@ -245,11 +274,11 @@ def resolve(state):
                         ws_stop(sn)
                         log(f"ws {sn} stopped after check {cs['status']}")
                     except Exception as e:
-                        log(f"ws stop {sn} failed: {e}")
+                        log(f"ws stop {sn} failed: {redact(str(e))}")
             else:
                 st = cnb_api(f"/{ORG}/ci-farm/-/build/status/{sn}").get("status")
         except Exception as e:
-            log(f"poll {sn}: {e}")
+            log(f"poll {sn}: {redact(str(e))}")
             continue
         if st in ("success", "error", "cancel"):
             remember(state, sha)
@@ -261,7 +290,7 @@ def resolve(state):
                     gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel", {}, method="POST")
                     log(f"cancelled queued farm run {run_id} ({repo}) — cnb green")
             except Exception as e:
-                log(f"cancel check {run_id}: {e}")
+                log(f"cancel check {run_id}: {redact(str(e))}")
             del state[run_id]
         elif st in ("error", "cancel"):
             post_status(repo, sha, "failure", url)
@@ -301,7 +330,7 @@ def main():
             save_state(state)
             log(f"queued={len(q)} tracked={len(state) - 1} threshold={THRESHOLD}")
         except Exception as e:
-            log(f"loop error: {e}")
+            log(f"loop error: {redact(str(e))}")
         time.sleep(POLL_SEC)
 
 
