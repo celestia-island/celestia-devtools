@@ -202,8 +202,21 @@ def ensure_sha_on_mirror(repo, sha):
     tree_sha = spill_merge_tree(d, "master", sha)
     msha = spill_merge_commit(d, tree_sha, "master", sha)
     env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
-    subprocess.run(["git", "-C", d, "push", "-q", f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git",
-                    f"{msha}:refs/heads/spill/{sha[:10]}"], check=True, env=env_cnb, timeout=300)
+    cnb_url = f"https://cnb:{CNB}@cnb.cool/{ORG}/{repo}.git"
+    spill_ref = f"refs/heads/spill/{sha[:10]}"
+    # spill/<sha> refs are one-shot synthetic merge commits owned by this daemon;
+    # a stale ref from a previous spill of the same sha makes a plain push fail
+    # with non-fast-forward and doom the ws lane to its build-lane fallback.
+    # A bare --force-with-lease is a no-op here: the gitcache bare repo has no
+    # remote-tracking refs to lease against, so git rejects the push with
+    # "stale info" exactly like a plain push. Pin the lease explicitly instead:
+    # ls-remote the current value and require the push to land on exactly that
+    # value (empty expect = ref must not exist yet). Never bare --force.
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, spill_ref],
+                         capture_output=True, text=True, check=True, env=env_cnb, timeout=60)
+    remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
+    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={spill_ref}:{remote_val}",
+                    cnb_url, f"{msha}:{spill_ref}"], check=True, env=env_cnb, timeout=300)
     return msha
 
 
@@ -214,6 +227,28 @@ def ws_stop(sn):
                  "Accept": "application/vnd.cnb.api+json"}, method="POST")
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read() or b"{}")
+
+
+def ws_start(repo, ref, attempts=2, delay=30):
+    """Start a dev-quota workspace, retrying when the response carries no `sn`.
+
+    CNB's workspace/start intermittently returns 200 without `sn` when the
+    dev-quota concurrency cap is already occupied; that is transient (slots free
+    up when running checks settle and stop), so retry once before giving up and
+    falling back to the build lane. Blocks at most `delay` extra seconds per
+    attempt — kept well under the poll cadence so the single-threaded loop
+    never stalls behind it.
+    """
+    last = RuntimeError("workspace/start failed: no attempts made")
+    for i in range(attempts):
+        if i:
+            time.sleep(delay)
+        r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": ref})
+        if r.get("sn"):
+            return r
+        last = RuntimeError(f"workspace/start returned no sn (attempt {i + 1}/{attempts}): "
+                            f"{redact(json.dumps(r))[:200]}")
+    raise last
 
 
 def spill(entry, state):
@@ -232,7 +267,7 @@ def spill(entry, state):
     if repo in DEV_QUOTA and CNB_WS:
         try:
             wsha = ensure_sha_on_mirror(repo, sha)
-            r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": "master", "ref": wsha})
+            r = ws_start(repo, wsha)
             state[str(entry["run_id"])] = {"mode": "ws", "sn": r["sn"], "repo": repo, "sha": sha,
                                            "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")

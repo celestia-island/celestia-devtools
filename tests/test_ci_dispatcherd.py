@@ -192,3 +192,126 @@ def test_log_choke_point_redacts_everything(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert FETCH_TOKEN not in out
     assert "langyo:***@github.com" in out
+
+
+class _FakeCompleted:
+    def __init__(self, stdout=""):
+        self.returncode = 0
+        self.stdout = stdout
+        self.stderr = ""
+
+
+def test_spill_push_uses_force_with_lease(monkeypatch, tmp_path):
+    """The spill ref push must carry an explicit --force-with-lease=<ref>:<expect>.
+
+    The gitcache bare repo has no remote-tracking refs, so a BARE
+    --force-with-lease is inert (git rejects a stale-ref overwrite with "stale
+    info" just like a plain push) — the lease must be pinned to the value
+    ls-remote reports. Mutation guard: dropping the flag, reverting to the bare
+    form, or widening the refspec destination all turn this test red.
+    """
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    monkeypatch.setattr(dsp, "FETCH", "fetch-token-x")
+    monkeypatch.setattr(dsp, "CNB", CNB_TOKEN)
+    sha = "b" * 40
+    spill_ref = f"refs/heads/spill/{sha[:10]}"
+    stale = "0" * 40
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if "ls-remote" in argv:
+            return _FakeCompleted(f"{stale}\t{spill_ref}\n")
+        if "merge-tree" in argv:
+            return _FakeCompleted("a" * 40 + "\n")
+        if "commit-tree" in argv:
+            return _FakeCompleted("c" * 40 + "\n")
+        return _FakeCompleted("")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    msha = dsp.ensure_sha_on_mirror("shittim-chest", sha)
+    assert msha == "c" * 40
+    push_calls = [c for c in calls if "push" in c]
+    assert len(push_calls) == 1, f"expected exactly one push, got {push_calls}"
+    argv = push_calls[0]
+    leases = [a for a in argv if a.startswith("--force-with-lease=")]
+    assert leases == [f"--force-with-lease={spill_ref}:{stale}"], \
+        f"explicit lease pinned to the stale value required, got {leases}"
+    assert "--force" not in argv, "bare --force must never appear"
+    refspecs = [a for a in argv if ":" in a and a.startswith("c" * 40)]
+    assert refspecs == [f"{'c' * 40}:{spill_ref}"], \
+        f"refspec destination must stay pinned to the spill ref, got {refspecs}"
+
+
+def test_spill_push_lease_empty_expect_for_new_ref(monkeypatch, tmp_path):
+    """When the spill ref does not exist remotely, the lease expects emptiness."""
+    monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+    monkeypatch.setattr(dsp, "FETCH", "fetch-token-x")
+    monkeypatch.setattr(dsp, "CNB", CNB_TOKEN)
+    sha = "b" * 40
+    spill_ref = f"refs/heads/spill/{sha[:10]}"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        if "ls-remote" in argv:
+            return _FakeCompleted("")  # ref absent on the remote
+        if "merge-tree" in argv:
+            return _FakeCompleted("a" * 40 + "\n")
+        if "commit-tree" in argv:
+            return _FakeCompleted("c" * 40 + "\n")
+        return _FakeCompleted("")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    dsp.ensure_sha_on_mirror("shittim-chest", sha)
+    push_argv = next(c for c in calls if "push" in c)
+    assert f"--force-with-lease={spill_ref}:" in push_argv
+
+
+def test_ws_start_retries_when_sn_missing(monkeypatch):
+    """First start without `sn` (dev-quota cap) is transient: retry once, succeed."""
+    responses = [{}, {"sn": "sn-9", "buildLogUrl": "https://cnb.cool/x"}]
+    seen = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append(path), responses[len(seen) - 1])[1])
+    sleeps = []
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    r = dsp.ws_start("evernight", "c" * 40)
+    assert r["sn"] == "sn-9"
+    assert len(seen) == 2
+    assert sleeps == [30]
+
+
+def test_ws_start_gives_up_after_exhausted_retries(monkeypatch):
+    """Both attempts missing `sn` must raise (caller falls back to build lane)."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"error": "cap"})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError) as ei:
+        dsp.ws_start("evernight", "c" * 40)
+    assert "no sn (attempt 2/2)" in str(ei.value)
+    assert "cap" in str(ei.value)
+
+
+def test_ws_start_failure_message_redacts_credentials(monkeypatch):
+    """A token-bearing response body must not leak through the raised message."""
+    monkeypatch.setattr(dsp, "FETCH", FETCH_TOKEN)
+    body = {"error": f"denied https://langyo:{FETCH_TOKEN}@github.com/o/r.git"}
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: body)
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    with pytest.raises(RuntimeError) as ei:
+        dsp.ws_start("evernight", "c" * 40)
+    assert FETCH_TOKEN not in str(ei.value)
+    assert "langyo:***@github.com" in str(ei.value)
+
+
+def test_ws_start_no_retry_on_first_success(monkeypatch):
+    """A healthy first response must not pay the retry delay."""
+    seen = []
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: (seen.append(path), {"sn": "sn-1"})[1])
+    sleeps = []
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: sleeps.append(s)),
+                                                    "time": staticmethod(lambda: 0.0)}))
+    assert dsp.ws_start("evernight", "c" * 40)["sn"] == "sn-1"
+    assert len(seen) == 1 and sleeps == []
