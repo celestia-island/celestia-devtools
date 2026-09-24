@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Tests for the dev-pool monitor and budget gate in ``ci_dispatcherd``.
+
+*Why this exists:* every dev-quota lane run is billed to the org's `云原生开发` pool (1600 free
+core-hours/month), and that quota is a capability limit — the docs say the capability is
+restricted once it is used up, and a pre-freeze with insufficient quota terminates the task. A
+spill attempted at exhaustion therefore fails ``workspace/start`` and, after the retry budget,
+**falls back to the build lane**: the failure spends the very pool the lane exists to protect.
+The daemon now reads the org charge ledger (``dev_in_sec`` settled + ``freeze_dev_in_sec``
+in-flight) and, at or above ``DISPATCH_DEV_BUDGET_PCT`` (default 80), defers the spill — the run
+stays queued on the farm, exactly like a same-repo deferral, and no quota is spent.
+
+These tests pin the three properties that matter:
+
+* the gate refuses at the boundary and never spends quota above the line,
+* it never fails *open*: an unreadable ledger with no usable reading defers, and nonsense values
+  (`-1`, `true`, `inf`, a renamed field) are not read as a fresh pool,
+* the monitor is honest — one log line per refresh carrying the number the gate acts on, read
+  directly rather than through the proxy that crawls cnb.cool.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+import urllib.request
+
+import pytest
+
+TOOL = os.path.join(os.path.dirname(__file__), "..", "tools", "ci_dispatcherd.py")
+spec = importlib.util.spec_from_file_location("ci_dispatcherd_devpool", TOOL)
+dsp = importlib.util.module_from_spec(spec)
+sys.modules["ci_dispatcherd_devpool"] = dsp
+spec.loader.exec_module(dsp)
+
+CAP_H = 1600.0
+
+
+@pytest.fixture(autouse=True)
+def clean_cache(monkeypatch):
+    """No reading cached between tests, and no real HTTP."""
+    dsp._pool_reading.update(t=0.0, dev=None, dev_pct=None, build=None, build_pct=None,
+                             fresh=False)
+    yield
+    dsp._pool_reading.update(t=0.0, dev=None, dev_pct=None, build=None, build_pct=None,
+                             fresh=False)
+
+
+def ledger(dev_hours=0.0, freeze_hours=0.0, build_hours=0.0, freeze_build_hours=0.0):
+    return {"dev_in_sec": int(dev_hours * 3600), "freeze_dev_in_sec": int(freeze_hours * 3600),
+            "ci_in_sec": int(build_hours * 3600),
+            "freeze_ci_in_sec": int(freeze_build_hours * 3600)}
+
+
+@pytest.fixture
+def ws_env(monkeypatch):
+    """A spill that would take the dev-quota path, with the network stubbed out."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append(r), {"sn": "s"})[1])
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    return started
+
+
+def spill(repo="hikari", run_id=91):
+    state = {}
+    result = dsp.spill({"repo": repo, "run_id": run_id, "sha": "b" * 40}, state)
+    return result, state
+
+
+class TestMonitor:
+    def test_logs_the_trend_line_with_the_number_the_gate_acts_on(self, monkeypatch):
+        seen = []
+        monkeypatch.setattr(dsp, "log", seen.append)
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=80.0))
+        hours, pct, fresh = dsp.dev_pool(refresh=True)
+        assert (hours, pct, fresh) == (80.0, 5.0, True)
+        assert seen == [f"pools dev 80.0/{CAP_H:.0f} core-h = 5.0% "
+                        f"(limit {dsp.DEV_BUDGET_PCT}%) | build 0.0/{dsp.BUILD_CAP_H} "
+                        f"= 0.0% (limit {dsp.BUILD_BUDGET_PCT}%)"]
+
+    def test_the_reading_is_cached_for_the_poll_window(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (calls.append(1), ledger(dev_hours=10.0))[1])
+        dsp.dev_pool()
+        dsp.dev_pool()
+        assert len(calls) == 1, "a second read inside DEV_POLL_SEC must reuse the cached value"
+        dsp.dev_pool(refresh=True)
+        assert len(calls) == 2
+
+    def test_the_inflight_freeze_counts_towards_the_budget(self, monkeypatch):
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(0.0, freeze_hours=800.0))
+        hours, pct, _ = dsp.dev_pool(refresh=True)
+        assert (hours, pct) == (800.0, 50.0)
+
+    def test_an_unreadable_ledger_keeps_the_last_good_reading_while_it_is_fresh_enough(
+            self, monkeypatch):
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=100.0))
+        dsp.dev_pool(refresh=True)
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        hours, pct, fresh = dsp.dev_pool(refresh=True)
+        assert (hours, pct) == (100.0, 6.25), "a stale reading is the best protection available"
+        assert fresh is False
+
+    def test_a_reading_older_than_the_stale_window_is_not_used(self, monkeypatch):
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=100.0))
+        dsp.dev_pool(refresh=True)
+        dsp._pool_reading["t"] -= dsp.DEV_STALE_SEC + 1
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert dsp.dev_pool() == (None, None, False)
+
+    def test_the_ledger_is_read_directly_not_through_the_proxy(self, monkeypatch):
+        """cnb.cool must be reached directly from this node (AGENTS §8.1); through the proxy it
+        crawls at ~13 KB/s and the guard would time out instead of protecting anything."""
+        captured = {}
+
+        class FakeResp:
+            def read(self):
+                return b'{"dev_in_sec": 0}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                captured["url"] = req.full_url
+                return FakeResp()
+
+        def fake_build_opener(*handlers):
+            captured["handlers"] = handlers
+            return FakeOpener()
+
+        # A proxy in the environment is what makes ProxyHandler() and ProxyHandler({}) differ;
+        # without it this test passes either way (found by mutation).
+        monkeypatch.setenv("HTTPS_PROXY", "http://daemon.node.local:7890")
+        monkeypatch.setenv("HTTP_PROXY", "http://daemon.node.local:7890")
+        monkeypatch.setattr(dsp.urllib.request, "build_opener", fake_build_opener)
+        assert dsp.charge_volume() == {"dev_in_sec": 0}
+        assert captured["url"].endswith("/celestia-island/-/charge/volume")
+        assert isinstance(captured["handlers"][0], urllib.request.ProxyHandler)
+        assert captured["handlers"][0].proxies == {}, "the proxy handler must be emptied"
+
+
+class TestGate:
+    def test_a_healthy_pool_spills(self, monkeypatch, ws_env):
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=1.0))
+        result, state = spill()
+        assert result is None and state["91"]["mode"] == "ws"
+        assert ws_env == ["ci-infra-hikari"]
+
+    def test_at_the_limit_it_defers(self, monkeypatch, ws_env):
+        monkeypatch.setattr(dsp, "DEV_BUDGET_PCT", 80)
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=CAP_H * 0.8))
+        result, state = spill()
+        assert result is False, "a deferral must be reported as False so the batch is not spent"
+        assert state == {} and ws_env == [], "no quota may be spent at the line"
+
+    def test_above_the_limit_it_defers(self, monkeypatch, ws_env):
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=CAP_H * 0.95))
+        result, state = spill()
+        assert result is False and state == {} and ws_env == []
+
+    def test_it_does_not_even_reach_the_mirror_when_deferring(self, monkeypatch, ws_env):
+        """The gate sits before the mirror work (~990 s of budget) so a refusal is cheap."""
+        touched = []
+        monkeypatch.setattr(dsp, "ensure_sha_on_mirror",
+                            lambda r, sha: (touched.append(1), "e" * 40)[1])
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=CAP_H))
+        assert spill()[0] is False
+        assert touched == []
+
+    def test_the_freeze_alone_can_trip_the_gate(self, monkeypatch, ws_env):
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(0.0, freeze_hours=CAP_H))
+        assert spill()[0] is False
+
+    def test_an_unknown_usage_defers_instead_of_risking_a_build_lane_fallback(
+            self, monkeypatch, ws_env):
+        seen = []
+        monkeypatch.setattr(dsp, "log", seen.append)
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("503")))
+        result, state = spill()
+        assert result is False and state == {} and ws_env == []
+        assert any("usage unknown" in line for line in seen)
+
+    def test_a_stale_reading_still_allows_the_spill_but_says_so(self, monkeypatch, ws_env):
+        seen = []
+        monkeypatch.setattr(dsp, "log", seen.append)
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=10.0))
+        dsp.dev_pool(refresh=True)                       # cache a good reading...
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        dsp._pool_reading["t"] -= dsp.DEV_POLL_SEC + 1    # ...and let it age past the poll window
+        result, state = spill()
+        assert result is None and state["91"]["mode"] == "ws"
+        assert any("stale" in line for line in seen)
+
+    def test_a_stale_reading_over_the_limit_still_defers(self, monkeypatch, ws_env):
+        """Stale means "keep using the number", not "ignore it"."""
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=CAP_H * 0.99))
+        dsp.dev_pool(refresh=True)
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        dsp._pool_reading["t"] -= dsp.DEV_POLL_SEC + 1
+        assert spill()[0] is False and ws_env == []
+
+    def test_the_dev_gate_only_applies_to_dev_quota_repos(self, monkeypatch, ws_env):
+        """A repo outside DEV_QUOTA goes to the build lane on a healthy ledger."""
+        monkeypatch.setattr(dsp, "DEV_QUOTA", set())
+        started = []
+        monkeypatch.setattr(dsp, "cnb_api",
+                            lambda path, data=None: (started.append(path), {"sn": "sn-build"})[1])
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger())
+        result, state = spill(repo="some-other-repo", run_id=55)
+        assert result is None and state["55"]["mode"] == "build" and started
+
+
+class TestPolicyAndWiring:
+    def test_the_shipped_defaults_are_the_agreed_policy_numbers(self):
+        """These are policy: dev 1600 core-hours/month with a line at 80%, build 160 with the
+        same 70% ceiling the caller-lane router uses, and a 5-minute reading cadence."""
+        assert (dsp.DEV_CAP_H, dsp.DEV_BUDGET_PCT) == (1600, 80)
+        assert (dsp.BUILD_CAP_H, dsp.BUILD_BUDGET_PCT) == (160, 70)
+        assert dsp.DEV_POLL_SEC == 300
+        assert dsp.DEV_STALE_SEC >= dsp.DEV_POLL_SEC
+
+    def test_the_main_loop_reads_the_pools_even_when_nothing_spills(self):
+        """The trend line is the monitor: without a read in the loop there is no visibility on a
+        quiet night, which is exactly when the pool can drift toward its line unnoticed."""
+        src = open(os.path.join(os.path.dirname(__file__), "..", "tools",
+                                "ci_dispatcherd.py")).read()
+        loop = src[src.index("def main():"):]
+        assert "pools()" in loop.split("resolve(state)")[0], "main() must read the pools each loop"
+
+
+class TestLedgerParsing:
+    @pytest.mark.parametrize("led,key,required", [
+        ({}, "dev_in_sec", True),
+        ({"dev_in_sec": "12"}, "dev_in_sec", True),
+        ({"dev_in_sec": True}, "dev_in_sec", True),
+        ({"dev_in_sec": -1}, "dev_in_sec", True),
+        ({"dev_in_sec": float("inf")}, "dev_in_sec", True),
+        ({"dev_in_sec": 1, "freeze_dev_in_sec": -1}, "freeze_dev_in_sec", False),
+        ({"dev_in_sec": 1, "freeze_dev_in_sec": {}}, "freeze_dev_in_sec", False),
+        ({"dev_in_sec": 1, "freeze_dev_in_sec": "x"}, "freeze_dev_in_sec", False),
+    ], ids=["missing-required", "string", "bool", "negative", "inf", "negative-freeze",
+            "freeze-dict", "freeze-string"])
+    def test_nonsense_counters_are_refused(self, led, key, required):
+        with pytest.raises(ValueError):
+            dsp.core_seconds(led, key, required)
+
+    def test_an_absent_optional_field_is_zero(self):
+        assert dsp.core_seconds({"dev_in_sec": 5}, "freeze_dev_in_sec", False) == 0.0
+
+    def test_a_renamed_field_does_not_read_as_a_fresh_pool(self, monkeypatch, ws_env):
+        """Only the dev field may be renamed here — a missing `ci_in_sec` would fail the whole
+        read first and mask what this test is about."""
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: {"dev_usage": 999, "ci_in_sec": 0, "freeze_ci_in_sec": 0})
+        assert spill()[0] is False, "a renamed field must defer, not spill at 0%"
+
+
+class TestBuildPoolFallbackGate:
+    """The fallback path spends the scarce pool, so it is held to the caller-lane router's line."""
+
+    def test_the_fallback_is_refused_above_the_build_line(self, monkeypatch, ws_env):
+        built = []
+        monkeypatch.setattr(dsp, "cnb_api",
+                            lambda path, data=None: (built.append(path), {"sn": "sn-build"})[1])
+        monkeypatch.setattr(dsp, "DEV_QUOTA", set())          # force the fallback path
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: ledger(build_hours=dsp.BUILD_CAP_H * 0.71))
+        result, state = spill(repo="outside-quota", run_id=61)
+        assert result is False and state == {} and built == [], "no build core-hours may be spent"
+
+    def test_the_fallback_still_works_below_the_line(self, monkeypatch, ws_env):
+        monkeypatch.setattr(dsp, "DEV_QUOTA", set())
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: ledger(build_hours=dsp.BUILD_CAP_H * 0.5))
+        result, state = spill(repo="outside-quota", run_id=62)
+        assert result is None and state["62"]["mode"] == "build"
+
+    def test_an_unreadable_ledger_defers_the_fallback_too(self, monkeypatch, ws_env):
+        monkeypatch.setattr(dsp, "DEV_QUOTA", set())
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("503")))
+        result, state = spill(repo="outside-quota", run_id=63)
+        assert result is False and state == {}
