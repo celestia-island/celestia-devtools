@@ -404,9 +404,9 @@ def test_lane_host_without_a_pipeline_falls_back_to_the_build_lane(monkeypatch):
 
 
 def test_same_repo_workspace_defers_only_when_the_whole_host_pool_is_busy(monkeypatch):
-    """CNB allows one workspace per *host*, so a second same-repo spill takes the pool's second
-    host; only a pool with every host busy must wait for the next poll rather than exhaust the
-    retry budget and drop to the build lane."""
+    """CNB allows one workspace per *host*, so second and third same-repo spills take the
+    pool's next hosts; only a pool with every host busy must wait for the next poll rather
+    than exhaust the retry budget and drop to the build lane."""
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     touched = []
@@ -422,11 +422,15 @@ def test_same_repo_workspace_defers_only_when_the_whole_host_pool_is_busy(monkey
     dsp.spill({"repo": "hikari", "run_id": 41, "sha": "b" * 40}, state)
     assert state["41"]["host"] == "ci-infra-hikari-2"
     assert published == ["ci-infra-hikari-2"], "the ref must go to the host the run lands on"
-    # 2nd spill: the whole pool (2 hosts) is busy -> defer, touch nothing, no record
-    touched.clear()
+    # 2nd spill: first two hosts busy -> the third host takes it
     dsp.spill({"repo": "hikari", "run_id": 42, "sha": "c" * 40}, state)
+    assert state["42"]["host"] == "ci-infra-hikari-3"
+    assert published == ["ci-infra-hikari-2", "ci-infra-hikari-3"]
+    # 3rd spill: the whole pool (3 hosts) is busy -> defer, touch nothing, no record
+    touched.clear()
+    dsp.spill({"repo": "hikari", "run_id": 44, "sha": "d" * 40}, state)
     assert touched == []          # neither a workspace nor a build-lane dispatch
-    assert "42" not in state      # no record: the census re-offers it next poll
+    assert "44" not in state      # no record: the census re-offers it next poll
     # an unrelated repo is unaffected
     dsp.spill({"repo": "arona", "run_id": 43, "sha": "c" * 40}, state)
     assert state["43"]["mode"] == "ws" and state["43"]["host"] == "ci-infra-arona"
@@ -956,11 +960,13 @@ def test_real_spill_returns_false_when_it_defers(monkeypatch):
     monkeypatch.setattr(dsp, "publish_lane_ref",
                         lambda repo, sha: pytest.fail("a deferral must not touch the lane host"))
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: pytest.fail("no build-lane dispatch"))
-    # the whole pool must be busy: both hosts hold tracked workspaces
+    # the whole pool must be busy: all three hosts hold tracked workspaces
     state = {"9": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-running", "repo": "hikari",
                    "sha": "a" * 40, "url": "", "since": 0.0},
              "10": {"mode": "ws", "host": "ci-infra-hikari-2", "sn": "sn-running2", "repo": "hikari",
-                    "sha": "c" * 40, "url": "", "since": 0.0}}
+                    "sha": "c" * 40, "url": "", "since": 0.0},
+             "11": {"mode": "ws", "host": "ci-infra-hikari-3", "sn": "sn-running3", "repo": "hikari",
+                    "sha": "d" * 40, "url": "", "since": 0.0}}
     assert dsp.spill({"repo": "hikari", "run_id": 61, "sha": "b" * 40}, state) is False
 
 
