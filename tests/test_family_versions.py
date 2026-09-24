@@ -492,3 +492,38 @@ def test_a_nested_override_is_read(tmp_path):
     findings = check(tmp_path)
     assert _levels(findings) == ["warning"], findings
     assert "0.55" in findings[0].message
+
+
+def test_a_lock_is_grouped_by_crate_name_not_by_family_prefix(tmp_path):
+    # `kirino-macro` keeps its own version track: grouping the lock by family
+    # prefix reported a "second generation" that does not exist (evernight grew
+    # a phantom `plana @ Cargo.lock` finding that way).
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.7.2"
+
+[[package]]
+name = "kirino-macro"
+version = "0.1.0"
+""")
+    assert check(tmp_path) == []
+
+
+def test_one_crate_at_two_lines_is_still_reported(tmp_path):
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.7.2"
+
+[[package]]
+name = "kirino"
+version = "0.6.5"
+
+[[package]]
+name = "kirino-macro"
+version = "0.1.0"
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert findings[0].subject == "kirino @ Cargo.lock"
