@@ -366,7 +366,7 @@ def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: (f"spill/{sha[:10]}", True))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha, host=None: (f"spill/{sha[:10]}", True))
     started = []
     monkeypatch.setattr(dsp, "ws_start",
                         lambda repo, ref: (started.append((repo, ref)), {"sn": "sn-ws"})[1])
@@ -393,7 +393,7 @@ def test_lane_host_without_a_pipeline_falls_back_to_the_build_lane(monkeypatch):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: (f"spill/{sha[:10]}", False))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha, host=None: (f"spill/{sha[:10]}", False))
     started = []
     monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(ref), {"sn": "sn-ws"})[1])
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
@@ -403,23 +403,33 @@ def test_lane_host_without_a_pipeline_falls_back_to_the_build_lane(monkeypatch):
     assert started == []
 
 
-def test_same_repo_workspace_defers_instead_of_burning_the_budget(monkeypatch):
-    """CNB allows one workspace per repository: a second same-repo spill must wait for the next
-    poll rather than exhaust the retry budget and drop to the build lane."""
+def test_same_repo_workspace_defers_only_when_the_whole_host_pool_is_busy(monkeypatch):
+    """CNB allows one workspace per *host*, so a second same-repo spill takes the pool's second
+    host; only a pool with every host busy must wait for the next poll rather than exhaust the
+    retry budget and drop to the build lane."""
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     touched = []
+    published = []
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: touched.append("mirror") or "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: touched.append("lane") or ("spill/x", True))
+    monkeypatch.setattr(dsp, "publish_lane_ref",
+                        lambda repo, sha, host=None: published.append(host) or ("spill/x", True))
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: touched.append("build") or {"sn": "s"})
     monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: touched.append("ws") or {"sn": "sn"})
-    state = {"9": {"mode": "ws", "sn": "sn-running", "repo": "hikari", "sha": "a" * 40,
-                   "url": "", "since": 0.0}}
+    state = {"9": {"mode": "ws", "sn": "sn-running", "host": "ci-infra-hikari",
+                   "repo": "hikari", "sha": "a" * 40, "url": "", "since": 0.0}}
+    # 1st spill: primary host busy -> the second host takes it
     dsp.spill({"repo": "hikari", "run_id": 41, "sha": "b" * 40}, state)
+    assert state["41"]["host"] == "ci-infra-hikari-2"
+    assert published == ["ci-infra-hikari-2"], "the ref must go to the host the run lands on"
+    # 2nd spill: the whole pool (2 hosts) is busy -> defer, touch nothing, no record
+    touched.clear()
+    dsp.spill({"repo": "hikari", "run_id": 42, "sha": "c" * 40}, state)
     assert touched == []          # neither a workspace nor a build-lane dispatch
-    assert "41" not in state      # no record: the census re-offers it next poll
-    dsp.spill({"repo": "arona", "run_id": 42, "sha": "c" * 40}, state)
-    assert state["42"]["mode"] == "ws"
+    assert "42" not in state      # no record: the census re-offers it next poll
+    # an unrelated repo is unaffected
+    dsp.spill({"repo": "arona", "run_id": 43, "sha": "c" * 40}, state)
+    assert state["43"]["mode"] == "ws" and state["43"]["host"] == "ci-infra-arona"
 
 
 def test_ws_start_budget_reads_the_service_env():
@@ -929,7 +939,7 @@ def test_a_build_record_does_not_defer_a_workspace_spill(monkeypatch):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda repo, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: ("spill/" + sha[:10], True))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha, host=None: ("spill/" + sha[:10], True))
     started = []
     monkeypatch.setattr(dsp, "ws_start", lambda repo, ref: (started.append(repo), {"sn": "s"})[1])
     state = {"9": {"mode": "build", "sn": "cnb-x", "repo": "hikari", "sha": "a" * 40,
@@ -946,8 +956,11 @@ def test_real_spill_returns_false_when_it_defers(monkeypatch):
     monkeypatch.setattr(dsp, "publish_lane_ref",
                         lambda repo, sha: pytest.fail("a deferral must not touch the lane host"))
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: pytest.fail("no build-lane dispatch"))
+    # the whole pool must be busy: both hosts hold tracked workspaces
     state = {"9": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-running", "repo": "hikari",
-                   "sha": "a" * 40, "url": "", "since": 0.0}}
+                   "sha": "a" * 40, "url": "", "since": 0.0},
+             "10": {"mode": "ws", "host": "ci-infra-hikari-2", "sn": "sn-running2", "repo": "hikari",
+                    "sha": "c" * 40, "url": "", "since": 0.0}}
     assert dsp.spill({"repo": "hikari", "run_id": 61, "sha": "b" * 40}, state) is False
 
 
@@ -1037,7 +1050,7 @@ def test_lane_repos_route_to_their_host(monkeypatch, repo):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha, host=None: (f"spill/{sha[:10]}", True))
     started = []
     monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append((r, ref)), {"sn": "s"})[1])
     # stub the build lane too: if this repo ever leaves DEV_QUOTA the spill would fall back there,
@@ -1056,7 +1069,7 @@ def test_lane_host_names_keep_hyphens(monkeypatch):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha, host=None: (f"spill/{sha[:10]}", True))
     started = []
     monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append(r), {"sn": "s"})[1])
     state = {}

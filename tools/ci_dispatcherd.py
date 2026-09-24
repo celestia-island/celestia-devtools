@@ -57,6 +57,36 @@ DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari",
 # repository, so one host per repo also keeps the four lanes concurrent — consolidating them
 # into a single host would serialise the whole dev pool.
 LANE_HOST = os.environ.get("DISPATCH_LANE_HOST", "ci-infra-{repo}")
+# CNB allows one workspace per repository, so a repo's lane concurrency equals the number of
+# lane hosts it owns. One host per repo capped the whole dev pool at 10 concurrent checks and
+# turned every burst into same-repo deferrals (85 in the first 3.8 h after the wave-2b deploy)
+# that then ran on the farm anyway. Extra hosts are exact clones of the primary (same pipeline,
+# same profile): `ci-infra-<repo>-2`, ... Comma-separated extra templates; first free host wins;
+# defer only when the whole pool is busy.
+LANE_HOST_EXTRA = [t.strip() for t in os.environ.get(
+    "DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2").split(",") if t.strip()]
+
+
+def lane_hosts(repo):
+    """The lane-host pool for a repo: primary first, then extras, deduplicated."""
+    hosts = [LANE_HOST.format(repo=repo)]
+    hosts += [t.format(repo=repo) for t in LANE_HOST_EXTRA]
+    return list(dict.fromkeys(hosts))
+
+
+def busy_hosts(state):
+    """Host repos currently holding a tracked dev-quota workspace."""
+    return {t.get("host") for k, t in state.items() if k != "_recent"
+            and t.get("mode") == "ws" and t.get("host")}
+
+
+def free_host(repo, state):
+    """First lane host of `repo` without a workspace, or None when the pool is exhausted."""
+    busy = busy_hosts(state)
+    for host in lane_hosts(repo):
+        if host not in busy:
+            return host
+    return None
 WS_CHECK_STAGE = "cargo-check"
 
 
@@ -424,7 +454,7 @@ def ensure_sha_on_mirror(repo, sha):
     return msha
 
 
-def publish_lane_ref(repo, sha):
+def publish_lane_ref(repo, sha, host=None):
     """Publish `spill/<sha10>` into the repo's CNB-side lane host.
 
     Returns (branch, host_has_pipeline). The branch points at the *host's* own master, so the
@@ -434,7 +464,7 @@ def publish_lane_ref(repo, sha):
     the build lane instead of starting a workspace that can never reach the gated stage.
     """
     import subprocess
-    host = LANE_HOST.format(repo=repo)
+    host = host or LANE_HOST.format(repo=repo)
     d = f"{GITCACHE}/{host}.git"
     os.makedirs(GITCACHE, exist_ok=True)
     if not os.path.isdir(d):
@@ -514,13 +544,15 @@ def spill(entry, state):
         env["NEED_NODE"] = "1"
         env["PY_IGNORE"] = "tests/test_ci_orphan_janitor.py tests/test_deploy_e2e.py"
     if repo in DEV_QUOTA and CNB_WS:
-        # CNB allows one workspace per repository, so a second spill for a repo whose workspace
-        # is still running cannot succeed: it would burn the whole retry budget and then fall
-        # back to the build lane — spending exactly the pool this lane exists to save. Defer it
-        # to the next poll instead (no record, so the census re-offers it).
-        if any(t.get("mode") == "ws" and t.get("repo") == repo
-               for k, t in state.items() if k != "_recent"):
-            log(f"ws-spill {repo} run {entry['run_id']} deferred — {repo} already holds a workspace")
+        # CNB allows one workspace per repository, so the repo's pool decides: take the first
+        # host without a workspace and defer only when the whole pool is busy. Deferring a full
+        # pool is still right — the alternative burns the whole workspace/start retry budget and
+        # then falls back to the build lane, spending exactly the pool this lane exists to save
+        # (no record, so the census re-offers the run next poll).
+        host = free_host(repo, state)
+        if host is None:
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — "
+                f"all {len(lane_hosts(repo))} lane hosts busy")
             return False
         # Dev-pool budget gate: attempting a workspace at (or near) exhaustion fails
         # `workspace/start` and falls back to the build lane, spending the pool this lane
@@ -539,10 +571,9 @@ def spill(entry, state):
             log(f"dev pool reading is stale ({hours:.1f}/{DEV_CAP_H} core-h = {pct:.1f}%) — proceeding")
         try:
             ensure_sha_on_mirror(repo, sha)
-            branch, has_pipeline = publish_lane_ref(repo, sha)
+            branch, has_pipeline = publish_lane_ref(repo, sha, host)
             if not has_pipeline:
-                raise RuntimeError(f"{LANE_HOST.format(repo=repo)}: no .cnb.yml on master")
-            host = LANE_HOST.format(repo=repo)
+                raise RuntimeError(f"{host}: no .cnb.yml on master")
             r = ws_start(host, branch)
             # `build/status/{sn}` is scoped to the repo the pipeline belongs to, and since the
             # lane moved to the host that is NOT the target repo any more: polling the target

@@ -25,6 +25,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import types
 import urllib.request
 
 import pytest
@@ -60,7 +61,7 @@ def ws_env(monkeypatch):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
-    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha, host=None: (f"spill/{sha[:10]}", True))
     started = []
     monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append(r), {"sn": "s"})[1])
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
@@ -298,6 +299,19 @@ class TestPolicyAndWiring:
         assert "WARN" in out.stderr and "DISPATCH_DEV_POLL_SEC" in out.stderr
         assert out.stdout.split() == ["900", "900"]
 
+    def test_lane_host_extra_env_extends_the_pool(self):
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys;"
+             f"s=importlib.util.spec_from_file_location('x',{TOOL!r});"
+             "m=importlib.util.module_from_spec(s);sys.modules['x']=m;s.loader.exec_module(m);"
+             "print('|'.join(m.lane_hosts('hikari')))"],
+            capture_output=True, text=True,
+            env={**os.environ, "DISPATCH_LANE_HOST_EXTRA":
+                 "ci-infra-{repo}-b, ci-infra-{repo}-c,,ci-infra-{repo}-2"}, timeout=60)
+        assert out.stdout.split() == ["ci-infra-hikari|ci-infra-hikari-b|"
+                                      "ci-infra-hikari-c|ci-infra-hikari-2"]
+
     def test_the_main_loop_logs_the_trend_line_even_when_nothing_spills(self, monkeypatch):
         """Driven, not grepped: a source check let `pass  # pools()` survive (found by mutation).
 
@@ -328,6 +342,47 @@ class TestPolicyAndWiring:
         trend = [line for line in seen if line.startswith("pools dev ")]
         assert trend, f"the loop must log the pools line with an empty queue; got {seen}"
         assert "dev 42.0/1600" in trend[0] and "build 99.0/160" in trend[0]
+
+
+class TestBusyHosts:
+    def test_only_tracked_dev_quota_workspaces_block_a_host(self):
+        """P3 (round-A verifier): without the mode/host filter, a build or legacy record keyed
+        by repo could shadow a host name and make free_host defer on an idle pool."""
+        state = {
+            "_recent": {"a" * 40: 1.0},                                    # bookkeeping: never counts
+            "1": {"mode": "ws", "host": "ci-infra-hikari", "repo": "hikari",
+                  "sha": "a" * 40, "url": "", "since": 0.0},               # counts
+            "2": {"mode": "build", "host": "ci-infra-hikari-2", "repo": "hikari",
+                  "sha": "b" * 40, "url": "", "since": 0.0},               # build: never counts
+            "3": {"mode": "ws", "repo": "hikari", "sha": "c" * 40,
+                  "url": "", "since": 0.0},                                # legacy ws: no host
+            "4": {"mode": "ws", "host": "ci-infra-plana", "repo": "plana",
+                  "sha": "d" * 40, "url": "", "since": 0.0},               # another repo: counts
+        }
+        assert dsp.busy_hosts(state) == {"ci-infra-hikari", "ci-infra-plana"}
+
+
+class TestPublishLaneRef:
+    def test_the_ref_lands_on_the_selected_host(self, monkeypatch, tmp_path):
+        """`publish-ignores-the-selected-host`: the host parameter is the whole point."""
+        recorded = []
+        monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
+        monkeypatch.setattr(dsp, "CNB", "cnb-token-fake")
+        monkeypatch.setattr(dsp, "log", lambda *_: None)
+        fake = types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+        def fake_run(argv, **kwargs):
+            recorded.append(list(argv))
+            return fake
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        branch, ok = dsp.publish_lane_ref("hikari", "b" * 40, host="ci-infra-hikari-2")
+        assert (branch, ok) == ("spill/" + "b" * 10, True)
+        pushes = [" ".join(argv) for argv in recorded if "push" in argv]
+        assert pushes, recorded
+        assert any("ci-infra-hikari-2" in p for p in pushes), pushes
+        assert not any("celestia-island/hikari.git" in p for p in pushes), \
+            "the spill ref must not be published to the target repo"
 
 
 class TestLedgerParsing:
