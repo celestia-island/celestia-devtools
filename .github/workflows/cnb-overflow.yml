@@ -14,6 +14,26 @@
 #     that are not on the mirror (deleted branches). Fork PRs get no secrets from Actions, so
 #     the fallback only applies to same-repo branches; fork PRs rely on the mirror.
 #
+# Build-pool budget guard (2026-09-24): every CNB dispatch spends the org's 160 core-hour/month
+# `云原生构建` free quota, and that quota is a *capability* limit rather than a soft bill — the
+# docs say the capability is restricted once it is used up and that a pre-freeze with
+# insufficient quota terminates the task immediately (overage billing only starts once a
+# Tencent Cloud budget is bound). The dispatcher's own traffic now runs on the dev pool
+# (1600/month), so what is left on the build pool is this lane plus the mirror-sync pipelines —
+# and the mirror syncs are what the dev-pool lane itself clones from, so exhausting the build
+# pool takes the whole overflow layer down with it. Hence: before dispatching, read the org
+# charge ledger (`ci_in_sec` settled + `freeze_ci_in_sec` in-flight, in core-seconds; the cap is
+# the platform's `云原生构建` quota — re-check `/{org}/-/charge/quota` if CNB ever changes it) and
+# refuse to dispatch at or above `build_budget_pct` (default 70%). A refusal is a
+# no-op, exactly like `decision=farm`: the caller's farm CI still runs the authoritative check,
+# the lane simply adds nothing, and no `cnb/*` status is posted (never post a green we did not
+# earn). The guard fails closed: an unreadable ledger, a renamed field, a missing token, or a
+# `build_budget_pct` outside (0, 100] (e.g. `inf`, which YAML happily parses) all skip the
+# dispatch, and the step itself always exits 0 so it can never redden the route job.
+# `force_cnb: true` bypasses the guard for explicit testing — note that `workflow_dispatch`
+# defaults it to true, so a manual run that means to exercise the guard must pass
+# `force_cnb: false`.
+#
 # Caller contract:
 #   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@master
 #   with: {target_repo: <repo-name>, target_sha: ${{ github.event.pull_request.head.sha }},
@@ -52,6 +72,10 @@ on:
         description: 'Dispatch to CNB when queued runs in the caller repo >= this (0 = always)'
         type: number
         default: 3
+      build_budget_pct:
+        description: 'Stop dispatching once the org build pool is this % used (see the budget guard step); 100 = only at the hard cap'
+        type: number
+        default: 70
       force_cnb:
         description: 'Bypass the saturation check and always dispatch to CNB (for testing)'
         type: boolean
@@ -88,6 +112,10 @@ on:
       queue_threshold:
         type: number
         default: 3
+      build_budget_pct:
+        description: 'Stop dispatching once the org build pool is this % used (lower it to test the skip path)'
+        type: number
+        default: 70
       force_cnb:
         description: 'Testing default: forced to true for manual runs'
         type: boolean
@@ -110,6 +138,8 @@ jobs:
     outputs:
       decision: ${{ steps.decide.outputs.decision }}
       queued: ${{ steps.decide.outputs.queued }}
+      budget: ${{ steps.budget.outputs.budget }}
+      budget_reason: ${{ steps.budget.outputs.budget_reason }}
     steps:
       - name: Decide farm vs CNB
         id: decide
@@ -145,9 +175,120 @@ jobs:
             echo "decision=farm" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build-pool budget guard: a refusal must be a no-op (the farm still checks the SHA), never
+      # a green, so this only ever narrows when the `cnb` job may run. Fail-closed on any error.
+      - name: Check the org build-pool budget
+        id: budget
+        if: steps.decide.outputs.decision == 'cnb'
+        timeout-minutes: 2
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          BUDGET_PCT: ${{ inputs.build_budget_pct }}
+          FORCE_CNB: ${{ inputs.force_cnb }}
+          CHARGE_URL: https://api.cnb.cool/celestia-island/-/charge/volume
+          BUILD_CAP_H: '160'
+        run: |
+          python3 - <<'PYEOF'
+          # ASCII only: this program prints to CI logs, and a non-ASCII byte in an executed
+          # string dies as UnicodeEncodeError on an ASCII stdout (LC_ALL=C), reddening the step.
+          import json, math, os, sys, urllib.request
+
+          out_path = os.environ.get("GITHUB_OUTPUT") or os.devnull
+
+          def emit(budget, reason):
+              reason = " ".join(reason.split())
+              # A write failure must not redden the step (this guard exits 0 on every path): if
+              # GITHUB_OUTPUT is unwritable the output simply stays empty, which skips the cnb job.
+              try:
+                  with open(out_path, "a") as f:
+                      f.write(f"budget={budget}\n")
+                      f.write(f"budget_reason={reason[:180]}\n")
+              except (OSError, UnicodeError) as e:
+                  print(f"::warning::could not write GITHUB_OUTPUT ({e})")
+              print(f"build-pool budget: {budget} ({reason})")
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  try:
+                      with open(summary, "a") as f:
+                          f.write(f"**Build-pool budget: {budget}** - {reason}\n")
+                  except (OSError, UnicodeError) as e:
+                      print(f"::warning::could not write the step summary ({e})")
+
+          def counter(led, key, required):
+              """A usage counter: a JSON number that is finite and non-negative.
+
+              Parseable-but-nonsense values (`-1`, `true`, `-Infinity`) must not read as a fresh
+              pool, and a present-but-unreadable shape must not be silently treated as 0 - either
+              would be fail-open. Only an optional `freeze_*` field may be absent: it is
+              `omitempty` (the key was missing in all four samples taken, which between them
+              covered an idle pool and an in-flight *dev* pipeline) and released at settlement
+              (the dev field read 1200 core-s and was gone two minutes later) - so an absent or
+              zero freeze really does mean "nothing in flight", and the sum cannot double count.
+              """
+              if key not in led:
+                  if required:
+                      raise ValueError(f"ledger has no {key} (keys={sorted(led)[:6]})")
+                  return 0.0
+              v = led[key]
+              if isinstance(v, bool) or not isinstance(v, (int, float)):
+                  raise ValueError(f"{key} is not a number: {ascii(v)}")
+              v = float(v)
+              if not math.isfinite(v) or v < 0:
+                  raise ValueError(f"{key} is not a usable counter: {ascii(v)}")
+              return v
+
+          if os.environ.get("FORCE_CNB") == "true":
+              emit("allow", "force_cnb=true bypasses the guard")
+              sys.exit(0)
+
+          tok = (os.environ.get("CNB_TOKEN") or "").strip()
+          if not tok:
+              emit("skip", "CNB_TOKEN missing - refusing to dispatch unguarded")
+              sys.exit(0)
+          try:
+              limit = float(os.environ.get("BUDGET_PCT") or 70)
+          except ValueError:
+              emit("skip", f"unusable build_budget_pct={os.environ.get('BUDGET_PCT')!r}")
+              sys.exit(0)
+          # `1e308` / `inf` are valid YAML floats and would switch the guard off; a pct outside
+          # (0, 100] is not a policy, it is a typo - treat it as unusable and fail closed.
+          if not math.isfinite(limit) or not 0 < limit <= 100:
+              emit("skip", f"build_budget_pct={limit!r} is outside (0, 100] - ignoring it")
+              sys.exit(0)
+          try:
+              cap = float(os.environ.get("BUILD_CAP_H") or 160)
+          except ValueError:
+              emit("skip", f"unusable BUILD_CAP_H={os.environ.get('BUILD_CAP_H')!r}")
+              sys.exit(0)
+          if not math.isfinite(cap) or cap <= 0:
+              emit("skip", f"BUILD_CAP_H={cap!r} is not a usable quota")
+              sys.exit(0)
+          # cnb.cool must be reached directly from this runner (through the proxy it crawls), so
+          # bypass any HTTPS_PROXY the runner carries for GitHub.
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          try:
+              req = urllib.request.Request(os.environ["CHARGE_URL"], headers={
+                  "Authorization": "Bearer " + tok,
+                  "Accept": "application/vnd.cnb.api+json"})
+              with opener.open(req, timeout=30) as r:
+                  led = json.load(r)
+              # The budget still free is cap - settled - frozen: `ci_in_sec` is this month's
+              # settled build usage, `freeze_ci_in_sec` the in-flight pre-deduction CNB holds for
+              # pipelines that have not settled yet. Both are read strictly (see `counter`).
+              used = (counter(led, "ci_in_sec", True)
+                      + counter(led, "freeze_ci_in_sec", False)) / 3600.0
+          except Exception as e:
+              emit("skip", f"ledger unreadable ({type(e).__name__}: {ascii(str(e))}) - failing closed")
+              sys.exit(0)
+          pct = used / cap * 100.0
+          emit("allow" if pct < limit else "skip",
+               f"build pool {used:.2f}/{cap:.0f} core-h = {pct:.1f}% "
+               f"{'<' if pct < limit else '>='} {limit:.0f}%")
+          PYEOF
+
   cnb:
     needs: route
-    if: needs.route.outputs.decision == 'cnb'
+    if: needs.route.outputs.decision == 'cnb' && needs.route.outputs.budget == 'allow'
     runs-on: [self-hosted, linux, x64, dispatcher]
     timeout-minutes: 40
     concurrency:
