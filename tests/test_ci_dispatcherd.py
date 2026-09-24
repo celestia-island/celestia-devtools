@@ -1018,12 +1018,16 @@ def test_every_watched_repo_is_on_the_lane():
 @pytest.mark.parametrize("repo", ["plana", "entelecheia", "malkuth", "kirino",
                                       "celestia-devtools", "evernight-appliance"])
 def test_lane_repos_route_to_their_host(monkeypatch, repo):
+    """Every watched repo routes to the lane host named after it — the literal, not the template."""
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
     monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
     started = []
     monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append((r, ref)), {"sn": "s"})[1])
+    # stub the build lane too: if this repo ever leaves DEV_QUOTA the spill would fall back there,
+    # and without the stub the test would reach api.cnb.cool for real
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
     state = {}
     dsp.spill({"repo": repo, "run_id": 71, "sha": "b" * 40}, state)
     assert state["71"]["mode"] == "ws"
