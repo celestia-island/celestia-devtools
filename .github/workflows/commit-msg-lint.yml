@@ -66,12 +66,17 @@ jobs:
     # variable can flip without touching the repo's tree.
     # `inputs` is empty outside workflow_call/dispatch, hence the fallback:
     # a bare pull_request on this repo keeps the hosted default.
-    runs-on: ${{ fromJSON(inputs.runner || '["ubuntu-latest"]') }}
+    # Lane resolution order: caller input > LINT_RUNNER variable (org/repo;
+    # `vars` resolves against the CALLER repository, so one org variable
+    # re-lanes every caller at once) > hosted. With the org variable set to
+    # the farm labels and visible to private repos only, public repos keep
+    # free hosted minutes while private repos stop drawing paid minutes.
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
     steps:
       - name: Lane
-        run: echo "commit-message lint served by lane ${{ inputs.lane || 'hosted' }} on ${{ join(fromJSON(inputs.runner || '["ubuntu-latest"]'), ', ') }}"
+        run: echo "commit-message lint served by lane ${{ inputs.lane || vars.LINT_LANE || 'hosted' }} on ${{ join(fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]'), ', ') }}"
 
       - name: Resolve the pull request under a dispatched run
         # pull_request and workflow_call carry the PR payload in the event; a
