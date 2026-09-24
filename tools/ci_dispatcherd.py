@@ -34,18 +34,17 @@ WATCHED = [
     "celestia-devtools", "evernight-appliance",
 ]
 TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-check"}
-# Repos whose spills run in a CNB dev-quota workspace (the repo's own `.cnb.yml`
-# `$: vscode:` pipeline) instead of the ci-farm build lane: the dev pool carries
-# 1600 free core-hours/month against the build pool's 160, and build-pool burn is
-# the binding constraint. hikari is the single biggest build-lane consumer (23 of
-# the 33 build dispatches in the 4.8 h after the #132/#133/#134 deploy = 70%), so
-# it moved here once the ws lane proved healthy (90% after that deploy).
-# Ordering precondition: a repo only qualifies while master already carries
-# `.cnb.yml`. The spill ref merges master with the PR head; a tree without the file
-# runs CNB's default environment, which exposes no `cargo-check` stage at all — so the
-# spill never reaches a terminal state: no cancel (no false green), but the workspace
-# leaks a dev-quota slot until WS_STAGE_GRACE_SEC and starves the other dev-quota
-# repos into build-lane fallbacks. Verified by simulation against the real resolve().
+# Repos whose spills run in a CNB dev-quota workspace instead of the ci-farm build lane: the
+# dev pool carries 1600 free core-hours/month against the build pool's 160, and build-pool burn
+# is the binding constraint. It started with hikari (the single biggest build-lane consumer: 23
+# of the 33 build dispatches in the 4.8 h after the #132/#133/#134 deploy) and now carries every
+# repo whose task is a cargo check — celestia-devtools (python-check) and evernight-appliance
+# (webui-check) still need non-cargo lane variants.
+#
+# Admission condition: the repo's *host* repository (`ci-infra-<repo>`, CNB-side only) must carry
+# the lane pipeline on its master. `publish_lane_ref()` checks that at dispatch time and anything
+# missing falls back to the build lane; the target repo itself no longer needs a `.cnb.yml` — the
+# lane stopped reading the target's tree when it moved to the host.
 DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari",
              "plana", "entelecheia", "malkuth", "kirino"}
 # Each dev-quota repo is validated by a CNB-side lane host (`ci-infra-<repo>`, a repo that
