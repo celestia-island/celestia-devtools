@@ -64,12 +64,14 @@ jobs:
     # minutes, though, and when that quota fails the hosted lane cannot start at
     # all — so a caller may pin another lane through `runner`, which a repository
     # variable can flip without touching the repo's tree.
-    runs-on: ${{ fromJSON(inputs.runner) }}
+    # `inputs` is empty outside workflow_call/dispatch, hence the fallback:
+    # a bare pull_request on this repo keeps the hosted default.
+    runs-on: ${{ fromJSON(inputs.runner || '["ubuntu-latest"]') }}
     permissions:
       contents: read
     steps:
       - name: Lane
-        run: echo "commit-message lint served by lane ${{ inputs.lane }} on ${{ join(fromJSON(inputs.runner), ', ') }}"
+        run: echo "commit-message lint served by lane ${{ inputs.lane || 'hosted' }} on ${{ join(fromJSON(inputs.runner || '["ubuntu-latest"]'), ', ') }}"
 
       - name: Resolve the pull request under a dispatched run
         # pull_request and workflow_call carry the PR payload in the event; a
@@ -99,7 +101,7 @@ jobs:
           fetch-depth: 0
           # A dispatched (CNB) run has no PR payload, so it checks out the head
           # SHA resolved above; every other trigger keeps its default ref.
-          ref: ${{ (github.event.pull_request == null && env.PR_HEAD_SHA) || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && env.PR_HEAD_SHA || github.ref }}
         # Defensive: the org self-hosted runner env rewrites
         # github.com/celestia-island/* to local bare mirrors (per-repo
         # exact-prefix rules). Those mirrors may lack fresh PR merge refs
