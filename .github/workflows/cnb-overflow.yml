@@ -189,6 +189,8 @@ jobs:
           BUILD_CAP_H: '160'
         run: |
           python3 - <<'PYEOF'
+          # ASCII only: this program prints to CI logs, and a non-ASCII byte in an executed
+          # string dies as UnicodeEncodeError on an ASCII stdout (LC_ALL=C), reddening the step.
           import json, math, os, sys, urllib.request
 
           out_path = os.environ.get("GITHUB_OUTPUT") or os.devnull
@@ -201,25 +203,27 @@ jobs:
                   with open(out_path, "a") as f:
                       f.write(f"budget={budget}\n")
                       f.write(f"budget_reason={reason[:180]}\n")
-              except OSError as e:
+              except (OSError, UnicodeError) as e:
                   print(f"::warning::could not write GITHUB_OUTPUT ({e})")
               print(f"build-pool budget: {budget} ({reason})")
               summary = os.environ.get("GITHUB_STEP_SUMMARY")
               if summary:
                   try:
                       with open(summary, "a") as f:
-                          f.write(f"**Build-pool budget: {budget}** — {reason}\n")
-                  except OSError as e:
+                          f.write(f"**Build-pool budget: {budget}** - {reason}\n")
+                  except (OSError, UnicodeError) as e:
                       print(f"::warning::could not write the step summary ({e})")
 
           def counter(led, key, required):
               """A usage counter: a JSON number that is finite and non-negative.
 
               Parseable-but-nonsense values (`-1`, `true`, `-Infinity`) must not read as a fresh
-              pool, and a present-but-unreadable shape must not be silently treated as 0 — either
+              pool, and a present-but-unreadable shape must not be silently treated as 0 - either
               would be fail-open. Only an optional `freeze_*` field may be absent: it is
-              `omitempty` upstream (measured absent while builds are in flight) and is released at
-              settlement.
+              `omitempty` (the key was missing in all four samples taken, which between them
+              covered an idle pool and an in-flight *dev* pipeline) and released at settlement
+              (the dev field read 1200 core-s and was gone two minutes later) - so an absent or
+              zero freeze really does mean "nothing in flight", and the sum cannot double count.
               """
               if key not in led:
                   if required:
@@ -227,10 +231,10 @@ jobs:
                   return 0.0
               v = led[key]
               if isinstance(v, bool) or not isinstance(v, (int, float)):
-                  raise ValueError(f"{key} is not a number: {v!r}")
+                  raise ValueError(f"{key} is not a number: {ascii(v)}")
               v = float(v)
               if not math.isfinite(v) or v < 0:
-                  raise ValueError(f"{key} is not a usable counter: {v!r}")
+                  raise ValueError(f"{key} is not a usable counter: {ascii(v)}")
               return v
 
           if os.environ.get("FORCE_CNB") == "true":
@@ -239,7 +243,7 @@ jobs:
 
           tok = (os.environ.get("CNB_TOKEN") or "").strip()
           if not tok:
-              emit("skip", "CNB_TOKEN missing — refusing to dispatch unguarded")
+              emit("skip", "CNB_TOKEN missing - refusing to dispatch unguarded")
               sys.exit(0)
           try:
               limit = float(os.environ.get("BUDGET_PCT") or 70)
@@ -247,9 +251,9 @@ jobs:
               emit("skip", f"unusable build_budget_pct={os.environ.get('BUDGET_PCT')!r}")
               sys.exit(0)
           # `1e308` / `inf` are valid YAML floats and would switch the guard off; a pct outside
-          # (0, 100] is not a policy, it is a typo — treat it as unusable and fail closed.
+          # (0, 100] is not a policy, it is a typo - treat it as unusable and fail closed.
           if not math.isfinite(limit) or not 0 < limit <= 100:
-              emit("skip", f"build_budget_pct={limit!r} is outside (0, 100] — ignoring it")
+              emit("skip", f"build_budget_pct={limit!r} is outside (0, 100] - ignoring it")
               sys.exit(0)
           try:
               cap = float(os.environ.get("BUILD_CAP_H") or 160)
@@ -274,7 +278,7 @@ jobs:
               used = (counter(led, "ci_in_sec", True)
                       + counter(led, "freeze_ci_in_sec", False)) / 3600.0
           except Exception as e:
-              emit("skip", f"ledger unreadable ({type(e).__name__}: {e}) — failing closed")
+              emit("skip", f"ledger unreadable ({type(e).__name__}: {ascii(e)}) - failing closed")
               sys.exit(0)
           pct = used / cap * 100.0
           emit("allow" if pct < limit else "skip",

@@ -119,8 +119,8 @@ def run_guard(tmp_path, ledger_url, *, used_core_h=None, pct="70", auth_token="t
     elif outputs:
         env["GITHUB_OUTPUT"] = str(out_file)
     env.update(extra_env or {})
-    r = subprocess.run([sys.executable, "-c", _guard_script()], capture_output=True, text=True,
-                       env=env, timeout=60)
+    r = subprocess.run([sys.executable, "-"], input=_guard_script(), capture_output=True,
+                       text=True, env=env, timeout=60)
     got = ({} if out_file.is_dir() else
            dict(line.split("=", 1) for line in out_file.read_text().splitlines() if "=" in line))
     return r.stdout + r.stderr, got, r.returncode
@@ -171,6 +171,13 @@ class TestShippedShape:
         writers = [s.get("id") or s.get("name") for s in _steps("route")
                    if "budget=" in (s.get("run") or "")]
         assert writers == [GUARD_STEP_ID], f"more than one step can grant the budget: {writers}"
+        # A grant has to reach GITHUB_OUTPUT, so a writer is any step that touches that file
+        # *and* mentions budget — which catches one that builds the string without a literal
+        # `budget=` (the decide step writes GITHUB_OUTPUT but never touches the budget).
+        touchers = [s.get("id") or s.get("name") for s in _steps("route")
+                    if "GITHUB_OUTPUT" in (s.get("run") or "")
+                    and "budget" in (s.get("run") or "")]
+        assert touchers == [GUARD_STEP_ID], f"another step writes a budget output: {touchers}"
 
     def test_budget_default_is_conservative_and_leaves_headroom(self):
         for on in ("workflow_call", "workflow_dispatch"):
@@ -355,6 +362,28 @@ class TestHygiene:
                                  extra_env={"GITHUB_STEP_SUMMARY": str(tmp_path)})
         assert (rc, got["budget"]) == (0, "allow")
         assert "could not write the step summary" in out
+
+    def test_the_shipped_program_is_ascii_only(self):
+        """Executed strings must be ASCII: they are printed to CI logs under whatever locale."""
+        offenders = [(i + 1, line.strip()[:60])
+                     for i, line in enumerate(_guard_script().splitlines())
+                     if any(ord(ch) > 127 for ch in line)]
+        assert not offenders, f"non-ASCII in the shipped guard program: {offenders}"
+
+    def test_a_non_ascii_reason_cannot_redden_the_step(self, tmp_path, ledger):
+        """UnicodeEncodeError is a ValueError, so `except OSError` alone would let it escape."""
+        _Ledger.payload = {"ci_in_sec": "日本語"}
+        out, got, rc = run_guard(tmp_path, ledger, pct="70", extra_env={
+            "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C", "LANG": "C"})
+        assert (rc, got["budget"]) == (0, "skip")
+        assert "failing closed" in got["budget_reason"] or "failing closed" in out
+
+    def test_a_non_ascii_exception_text_cannot_redden_the_step(self, tmp_path, ledger):
+        """The message embeds the exception, so a non-ASCII one must be escaped before printing."""
+        out, got, rc = run_guard(tmp_path, ledger + "/\u65e5\u672c\u8a9e", pct="70", extra_env={
+            "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C", "LANG": "C"})
+        assert (rc, got["budget"]) == (0, "skip"), out[-300:]
+        assert all(ord(ch) < 128 for ch in out), "the step printed a non-ASCII byte"
 
     def test_an_unusable_cap_skips_instead_of_crashing(self, tmp_path, ledger):
         out, got, rc = run_guard(tmp_path, ledger, used_core_h=1.0, cap="abc")
