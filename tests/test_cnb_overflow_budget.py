@@ -134,6 +134,26 @@ class TestShippedShape:
         assert "needs.route.outputs.decision == 'cnb'" in cond
         assert "needs.route.outputs.budget == 'allow'" in cond
 
+    def test_the_budget_condition_has_no_escape_hatch(self):
+        """`|| budget == ''` would fail OPEN whenever the guard did not run (mutation M1)."""
+        cond = _doc()["jobs"]["cnb"]["if"]
+        assert "||" not in cond, f"the cnb gate must be a plain conjunction, got: {cond!r}"
+        assert cond.strip() == ("needs.route.outputs.decision == 'cnb' "
+                               "&& needs.route.outputs.budget == 'allow'")
+
+    def test_the_guard_step_is_wired_to_the_token_the_input_and_the_cap(self):
+        """Dropping any of these turns the guard into a no-op that the suite used to miss."""
+        env = _guard_step()["env"]
+        assert env["CNB_TOKEN"] == "${{ secrets.CNB_TOKEN }}"
+        assert env["BUDGET_PCT"] == "${{ inputs.build_budget_pct }}"
+        assert env["FORCE_CNB"] == "${{ inputs.force_cnb }}"
+        assert env["CHARGE_URL"] == "https://api.cnb.cool/celestia-island/-/charge/volume"
+        assert env["BUILD_CAP_H"] == "160", "the cap is the quota being protected: 160 core-h"
+
+    def test_the_guard_cannot_be_switched_off_by_an_empty_step_env(self):
+        for key, val in _guard_step()["env"].items():
+            assert val != "", f"{key} is empty: the step would fall back to a default"
+
     def test_route_job_exports_the_budget_outputs(self):
         outs = _doc()["jobs"]["route"]["outputs"]
         assert outs["budget"] == "${{ steps.budget.outputs.budget }}"
@@ -170,6 +190,18 @@ class TestAllowPath:
 
 
 class TestSkipPath:
+    def test_a_fresh_month_reads_as_zero_used_and_allows(self, tmp_path, ledger):
+        """`if not led.get(...)` would mistake a zero balance for an unreadable ledger (M2)."""
+        out, got, _ = run_guard(tmp_path, ledger, used_core_h=0.0, pct="70")
+        assert got["budget"] == "allow"
+        assert "0.00/160" in out
+
+    def test_inflight_prefreeze_counts_towards_the_budget(self, tmp_path, ledger):
+        """A month whose quota is already pre-frozen for in-flight pipelines is not a fresh pool."""
+        _Ledger.payload = {"ci_in_sec": 0, "freeze_ci_in_sec": int(0.9 * CAP_H * 3600)}
+        _, got, _ = run_guard(tmp_path, ledger, pct="70")
+        assert got["budget"] == "skip"
+
     def test_at_the_threshold_it_skips(self, tmp_path, ledger):
         out, got, _ = run_guard(tmp_path, ledger, used_core_h=0.7 * CAP_H)
         assert got["budget"] == "skip"
@@ -228,6 +260,17 @@ class TestFailsClosed:
     def test_unusable_pct_skips(self, tmp_path, ledger):
         _, got, _ = run_guard(tmp_path, ledger, pct="not-a-number")
         assert got["budget"] == "skip"
+
+    @pytest.mark.parametrize("pct", ["1e308", "inf", "-inf", "nan", "0", "-1", "101", "1000"])
+    def test_a_threshold_outside_the_sane_range_is_unusable(self, tmp_path, ledger, pct):
+        """These are all valid YAML floats a caller could pass; none may widen the guard."""
+        _, got, _ = run_guard(tmp_path, ledger, used_core_h=0.95 * CAP_H, pct=pct)
+        assert got["budget"] == "skip", f"pct={pct} must not allow at 95% usage"
+
+    def test_the_hard_cap_threshold_is_still_a_policy(self, tmp_path, ledger):
+        """100 means "only refuse at the cap" — legal, and it must really allow below it."""
+        _, got, _ = run_guard(tmp_path, ledger, used_core_h=0.99 * CAP_H, pct="100")
+        assert got["budget"] == "allow"
 
     def test_guard_always_exits_zero_so_it_cannot_fail_the_route_job(self, tmp_path, ledger):
         _Ledger.status = 503

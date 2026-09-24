@@ -22,11 +22,17 @@
 # (1600/month), so what is left on the build pool is this lane plus the mirror-sync pipelines —
 # and the mirror syncs are what the dev-pool lane itself clones from, so exhausting the build
 # pool takes the whole overflow layer down with it. Hence: before dispatching, read the org
-# charge ledger and refuse to dispatch above `build_budget_pct` (default 70%). A refusal is a
+# charge ledger (`ci_in_sec` settled + `freeze_ci_in_sec` in-flight, in core-seconds; the cap is
+# the platform's `云原生构建` quota — re-check `/{org}/-/charge/quota` if CNB ever changes it) and
+# refuse to dispatch at or above `build_budget_pct` (default 70%). A refusal is a
 # no-op, exactly like `decision=farm`: the caller's farm CI still runs the authoritative check,
 # the lane simply adds nothing, and no `cnb/*` status is posted (never post a green we did not
-# earn). The guard fails closed: an unreadable ledger skips the dispatch. `force_cnb: true`
-# (manual runs) bypasses it for explicit testing.
+# earn). The guard fails closed: an unreadable ledger, a renamed field, a missing token, or a
+# `build_budget_pct` outside (0, 100] (e.g. `inf`, which YAML happily parses) all skip the
+# dispatch, and the step itself always exits 0 so it can never redden the route job.
+# `force_cnb: true` bypasses the guard for explicit testing — note that `workflow_dispatch`
+# defaults it to true, so a manual run that means to exercise the guard must pass
+# `force_cnb: false`.
 #
 # Caller contract:
 #   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@master
@@ -182,7 +188,7 @@ jobs:
           BUILD_CAP_H: '160'
         run: |
           python3 - <<'PYEOF'
-          import json, os, sys, urllib.request
+          import json, math, os, sys, urllib.request
 
           out_path = os.environ.get("GITHUB_OUTPUT") or os.devnull
 
@@ -210,6 +216,11 @@ jobs:
           except ValueError:
               emit("skip", f"unusable build_budget_pct={os.environ.get('BUDGET_PCT')!r}")
               sys.exit(0)
+          # `1e308` / `inf` are valid YAML floats and would switch the guard off; a pct outside
+          # (0, 100] is not a policy, it is a typo — treat it as unusable and fail closed.
+          if not math.isfinite(limit) or not 0 < limit <= 100:
+              emit("skip", f"build_budget_pct={limit!r} is outside (0, 100] — ignoring it")
+              sys.exit(0)
           cap = float(os.environ.get("BUILD_CAP_H") or 160)
           # cnb.cool must be reached directly from this runner (through the proxy it crawls), so
           # bypass any HTTPS_PROXY the runner carries for GitHub.
@@ -221,10 +232,13 @@ jobs:
               with opener.open(req, timeout=30) as r:
                   led = json.load(r)
               # A renamed/absent field must never read as "0 used" — a silent fail-open is the one
-              # direction this guard must not take.
+              # direction this guard must not take. `freeze_ci_in_sec` is the in-flight
+              # pre-deduction CNB holds for pipelines that have not settled yet, so the budget
+              # actually still free is cap - settled - frozen; it is transient and expected to be
+              # absent/0 on an idle org, so only the settled field is mandatory.
               if "ci_in_sec" not in led:
                   raise ValueError(f"ledger has no ci_in_sec (keys={sorted(led)[:6]})")
-              used = float(led["ci_in_sec"]) / 3600.0
+              used = (float(led["ci_in_sec"]) + float(led.get("freeze_ci_in_sec") or 0)) / 3600.0
           except Exception as e:
               emit("skip", f"ledger unreadable ({type(e).__name__}: {e}) — failing closed")
               sys.exit(0)
