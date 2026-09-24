@@ -298,3 +298,81 @@ def test_cli_json_report_shape(tmp_path, capsys):
 def test_cli_says_ok_on_a_clean_tree(tmp_path, capsys):
     assert main([str(tmp_path)]) == 0
     assert "ok:" in capsys.readouterr().out
+
+
+# ── surfaces the mutation round found unpinned ───────────────────────────────
+
+
+def test_an_alias_does_not_hide_a_direct_declaration(tmp_path):
+    # Returning the first match hid the `file:` violation behind an alias of the
+    # same package in the same table.
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"dependencies": {
+            "hk": "npm:@celestia-island/hikari@^0.55.71",
+            "@celestia-island/hikari": "file:../hikari",
+        }}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "retired" in findings[0].message
+
+
+def test_cargo_replace_section_is_flat(tmp_path):
+    # `[replace]` is keyed by "name:version", not by source like `[patch]`;
+    # walking it as patch-shaped made the section dead code.
+    _cargo(tmp_path, '[replace]\n"kirino:0.6.0" = { version = "^0.6" }\n')
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+def test_cargo_patch_section_is_checked(tmp_path):
+    _cargo(
+        tmp_path,
+        '[patch.crates-io]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
+        ' branch = "master" }\n',
+    )
+    assert _levels(check(tmp_path)) == ["warning"]
+
+
+def test_plain_overrides_are_reported(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"overrides": {"@celestia-island/hikari": "^0.40.1"}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "(overrides)" in findings[0].subject
+
+
+def test_resolutions_are_reported(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"resolutions": {"@celestia-island/hikari": "^*"}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "(resolutions)" in findings[0].subject
+
+
+def test_build_dependencies_are_checked(tmp_path):
+    _cargo(tmp_path, '[build-dependencies]\nkirino = "^0.6"\n')
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+def test_peer_and_optional_dependencies_are_checked(tmp_path):
+    _write(tmp_path / "a/package.json",
+           json.dumps({"peerDependencies": {"@celestia-island/hikari": "^0.40.1"}}))
+    _write(tmp_path / "b/package.json",
+           json.dumps({"optionalDependencies": {"@celestia-island/hikari": "^0.40.1"}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning", "warning"], findings
+    assert any("(peerDependencies)" in f.subject for f in findings)
+    assert any("(optionalDependencies)" in f.subject for f in findings)
+
+
+def test_catalog_and_portal_protocols_are_left_alone(tmp_path):
+    _write(tmp_path / "a/package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "catalog:"}}))
+    _write(tmp_path / "b/package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "portal:../hikari"}}))
+    assert check(tmp_path) == []

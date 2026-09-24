@@ -254,14 +254,17 @@ def _cargo_deps(document: dict) -> Iterable[tuple[str, object, str]]:
                             (key, spec, f"target.{cfg}.{section}")
                             for key, spec in table.items()
                         )
-    for section in ("patch", "replace"):
-        tables = document.get(section)
-        if isinstance(tables, dict):
-            for source, table in tables.items():
-                if isinstance(table, dict):
-                    yield from (
-                        (key, spec, f"{section}.{source}") for key, spec in table.items()
-                    )
+    patches = document.get("patch")
+    if isinstance(patches, dict):
+        for source, table in patches.items():
+            if isinstance(table, dict):
+                yield from ((key, spec, f"patch.{source}") for key, spec in table.items())
+    # `[replace]` is flat: "name:version" = { path = … } (Cargo's older spelling
+    # of a patch). Reading it as patch-shaped made the whole section dead code.
+    replaces = document.get("replace")
+    if isinstance(replaces, dict):
+        for key, spec in replaces.items():
+            yield key.split(":")[0], spec, "replace"
 
 
 def _crate_name(key: str, spec: object) -> str:
@@ -354,16 +357,22 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str) -> 
             ))
 
 
-def _npm_value(table: object, package: str) -> str | None:
+def _npm_values(table: object, package: str) -> list[str]:
+    """Every declaration of ``package`` in one table.
+
+    All of them, not the first: `{"hk": "npm:<pkg>@^0.55", "<pkg>": "file:../x"}`
+    declares the package twice, and returning on the alias hid the `file:`
+    violation behind it.
+    """
     if not isinstance(table, dict):
-        return None
+        return []
+    found: list[str] = []
     for key, value in table.items():
-        if key == package:
-            return value if isinstance(value, str) else None
-        # npm:@scope/pkg@range aliases the package under another name.
-        if isinstance(value, str) and value.startswith(f"npm:{package}@"):
-            return value
-    return None
+        if not isinstance(value, str):
+            continue
+        if key == package or value.startswith(f"npm:{package}@"):
+            found.append(value)
+    return found
 
 
 def _check_npm(path: Path, root: Path, findings: list[Finding]) -> None:
@@ -382,37 +391,37 @@ def _check_npm(path: Path, root: Path, findings: list[Finding]) -> None:
     tables.append(("resolutions", document.get("resolutions")))
     for package, canonical, _why in NPM_LAYERS:
         for section, table in tables:
-            requirement = _npm_value(table, package)
-            if requirement is None:
-                continue
-            subject = f"{package} @ {path.relative_to(root)} ({section})"
-            if requirement.startswith("file:"):
-                findings.append(Finding(
-                    "violation", subject,
-                    f"declares {requirement!r} — a sibling-directory dependency, retired "
-                    "family-wide in favour of the published package",
-                ))
-                continue
-            if requirement.startswith(SKIP_PROTOCOLS):
-                continue
-            if requirement.strip() in UNBOUNDED:
-                findings.append(Finding(
-                    "warning", subject,
-                    f"declares {requirement!r}, which node-semver reads as `*` — any "
-                    "future major is admitted on a fresh resolve",
-                ))
-                continue
-            verdict = intersects(requirement, canonical, (canonical[0], canonical[1] + 1, 0))
-            if verdict is False:
-                findings.append(Finding(
-                    "warning", subject,
-                    f"declares {requirement}, which cannot resolve to the family's "
-                    f"{canonical[0]}.{canonical[1]} line",
-                ))
-            elif verdict is None:
-                findings.append(Finding(
-                    "warning", subject, f"cannot judge the requirement {requirement!r}",
-                ))
+            for requirement in _npm_values(table, package):
+                subject = f"{package} @ {path.relative_to(root)} ({section})"
+                if requirement.startswith("file:"):
+                    findings.append(Finding(
+                        "violation", subject,
+                        f"declares {requirement!r} — a sibling-directory dependency, "
+                        "retired family-wide in favour of the published package",
+                    ))
+                    continue
+                if requirement.startswith(SKIP_PROTOCOLS):
+                    continue
+                if requirement.strip() in UNBOUNDED:
+                    findings.append(Finding(
+                        "warning", subject,
+                        f"declares {requirement!r}, which node-semver reads as `*` — any "
+                        "future major is admitted on a fresh resolve",
+                    ))
+                    continue
+                verdict = intersects(
+                    requirement, canonical, (canonical[0], canonical[1] + 1, 0)
+                )
+                if verdict is False:
+                    findings.append(Finding(
+                        "warning", subject,
+                        f"declares {requirement}, which cannot resolve to the family's "
+                        f"{canonical[0]}.{canonical[1]} line",
+                    ))
+                elif verdict is None:
+                    findings.append(Finding(
+                        "warning", subject, f"cannot judge the requirement {requirement!r}",
+                    ))
 
 
 def check(root: Path) -> list[Finding]:
