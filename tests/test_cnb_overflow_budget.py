@@ -69,9 +69,13 @@ class _Ledger(http.server.BaseHTTPRequestHandler):
     payload: dict = {}
     status = 200
     seen_auth: list = []
+    raw: bytes | None = None      # served verbatim, for malformed/non-ASCII status lines
 
     def do_GET(self):                                                  # noqa: N802
         type(self).seen_auth.append(self.headers.get("Authorization", ""))
+        if self.raw is not None:
+            self.wfile.write(self.raw)
+            return
         if self.status != 200:
             self.send_response(self.status)
             self.end_headers()
@@ -92,7 +96,7 @@ class _Ledger(http.server.BaseHTTPRequestHandler):
 def ledger():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Ledger)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    _Ledger.payload, _Ledger.status, _Ledger.seen_auth = {}, 200, []
+    _Ledger.payload, _Ledger.status, _Ledger.seen_auth, _Ledger.raw = {}, 200, [], None
     yield f"http://127.0.0.1:{srv.server_address[1]}/charge"
     srv.shutdown()
 
@@ -379,11 +383,18 @@ class TestHygiene:
         assert "failing closed" in got["budget_reason"] or "failing closed" in out
 
     def test_a_non_ascii_exception_text_cannot_redden_the_step(self, tmp_path, ledger):
-        """The message embeds the exception, so a non-ASCII one must be escaped before printing."""
-        out, got, rc = run_guard(tmp_path, ledger + "/\u65e5\u672c\u8a9e", pct="70", extra_env={
+        """The reason embeds the exception, so a non-ASCII one must be escaped before printing.
+
+        A `/日本語` path is *not* enough: the UnicodeEncodeError it raises has ASCII text, so the
+        assertion would hold trivially.  A raw status line carrying a latin-1 byte does make
+        `HTTPError.str()` non-ASCII, and `print()` of it on an ASCII stdout raises.
+        """
+        _Ledger.raw = b"HTTP/1.0 503 caf\xe9\r\nContent-Length: 0\r\n\r\n"
+        out, got, rc = run_guard(tmp_path, ledger, pct="70", extra_env={
             "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C", "LANG": "C"})
         assert (rc, got["budget"]) == (0, "skip"), out[-300:]
-        assert all(ord(ch) < 128 for ch in out), "the step printed a non-ASCII byte"
+        assert "caf" in got["budget_reason"], got["budget_reason"]
+        assert all(ord(ch) < 128 for ch in out + got["budget_reason"]), "printed a non-ASCII byte"
 
     def test_an_unusable_cap_skips_instead_of_crashing(self, tmp_path, ledger):
         out, got, rc = run_guard(tmp_path, ledger, used_core_h=1.0, cap="abc")

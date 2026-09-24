@@ -278,7 +278,7 @@ jobs:
               used = (counter(led, "ci_in_sec", True)
                       + counter(led, "freeze_ci_in_sec", False)) / 3600.0
           except Exception as e:
-              emit("skip", f"ledger unreadable ({type(e).__name__}: {ascii(e)}) - failing closed")
+              emit("skip", f"ledger unreadable ({type(e).__name__}: {ascii(str(e))}) - failing closed")
               sys.exit(0)
           pct = used / cap * 100.0
           emit("allow" if pct < limit else "skip",
