@@ -38,15 +38,17 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # dev pool carries 1600 free core-hours/month against the build pool's 160, and build-pool burn
 # is the binding constraint. It started with hikari (the single biggest build-lane consumer: 23
 # of the 33 build dispatches in the 4.8 h after the #132/#133/#134 deploy) and now carries every
-# repo whose task is a cargo check — celestia-devtools (python-check) and evernight-appliance
-# (webui-check) still need non-cargo lane variants.
+# repo the census watches. Most hosts run a cargo check; the two non-cargo ones run the python and
+# webui checks respectively (their pipelines keep the `cargo-check` stage *name* because that name is
+# the dispatcher's contract, but the stage body is the check their own CI would have run).
 #
 # Admission condition: the repo's *host* repository (`ci-infra-<repo>`, CNB-side only) must carry
 # the lane pipeline on its master. `publish_lane_ref()` checks that at dispatch time and anything
 # missing falls back to the build lane; the target repo itself no longer needs a `.cnb.yml` — the
 # lane stopped reading the target's tree when it moved to the host.
 DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari",
-             "plana", "entelecheia", "malkuth", "kirino"}
+             "plana", "entelecheia", "malkuth", "kirino",
+             "celestia-devtools", "evernight-appliance"}
 # Each dev-quota repo is validated by a CNB-side lane host (`ci-infra-<repo>`, a repo that
 # exists only on cnb.cool) rather than by a pipeline file in the GitHub repo: the dispatcher
 # pushes `spill/<sha10>` into the host, CNB runs the host's own `.cnb.yml`, and that pipeline

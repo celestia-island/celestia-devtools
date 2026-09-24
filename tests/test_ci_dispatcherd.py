@@ -364,8 +364,10 @@ def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
     paths = []
     monkeypatch.setattr(dsp, "cnb_api",
                         lambda path, data=None: (paths.append(path), {"sn": "sn-build"})[1])
-    # celestia-devtools is still a build-lane repo (its lane variant is python, not cargo)
-    dsp.spill({"repo": "celestia-devtools", "run_id": 12, "sha": "c" * 40}, state)
+    # every watched repo is on the lane now, so the fallback is reached by making the lane fail
+    monkeypatch.setattr(dsp, "publish_lane_ref",
+                        lambda repo, sha: (_ for _ in ()).throw(RuntimeError("host missing")))
+    dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
     assert state["12"]["mode"] == "build"
     assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
 
@@ -1003,19 +1005,19 @@ def test_ws_failure_keeps_the_farm_run(monkeypatch):
     assert "4242" not in state
 
 
-def test_every_watched_cargo_repo_is_on_the_lane():
-    """The lane carries every repo whose spawned task is a cargo check. The two excluded repos
-    are excluded because of their *task*, not their language: celestia-devtools runs python-check
-    and evernight-appliance runs webui-check (it does have a Cargo.toml — a Tauri workspace), and
-    both need non-cargo pipeline variants that do not exist yet."""
+def test_every_watched_repo_is_on_the_lane():
+    """Every repo the census watches now has a lane host — the two non-cargo ones (python-check and
+    webui-check) included, through variant pipelines that keep the `cargo-check` stage *name*
+    because that name is the dispatcher's contract."""
+    assert dsp.DEV_QUOTA == set(dsp.WATCHED)
     assert dsp.DEV_QUOTA == {"shittim-chest", "evernight", "arona", "hikari",
-                             "plana", "entelecheia", "malkuth", "kirino"}
-    assert dsp.DEV_QUOTA <= set(dsp.WATCHED)
-    assert set(dsp.WATCHED) - dsp.DEV_QUOTA == {"celestia-devtools", "evernight-appliance"}
+                             "plana", "entelecheia", "malkuth", "kirino",
+                             "celestia-devtools", "evernight-appliance"}
 
 
-@pytest.mark.parametrize("repo", ["plana", "entelecheia", "malkuth", "kirino"])
-def test_wave2_repos_route_to_their_lane_host(monkeypatch, repo):
+@pytest.mark.parametrize("repo", ["plana", "entelecheia", "malkuth", "kirino",
+                                      "celestia-devtools", "evernight-appliance"])
+def test_lane_repos_route_to_their_host(monkeypatch, repo):
     monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
