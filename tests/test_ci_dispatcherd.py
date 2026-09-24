@@ -364,7 +364,8 @@ def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
     paths = []
     monkeypatch.setattr(dsp, "cnb_api",
                         lambda path, data=None: (paths.append(path), {"sn": "sn-build"})[1])
-    dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
+    # celestia-devtools is still a build-lane repo (its lane variant is python, not cargo)
+    dsp.spill({"repo": "celestia-devtools", "run_id": 12, "sha": "c" * 40}, state)
     assert state["12"]["mode"] == "build"
     assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
 
@@ -1000,3 +1001,72 @@ def test_ws_failure_keeps_the_farm_run(monkeypatch):
     assert gh == []                       # no run lookup, no cancel
     assert stopped == ["sn-1"]
     assert "4242" not in state
+
+
+def test_every_watched_cargo_repo_is_on_the_lane():
+    """The lane carries every repo whose spawned task is a cargo check. The two excluded repos
+    are excluded because of their *task*, not their language: celestia-devtools runs python-check
+    and evernight-appliance runs webui-check (it does have a Cargo.toml — a Tauri workspace), and
+    both need non-cargo pipeline variants that do not exist yet."""
+    assert dsp.DEV_QUOTA == {"shittim-chest", "evernight", "arona", "hikari",
+                             "plana", "entelecheia", "malkuth", "kirino"}
+    assert dsp.DEV_QUOTA <= set(dsp.WATCHED)
+    assert set(dsp.WATCHED) - dsp.DEV_QUOTA == {"celestia-devtools", "evernight-appliance"}
+
+
+@pytest.mark.parametrize("repo", ["plana", "entelecheia", "malkuth", "kirino"])
+def test_wave2_repos_route_to_their_lane_host(monkeypatch, repo):
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append((r, ref)), {"sn": "s"})[1])
+    state = {}
+    dsp.spill({"repo": repo, "run_id": 71, "sha": "b" * 40}, state)
+    assert state["71"]["mode"] == "ws"
+    assert state["71"]["host"] == f"ci-infra-{repo}"
+    assert started == [(f"ci-infra-{repo}", "spill/" + "b" * 10)]
+
+
+def test_lane_host_names_keep_hyphens(monkeypatch):
+    """shittim-chest is the biggest build-pool consumer, and its host name is the one place where
+    a naive slug would silently point at a repository that does not exist."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append(r), {"sn": "s"})[1])
+    state = {}
+    dsp.spill({"repo": "shittim-chest", "run_id": 81, "sha": "b" * 40}, state)
+    assert started == ["ci-infra-shittim-chest"]
+    assert state["81"]["host"] == "ci-infra-shittim-chest"
+
+
+def test_check_stage_name_matches_the_host_pipelines():
+    """The dispatcher gates on a stage *name*; the host pipelines define it. This is the only
+    thing tying the two repositories together, so a rename on either side must fail here."""
+    assert dsp.WS_CHECK_STAGE == "cargo-check"
+
+
+def test_grace_release_never_posts_a_green(monkeypatch):
+    """A workspace that never shows the gated stage must be released silently: posting anything
+    would either fake a verdict or drop the signal the farm run still owes the author."""
+    now = 1_000_000.0
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "pending",
+        "pipelinesStatus": {"p1": {"stages": [{"name": "resolve-target", "status": "success"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: now)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    posted, gh, stopped = [], [], []
+    monkeypatch.setattr(dsp, "post_status", lambda *a, **k: posted.append(a))
+    monkeypatch.setattr(dsp, "gh_api", lambda *a, **k: gh.append(a))
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
+    state = {"7": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
+                   "sha": "a" * 40, "url": "u", "since": now - dsp.WS_STAGE_GRACE_SEC - 1}}
+    dsp.resolve(state)
+    assert posted == [] and gh == []          # nothing claimed, nothing cancelled
+    assert stopped == ["sn-1"] and "7" not in state
+    assert state["_recent"]["a" * 40] == now  # and not re-spilled immediately
