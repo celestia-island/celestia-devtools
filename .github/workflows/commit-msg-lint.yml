@@ -1,11 +1,53 @@
 name: Commit Message Lint
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      # Which lane serves this required check. GitHub evaluates a required
+      # context as "every check run with this name must be successful" (probed
+      # 2026-09-24: a pass alongside a pending or failing duplicate leaves the PR
+      # BLOCKED), so the three lanes — hosted / self-hosted farm / CNB-dispatched
+      # — can never report at the same time. The lane is picked, not raced.
+      # Callers that pass nothing keep the historical hosted behaviour.
+      runner:
+        description: 'JSON array of runner labels, e.g. ["ubuntu-latest"] or ["self-hosted","linux","x64","local"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      lane:
+        description: "Human label for logs (hosted / farm / cnb)"
+        required: false
+        type: string
+        default: "hosted"
+      # Set when a caller is dispatched (e.g. by CNB) and has no PR payload of
+      # its own: the lint then resolves that PR number and lints the same head.
+      pr:
+        description: "Pull request number to lint (empty on normal events)"
+        required: false
+        type: string
+        default: ""
   pull_request:
     types: [opened, edited, reopened, ready_for_review, synchronize]
   merge_group:
     types: [checks_requested]
+  # CNB (or an operator) dispatches this to serve the same single check when the
+  # scheduled lane cannot run; `pr` is the pull request number to lint.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to lint"
+        required: true
+        type: string
+      runner:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","local"]'
+      lane:
+        description: "Human label for logs"
+        required: false
+        type: string
+        default: "cnb"
 
 jobs:
   lint:
@@ -15,20 +57,49 @@ jobs:
     # Guard applies both to direct pull_request triggers and to workflow_call
     # callers (github.event then carries the caller's PR payload).
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    # Message lint is a sub-minute, stdlib-only job, so it runs on GitHub-hosted
-    # runners instead of the org self-hosted fleet: hosted provisioning is
-    # instant and parallel, and a queued lint check must never hold a PR behind
-    # real builds (the 4-VM node-ci pool produced ~1h queues for exactly this
-    # check). Public repos are free and unlimited; private-repo runs draw on the
-    # org's monthly included minutes.
-    runs-on: ubuntu-latest
+    # Message lint is a sub-minute, stdlib-only job. Hosted stays the default:
+    # provisioning is instant and parallel, and a queued lint check must never
+    # hold a PR behind real builds (the 4-VM node-ci pool produced ~1h queues for
+    # exactly this check). Private repos draw on the org's monthly included
+    # minutes, though, and when that quota fails the hosted lane cannot start at
+    # all — so a caller may pin another lane through `runner`, which a repository
+    # variable can flip without touching the repo's tree.
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
     steps:
+      - name: Lane
+        run: echo "commit-message lint served by lane ${{ inputs.lane }} on ${{ join(fromJSON(inputs.runner), ', ') }}"
+
+      - name: Resolve the pull request under a dispatched run
+        # pull_request and workflow_call carry the PR payload in the event; a
+        # workflow_dispatch does not, so the CNB lane passes the number and the
+        # same lint then runs against the same head SHA.
+        if: github.event.pull_request == null && inputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -o pipefail
+          gh api "repos/${{ github.repository }}/pulls/$PR" \
+            --jq '{title: .title, head_sha: .head.sha, base_ref: .base.ref, base_sha: .base.sha}' \
+            > "$RUNNER_TEMP/pr.json"
+          python3 - "$RUNNER_TEMP/pr.json" >> "$GITHUB_ENV" <<'PY'
+          import json, sys
+          pr = json.load(open(sys.argv[1]))
+          print(f"PR_TITLE={pr['title']}")
+          print(f"PR_HEAD_SHA={pr['head_sha']}")
+          print(f"PR_BASE_REF={pr['base_ref']}")
+          print(f"PR_BASE_SHA={pr['base_sha']}")
+          PY
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # A dispatched (CNB) run has no PR payload, so it checks out the head
+          # SHA resolved above; every other trigger keeps its default ref.
+          ref: ${{ (github.event.pull_request == null && env.PR_HEAD_SHA) || '' }}
         # Defensive: the org self-hosted runner env rewrites
         # github.com/celestia-island/* to local bare mirrors (per-repo
         # exact-prefix rules). Those mirrors may lack fresh PR merge refs
@@ -107,15 +178,15 @@ jobs:
           echo "DT_CMD=python3 -m celestia_devtools" >> "$GITHUB_ENV"
 
       - name: Lint PR title (squash merge subject)
-        # Fires on the repo's own pull_request events and, via workflow_call,
-        # when the CALLER workflow was triggered by a pull_request (github.event
-        # then carries the caller's PR payload). Dependabot PRs are exempt:
-        # machine-generated subjects cannot satisfy the gitmoji/period rules.
-        if: github.event.pull_request && github.actor != 'dependabot[bot]'
+        # Fires on the repo's own pull_request events, via workflow_call when the
+        # CALLER was triggered by a pull_request, and on a dispatched (CNB) run,
+        # where the title was resolved from the PR number above. Dependabot PRs
+        # are exempt: machine-generated subjects cannot satisfy the rules.
+        if: (github.event.pull_request || inputs.pr != '') && github.actor != 'dependabot[bot]'
         env:
           # Passed via env so a user-controlled title is never interpolated
           # into shell syntax (quotes, $() and backticks are inert in env).
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_TITLE: ${{ github.event.pull_request.title || env.PR_TITLE }}
         run: |
           set -o pipefail
           [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
@@ -124,21 +195,24 @@ jobs:
           $DT_CMD commit-msg-lint check --stdin-subjects
 
       - name: Lint all commits in the PR
-        if: github.event.pull_request && github.actor != 'dependabot[bot]'
+        if: (github.event.pull_request || inputs.pr != '') && github.actor != 'dependabot[bot]'
         env:
           # Passed via env: a branch name must never be interpolated into
-          # shell syntax (same pattern as PR_TITLE above).
-          BASE_NAME: ${{ github.event.pull_request.base.ref }}
+          # shell syntax (same pattern as PR_TITLE above). BASE_SHA and
+          # HEAD_SHA come from the resolved PR payload on a dispatched run.
+          BASE_NAME: ${{ github.event.pull_request.base.ref || env.PR_BASE_REF }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || env.PR_BASE_SHA }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || env.PR_HEAD_SHA }}
         run: |
           set -o pipefail
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           # The event snapshot of base.sha can go stale after squash merges
           # advance the base branch (the old base commit disappears from
           # history, making `base..head` an invalid range). Resolve the real
           # fork point against the checked-out BASE branch (works for any
           # default-branch name, e.g. master or main), falling back to the
-          # event snapshot.
-          BASE_REF="$(git rev-parse --verify -q "origin/${BASE_NAME}" || echo "${{ github.event.pull_request.base.sha }}")"
+          # snapshot the payload carried.
+          BASE_REF="$(git rev-parse --verify -q "origin/${BASE_NAME}" || echo "$BASE_SHA")"
+          git fetch --quiet origin "$BASE_REF" 2>/dev/null || true
           MERGE_BASE="$(git merge-base "$BASE_REF" "$HEAD_SHA" 2>/dev/null || echo "$BASE_REF")"
           RANGE="${MERGE_BASE}..${HEAD_SHA}"
           echo "Linting commits in range: $RANGE"
