@@ -60,11 +60,14 @@ LANE_HOST = os.environ.get("DISPATCH_LANE_HOST", "ci-infra-{repo}")
 # CNB allows one workspace per repository, so a repo's lane concurrency equals the number of
 # lane hosts it owns. One host per repo capped the whole dev pool at 10 concurrent checks and
 # turned every burst into same-repo deferrals (85 in the first 3.8 h after the wave-2b deploy)
-# that then ran on the farm anyway. Extra hosts are exact clones of the primary (same pipeline,
-# same profile): `ci-infra-<repo>-2`, ... Comma-separated extra templates; first free host wins;
-# defer only when the whole pool is busy.
+# that then ran on the farm anyway, and two hosts still deferred a third same-repo run (measured
+# on deploy day), while busy repos carry several queued runs at once. Extra hosts are exact
+# clones of the primary (same pipeline, same profile), named `ci-infra-<repo>` for the first
+# instance and `ci-infra-<repo>-<n>` for every later one, counting from 2 (user directive
+# 2026-09-25: every watched repo gets at least three instances). Comma-separated extra
+# templates; first free host wins; defer only when the whole pool is busy.
 LANE_HOST_EXTRA = [t.strip() for t in os.environ.get(
-    "DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2").split(",") if t.strip()]
+    "DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2,ci-infra-{repo}-3").split(",") if t.strip()]
 
 
 def lane_hosts(repo):

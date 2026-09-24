@@ -312,6 +312,25 @@ class TestPolicyAndWiring:
         assert out.stdout.split() == ["ci-infra-hikari|ci-infra-hikari-b|"
                                       "ci-infra-hikari-c|ci-infra-hikari-2"]
 
+    def test_shipped_default_pool_is_three_hosts_per_repo(self):
+        """User directive 2026-09-25: every watched repo gets at least three lane instances.
+
+        The first instance keeps the plain name and every later one gets a `-<n>` suffix
+        counting from 2; the default must ship all of them or a third same-repo run defers
+        again even though its host exists on cnb.cool (the hosts are created out-of-band,
+        so only this default turns them into concurrency).
+        """
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys;"
+             f"s=importlib.util.spec_from_file_location('x',{TOOL!r});"
+             "m=importlib.util.module_from_spec(s);sys.modules['x']=m;s.loader.exec_module(m);"
+             "print('|'.join(m.lane_hosts('hikari')))"],
+            capture_output=True, text=True,
+            env={k: v for k, v in os.environ.items() if k != "DISPATCH_LANE_HOST_EXTRA"},
+            timeout=60)
+        assert out.stdout.strip() == "ci-infra-hikari|ci-infra-hikari-2|ci-infra-hikari-3"
+
     def test_the_main_loop_logs_the_trend_line_even_when_nothing_spills(self, monkeypatch):
         """Driven, not grepped: a source check let `pass  # pools()` survive (found by mutation).
 
