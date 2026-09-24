@@ -46,7 +46,8 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # spill never reaches a terminal state: no cancel (no false green), but the workspace
 # leaks a dev-quota slot until WS_STAGE_GRACE_SEC and starves the other dev-quota
 # repos into build-lane fallbacks. Verified by simulation against the real resolve().
-DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari"}
+DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari",
+             "plana", "entelecheia", "malkuth", "kirino"}
 # Each dev-quota repo is validated by a CNB-side lane host (`ci-infra-<repo>`, a repo that
 # exists only on cnb.cool) rather than by a pipeline file in the GitHub repo: the dispatcher
 # pushes `spill/<sha10>` into the host, CNB runs the host's own `.cnb.yml`, and that pipeline

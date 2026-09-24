@@ -364,7 +364,8 @@ def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
     paths = []
     monkeypatch.setattr(dsp, "cnb_api",
                         lambda path, data=None: (paths.append(path), {"sn": "sn-build"})[1])
-    dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
+    # celestia-devtools is still a build-lane repo (its lane variant is python, not cargo)
+    dsp.spill({"repo": "celestia-devtools", "run_id": 12, "sha": "c" * 40}, state)
     assert state["12"]["mode"] == "build"
     assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
 
@@ -1000,3 +1001,28 @@ def test_ws_failure_keeps_the_farm_run(monkeypatch):
     assert gh == []                       # no run lookup, no cancel
     assert stopped == ["sn-1"]
     assert "4242" not in state
+
+
+def test_every_watched_cargo_repo_is_on_the_lane():
+    """The lane carries every cargo repo the census watches. The two non-cargo repos
+    (celestia-devtools = python-check, evernight-appliance = webui-check) need their own
+    pipeline variants and are deliberately not in this set."""
+    assert dsp.DEV_QUOTA == {"shittim-chest", "evernight", "arona", "hikari",
+                             "plana", "entelecheia", "malkuth", "kirino"}
+    assert dsp.DEV_QUOTA <= set(dsp.WATCHED)
+    assert set(dsp.WATCHED) - dsp.DEV_QUOTA == {"celestia-devtools", "evernight-appliance"}
+
+
+@pytest.mark.parametrize("repo", ["plana", "entelecheia", "malkuth", "kirino"])
+def test_wave2_repos_route_to_their_lane_host(monkeypatch, repo):
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha: (f"spill/{sha[:10]}", True))
+    started = []
+    monkeypatch.setattr(dsp, "ws_start", lambda r, ref: (started.append((r, ref)), {"sn": "s"})[1])
+    state = {}
+    dsp.spill({"repo": repo, "run_id": 71, "sha": "b" * 40}, state)
+    assert state["71"]["mode"] == "ws"
+    assert state["71"]["host"] == f"ci-infra-{repo}"
+    assert started == [(f"ci-infra-{repo}", "spill/" + "b" * 10)]
