@@ -180,6 +180,7 @@ jobs:
       - name: Check the org build-pool budget
         id: budget
         if: steps.decide.outputs.decision == 'cnb'
+        timeout-minutes: 2
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           BUDGET_PCT: ${{ inputs.build_budget_pct }}
@@ -194,14 +195,43 @@ jobs:
 
           def emit(budget, reason):
               reason = " ".join(reason.split())
-              with open(out_path, "a") as f:
-                  f.write(f"budget={budget}\n")
-                  f.write(f"budget_reason={reason[:180]}\n")
+              # A write failure must not redden the step (this guard exits 0 on every path): if
+              # GITHUB_OUTPUT is unwritable the output simply stays empty, which skips the cnb job.
+              try:
+                  with open(out_path, "a") as f:
+                      f.write(f"budget={budget}\n")
+                      f.write(f"budget_reason={reason[:180]}\n")
+              except OSError as e:
+                  print(f"::warning::could not write GITHUB_OUTPUT ({e})")
               print(f"build-pool budget: {budget} ({reason})")
               summary = os.environ.get("GITHUB_STEP_SUMMARY")
               if summary:
-                  with open(summary, "a") as f:
-                      f.write(f"**Build-pool budget: {budget}** — {reason}\n")
+                  try:
+                      with open(summary, "a") as f:
+                          f.write(f"**Build-pool budget: {budget}** — {reason}\n")
+                  except OSError as e:
+                      print(f"::warning::could not write the step summary ({e})")
+
+          def counter(led, key, required):
+              """A usage counter: a JSON number that is finite and non-negative.
+
+              Parseable-but-nonsense values (`-1`, `true`, `-Infinity`) must not read as a fresh
+              pool, and a present-but-unreadable shape must not be silently treated as 0 — either
+              would be fail-open. Only an optional `freeze_*` field may be absent: it is
+              `omitempty` upstream (measured absent while builds are in flight) and is released at
+              settlement.
+              """
+              if key not in led:
+                  if required:
+                      raise ValueError(f"ledger has no {key} (keys={sorted(led)[:6]})")
+                  return 0.0
+              v = led[key]
+              if isinstance(v, bool) or not isinstance(v, (int, float)):
+                  raise ValueError(f"{key} is not a number: {v!r}")
+              v = float(v)
+              if not math.isfinite(v) or v < 0:
+                  raise ValueError(f"{key} is not a usable counter: {v!r}")
+              return v
 
           if os.environ.get("FORCE_CNB") == "true":
               emit("allow", "force_cnb=true bypasses the guard")
@@ -221,7 +251,14 @@ jobs:
           if not math.isfinite(limit) or not 0 < limit <= 100:
               emit("skip", f"build_budget_pct={limit!r} is outside (0, 100] — ignoring it")
               sys.exit(0)
-          cap = float(os.environ.get("BUILD_CAP_H") or 160)
+          try:
+              cap = float(os.environ.get("BUILD_CAP_H") or 160)
+          except ValueError:
+              emit("skip", f"unusable BUILD_CAP_H={os.environ.get('BUILD_CAP_H')!r}")
+              sys.exit(0)
+          if not math.isfinite(cap) or cap <= 0:
+              emit("skip", f"BUILD_CAP_H={cap!r} is not a usable quota")
+              sys.exit(0)
           # cnb.cool must be reached directly from this runner (through the proxy it crawls), so
           # bypass any HTTPS_PROXY the runner carries for GitHub.
           opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -231,14 +268,11 @@ jobs:
                   "Accept": "application/vnd.cnb.api+json"})
               with opener.open(req, timeout=30) as r:
                   led = json.load(r)
-              # A renamed/absent field must never read as "0 used" — a silent fail-open is the one
-              # direction this guard must not take. `freeze_ci_in_sec` is the in-flight
-              # pre-deduction CNB holds for pipelines that have not settled yet, so the budget
-              # actually still free is cap - settled - frozen; it is transient and expected to be
-              # absent/0 on an idle org, so only the settled field is mandatory.
-              if "ci_in_sec" not in led:
-                  raise ValueError(f"ledger has no ci_in_sec (keys={sorted(led)[:6]})")
-              used = (float(led["ci_in_sec"]) + float(led.get("freeze_ci_in_sec") or 0)) / 3600.0
+              # The budget still free is cap - settled - frozen: `ci_in_sec` is this month's
+              # settled build usage, `freeze_ci_in_sec` the in-flight pre-deduction CNB holds for
+              # pipelines that have not settled yet. Both are read strictly (see `counter`).
+              used = (counter(led, "ci_in_sec", True)
+                      + counter(led, "freeze_ci_in_sec", False)) / 3600.0
           except Exception as e:
               emit("skip", f"ledger unreadable ({type(e).__name__}: {e}) — failing closed")
               sys.exit(0)

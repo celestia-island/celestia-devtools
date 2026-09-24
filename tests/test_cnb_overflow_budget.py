@@ -103,7 +103,7 @@ def run_guard(tmp_path, ledger_url, *, used_core_h=None, pct="70", auth_token="t
     env = {k: v for k, v in os.environ.items() if k not in ("BUDGET_PCT", "FORCE_CNB", "CNB_TOKEN")}
     env["CHARGE_URL"] = ledger_url
     env["BUDGET_PCT"] = pct
-    env["BUILD_CAP_H"] = str(cap if cap is not None else CAP_H)
+    env["BUILD_CAP_H"] = str(cap if cap is not None else CAP_H)  # cap may be a junk string
     if auth_token is not None:
         env["CNB_TOKEN"] = auth_token
     if force is not None:
@@ -112,12 +112,17 @@ def run_guard(tmp_path, ledger_url, *, used_core_h=None, pct="70", auth_token="t
         _Ledger.payload = {"ci_in_sec": int(used_core_h * 3600), "dev_in_sec": 0}
     out_file = tmp_path / "gh_output"
     out_file.write_text("")
-    if outputs:
+    if outputs == "directory":
+        out_file.unlink()
+        out_file.mkdir()
+        env["GITHUB_OUTPUT"] = str(out_file)
+    elif outputs:
         env["GITHUB_OUTPUT"] = str(out_file)
     env.update(extra_env or {})
     r = subprocess.run([sys.executable, "-c", _guard_script()], capture_output=True, text=True,
                        env=env, timeout=60)
-    got = dict(line.split("=", 1) for line in out_file.read_text().splitlines() if "=" in line)
+    got = ({} if out_file.is_dir() else
+           dict(line.split("=", 1) for line in out_file.read_text().splitlines() if "=" in line))
     return r.stdout + r.stderr, got, r.returncode
 
 
@@ -158,6 +163,14 @@ class TestShippedShape:
         outs = _doc()["jobs"]["route"]["outputs"]
         assert outs["budget"] == "${{ steps.budget.outputs.budget }}"
         assert "budget_reason" in outs
+
+    def test_the_guard_step_is_the_only_writer_of_the_budget_output(self):
+        """A second step emitting `budget=allow` would otherwise override the guard silently."""
+        ids = [s.get("id") for s in _steps("route")]
+        assert ids.count(GUARD_STEP_ID) == 1, f"duplicate guard step ids: {ids}"
+        writers = [s.get("id") or s.get("name") for s in _steps("route")
+                   if "budget=" in (s.get("run") or "")]
+        assert writers == [GUARD_STEP_ID], f"more than one step can grant the budget: {writers}"
 
     def test_budget_default_is_conservative_and_leaves_headroom(self):
         for on in ("workflow_call", "workflow_dispatch"):
@@ -239,6 +252,26 @@ class TestFailsClosed:
         _, got, _ = run_guard(tmp_path, ledger, pct="70")
         assert got["budget"] == "skip"
 
+    @pytest.mark.parametrize("payload", [
+        {"ci_in_sec": -1},                       # a negative counter is not a fresh pool
+        {"ci_in_sec": -1e12},
+        {"ci_in_sec": float("-inf")},
+        {"ci_in_sec": True},                     # float(True) == 1.0
+        {"ci_in_sec": False},
+        {"ci_in_sec": None},
+        {"ci_in_sec": 1, "freeze_ci_in_sec": -1e12},
+        {"ci_in_sec": 1, "freeze_ci_in_sec": {}},   # present but unreadable, not silently 0
+        {"ci_in_sec": 1, "freeze_ci_in_sec": []},
+        {"ci_in_sec": 1, "freeze_ci_in_sec": ""},
+        {"ci_in_sec": 1, "freeze_ci_in_sec": "abc"},
+    ], ids=["negative", "very-negative", "-inf", "true", "false", "null",
+            "negative-freeze", "freeze-dict", "freeze-list", "freeze-empty", "freeze-text"])
+    def test_parseable_but_nonsensical_counters_fail_closed(self, tmp_path, ledger, payload):
+        _Ledger.payload = payload
+        out, got, rc = run_guard(tmp_path, ledger, pct="70")
+        assert (rc, got["budget"]) == (0, "skip"), f"{payload} must not read as a fresh pool"
+        assert "failing closed" in out
+
     def test_renamed_ledger_field_must_not_read_as_zero_used(self, tmp_path, ledger):
         """A shape change in the charge API is the one way this guard could silently fail open."""
         _Ledger.payload = {"build_in_sec": 10}
@@ -274,15 +307,21 @@ class TestFailsClosed:
 
     def test_guard_always_exits_zero_so_it_cannot_fail_the_route_job(self, tmp_path, ledger):
         _Ledger.status = 503
-        _, _, rc = run_guard(tmp_path, ledger, pct="70")
+        _, got, rc = run_guard(tmp_path, ledger, pct="70")
         assert rc == 0
+        assert got["budget"] == "skip"          # ...and it still produced a verdict
+        assert _Ledger.seen_auth                 # ...after really asking the ledger
 
 
 class TestHygiene:
     def test_token_is_never_echoed(self, tmp_path, ledger):
         for used in (1.0, 140.0):
-            out, _, _ = run_guard(tmp_path, ledger, used_core_h=used, auth_token="tok-secret-value")
+            out, got, _ = run_guard(tmp_path, ledger, used_core_h=used,
+                                    auth_token="tok-secret-value")
             assert "tok-secret-value" not in out
+            # ...and the guard really ran: an absence assertion alone also passes if it did not.
+            assert got.get("budget") in ("allow", "skip")
+        assert set(_Ledger.seen_auth) == {"Bearer tok-secret-value"}
 
     def test_token_is_sent_as_a_bearer_header(self, tmp_path, ledger):
         run_guard(tmp_path, ledger, used_core_h=1.0, auth_token="tok-secret-value")
@@ -303,3 +342,25 @@ class TestHygiene:
         out, _, rc = run_guard(tmp_path, ledger, used_core_h=1.0, outputs=False)
         assert rc == 0
         assert "build-pool budget: allow" in out
+
+    def test_an_unwritable_github_output_warns_and_still_exits_zero(self, tmp_path, ledger):
+        """An empty output skips the cnb job (fail-closed); it must not redden the step."""
+        out, got, rc = run_guard(tmp_path, ledger, used_core_h=1.0, outputs="directory")
+        assert rc == 0
+        assert got == {}, "no output must be produced when it cannot be written"
+        assert "could not write GITHUB_OUTPUT" in out
+
+    def test_a_summary_path_that_is_a_directory_still_exits_zero(self, tmp_path, ledger):
+        out, got, rc = run_guard(tmp_path, ledger, used_core_h=1.0,
+                                 extra_env={"GITHUB_STEP_SUMMARY": str(tmp_path)})
+        assert (rc, got["budget"]) == (0, "allow")
+        assert "could not write the step summary" in out
+
+    def test_an_unusable_cap_skips_instead_of_crashing(self, tmp_path, ledger):
+        out, got, rc = run_guard(tmp_path, ledger, used_core_h=1.0, cap="abc")
+        assert (rc, got["budget"]) == (0, "skip")
+        assert "BUILD_CAP_H" in out
+
+    def test_a_nonpositive_cap_skips(self, tmp_path, ledger):
+        _, got, rc = run_guard(tmp_path, ledger, used_core_h=1.0, cap="0")
+        assert (rc, got["budget"]) == (0, "skip")
