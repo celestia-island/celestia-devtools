@@ -344,6 +344,24 @@ class TestPolicyAndWiring:
         assert "dev 42.0/1600" in trend[0] and "build 99.0/160" in trend[0]
 
 
+class TestBusyHosts:
+    def test_only_tracked_dev_quota_workspaces_block_a_host(self):
+        """P3 (round-A verifier): without the mode/host filter, a build or legacy record keyed
+        by repo could shadow a host name and make free_host defer on an idle pool."""
+        state = {
+            "_recent": {"a" * 40: 1.0},                                    # bookkeeping: never counts
+            "1": {"mode": "ws", "host": "ci-infra-hikari", "repo": "hikari",
+                  "sha": "a" * 40, "url": "", "since": 0.0},               # counts
+            "2": {"mode": "build", "host": "ci-infra-hikari-2", "repo": "hikari",
+                  "sha": "b" * 40, "url": "", "since": 0.0},               # build: never counts
+            "3": {"mode": "ws", "repo": "hikari", "sha": "c" * 40,
+                  "url": "", "since": 0.0},                                # legacy ws: no host
+            "4": {"mode": "ws", "host": "ci-infra-plana", "repo": "plana",
+                  "sha": "d" * 40, "url": "", "since": 0.0},               # another repo: counts
+        }
+        assert dsp.busy_hosts(state) == {"ci-infra-hikari", "ci-infra-plana"}
+
+
 class TestPublishLaneRef:
     def test_the_ref_lands_on_the_selected_host(self, monkeypatch, tmp_path):
         """`publish-ignores-the-selected-host`: the host parameter is the whole point."""
