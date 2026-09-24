@@ -139,6 +139,14 @@ DEV_STALE_SEC = _env_int("DISPATCH_DEV_STALE_SEC", 1800, 60, 86400)
 # holding the fallback to the same line keeps the whole overflow layer under one ceiling.
 BUILD_CAP_H = _env_int("DISPATCH_BUILD_CAP_H", 160, 1, 100000)
 BUILD_BUDGET_PCT = _env_int("DISPATCH_BUILD_BUDGET_PCT", 70, 1, 100)
+if DEV_POLL_SEC > DEV_STALE_SEC:
+    # A reading that expires before the next refresh means the gate is blind between refreshes
+    # (every spill defers) even while the ledger is perfectly healthy — the same trap the
+    # grace-vs-TTL guard above clamps.
+    _fixed = max(30, min(DEV_POLL_SEC, DEV_STALE_SEC))
+    print(f"WARN: DISPATCH_DEV_POLL_SEC={DEV_POLL_SEC} exceeds DISPATCH_DEV_STALE_SEC="
+          f"{DEV_STALE_SEC} — using {_fixed}", file=sys.stderr)
+    DEV_POLL_SEC = _fixed
 STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
 GH = os.environ.get("GH_TOKEN", "")
 FETCH = os.environ.get("GH_FETCH", "")
@@ -210,8 +218,10 @@ def cnb_api(path, data=None):
 
 
 CHARGE_URL = f"https://api.cnb.cool/{ORG}/-/charge/volume"
-_pool_reading = {"t": 0.0, "dev": None, "dev_pct": None, "build": None, "build_pct": None,
-                 "fresh": False}
+#  `t`        — when the last *successful* read happened (staleness is measured from it)
+#  `attempt`  — when the last read was *attempted*, success or not (negative cache)
+_pool_reading = {"t": 0.0, "attempt": 0.0, "dev": None, "dev_pct": None, "build": None,
+                 "build_pct": None, "fresh": False}
 _NO_READING = {"dev_hours": None, "dev_pct": None, "build_hours": None, "build_pct": None,
                "fresh": False}
 
@@ -253,7 +263,14 @@ def pools(now=None, refresh=False):
     """
     now = time.time() if now is None else now
     c = _pool_reading
-    if refresh or c["dev"] is None or now - c["t"] >= DEV_POLL_SEC:
+    # Negative cache: while the ledger is unreachable every deferring spill calls pools() again,
+    # and deferrals do not consume the per-loop spill batch — so without this throttle a
+    # blackholed API costs one blocking read (up to 30 s) per queued run *before* resolve(),
+    # whose cancel-green step is what frees farm slots. `attempt` is deliberately separate from
+    # `t`: a failed attempt must not make the last good reading look fresher than it is.
+    due = refresh or c["dev"] is None or now - c["t"] >= DEV_POLL_SEC
+    if due and (refresh or now - c["attempt"] >= DEV_POLL_SEC):
+        c["attempt"] = now
         try:
             led = charge_volume()
             dev = (core_seconds(led, "dev_in_sec", True)
@@ -515,7 +532,8 @@ def spill(entry, state):
             return False
         if pct >= DEV_BUDGET_PCT:
             log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool at {pct:.1f}% "
-                f"({hours:.1f}/{DEV_CAP_H} core-h, limit {DEV_BUDGET_PCT}%)")
+                f"({hours:.1f}/{DEV_CAP_H} core-h, limit {DEV_BUDGET_PCT}%"
+                f"{'' if fresh else ', stale reading'})")
             return False
         if not fresh:
             log(f"dev pool reading is stale ({hours:.1f}/{DEV_CAP_H} core-h = {pct:.1f}%) — proceeding")

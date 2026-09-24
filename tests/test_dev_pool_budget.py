@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import subprocess
 import sys
 import urllib.request
 
@@ -40,11 +41,11 @@ CAP_H = 1600.0
 @pytest.fixture(autouse=True)
 def clean_cache(monkeypatch):
     """No reading cached between tests, and no real HTTP."""
-    dsp._pool_reading.update(t=0.0, dev=None, dev_pct=None, build=None, build_pct=None,
-                             fresh=False)
+    dsp._pool_reading.update(t=0.0, attempt=0.0, dev=None, dev_pct=None,
+                             build=None, build_pct=None, fresh=False)
     yield
-    dsp._pool_reading.update(t=0.0, dev=None, dev_pct=None, build=None, build_pct=None,
-                             fresh=False)
+    dsp._pool_reading.update(t=0.0, attempt=0.0, dev=None, dev_pct=None,
+                             build=None, build_pct=None, fresh=False)
 
 
 def ledger(dev_hours=0.0, freeze_hours=0.0, build_hours=0.0, freeze_build_hours=0.0):
@@ -114,6 +115,50 @@ class TestMonitor:
         dsp._pool_reading["t"] -= dsp.DEV_STALE_SEC + 1
         monkeypatch.setattr(dsp, "charge_volume",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert dsp.dev_pool() == (None, None, False)
+
+    def test_a_failed_read_is_not_retried_on_every_call(self, monkeypatch):
+        """Both verifiers measured the same defect: with a dying ledger every deferring spill
+        re-attempted a blocking read, which could push resolve() (the cancel-green step that
+        frees farm slots) out by ~an hour on a deep queue."""
+        attempts = []
+
+        def dying():
+            attempts.append(1)
+            raise RuntimeError("blackhole")
+
+        seen = []
+        monkeypatch.setattr(dsp, "log", seen.append)
+        monkeypatch.setattr(dsp, "charge_volume", dying)
+        for _ in range(50):
+            dsp.dev_pool()
+        assert len(attempts) == 1, f"50 calls must cost one attempt, got {len(attempts)}"
+        assert sum("charge ledger unreadable" in line for line in seen) == 1
+
+    def test_the_negative_cache_expires(self, monkeypatch):
+        attempts = []
+
+        def dying():
+            attempts.append(1)
+            raise RuntimeError("blackhole")
+
+        monkeypatch.setattr(dsp, "log", lambda *_: None)
+        monkeypatch.setattr(dsp, "charge_volume", dying)
+        dsp.dev_pool()
+        dsp._pool_reading["attempt"] -= dsp.DEV_POLL_SEC + 1
+        dsp.dev_pool()
+        assert len(attempts) == 2
+
+    def test_a_failed_attempt_does_not_make_the_last_good_reading_look_fresh(self, monkeypatch):
+        """`attempt` must stay separate from `t`: advancing `t` on failure would extend the
+        usable window of a stale number, which is fail-open."""
+        monkeypatch.setattr(dsp, "log", lambda *_: None)
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=100.0))
+        dsp.pools(refresh=True)
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        dsp._pool_reading["t"] -= dsp.DEV_STALE_SEC + 1     # the last good read is too old
+        dsp.pools(refresh=True)                             # the failure must not revive it
         assert dsp.dev_pool() == (None, None, False)
 
     def test_the_ledger_is_read_directly_not_through_the_proxy(self, monkeypatch):
@@ -200,19 +245,24 @@ class TestGate:
         dsp.dev_pool(refresh=True)                       # cache a good reading...
         monkeypatch.setattr(dsp, "charge_volume",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        dsp._pool_reading["t"] -= dsp.DEV_POLL_SEC + 1    # ...and let it age past the poll window
+        dsp._pool_reading["t"] -= dsp.DEV_POLL_SEC + 1        # ...let it age past the poll window,
+        dsp._pool_reading["attempt"] -= dsp.DEV_POLL_SEC + 1  # ...and let the retry be due again
         result, state = spill()
         assert result is None and state["91"]["mode"] == "ws"
         assert any("stale" in line for line in seen)
 
     def test_a_stale_reading_over_the_limit_still_defers(self, monkeypatch, ws_env):
-        """Stale means "keep using the number", not "ignore it"."""
+        """Stale means "keep using the number", not "ignore it" — and the log must say so."""
+        seen = []
+        monkeypatch.setattr(dsp, "log", seen.append)
         monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=CAP_H * 0.99))
         dsp.dev_pool(refresh=True)
         monkeypatch.setattr(dsp, "charge_volume",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         dsp._pool_reading["t"] -= dsp.DEV_POLL_SEC + 1
+        dsp._pool_reading["attempt"] -= dsp.DEV_POLL_SEC + 1
         assert spill()[0] is False and ws_env == []
+        assert any("stale reading" in line for line in seen), seen
 
     def test_the_dev_gate_only_applies_to_dev_quota_repos(self, monkeypatch, ws_env):
         """A repo outside DEV_QUOTA goes to the build lane on a healthy ledger."""
@@ -234,13 +284,50 @@ class TestPolicyAndWiring:
         assert dsp.DEV_POLL_SEC == 300
         assert dsp.DEV_STALE_SEC >= dsp.DEV_POLL_SEC
 
-    def test_the_main_loop_reads_the_pools_even_when_nothing_spills(self):
-        """The trend line is the monitor: without a read in the loop there is no visibility on a
-        quiet night, which is exactly when the pool can drift toward its line unnoticed."""
-        src = open(os.path.join(os.path.dirname(__file__), "..", "tools",
-                                "ci_dispatcherd.py")).read()
-        loop = src[src.index("def main():"):]
-        assert "pools()" in loop.split("resolve(state)")[0], "main() must read the pools each loop"
+    def test_a_poll_window_longer_than_the_stale_window_is_clamped(self):
+        """Otherwise a healthy ledger reads as unknown between refreshes and the lane goes dark."""
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys;"
+             f"s=importlib.util.spec_from_file_location('x',{TOOL!r});"
+             "m=importlib.util.module_from_spec(s);sys.modules['x']=m;s.loader.exec_module(m);"
+             "print(m.DEV_POLL_SEC, m.DEV_STALE_SEC)"],
+            capture_output=True, text=True,
+            env={**os.environ, "DISPATCH_DEV_POLL_SEC": "86400", "DISPATCH_DEV_STALE_SEC": "900"},
+            timeout=60)
+        assert "WARN" in out.stderr and "DISPATCH_DEV_POLL_SEC" in out.stderr
+        assert out.stdout.split() == ["900", "900"]
+
+    def test_the_main_loop_logs_the_trend_line_even_when_nothing_spills(self, monkeypatch):
+        """Driven, not grepped: a source check let `pass  # pools()` survive (found by mutation).
+
+        The trend line is the whole monitor — without a read in the loop there is no visibility
+        on a quiet night, which is exactly when a pool can drift toward its line unnoticed.
+        """
+        seen = []
+        monkeypatch.setattr(dsp, "log", seen.append)
+        monkeypatch.setattr(dsp, "GH", "gh")
+        monkeypatch.setattr(dsp, "CNB", "cnb")
+        monkeypatch.setattr(dsp, "FETCH", "fetch")
+        monkeypatch.setattr(dsp, "CNB_WS", "ws")
+        monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours=42.0, build_hours=99.0))
+        monkeypatch.setattr(dsp, "load_state", lambda: {})
+        monkeypatch.setattr(dsp, "census", lambda: [])
+        monkeypatch.setattr(dsp, "save_state", lambda st: None)
+        monkeypatch.setattr(dsp, "resolve", lambda st: None)
+
+        class Stop(Exception):
+            pass
+
+        def one_iteration(_sec):
+            raise Stop
+
+        monkeypatch.setattr(dsp.time, "sleep", one_iteration)
+        with pytest.raises(Stop):
+            dsp.main()
+        trend = [line for line in seen if line.startswith("pools dev ")]
+        assert trend, f"the loop must log the pools line with an empty queue; got {seen}"
+        assert "dev 42.0/1600" in trend[0] and "build 99.0/160" in trend[0]
 
 
 class TestLedgerParsing:
@@ -289,6 +376,37 @@ class TestBuildPoolFallbackGate:
                             lambda: ledger(build_hours=dsp.BUILD_CAP_H * 0.5))
         result, state = spill(repo="outside-quota", run_id=62)
         assert result is None and state["62"]["mode"] == "build"
+
+    def test_the_real_fallback_from_a_dev_lane_repo_is_gated(self, monkeypatch, ws_env):
+        """The production shape: the repo IS in DEV_QUOTA (WATCHED == DEV_QUOTA) and its
+        workspace start fails, so the spill would fall through to the build lane. Scoping the
+        build gate to repos *outside* DEV_QUOTA survived the suite and would spend build
+        core-hours above the line (found by the round-A verifier)."""
+        built = []
+        monkeypatch.setattr(dsp, "cnb_api",
+                            lambda path, data=None: (built.append(path), {"sn": "sn-build"})[1])
+
+        def broken_start(host, ref):
+            raise RuntimeError("workspace/start refused")
+
+        monkeypatch.setattr(dsp, "ws_start", broken_start)
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: ledger(dev_hours=1.0, build_hours=dsp.BUILD_CAP_H * 0.71))
+        result, state = spill(repo="hikari", run_id=77)
+        assert result is False and state == {} and built == [], \
+            "a dev-lane fallback must not spend build core-hours above the line"
+
+    def test_the_real_fallback_from_a_dev_lane_repo_still_works_below_the_line(
+            self, monkeypatch, ws_env):
+        built = []
+        monkeypatch.setattr(dsp, "cnb_api",
+                            lambda path, data=None: (built.append(path), {"sn": "sn-build"})[1])
+        monkeypatch.setattr(dsp, "ws_start",
+                            lambda host, ref: (_ for _ in ()).throw(RuntimeError("nope")))
+        monkeypatch.setattr(dsp, "charge_volume",
+                            lambda: ledger(dev_hours=1.0, build_hours=dsp.BUILD_CAP_H * 0.5))
+        result, state = spill(repo="hikari", run_id=78)
+        assert result is None and state["78"]["mode"] == "build" and built
 
     def test_an_unreadable_ledger_defers_the_fallback_too(self, monkeypatch, ws_env):
         monkeypatch.setattr(dsp, "DEV_QUOTA", set())
