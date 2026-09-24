@@ -207,6 +207,18 @@ class TestFailsClosed:
         _, got, _ = run_guard(tmp_path, ledger, pct="70")
         assert got["budget"] == "skip"
 
+    def test_renamed_ledger_field_must_not_read_as_zero_used(self, tmp_path, ledger):
+        """A shape change in the charge API is the one way this guard could silently fail open."""
+        _Ledger.payload = {"build_in_sec": 10}
+        out, got, _ = run_guard(tmp_path, ledger, pct="70")
+        assert got["budget"] == "skip"
+        assert "no ci_in_sec" in out
+
+    def test_absent_field_is_not_treated_as_a_fresh_pool(self, tmp_path, ledger):
+        _Ledger.payload = {}
+        _, got, _ = run_guard(tmp_path, ledger, pct="70")
+        assert got["budget"] == "skip"
+
     def test_missing_token_skips_without_calling_out(self, tmp_path, ledger):
         out, got, _ = run_guard(tmp_path, ledger, auth_token=None, used_core_h=1.0)
         assert got["budget"] == "skip"

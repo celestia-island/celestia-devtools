@@ -219,7 +219,12 @@ jobs:
                   "Authorization": "Bearer " + tok,
                   "Accept": "application/vnd.cnb.api+json"})
               with opener.open(req, timeout=30) as r:
-                  used = float(json.load(r).get("ci_in_sec", 0)) / 3600.0
+                  led = json.load(r)
+              # A renamed/absent field must never read as "0 used" — a silent fail-open is the one
+              # direction this guard must not take.
+              if "ci_in_sec" not in led:
+                  raise ValueError(f"ledger has no ci_in_sec (keys={sorted(led)[:6]})")
+              used = float(led["ci_in_sec"]) / 3600.0
           except Exception as e:
               emit("skip", f"ledger unreadable ({type(e).__name__}: {e}) — failing closed")
               sys.exit(0)
