@@ -18,7 +18,15 @@ name: PR Title Check
 # title checks red — see the 2026-09-11 migration.
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      # Lane override, mirroring commit-msg-lint.yml: caller input > LINT_RUNNER
+      # variable (org/repo) > hosted. Empty keeps the historical hosted runner.
+      runner:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: ""
   # Runs on this repo's own PRs too, which is also how the workflow is verified
   # before any caller adopts it.
   pull_request:
@@ -36,7 +44,10 @@ jobs:
     # provision instantly and in parallel, so it never queues behind real builds
     # on the org self-hosted fleet. Public repos are free and unlimited;
     # private-repo runs draw on the org's monthly included minutes.
-    runs-on: ubuntu-latest
+    # Same lane resolution as commit-msg-lint.yml: caller input > org/repo
+    # variable > hosted, so private repos stop drawing paid minutes when the
+    # quota fails while public repos keep free hosted minutes.
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
     steps:
