@@ -21,6 +21,7 @@ dispatched a spill for, and only after the CNB build proved green.
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -116,6 +117,36 @@ if WS_STAGE_GRACE_SEC >= SPILL_TTL_SEC - POLL_SEC:
     print(f"WARN: DISPATCH_WS_STAGE_GRACE_SEC={WS_STAGE_GRACE_SEC} leaves no room inside "
           f"DISPATCH_SPILL_TTL_SEC={SPILL_TTL_SEC} — using {_fixed}", file=sys.stderr)
     WS_STAGE_GRACE_SEC = _fixed
+# ── dev-pool budget guard ────────────────────────────────────────────────────────────────
+# The dev pool (云原生开发, 1600 free core-hours/month) carries every dev-quota lane run. Its
+# quota is a capability limit like the build pool's: once it is used up CNB restricts the
+# capability and a pre-freeze with insufficient quota terminates the task, so a spill attempted
+# at exhaustion fails `workspace/start` and — after WS_START_ATTEMPTS — **falls back to the build
+# lane**, i.e. the failure spends the very pool this lane exists to protect. So the daemon reads
+# the org charge ledger and, at or above the threshold, defers the spill instead of attempting it:
+# the run stays queued on the farm (fail-closed, exactly like a same-repo deferral). That also
+# leaves headroom for the human cloud-native workspaces that share this pool.
+DEV_CAP_H = _env_int("DISPATCH_DEV_CAP_H", 1600, 1, 100000)
+DEV_BUDGET_PCT = _env_int("DISPATCH_DEV_BUDGET_PCT", 80, 1, 100)
+# The ledger is cheap but not free and its numbers move slowly, so a reading is cached for
+# DEV_POLL_SEC; the last good one still counts for DEV_STALE_SEC while the API is down (a stale
+# number is the best protection available). With *no* reading the guard refuses to spill.
+DEV_POLL_SEC = _env_int("DISPATCH_DEV_POLL_SEC", 300, 30, 86400)
+DEV_STALE_SEC = _env_int("DISPATCH_DEV_STALE_SEC", 1800, 60, 86400)
+# The build pool (云原生构建, 160/month) is the scarce one, and the lane's *fallback* path spends
+# it: a workspace that fails to start, or a PR whose branch cannot be merged into master for the
+# spill ref, ends up as a ci-farm build. The caller-lane router refuses to dispatch at 70%, so
+# holding the fallback to the same line keeps the whole overflow layer under one ceiling.
+BUILD_CAP_H = _env_int("DISPATCH_BUILD_CAP_H", 160, 1, 100000)
+BUILD_BUDGET_PCT = _env_int("DISPATCH_BUILD_BUDGET_PCT", 70, 1, 100)
+if DEV_POLL_SEC > DEV_STALE_SEC:
+    # A reading that expires before the next refresh means the gate is blind between refreshes
+    # (every spill defers) even while the ledger is perfectly healthy — the same trap the
+    # grace-vs-TTL guard above clamps.
+    _fixed = max(30, min(DEV_POLL_SEC, DEV_STALE_SEC))
+    print(f"WARN: DISPATCH_DEV_POLL_SEC={DEV_POLL_SEC} exceeds DISPATCH_DEV_STALE_SEC="
+          f"{DEV_STALE_SEC} — using {_fixed}", file=sys.stderr)
+    DEV_POLL_SEC = _fixed
 STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
 GH = os.environ.get("GH_TOKEN", "")
 FETCH = os.environ.get("GH_FETCH", "")
@@ -184,6 +215,93 @@ def cnb_api(path, data=None):
     with urllib.request.urlopen(req, timeout=30) as r:
         body = r.read()
     return json.loads(body) if body else {}
+
+
+CHARGE_URL = f"https://api.cnb.cool/{ORG}/-/charge/volume"
+#  `t`        — when the last *successful* read happened (staleness is measured from it)
+#  `attempt`  — when the last read was *attempted*, success or not (negative cache)
+_pool_reading = {"t": 0.0, "attempt": 0.0, "dev": None, "dev_pct": None, "build": None,
+                 "build_pct": None, "fresh": False}
+_NO_READING = {"dev_hours": None, "dev_pct": None, "build_hours": None, "build_pct": None,
+               "fresh": False}
+
+
+def charge_volume():
+    """The org charge ledger, read **directly**: through the proxy cnb.cool crawls."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(CHARGE_URL, headers={
+        "Authorization": "Bearer " + CNB, "Accept": "application/vnd.cnb.api+json"})
+    with opener.open(req, timeout=30) as r:
+        return json.loads(r.read())
+
+
+def core_seconds(led, key, required):
+    """A usage counter from the ledger: a finite, non-negative JSON number.
+
+    A renamed/absent field must not read as "0 used", and parseable nonsense (`-1`, `true`,
+    `inf`) must not read as a fresh pool — both would be fail-open in the wrong direction.
+    Only the optional in-flight `freeze_*` field may be absent (it is omitempty upstream).
+    """
+    if key not in led:
+        if required:
+            raise ValueError(f"ledger has no {key}")
+        return 0.0
+    v = led[key]
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError(f"{key} is not a number: {v!r}")
+    v = float(v)
+    if not math.isfinite(v) or v < 0:
+        raise ValueError(f"{key} is not a usable counter: {v!r}")
+    return v
+
+
+def pools(now=None, refresh=False):
+    """Both pools from one ledger read; all-None when no reading is usable.
+
+    Logs a single trend line whenever it refreshes — that line *is* the monitor, and it carries
+    the same numbers the gates act on.
+    """
+    now = time.time() if now is None else now
+    c = _pool_reading
+    # Negative cache: while the ledger is unreachable every deferring spill calls pools() again,
+    # and deferrals do not consume the per-loop spill batch — so without this throttle a
+    # blackholed API costs one blocking read (up to 30 s) per queued run *before* resolve(),
+    # whose cancel-green step is what frees farm slots. `attempt` is deliberately separate from
+    # `t`: a failed attempt must not make the last good reading look fresher than it is.
+    due = refresh or c["dev"] is None or now - c["t"] >= DEV_POLL_SEC
+    if due and (refresh or now - c["attempt"] >= DEV_POLL_SEC):
+        c["attempt"] = now
+        try:
+            led = charge_volume()
+            dev = (core_seconds(led, "dev_in_sec", True)
+                   + core_seconds(led, "freeze_dev_in_sec", False)) / 3600.0
+            build = (core_seconds(led, "ci_in_sec", True)
+                     + core_seconds(led, "freeze_ci_in_sec", False)) / 3600.0
+            c.update(t=now, dev=dev, dev_pct=dev / DEV_CAP_H * 100.0,
+                     build=build, build_pct=build / BUILD_CAP_H * 100.0, fresh=True)
+            log(f"pools dev {dev:.1f}/{DEV_CAP_H} core-h = {c['dev_pct']:.1f}% "
+                f"(limit {DEV_BUDGET_PCT}%) | build {build:.1f}/{BUILD_CAP_H} "
+                f"= {c['build_pct']:.1f}% (limit {BUILD_BUDGET_PCT}%)")
+        except Exception as e:
+            # Fall through, do NOT return: the previous reading is still the best available
+            # protection (it is what makes a transient API failure cost nothing), so only the
+            # staleness check below may discard it.
+            c["fresh"] = False
+            log(f"charge ledger unreadable: {redact(str(e))}")
+    if c["dev"] is None or now - c["t"] >= DEV_STALE_SEC:
+        return dict(_NO_READING)
+    return {"dev_hours": c["dev"], "dev_pct": c["dev_pct"],
+            "build_hours": c["build"], "build_pct": c["build_pct"], "fresh": c["fresh"]}
+
+
+def dev_pool(now=None, refresh=False):
+    p = pools(now, refresh)
+    return p["dev_hours"], p["dev_pct"], p["fresh"]
+
+
+def build_pool(now=None, refresh=False):
+    p = pools(now, refresh)
+    return p["build_hours"], p["build_pct"], p["fresh"]
 
 
 def census():
@@ -404,6 +522,21 @@ def spill(entry, state):
                for k, t in state.items() if k != "_recent"):
             log(f"ws-spill {repo} run {entry['run_id']} deferred — {repo} already holds a workspace")
             return False
+        # Dev-pool budget gate: attempting a workspace at (or near) exhaustion fails
+        # `workspace/start` and falls back to the build lane, spending the pool this lane
+        # exists to protect. Defer instead — the farm run is untouched and re-offered next poll.
+        hours, pct, fresh = dev_pool()
+        if pct is None:
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool usage unknown "
+                f"(ledger unreadable; not attempting a spill that would fall back to the build lane)")
+            return False
+        if pct >= DEV_BUDGET_PCT:
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool at {pct:.1f}% "
+                f"({hours:.1f}/{DEV_CAP_H} core-h, limit {DEV_BUDGET_PCT}%"
+                f"{'' if fresh else ', stale reading'})")
+            return False
+        if not fresh:
+            log(f"dev pool reading is stale ({hours:.1f}/{DEV_CAP_H} core-h = {pct:.1f}%) — proceeding")
         try:
             ensure_sha_on_mirror(repo, sha)
             branch, has_pipeline = publish_lane_ref(repo, sha)
@@ -421,6 +554,15 @@ def spill(entry, state):
             return
         except Exception as e:
             log(f"ws-spill {repo} failed ({redact(str(e))}); falling back to build lane")
+    # Build-pool gate on the fallback: same ceiling as the caller-lane router, fail-closed (the
+    # farm run simply stays queued), so no path of this daemon spends build core-hours above it.
+    bhours, bpct, _ = build_pool()
+    if bpct is None or bpct >= BUILD_BUDGET_PCT:
+        log(f"spill {repo} run {entry['run_id']} deferred — build pool "
+            + (f"at {bpct:.1f}% ({bhours:.1f}/{BUILD_CAP_H} core-h, limit {BUILD_BUDGET_PCT}%)"
+               if bpct is not None else "usage unknown (ledger unreadable)")
+            + "; farm run stays queued")
+        return False
     r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
                 {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
                  "title": f"daemon spill {repo} {sha[:10]}", "env": env})
@@ -529,6 +671,7 @@ def main():
     while True:
         try:
             state = load_state()
+            pools()             # monitor: logs both pools on each refresh
             q = census()
             # state also carries the `_recent` bookkeeping dict — skip it or
             # the comprehension raises KeyError('sha') on every loop and the

@@ -23,6 +23,21 @@ FETCH_TOKEN = "github-pat-1111111111111111111111111"
 CNB_TOKEN = "cnb-token-2222222222222222222222222"
 
 
+@pytest.fixture(autouse=True)
+def healthy_dev_pool(monkeypatch):
+    """Default the dev-pool guard to a fresh pool, and clear its module-level cache.
+
+    Every spill now reads the org charge ledger first; without this stub each unrelated test
+    would reach api.cnb.cool (or defer, because the reading failed). Tests that are *about* the
+    guard override `charge_volume` and `_pool_reading` themselves.
+    """
+    dsp._pool_reading.update(t=0.0, attempt=0.0, dev=None, dev_pct=None,
+                             build=None, build_pct=None, fresh=False)
+    monkeypatch.setattr(dsp, "charge_volume",
+                        lambda: {"dev_in_sec": 0, "freeze_dev_in_sec": 0,
+                                 "ci_in_sec": 0, "freeze_ci_in_sec": 0})
+
+
 def _called_process_error_with_cred_urls():
     """Mimic the real production failure argv shape (tokens inline in URLs)."""
     return subprocess.CalledProcessError(128, [
