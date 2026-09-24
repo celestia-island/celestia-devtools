@@ -33,6 +33,8 @@ import re
 import subprocess
 import sys
 import tomllib
+
+import yaml
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -58,12 +60,29 @@ RUST_LAYERS: tuple[tuple[str, Version, str], ...] = (
 #: currently mandate `^*` for family packages, so an unbounded range warns
 #: (showing what the audit measured) instead of failing.
 NPM_LAYERS: tuple[tuple[str, Version, str], ...] = (
+    # (package, the line that package is actually published on, why). The npm
+    # binding has its own version track: `@celestia-island/kirino` is published
+    # at 0.6.x while the Rust crate is 0.7.x, so comparing the npm declaration
+    # against the CRATE's line would invent violations.
     ("@celestia-island/hikari", (0, 55, 0), "UI component library (Layer 2)"),
+    ("@celestia-island/kirino", (0, 6, 0), "auth bindings (Layer 0, npm track)"),
+    ("@celestia-island/plana-types", (0, 1, 0), "shared protocol types (Layer 1, npm track)"),
+    ("@celestia-island/plana-rpc-client", (0, 1, 0), "RPC client (Layer 1, npm track)"),
+)
+
+#: `layer → (rust crate family, npm package)` for the cross-track check: the same
+#: layer shipped on two tracks has to agree on which generation it is.
+CROSS_TRACK = (
+    ("kirino", "kirino", "@celestia-island/kirino"),
 )
 
 UNBOUNDED = {"", "*", "^*", "x", "X", "latest", ">=0.0.0"}
-#: `file:` is a sibling-directory dependency — retired family-wide (§3.5).
-SKIP_PROTOCOLS = ("workspace:", "catalog:", "link:workspace", "portal:")
+#: Sibling-directory dependencies — retired family-wide (§3.5). `link:` and
+#: `portal:` are the same shape as `file:` (a path outside the package), so they
+#: are judged the same way instead of one warning and one silence.
+SIBLING_PROTOCOLS = ("file:", "link:", "portal:")
+#: Resolution the package manager owns: not a family-version decision.
+SKIP_PROTOCOLS = ("workspace:", "catalog:")
 SKIP_DIRS = {"node_modules", "target", "dist", ".git", ".generated", "vendor"}
 
 CARGO_DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -98,6 +117,22 @@ def _parse_version(text: str) -> tuple[int, int | None, int | None] | None:
     return parts[0], parts[1], parts[2]  # type: ignore[return-value]
 
 
+def _hyphen_bounds(first: str, last: str) -> tuple[Version, Version] | None:
+    """`1.2.3 - 2.3.4` — both ends parse as versions, the upper end inclusive."""
+    low = _parse_version(first)
+    high = _parse_version(last)
+    if low is None or high is None:
+        return None
+    lower = (low[0], low[1] or 0, low[2] or 0)
+    if high[2] is not None:
+        upper = (high[0], high[1] or 0, high[2] + 1)
+    elif high[1] is not None:
+        upper = (high[0], high[1] + 1, 0)
+    else:
+        upper = (high[0] + 1, 0, 0)
+    return lower, upper
+
+
 def _bounds(part: str) -> tuple[Version, Version] | None:
     """The `[lower, upper)` interval one comma-separated comparator admits."""
     part = part.strip()
@@ -116,10 +151,14 @@ def _bounds(part: str) -> tuple[Version, Version] | None:
     if operator == "^":
         if major > 0:
             high = (major + 1, 0, 0)
-        elif minor:
+        elif minor is not None and minor > 0:
             high = (0, minor + 1, 0)
+        elif patch is not None:
+            high = (0, 0, patch + 1)  # ^0.0.3 is >=0.0.3 <0.0.4
+        elif minor is not None:
+            high = (0, 1, 0)  # ^0.0 is >=0.0.0 <0.1.0
         else:
-            high = (1, 0, 0)  # ^0 / ^0.* admits every 0.x
+            high = (1, 0, 0)  # ^0 / ^0.x admits every 0.x
     elif operator == "~":
         high = (major, (minor or 0) + 1, 0)
     elif operator == ">=":
@@ -166,8 +205,23 @@ def _requirement_bounds(requirement: str) -> tuple[Version, Version] | None:
         return None
     if text.startswith("npm:"):
         text = text[len("npm:"):].rpartition("@")[2] or "*"  # npm:alias@range → range
-    if text.startswith("||"):
-        return None
+    # `a || b` and `a - b` are unions: the requirement admits anything either
+    # alternative admits, so the intervals are merged rather than intersecting.
+    if "||" in text or " - " in text:
+        merged: tuple[Version, Version] | None = None
+        alternatives = text.split("||") if "||" in text else [text]
+        for alternative in alternatives:
+            if " - " in alternative:
+                first, _, last = alternative.partition(" - ")
+                bounds = _hyphen_bounds(first, last)
+            else:
+                bounds = _requirement_bounds(alternative)
+            if bounds is None:
+                return None
+            merged = bounds if merged is None else (
+                min(merged[0], bounds[0]), max(merged[1], bounds[1])
+            )
+        return merged
     low: Version = (0, 0, 0)
     high: Version = (10**9, 0, 0)
     for part in text.split(","):
@@ -273,7 +327,8 @@ def _crate_name(key: str, spec: object) -> str:
     return key
 
 
-def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str) -> None:
+def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str,
+                 rust_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
     try:
         document = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover - unreadable manifest
@@ -332,16 +387,20 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str) -> 
             continue
         # kirino and friends: one major, or it is a different primitive.
         if "git" in spec:
-            findings.append(Finding(
-                "warning", subject,
-                f"tracks {spec.get('branch') or spec.get('rev') or 'a git source'}; "
-                f"crates.io {canonical[0]}.{canonical[1]} is the family floor",
-            ))
+            # §3.3 prescribes git references on master for cross-repo Rust
+            # dependencies, and entelecheia consumes kirino that way on purpose.
+            # Reporting it made `--strict` fail a compliant repository, so the
+            # consumption mode is not a finding; what matters is the generation,
+            # which the crates.io declarations and the lock below reveal.
             continue
         requirement = spec.get("version")
         if not isinstance(requirement, str):
             findings.append(Finding("violation", subject, "no version requirement"))
             continue
+        if rust_lines is not None and _parse_version(requirement.lstrip("^~>=< ")):
+            parsed = _parse_version(requirement.lstrip("^~>=< "))
+            if parsed and parsed[1] is not None:
+                rust_lines.setdefault(prefix, set()).add((parsed[0], parsed[1]))
         line = (canonical[0], canonical[1] + 1, 0)
         verdict = intersects(requirement, canonical, line)
         if verdict is False:
@@ -368,6 +427,15 @@ def _npm_values(table: object, package: str) -> list[str]:
         return []
     found: list[str] = []
     for key, value in table.items():
+        if isinstance(value, dict):
+            # pnpm writes a nested override as `{"<pkg>": {".": "range"}}`.
+            if key != package:
+                continue
+            for nested_key in (".", "", "*"):
+                nested = value.get(nested_key)
+                if isinstance(nested, str):
+                    found.append(nested)
+            continue
         if not isinstance(value, str):
             continue
         if key == package or value.startswith(f"npm:{package}@"):
@@ -375,7 +443,8 @@ def _npm_values(table: object, package: str) -> list[str]:
     return found
 
 
-def _check_npm(path: Path, root: Path, findings: list[Finding]) -> None:
+def _check_npm(path: Path, root: Path, findings: list[Finding],
+               npm_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - unreadable manifest
@@ -393,7 +462,7 @@ def _check_npm(path: Path, root: Path, findings: list[Finding]) -> None:
         for section, table in tables:
             for requirement in _npm_values(table, package):
                 subject = f"{package} @ {path.relative_to(root)} ({section})"
-                if requirement.startswith("file:"):
+                if requirement.startswith(SIBLING_PROTOCOLS):
                     findings.append(Finding(
                         "violation", subject,
                         f"declares {requirement!r} — a sibling-directory dependency, "
@@ -409,6 +478,10 @@ def _check_npm(path: Path, root: Path, findings: list[Finding]) -> None:
                         "future major is admitted on a fresh resolve",
                     ))
                     continue
+                if npm_lines is not None:
+                    parsed = _parse_version(requirement.lstrip("^~>=< "))
+                    if parsed and parsed[1] is not None:
+                        npm_lines.setdefault(package, set()).add((parsed[0], parsed[1]))
                 verdict = intersects(
                     requirement, canonical, (canonical[0], canonical[1] + 1, 0)
                 )
@@ -424,15 +497,160 @@ def _check_npm(path: Path, root: Path, findings: list[Finding]) -> None:
                     ))
 
 
+def _workspace_override_findings(root: Path) -> list[Finding]:
+    """`pnpm-workspace.yaml` carries `overrides` for the pnpm 11 layout.
+
+    The family moved `pnpm.overrides` there (see the frontend skill), so a check
+    that only reads package.json cannot see a forced family version.
+    """
+    path = root / "pnpm-workspace.yaml"
+    if not path.is_file():
+        return []
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:  # pragma: no cover - unreadable manifest
+        return [Finding("warning", path.name, f"unreadable: {exc}")]
+    overrides = document.get("overrides") if isinstance(document, dict) else None
+    findings: list[Finding] = []
+    for package, canonical, _why in NPM_LAYERS:
+        for requirement in _npm_values(overrides, package):
+            subject = f"{package} @ pnpm-workspace.yaml (overrides)"
+            if requirement.startswith(SIBLING_PROTOCOLS):
+                findings.append(Finding(
+                    "violation", subject,
+                    f"declares {requirement!r} — a sibling-directory dependency, "
+                    "retired family-wide in favour of the published package",
+                ))
+            elif requirement.strip() in UNBOUNDED:
+                findings.append(Finding(
+                    "warning", subject,
+                    f"declares {requirement!r}, which node-semver reads as `*`",
+                ))
+            elif intersects(requirement, canonical, (canonical[0], canonical[1] + 1, 0)) is False:
+                findings.append(Finding(
+                    "warning", subject,
+                    f"declares {requirement}, which cannot resolve to the family's "
+                    f"{canonical[0]}.{canonical[1]} line",
+                ))
+    return findings
+
+
+def _lock_findings(root: Path) -> list[Finding]:
+    """What the LOCKFILES resolved, which is what actually gets built.
+
+    A declaration can be satisfied by a version the auditor did not expect: four
+    consumers declare `^*` and resolve to 0.40.27 / 0.41.3 / 0.41.9 / 0.55.0,
+    and one `Cargo.lock` can link three generations of the auth crate while every
+    declaration looks fine. These are warnings: a transitive dependency can pin
+    the split, so they are evidence to act on rather than a gate.
+    """
+    findings: list[Finding] = []
+    cargo_lock = root / "Cargo.lock"
+    if cargo_lock.is_file():
+        try:
+            data = tomllib.loads(cargo_lock.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover
+            findings.append(Finding("warning", "Cargo.lock", f"unreadable: {exc}"))
+            data = {}
+        # Grouped by crate NAME, not by family prefix: `kirino-macro` and
+        # `plana-celestia-types` keep their own version tracks, so lumping them
+        # in reported a "second generation" that does not exist. What matters is
+        # one name resolving to two lines (kirino 0.6.3 + 0.6.5 + 0.7.2 is the
+        # real finding).
+        lines: dict[str, set[tuple[int, int]]] = {}
+        seen: dict[str, set[str]] = {}
+        for package in data.get("package", []) or []:
+            name = str(package.get("name", ""))
+            parsed = _parse_version(str(package.get("version", "")))
+            if _family_crate(name) is None or parsed is None or parsed[1] is None:
+                continue
+            lines.setdefault(name, set()).add((parsed[0], parsed[1]))
+            seen.setdefault(name, set()).add(f"{name} {package.get('version')}")
+        for crate, versions in sorted(lines.items()):
+            if len(versions) > 1:
+                findings.append(Finding(
+                    "warning", f"{crate} @ Cargo.lock",
+                    "the lock links "
+                    + ", ".join(f"{m}.{n}" for m, n in sorted(versions))
+                    + " of the same crate ("
+                    + ", ".join(sorted(seen[crate]))
+                    + ") — more than one generation in one binary",
+                ))
+    lock = root / "pnpm-lock.yaml"
+    if lock.is_file():
+        try:
+            data = yaml.safe_load(lock.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:  # pragma: no cover
+            findings.append(Finding("warning", "pnpm-lock.yaml", f"unreadable: {exc}"))
+            data = {}
+        importers = data.get("importers") if isinstance(data, dict) else None
+        resolved: dict[str, dict[str, set[tuple[int, int]]]] = {}
+        for importer, tables in (importers or {}).items():
+            if not isinstance(tables, dict):
+                continue
+            for section in NPM_DEP_SECTIONS:
+                table = tables.get(section)
+                if not isinstance(table, dict):
+                    continue
+                for package, _canonical, _why in NPM_LAYERS:
+                    entry = table.get(package)
+                    if not isinstance(entry, dict):
+                        continue
+                    parsed = _parse_version(str(entry.get("version", "")).split("(")[0])
+                    if parsed is None or parsed[1] is None:
+                        continue
+                    resolved.setdefault(package, {}).setdefault(importer, set()).add(
+                        (parsed[0], parsed[1])
+                    )
+        for package, per_importer in sorted(resolved.items()):
+            canonical = next(c for n, c, _why in NPM_LAYERS if n == package)
+            lines = {line for found in per_importer.values() for line in found}
+            below = sorted(line for line in lines if line < canonical[:2])
+            if below:
+                findings.append(Finding(
+                    "warning", f"{package} @ pnpm-lock.yaml",
+                    "the lock resolves "
+                    + ", ".join(f"{m}.{n}" for m, n in below)
+                    + f" while the family line is {canonical[0]}.{canonical[1]}",
+                ))
+            if len(lines) > 1:
+                where = ", ".join(
+                    f"{imp}: {', '.join(f'{m}.{n}' for m, n in sorted(found))}"
+                    for imp, found in sorted(per_importer.items())
+                )
+                findings.append(Finding(
+                    "warning", f"{package} @ pnpm-lock.yaml",
+                    f"the lock resolves {len(lines)} different lines across importers ({where})",
+                ))
+    return findings
+
+
 def check(root: Path) -> list[Finding]:
     """Every family-consumption finding in ``root``, violations first."""
     root = Path(root).resolve()
     findings: list[Finding] = []
     repo = _repo_name(root)
+    rust_lines: dict[str, set[tuple[int, int]]] = {}
+    npm_lines: dict[str, set[tuple[int, int]]] = {}
     for path in _manifests(root, "Cargo.toml"):
-        _check_cargo(path, root, findings, repo)
+        _check_cargo(path, root, findings, repo, rust_lines)
     for path in _manifests(root, "package.json"):
-        _check_npm(path, root, findings)
+        _check_npm(path, root, findings, npm_lines)
+    for crate, _prefix, package in CROSS_TRACK:
+        rust = rust_lines.get(crate, set())
+        npm = npm_lines.get(package, set())
+        if rust and npm and not (rust & npm):
+            findings.append(Finding(
+                "warning", f"{package} (npm) vs {crate} (cargo)",
+                "the two tracks of "
+                f"{crate} are on different generations (cargo "
+                + ", ".join(f"{m}.{n}" for m, n in sorted(rust))
+                + " vs npm "
+                + ", ".join(f"{m}.{n}" for m, n in sorted(npm))
+                + ") — the JS bindings expose a different generation than the crate",
+            ))
+    findings.extend(_workspace_override_findings(root))
+    findings.extend(_lock_findings(root))
     order = {"violation": 0, "warning": 1}
     return sorted(findings, key=lambda f: (order[f.level], f.subject, f.message))
 

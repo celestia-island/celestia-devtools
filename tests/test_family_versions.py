@@ -61,13 +61,16 @@ def test_kirino_at_the_family_floor_passes(tmp_path):
     assert check(tmp_path) == []
 
 
-def test_kirino_from_git_master_warns_but_does_not_fail(tmp_path):
+def test_kirino_from_git_master_is_not_a_finding(tmp_path):
+    # §3.3 prescribes git references on master for cross-repo Rust dependencies
+    # (entelecheia consumes kirino that way on purpose); reporting it made
+    # `--strict` fail a compliant repository.
     _cargo(
         tmp_path,
         '[dependencies]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
         ' branch = "master" }\n',
     )
-    assert _levels(check(tmp_path)) == ["warning"]
+    assert check(tmp_path) == []
 
 
 def test_a_range_that_admits_the_family_version_passes(tmp_path):
@@ -326,12 +329,8 @@ def test_cargo_replace_section_is_flat(tmp_path):
 
 
 def test_cargo_patch_section_is_checked(tmp_path):
-    _cargo(
-        tmp_path,
-        '[patch.crates-io]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
-        ' branch = "master" }\n',
-    )
-    assert _levels(check(tmp_path)) == ["warning"]
+    _cargo(tmp_path, '[patch.crates-io]\nkirino = "0.6"\n')
+    assert _levels(check(tmp_path)) == ["violation"]
 
 
 def test_plain_overrides_are_reported(tmp_path):
@@ -370,9 +369,126 @@ def test_peer_and_optional_dependencies_are_checked(tmp_path):
     assert any("(optionalDependencies)" in f.subject for f in findings)
 
 
-def test_catalog_and_portal_protocols_are_left_alone(tmp_path):
+def test_catalog_is_left_alone_and_portal_is_a_sibling_dependency(tmp_path):
     _write(tmp_path / "a/package.json",
            json.dumps({"dependencies": {"@celestia-island/hikari": "catalog:"}}))
+    assert check(tmp_path) == []
     _write(tmp_path / "b/package.json",
            json.dumps({"dependencies": {"@celestia-island/hikari": "portal:../hikari"}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+
+
+def test_link_protocol_is_a_sibling_dependency(tmp_path):
+    _write(tmp_path / "package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "link:../hikari"}}))
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+# ── the round-2 counterexamples ──────────────────────────────────────────────
+
+
+def test_caret_on_a_zero_patch_line_is_its_own_line():
+    # `^0.0.3` is `>=0.0.3 <0.0.4`, not "every 0.x": treating a 0 minor as
+    # "absent" made it admit 0.7.0.
+    assert admits("^0.0.3", (0, 7, 0)) is False
+    assert admits("^0.0.x", (0, 7, 0)) is False
+    assert admits("^0.0", (0, 7, 0)) is False
+    assert admits("^0", (0, 7, 0)) is True
+
+
+def test_unions_and_hyphen_ranges_are_understood():
+    assert admits("^0.5 || ^0.6", (0, 7, 0)) is False
+    assert admits("^0.6 || ^0.7", (0, 7, 0)) is True
+    assert admits("0.5 - 0.6", (0, 7, 0)) is False
+    assert admits("0.6 - 0.7", (0, 7, 0)) is True
+
+
+def test_every_published_family_package_is_checked(tmp_path):
+    for name, spec in (
+        ("@celestia-island/kirino", "^0.5"),
+        ("@celestia-island/plana-types", "^0.0.1"),
+        ("@celestia-island/plana-rpc-client", "^*"),
+    ):
+        directory = tmp_path / name.replace("/", "-").replace("@", "")
+        _write(directory / "package.json", json.dumps({"dependencies": {name: spec}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning", "warning", "warning"], findings
+
+
+def test_the_two_tracks_of_one_layer_are_compared(tmp_path):
+    # shittim-chest really does this: cargo kirino ^0.7 and npm
+    # @celestia-island/kirino ^0.6 in the same repository.
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.7"\n')
+    _write(tmp_path / "web/package.json",
+           json.dumps({"dependencies": {"@celestia-island/kirino": "^0.6"}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "different generations" in findings[0].message
+
+
+def test_a_cargo_lock_linking_two_generations_is_reported(tmp_path):
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.6.3"
+source = "git+https://github.com/celestia-island/kirino.git?branch=master#abc"
+
+[[package]]
+name = "kirino"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "more than one generation in one binary" in findings[0].message
+
+
+def test_a_cargo_lock_with_one_generation_is_quiet(tmp_path):
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.7.2"
+""")
     assert check(tmp_path) == []
+
+
+def test_the_pnpm_lock_resolution_is_reported(tmp_path):
+    _write(tmp_path / "pnpm-lock.yaml", """
+lockfileVersion: '9.0'
+importers:
+  packages/webui:
+    dependencies:
+      '@celestia-island/hikari':
+        specifier: ^*
+        version: 0.40.27(vue@3.5.42)
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "resolves" in findings[0].message
+
+
+def test_overrides_in_pnpm_workspace_are_read(tmp_path):
+    _write(tmp_path / "pnpm-workspace.yaml", """
+packages:
+  - packages/*
+overrides:
+  '@celestia-island/hikari': ^0.40.1
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "pnpm-workspace.yaml" in findings[0].subject
+
+
+def test_a_nested_override_is_read(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"pnpm": {"overrides": {"@celestia-island/hikari": {".": "^0.40.1"}}}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "0.55" in findings[0].message
