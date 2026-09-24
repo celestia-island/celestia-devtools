@@ -54,7 +54,14 @@ REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
 RUST_LAYERS: tuple[tuple[str, Version, str], ...] = (
     ("kirino", (0, 7, 0), "auth primitives: JWT/RBAC/sessions (Layer 0)"),
     ("plana", (0, 2, 0), "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"),
+    # The Rust track of the UI layer is 0.3.x while the npm binding is 0.55.x;
+    # without it a `[patch."…/hikari.git"] hikari-* = { path = "../hikari/…" }`
+    # (a cross-repository path dependency the rules forbid) reads as unknown.
+    ("hikari", (0, 3, 0), "UI components, Rust track (Layer 2)"),
 )
+
+#: `crate family → repository` for the git-source check.
+FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
 
 #: `(npm package, canonical version, why)` — informational: the workspace rules
 #: currently mandate `^*` for family packages, so an unbounded range warns
@@ -160,11 +167,17 @@ def _bounds(part: str) -> tuple[Version, Version] | None:
         else:
             high = (1, 0, 0)  # ^0 / ^0.x admits every 0.x
     elif operator == "~":
-        high = (major, (minor or 0) + 1, 0)
+        # `~1` is `>=1.0.0 <2.0.0`; only `~1.2` pins the minor.
+        high = (major, minor + 1, 0) if minor is not None else (major + 1, 0, 0)
     elif operator == ">=":
         return low, (10**9, 0, 0)
     elif operator == ">":
-        return (major, minor or 0, (patch or 0) + 1), (10**9, 0, 0)
+        # node-semver: `>1.2.3` is `>=1.2.4`, `>1.2` is `>=1.3.0`, `>1` is `>=2.0.0`
+        if patch is not None:
+            return (major, minor or 0, patch + 1), (10**9, 0, 0)
+        if minor is not None:
+            return (major, minor + 1, 0), (10**9, 0, 0)
+        return (major + 1, 0, 0), (10**9, 0, 0)
     elif operator == "<":
         return (0, 0, 0), low
     elif operator == "<=":
@@ -224,7 +237,7 @@ def _requirement_bounds(requirement: str) -> tuple[Version, Version] | None:
         return merged
     low: Version = (0, 0, 0)
     high: Version = (10**9, 0, 0)
-    for part in text.split(","):
+    for part in re.split(r"[,\s]+", text):
         if "||" in part:
             return None
         if not part.strip():
@@ -388,10 +401,32 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str,
         # kirino and friends: one major, or it is a different primitive.
         if "git" in spec:
             # §3.3 prescribes git references on master for cross-repo Rust
-            # dependencies, and entelecheia consumes kirino that way on purpose.
-            # Reporting it made `--strict` fail a compliant repository, so the
-            # consumption mode is not a finding; what matters is the generation,
-            # which the crates.io declarations and the lock below reveal.
+            # dependencies, and entelecheia consumes kirino that way on purpose —
+            # so the consumption MODE is not a finding. Which repository it
+            # points at, and which ref it follows, still is: `plana` was checked
+            # and `kirino` was not, which let `{ git = "…/other/kirino.git",
+            # branch = "0.4-legacy" }` through.
+            url = str(spec.get("git", ""))
+            repository = FAMILY_REPOS.get(prefix, prefix)
+            if f"celestia-island/{repository}" not in url:
+                findings.append(Finding(
+                    "violation", subject,
+                    f"git source {url!r} is not the family's "
+                    f"https://github.com/celestia-island/{repository}.git",
+                ))
+                continue
+            if "rev" in spec and repo not in REV_PIN_ALLOWED:
+                findings.append(Finding(
+                    "violation", subject,
+                    f"pins {prefix} to rev {spec['rev']!r}; only the frozen repositories "
+                    f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin",
+                ))
+            elif "rev" not in spec and spec.get("branch") not in (None, "master"):
+                findings.append(Finding(
+                    "violation", subject,
+                    f"tracks {spec.get('branch') or spec.get('tag')!r}; the family tracks "
+                    'branch = "master"',
+                ))
             continue
         requirement = spec.get("version")
         if not isinstance(requirement, str):
@@ -495,6 +530,39 @@ def _check_npm(path: Path, root: Path, findings: list[Finding],
                     findings.append(Finding(
                         "warning", subject, f"cannot judge the requirement {requirement!r}",
                     ))
+
+
+def _own_cargo_line(root: Path) -> tuple[int, int] | None:
+    """This repository's own Rust version line, from its root manifest."""
+    manifest = root / "Cargo.toml"
+    if not manifest.is_file():
+        return None
+    try:
+        document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    for table in (document.get("workspace", {}).get("package", {}),
+                  document.get("package", {})):
+        parsed = _parse_version(str(table.get("version", "")))
+        if parsed is not None and parsed[1] is not None:
+            return (parsed[0], parsed[1])
+    return None
+
+
+def _published_family_lines(root: Path) -> dict[str, set[tuple[int, int]]]:
+    """The family npm packages this repository PUBLISHES, and on which line."""
+    published: dict[str, set[tuple[int, int]]] = {}
+    names = {package for _crate, _prefix, package in CROSS_TRACK}
+    for path in _manifests(root, "package.json"):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        name = document.get("name")
+        parsed = _parse_version(str(document.get("version", "")))
+        if name in names and parsed is not None and parsed[1] is not None:
+            published.setdefault(name, set()).add((parsed[0], parsed[1]))
+    return published
 
 
 def _workspace_override_findings(root: Path) -> list[Finding]:
@@ -636,6 +704,7 @@ def check(root: Path) -> list[Finding]:
         _check_cargo(path, root, findings, repo, rust_lines)
     for path in _manifests(root, "package.json"):
         _check_npm(path, root, findings, npm_lines)
+    published = _published_family_lines(root)
     for crate, _prefix, package in CROSS_TRACK:
         rust = rust_lines.get(crate, set())
         npm = npm_lines.get(package, set())
@@ -647,12 +716,30 @@ def check(root: Path) -> list[Finding]:
                 + ", ".join(f"{m}.{n}" for m, n in sorted(rust))
                 + " vs npm "
                 + ", ".join(f"{m}.{n}" for m, n in sorted(npm))
-                + ") — the JS bindings expose a different generation than the crate",
+                + "); the binding lags the crate until it is republished, so a "
+                "consumer cannot align on its own",
             ))
+        # The actionable side: a repository that PUBLISHES the binding while its
+        # own crates have moved on is the one that has to republish. Its own
+        # crate line comes from its root manifest — kirino does not declare a
+        # dependency on kirino, so the declaration scan sees nothing there.
+        ours = rust or ({own} if (own := _own_cargo_line(root)) else set())
+        for line in sorted(published.get(package, set())):
+            if ours and line not in ours:
+                findings.append(Finding(
+                    "warning", f"{package} @ published here",
+                    "this repository publishes the binding on "
+                    + f"{line[0]}.{line[1]} while its Rust crates are on "
+                    + ", ".join(f"{m}.{n}" for m, n in sorted(ours))
+                    + " — the binding is behind the crates it wraps",
+                ))
     findings.extend(_workspace_override_findings(root))
     findings.extend(_lock_findings(root))
     order = {"violation": 0, "warning": 1}
-    return sorted(findings, key=lambda f: (order[f.level], f.subject, f.message))
+    unique: dict[tuple[str, str, str], Finding] = {}
+    for finding in findings:
+        unique.setdefault((finding.level, finding.subject, finding.message), finding)
+    return sorted(unique.values(), key=lambda f: (order[f.level], f.subject, f.message))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -527,3 +527,94 @@ version = "0.1.0"
     findings = check(tmp_path)
     assert _levels(findings) == ["warning"], findings
     assert findings[0].subject == "kirino @ Cargo.lock"
+
+
+# ── round-3 counterexamples ──────────────────────────────────────────────────
+
+
+def test_strict_greater_and_tilde_edges():
+    # node-semver: `>1.2.3` is `>=1.2.4`, `>1.2` is `>=1.3.0`, `>1` is `>=2.0.0`;
+    # `~1` is `>=1.0.0 <2.0.0`, only `~1.2` pins the minor.
+    assert admits(">0.7", (0, 7, 5)) is False
+    assert admits(">0.7", (0, 8, 0)) is True
+    assert admits(">0.7.1", (0, 7, 1)) is False
+    assert admits(">0.7.1", (0, 7, 2)) is True
+    assert admits("~0", (0, 7, 0)) is True
+    assert admits("~0.7", (0, 7, 0)) is True
+    assert admits("~0.6", (0, 7, 0)) is False
+
+
+def test_whitespace_separated_comparators_are_an_intersection():
+    assert admits(">0.6 <0.8", (0, 7, 0)) is True
+    assert admits(">=0.6 <1.0", (0, 7, 0)) is True
+    assert admits(">=0.7.0 <0.7.0", (0, 7, 0)) is False
+
+
+def test_a_git_tracked_family_crate_must_point_at_the_family(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino = { git = "https://github.com/other/kirino.git",'
+        ' branch = "0.4-legacy" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "is not the family's" in findings[0].message
+
+
+def test_a_family_git_crate_on_a_feature_branch_is_a_violation(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
+        ' branch = "feat/x" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "feat/x" in findings[0].message
+
+
+def test_a_family_crate_on_the_family_repository_passes(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino-session = { git ='
+        ' "https://github.com/celestia-island/kirino.git", branch = "master" }\n',
+    )
+    assert check(tmp_path) == []
+
+
+def test_the_hikari_rust_track_is_checked(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nhikari-palette = "^0.3"\nhikari-components = "^0.3.20"\n')
+    assert check(tmp_path) == []
+
+    _cargo(
+        tmp_path,
+        '[patch."https://github.com/celestia-island/hikari.git"]\n'
+        'hikari-palette = { path = "../hikari/packages/palette" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "outside this repository" in findings[0].message
+
+
+def test_the_publisher_of_a_lagging_binding_is_told(tmp_path):
+    # kirino publishes `@celestia-island/kirino` 0.6.5 while its crates are 0.7 —
+    # the republish is that repository's job, not the consumers'. It declares no
+    # dependency on kirino, so the line comes from the root manifest.
+    _cargo(tmp_path, '[workspace.package]\nversion = "0.7.3"\n')
+    _write(tmp_path / "packages/web_ts/package.json",
+           json.dumps({"name": "@celestia-island/kirino", "version": "0.6.5"}))
+    findings = check(tmp_path)
+    assert any("published here" in f.subject for f in findings), findings
+
+
+def test_identical_findings_are_deduplicated(tmp_path):
+    # An alias next to a direct declaration of the same range used to emit the
+    # same warning twice.
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"dependencies": {
+            "hk": "npm:@celestia-island/hikari@^*",
+            "@celestia-island/hikari": "^*",
+        }}),
+    )
+    subjects = [f.subject for f in check(tmp_path)]
+    assert len(subjects) == len(set(subjects)), subjects
