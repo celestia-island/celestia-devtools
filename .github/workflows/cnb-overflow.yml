@@ -14,6 +14,20 @@
 #     that are not on the mirror (deleted branches). Fork PRs get no secrets from Actions, so
 #     the fallback only applies to same-repo branches; fork PRs rely on the mirror.
 #
+# Build-pool budget guard (2026-09-24): every CNB dispatch spends the org's 160 core-hour/month
+# `云原生构建` free quota, and that quota is a *capability* limit rather than a soft bill — the
+# docs say the capability is restricted once it is used up and that a pre-freeze with
+# insufficient quota terminates the task immediately (overage billing only starts once a
+# Tencent Cloud budget is bound). The dispatcher's own traffic now runs on the dev pool
+# (1600/month), so what is left on the build pool is this lane plus the mirror-sync pipelines —
+# and the mirror syncs are what the dev-pool lane itself clones from, so exhausting the build
+# pool takes the whole overflow layer down with it. Hence: before dispatching, read the org
+# charge ledger and refuse to dispatch above `build_budget_pct` (default 70%). A refusal is a
+# no-op, exactly like `decision=farm`: the caller's farm CI still runs the authoritative check,
+# the lane simply adds nothing, and no `cnb/*` status is posted (never post a green we did not
+# earn). The guard fails closed: an unreadable ledger skips the dispatch. `force_cnb: true`
+# (manual runs) bypasses it for explicit testing.
+#
 # Caller contract:
 #   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@master
 #   with: {target_repo: <repo-name>, target_sha: ${{ github.event.pull_request.head.sha }},
@@ -52,6 +66,10 @@ on:
         description: 'Dispatch to CNB when queued runs in the caller repo >= this (0 = always)'
         type: number
         default: 3
+      build_budget_pct:
+        description: 'Stop dispatching once the org build pool is this % used (see the budget guard step); 100 = only at the hard cap'
+        type: number
+        default: 70
       force_cnb:
         description: 'Bypass the saturation check and always dispatch to CNB (for testing)'
         type: boolean
@@ -88,6 +106,10 @@ on:
       queue_threshold:
         type: number
         default: 3
+      build_budget_pct:
+        description: 'Stop dispatching once the org build pool is this % used (lower it to test the skip path)'
+        type: number
+        default: 70
       force_cnb:
         description: 'Testing default: forced to true for manual runs'
         type: boolean
@@ -110,6 +132,8 @@ jobs:
     outputs:
       decision: ${{ steps.decide.outputs.decision }}
       queued: ${{ steps.decide.outputs.queued }}
+      budget: ${{ steps.budget.outputs.budget }}
+      budget_reason: ${{ steps.budget.outputs.budget_reason }}
     steps:
       - name: Decide farm vs CNB
         id: decide
@@ -145,9 +169,69 @@ jobs:
             echo "decision=farm" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build-pool budget guard: a refusal must be a no-op (the farm still checks the SHA), never
+      # a green, so this only ever narrows when the `cnb` job may run. Fail-closed on any error.
+      - name: Check the org build-pool budget
+        id: budget
+        if: steps.decide.outputs.decision == 'cnb'
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          BUDGET_PCT: ${{ inputs.build_budget_pct }}
+          FORCE_CNB: ${{ inputs.force_cnb }}
+          CHARGE_URL: https://api.cnb.cool/celestia-island/-/charge/volume
+          BUILD_CAP_H: '160'
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, sys, urllib.request
+
+          out_path = os.environ.get("GITHUB_OUTPUT") or os.devnull
+
+          def emit(budget, reason):
+              reason = " ".join(reason.split())
+              with open(out_path, "a") as f:
+                  f.write(f"budget={budget}\n")
+                  f.write(f"budget_reason={reason[:180]}\n")
+              print(f"build-pool budget: {budget} ({reason})")
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a") as f:
+                      f.write(f"**Build-pool budget: {budget}** — {reason}\n")
+
+          if os.environ.get("FORCE_CNB") == "true":
+              emit("allow", "force_cnb=true bypasses the guard")
+              sys.exit(0)
+
+          tok = (os.environ.get("CNB_TOKEN") or "").strip()
+          if not tok:
+              emit("skip", "CNB_TOKEN missing — refusing to dispatch unguarded")
+              sys.exit(0)
+          try:
+              limit = float(os.environ.get("BUDGET_PCT") or 70)
+          except ValueError:
+              emit("skip", f"unusable build_budget_pct={os.environ.get('BUDGET_PCT')!r}")
+              sys.exit(0)
+          cap = float(os.environ.get("BUILD_CAP_H") or 160)
+          # cnb.cool must be reached directly from this runner (through the proxy it crawls), so
+          # bypass any HTTPS_PROXY the runner carries for GitHub.
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          try:
+              req = urllib.request.Request(os.environ["CHARGE_URL"], headers={
+                  "Authorization": "Bearer " + tok,
+                  "Accept": "application/vnd.cnb.api+json"})
+              with opener.open(req, timeout=30) as r:
+                  used = float(json.load(r).get("ci_in_sec", 0)) / 3600.0
+          except Exception as e:
+              emit("skip", f"ledger unreadable ({type(e).__name__}: {e}) — failing closed")
+              sys.exit(0)
+          pct = used / cap * 100.0
+          emit("allow" if pct < limit else "skip",
+               f"build pool {used:.2f}/{cap:.0f} core-h = {pct:.1f}% "
+               f"{'<' if pct < limit else '>='} {limit:.0f}%")
+          PYEOF
+
   cnb:
     needs: route
-    if: needs.route.outputs.decision == 'cnb'
+    if: needs.route.outputs.decision == 'cnb' && needs.route.outputs.budget == 'allow'
     runs-on: [self-hosted, linux, x64, dispatcher]
     timeout-minutes: 40
     concurrency:
