@@ -660,3 +660,34 @@ def test_a_nested_workspace_lock_is_checked_too(tmp_path):
     )
     subjects = [f.subject for f in check(tmp_path)]
     assert any("fuzz/Cargo.lock" in subject for subject in subjects), subjects
+
+
+def test_a_split_across_workspaces_is_reported(tmp_path):
+    # Each lock can be internally consistent while the repository as a whole is
+    # not: the root locked 0.7.2 and a second workspace locked 0.6.6. Reading
+    # each lock on its own called that clean — and it is the shape evernight
+    # was in.
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    _write(tmp_path / "Cargo.lock", 'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.7.2"\n')
+    nested = tmp_path / "fuzz"
+    nested.mkdir()
+    _cargo(nested, 'kirino = "^0.6"\n')
+    _write(nested / "Cargo.lock", 'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.6.6"\n')
+    subjects = [f.subject for f in check(tmp_path)]
+    assert "kirino" in subjects, subjects
+
+
+def test_a_nested_pnpm_lock_is_read(tmp_path):
+    # The Cargo side was pinned; the pnpm side was not, so a regression there
+    # would have been silent.
+    _webui(tmp_path, '"@celestia-island/hikari": "^0.55.0"')
+    _write(tmp_path / "pnpm-lock.yaml", "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies: {}\n")
+    web = tmp_path / "web"
+    web.mkdir()
+    _write(
+        web / "pnpm-lock.yaml",
+        "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n"
+        "      '@celestia-island/hikari':\n        specifier: ^0.41.0\n        version: 0.41.9\n",
+    )
+    subjects = [f.subject for f in check(tmp_path)]
+    assert any("web/pnpm-lock.yaml" in subject for subject in subjects), subjects

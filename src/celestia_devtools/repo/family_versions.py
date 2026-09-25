@@ -22,7 +22,9 @@ already require.  The judgement is "does this requirement ADMIT the family's
 canonical version?", not "what is its floor": `>=0.6, <1.0` and `^0.*` both
 admit `0.7`, and reading a floor out of them is how a checker starts lying.
 
-Exit status: 0 clean, 1 violations (or warnings with ``--strict``).
+Exit status: 0 clean, 1 violations (or warnings with ``--strict``), 2 when
+nothing was scanned at all — a path that is not a directory, or one holding
+no manifest, is an error rather than a clean repository.
 """
 
 from __future__ import annotations
@@ -613,6 +615,12 @@ def _lock_findings(root: Path) -> list[Finding]:
     the split, so they are evidence to act on rather than a gate.
     """
     findings: list[Finding] = []
+    # What every lock resolved, so the workspaces can be compared WITH EACH
+    # OTHER. Reading each lock on its own still reported a repository as clean
+    # when its root locked one generation and a second workspace locked another
+    # — which is exactly the shape this check exists to catch, and exactly the
+    # shape evernight had.
+    across: dict[str, dict[tuple[int, int], set[str]]] = {}
     for cargo_lock in _manifests(root, "Cargo.lock"):
         where = cargo_lock.relative_to(root).as_posix()
         if where not in ("Cargo.lock",):
@@ -626,7 +634,7 @@ def _lock_findings(root: Path) -> list[Finding]:
         try:
             data = tomllib.loads(cargo_lock.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover
-            findings.append(Finding("warning", "Cargo.lock", f"unreadable: {exc}"))
+            findings.append(Finding("warning", where, f"unreadable: {exc}"))
             data = {}
         # Grouped by crate NAME, not by family prefix: `kirino-macro` and
         # `plana-celestia-types` keep their own version tracks, so lumping them
@@ -643,6 +651,8 @@ def _lock_findings(root: Path) -> list[Finding]:
             lines.setdefault(name, set()).add((parsed[0], parsed[1]))
             seen.setdefault(name, set()).add(f"{name} {package.get('version')}")
         for crate, versions in sorted(lines.items()):
+            for line in versions:
+                across.setdefault(crate, {}).setdefault(line, set()).add(where)
             if len(versions) > 1:
                 findings.append(Finding(
                     "warning", f"{crate} @ {where}",
@@ -652,6 +662,23 @@ def _lock_findings(root: Path) -> list[Finding]:
                     + ", ".join(sorted(seen[crate]))
                     + ") — more than one generation in one binary",
                 ))
+    for crate, per_line in sorted(across.items()):
+        # Only when the generations come from DIFFERENT locks: one lock linking
+        # two lines is already reported above, and calling that "different
+        # workspaces" would be wrong.
+        locks_involved = {path for paths in per_line.values() for path in paths}
+        if len(per_line) < 2 or len(locks_involved) < 2:
+            continue
+        where = ", ".join(
+            f"{m}.{n} in {', '.join(sorted(paths))}"
+            for (m, n), paths in sorted(per_line.items())
+        )
+        findings.append(Finding(
+            "warning", crate,
+            "different workspaces in this repository lock different generations "
+            f"of the same crate ({where}) — each build is internally consistent, "
+            "so only a comparison across them can see it",
+        ))
     for lock in _manifests(root, "pnpm-lock.yaml"):
         where = lock.relative_to(root).as_posix()
         try:
