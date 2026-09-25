@@ -1,0 +1,693 @@
+"""Tests for the family dependency-identity check (repo/family_versions.py)."""
+
+import json
+
+from celestia_devtools.repo.family_versions import admits, check, main
+
+
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _cargo(root, body, path="Cargo.toml"):
+    _write(root / path, body)
+
+
+def _levels(findings):
+    return [f.level for f in findings]
+
+
+# ── requirement semantics: the judgement is "does it admit 0.7?" ─────────────
+
+
+def test_admits_reads_ranges_not_floors():
+    # A floor reader calls all three of the first group "0.6" and reports a
+    # violation for `>=0.6, <1.0`, which does admit 0.7.0 — the false positive
+    # the adversarial round caught on a real repository (`^0.*`).
+    assert admits("^0.6", (0, 7, 0)) is False
+    assert admits("^0.6.5", (0, 7, 0)) is False
+    assert admits("=0.6.1", (0, 7, 0)) is False
+    assert admits(">=0.6, <1.0", (0, 7, 0)) is True
+    assert admits("^0.*", (0, 7, 0)) is True
+    assert admits("^0", (0, 7, 0)) is True
+    assert admits("^*", (0, 7, 0)) is True
+    assert admits("^0.7", (0, 7, 0)) is True
+    assert admits("~0.7.0", (0, 7, 0)) is True
+    assert admits("^0.8", (0, 7, 0)) is False
+
+
+# ── kirino: one major, or it is a different primitive ────────────────────────
+
+
+def test_kirino_below_the_family_floor_is_a_violation(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "cannot resolve to the family's 0.7 line" in findings[0].message
+
+
+def test_a_hyphenated_family_crate_is_checked_too(tmp_path):
+    # `kirino-session` is where the real split lives: evernight and
+    # erp.celestia.world declare it at 0.6 while the rest of the family is 0.7.
+    _cargo(tmp_path, '[dependencies]\nkirino-session = "0.6"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert findings[0].subject.startswith("kirino-session @")
+
+
+def test_kirino_at_the_family_floor_passes(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nkirino = { version = "^0.7", features = ["auth-jwt"] }\n')
+    assert check(tmp_path) == []
+
+
+def test_kirino_from_git_master_is_not_a_finding(tmp_path):
+    # §3.3 prescribes git references on master for cross-repo Rust dependencies
+    # (entelecheia consumes kirino that way on purpose); reporting it made
+    # `--strict` fail a compliant repository.
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
+        ' branch = "master" }\n',
+    )
+    assert check(tmp_path) == []
+
+
+def test_a_range_that_admits_the_family_version_passes(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nkirino = ">=0.6, <1.0"\n')
+    assert check(tmp_path) == []
+
+
+def test_workspace_and_dev_and_target_sections_are_all_checked(tmp_path):
+    _cargo(tmp_path, '[workspace.dependencies]\nkirino = "^0.6"\n')
+    assert _levels(check(tmp_path)) == ["violation"]
+    _cargo(tmp_path, '[dev-dependencies]\nkirino = "^0.6"\n', path="a/Cargo.toml")
+    assert _levels(check(tmp_path)) == ["violation", "violation"]
+    _cargo(tmp_path, "[target.'cfg(unix)'.dependencies]\nkirino = \"^0.6\"\n", path="b/Cargo.toml")
+    assert _levels(check(tmp_path)) == ["violation"] * 3
+
+
+# ── plana: master, not a station ─────────────────────────────────────────────
+
+_PLANA_OK = (
+    '[dependencies]\nplana = { git = "https://github.com/celestia-island/plana.git",'
+    ' branch = "master" }\n'
+)
+
+
+def test_plana_git_master_passes(tmp_path):
+    _cargo(tmp_path, _PLANA_OK)
+    assert check(tmp_path) == []
+
+
+def test_plana_subcrates_are_checked(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nplana-jsonrpc = { git ='
+        ' "https://github.com/celestia-island/plana.git", rev = "b4e7de35" }\n',
+    )
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+def test_plana_rev_pin_is_allowed_only_for_frozen_repositories(tmp_path):
+    pinned = (
+        '[dependencies]\nplana = { package = "plana", git ='
+        ' "https://github.com/celestia-island/plana.git", rev = "abc" }\n'
+    )
+    _cargo(tmp_path, pinned)
+    assert _levels(check(tmp_path)) == ["violation"]
+
+    frozen = tmp_path / "scriptum"
+    _cargo(frozen, pinned)
+    assert check(frozen) == []
+
+
+def test_plana_from_the_registry_is_a_violation(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nplana = "0.2"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "crates.io" in findings[0].message
+
+
+def test_plana_from_a_foreign_git_source_is_a_violation(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nplana = { git = "https://gitlab.example/evil/plana.git",'
+        ' branch = "master" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "is not the family's" in findings[0].message
+
+
+def test_plana_on_a_feature_branch_is_a_violation(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nplana = { git = "https://github.com/celestia-island/plana.git",'
+        ' branch = "feat/x" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "feat/x" in findings[0].message
+
+
+# ── hikari: unbounded ranges are the audit finding ───────────────────────────
+
+
+def _webui(root, spec):
+    _write(
+        root / "packages/webui/package.json",
+        json.dumps({"dependencies": {"@celestia-island/hikari": spec}}),
+    )
+
+
+def test_hikari_unbounded_range_warns(tmp_path):
+    _webui(tmp_path, "^*")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "any future major" in findings[0].message
+
+
+def test_hikari_bounded_range_passes(tmp_path):
+    _webui(tmp_path, "^0.55.71")
+    assert check(tmp_path) == []
+
+
+def test_hikari_below_the_family_line_warns(tmp_path):
+    _webui(tmp_path, "^0.40.27")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "cannot resolve to the family's 0.55" in findings[0].message
+
+
+def test_a_wildcard_zero_range_is_not_below_the_line(tmp_path):
+    # `^0.*` is what the workspace rules prescribe for a 0.x family package, and
+    # node-semver reads it as >=0.0.0 <1.0.0 — it admits 0.55.
+    _webui(tmp_path, "^0.*")
+    assert check(tmp_path) == []
+
+
+def test_a_sibling_file_dependency_is_a_violation(tmp_path):
+    _webui(tmp_path, "file:../hikari")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "retired" in findings[0].message
+
+
+def test_workspace_protocols_are_left_alone(tmp_path):
+    _webui(tmp_path, "workspace:*")
+    assert check(tmp_path) == []
+
+
+def test_an_npm_alias_is_judged_by_its_range(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"dependencies": {"hk": "npm:@celestia-island/hikari@^0.40.1"}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "0.55" in findings[0].message
+
+
+def test_overrides_are_reported_too(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"pnpm": {"overrides": {"@celestia-island/hikari": "^*"}}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "pnpm.overrides" in findings[0].subject
+
+
+# ── path dependencies and scanning rules ─────────────────────────────────────
+
+
+def test_workspace_inheritance_is_not_reported(tmp_path):
+    _cargo(tmp_path, '[workspace.dependencies]\nkirino = "^0.7"\n')
+    _cargo(tmp_path, '[dependencies]\nkirino = { workspace = true }\n',
+           path="packages/core/Cargo.toml")
+    assert check(tmp_path) == []
+
+
+def test_intra_repository_path_dependencies_are_not_reported(tmp_path):
+    _cargo(tmp_path, '[workspace]\nmembers = ["packages/plana", "packages/core"]\n')
+    _cargo(tmp_path, '[package]\nname = "plana"\n', path="packages/plana/Cargo.toml")
+    _cargo(tmp_path, '[dependencies]\nplana = { path = "../plana" }\n',
+           path="packages/core/Cargo.toml")
+    assert check(tmp_path) == []
+
+
+def test_a_cross_repository_path_dependency_is_a_violation(tmp_path):
+    repo = tmp_path / "consumer"
+    _cargo(repo, '[dependencies]\nplana = { path = "../../plana" }\n')
+    findings = check(repo)
+    assert _levels(findings) == ["violation"], findings
+    assert "outside this repository" in findings[0].message
+
+
+def test_dependencies_under_skipped_directories_are_ignored(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n', path="node_modules/dep/Cargo.toml")
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n', path="target/debug/Cargo.toml")
+    _webui(tmp_path, "^0.55.71")
+    _write(tmp_path / "node_modules/x/package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "^*"}}))
+    assert check(tmp_path) == []
+
+
+def test_a_repository_living_under_a_skipped_name_is_still_scanned(tmp_path):
+    # The skipped names belong to directories INSIDE the repository: matching
+    # them against the absolute path silently skipped a checkout that merely
+    # lived under `…/target/…`.
+    repo = tmp_path / "target" / "vendor" / "checkout"
+    _cargo(repo, '[dependencies]\nkirino = "^0.6"\n')
+    assert _levels(check(repo)) == ["violation"]
+
+
+def test_non_family_crates_are_left_alone(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nserde = "1"\nanyhow = "^1"\nserde_json = { workspace = true }\n')
+    assert check(tmp_path) == []
+
+
+def test_a_clean_repository_reports_nothing(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.7"\n')
+    _webui(tmp_path, "^0.55.71")
+    assert check(tmp_path) == []
+
+
+# ── CLI contract ─────────────────────────────────────────────────────────────
+
+
+def test_cli_fails_on_a_violation(tmp_path, capsys):
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n')
+    assert main([str(tmp_path)]) == 1
+    assert "violation" in capsys.readouterr().err
+
+
+def test_cli_passes_with_warnings_unless_strict(tmp_path, capsys):
+    _webui(tmp_path, "^*")
+    assert main([str(tmp_path)]) == 0
+    assert main([str(tmp_path), "--strict"]) == 1
+    assert "warning" in capsys.readouterr().out
+
+
+def test_cli_json_report_shape(tmp_path, capsys):
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n')
+    assert main([str(tmp_path), "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["violations"] == 1 and report["warnings"] == 0
+    assert report["findings"][0]["subject"].startswith("kirino @ Cargo.toml")
+
+
+def test_cli_says_ok_on_a_clean_tree(tmp_path, capsys):
+    # An EMPTY tree is not a clean tree any more: it exits 2, because an `ok`
+    # for a path with nothing in it is the answer that gets cited as evidence.
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    assert main([str(tmp_path)]) == 0
+    assert "ok:" in capsys.readouterr().out
+
+
+# ── surfaces the mutation round found unpinned ───────────────────────────────
+
+
+def test_an_alias_does_not_hide_a_direct_declaration(tmp_path):
+    # Returning the first match hid the `file:` violation behind an alias of the
+    # same package in the same table.
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"dependencies": {
+            "hk": "npm:@celestia-island/hikari@^0.55.71",
+            "@celestia-island/hikari": "file:../hikari",
+        }}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "retired" in findings[0].message
+
+
+def test_cargo_replace_section_is_flat(tmp_path):
+    # `[replace]` is keyed by "name:version", not by source like `[patch]`;
+    # walking it as patch-shaped made the section dead code.
+    _cargo(tmp_path, '[replace]\n"kirino:0.6.0" = { version = "^0.6" }\n')
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+def test_cargo_patch_section_is_checked(tmp_path):
+    _cargo(tmp_path, '[patch.crates-io]\nkirino = "0.6"\n')
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+def test_plain_overrides_are_reported(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"overrides": {"@celestia-island/hikari": "^0.40.1"}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "(overrides)" in findings[0].subject
+
+
+def test_resolutions_are_reported(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"resolutions": {"@celestia-island/hikari": "^*"}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "(resolutions)" in findings[0].subject
+
+
+def test_build_dependencies_are_checked(tmp_path):
+    _cargo(tmp_path, '[build-dependencies]\nkirino = "^0.6"\n')
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+def test_peer_and_optional_dependencies_are_checked(tmp_path):
+    _write(tmp_path / "a/package.json",
+           json.dumps({"peerDependencies": {"@celestia-island/hikari": "^0.40.1"}}))
+    _write(tmp_path / "b/package.json",
+           json.dumps({"optionalDependencies": {"@celestia-island/hikari": "^0.40.1"}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning", "warning"], findings
+    assert any("(peerDependencies)" in f.subject for f in findings)
+    assert any("(optionalDependencies)" in f.subject for f in findings)
+
+
+def test_catalog_is_left_alone_and_portal_is_a_sibling_dependency(tmp_path):
+    _write(tmp_path / "a/package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "catalog:"}}))
+    assert check(tmp_path) == []
+    _write(tmp_path / "b/package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "portal:../hikari"}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+
+
+def test_link_protocol_is_a_sibling_dependency(tmp_path):
+    _write(tmp_path / "package.json",
+           json.dumps({"dependencies": {"@celestia-island/hikari": "link:../hikari"}}))
+    assert _levels(check(tmp_path)) == ["violation"]
+
+
+# ── the round-2 counterexamples ──────────────────────────────────────────────
+
+
+def test_caret_on_a_zero_patch_line_is_its_own_line():
+    # `^0.0.3` is `>=0.0.3 <0.0.4`, not "every 0.x": treating a 0 minor as
+    # "absent" made it admit 0.7.0.
+    assert admits("^0.0.3", (0, 7, 0)) is False
+    assert admits("^0.0.x", (0, 7, 0)) is False
+    assert admits("^0.0", (0, 7, 0)) is False
+    assert admits("^0", (0, 7, 0)) is True
+
+
+def test_unions_and_hyphen_ranges_are_understood():
+    assert admits("^0.5 || ^0.6", (0, 7, 0)) is False
+    assert admits("^0.6 || ^0.7", (0, 7, 0)) is True
+    assert admits("0.5 - 0.6", (0, 7, 0)) is False
+    assert admits("0.6 - 0.7", (0, 7, 0)) is True
+
+
+def test_every_published_family_package_is_checked(tmp_path):
+    for name, spec in (
+        ("@celestia-island/kirino", "^0.5"),
+        ("@celestia-island/plana-types", "^0.0.1"),
+        ("@celestia-island/plana-rpc-client", "^*"),
+    ):
+        directory = tmp_path / name.replace("/", "-").replace("@", "")
+        _write(directory / "package.json", json.dumps({"dependencies": {name: spec}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning", "warning", "warning"], findings
+
+
+def test_the_two_tracks_of_one_layer_are_compared(tmp_path):
+    # shittim-chest really does this: cargo kirino ^0.7 and npm
+    # @celestia-island/kirino ^0.6 in the same repository.
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.7"\n')
+    _write(tmp_path / "web/package.json",
+           json.dumps({"dependencies": {"@celestia-island/kirino": "^0.6"}}))
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "different generations" in findings[0].message
+
+
+def test_a_cargo_lock_linking_two_generations_is_reported(tmp_path):
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.6.3"
+source = "git+https://github.com/celestia-island/kirino.git?branch=master#abc"
+
+[[package]]
+name = "kirino"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "more than one generation in one binary" in findings[0].message
+
+
+def test_a_cargo_lock_with_one_generation_is_quiet(tmp_path):
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.7.2"
+""")
+    assert check(tmp_path) == []
+
+
+def test_the_pnpm_lock_resolution_is_reported(tmp_path):
+    _write(tmp_path / "pnpm-lock.yaml", """
+lockfileVersion: '9.0'
+importers:
+  packages/webui:
+    dependencies:
+      '@celestia-island/hikari':
+        specifier: ^*
+        version: 0.40.27(vue@3.5.42)
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "resolves" in findings[0].message
+
+
+def test_overrides_in_pnpm_workspace_are_read(tmp_path):
+    _write(tmp_path / "pnpm-workspace.yaml", """
+packages:
+  - packages/*
+overrides:
+  '@celestia-island/hikari': ^0.40.1
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "pnpm-workspace.yaml" in findings[0].subject
+
+
+def test_a_nested_override_is_read(tmp_path):
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"pnpm": {"overrides": {"@celestia-island/hikari": {".": "^0.40.1"}}}}),
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "0.55" in findings[0].message
+
+
+def test_a_lock_is_grouped_by_crate_name_not_by_family_prefix(tmp_path):
+    # `kirino-macro` keeps its own version track: grouping the lock by family
+    # prefix reported a "second generation" that does not exist (evernight grew
+    # a phantom `plana @ Cargo.lock` finding that way).
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.7.2"
+
+[[package]]
+name = "kirino-macro"
+version = "0.1.0"
+""")
+    assert check(tmp_path) == []
+
+
+def test_one_crate_at_two_lines_is_still_reported(tmp_path):
+    _write(tmp_path / "Cargo.lock", """
+[[package]]
+name = "kirino"
+version = "0.7.2"
+
+[[package]]
+name = "kirino"
+version = "0.6.5"
+
+[[package]]
+name = "kirino-macro"
+version = "0.1.0"
+""")
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert findings[0].subject == "kirino @ Cargo.lock"
+
+
+# ── round-3 counterexamples ──────────────────────────────────────────────────
+
+
+def test_strict_greater_and_tilde_edges():
+    # node-semver: `>1.2.3` is `>=1.2.4`, `>1.2` is `>=1.3.0`, `>1` is `>=2.0.0`;
+    # `~1` is `>=1.0.0 <2.0.0`, only `~1.2` pins the minor.
+    assert admits(">0.7", (0, 7, 5)) is False
+    assert admits(">0.7", (0, 8, 0)) is True
+    assert admits(">0.7.1", (0, 7, 1)) is False
+    assert admits(">0.7.1", (0, 7, 2)) is True
+    assert admits("~0", (0, 7, 0)) is True
+    assert admits("~0.7", (0, 7, 0)) is True
+    assert admits("~0.6", (0, 7, 0)) is False
+
+
+def test_whitespace_separated_comparators_are_an_intersection():
+    assert admits(">0.6 <0.8", (0, 7, 0)) is True
+    assert admits(">=0.6 <1.0", (0, 7, 0)) is True
+    assert admits(">=0.7.0 <0.7.0", (0, 7, 0)) is False
+
+
+def test_a_git_tracked_family_crate_must_point_at_the_family(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino = { git = "https://github.com/other/kirino.git",'
+        ' branch = "0.4-legacy" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "is not the family's" in findings[0].message
+
+
+def test_a_family_git_crate_on_a_feature_branch_is_a_violation(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
+        ' branch = "feat/x" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "feat/x" in findings[0].message
+
+
+def test_a_family_crate_on_the_family_repository_passes(tmp_path):
+    _cargo(
+        tmp_path,
+        '[dependencies]\nkirino-session = { git ='
+        ' "https://github.com/celestia-island/kirino.git", branch = "master" }\n',
+    )
+    assert check(tmp_path) == []
+
+
+def test_the_hikari_rust_track_is_checked(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nhikari-palette = "^0.3"\nhikari-components = "^0.3.20"\n')
+    assert check(tmp_path) == []
+
+    _cargo(
+        tmp_path,
+        '[patch."https://github.com/celestia-island/hikari.git"]\n'
+        'hikari-palette = { path = "../hikari/packages/palette" }\n',
+    )
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "outside this repository" in findings[0].message
+
+
+def test_the_publisher_of_a_lagging_binding_is_told(tmp_path):
+    # kirino publishes `@celestia-island/kirino` 0.6.5 while its crates are 0.7 —
+    # the republish is that repository's job, not the consumers'. It declares no
+    # dependency on kirino, so the line comes from the root manifest.
+    _cargo(tmp_path, '[workspace.package]\nversion = "0.7.3"\n')
+    _write(tmp_path / "packages/web_ts/package.json",
+           json.dumps({"name": "@celestia-island/kirino", "version": "0.6.5"}))
+    findings = check(tmp_path)
+    assert any("published here" in f.subject for f in findings), findings
+
+
+def test_identical_findings_are_deduplicated(tmp_path):
+    # An alias next to a direct declaration of the same range used to emit the
+    # same warning twice.
+    _write(
+        tmp_path / "package.json",
+        json.dumps({"dependencies": {
+            "hk": "npm:@celestia-island/hikari@^*",
+            "@celestia-island/hikari": "^*",
+        }}),
+    )
+    subjects = [f.subject for f in check(tmp_path)]
+    assert len(subjects) == len(set(subjects)), subjects
+
+
+# ── an "ok" that scanned nothing is not an ok ────────────────────────────────
+def test_a_missing_root_is_an_error_not_a_clean_repository(capsys):
+    # The worst answer this tool can give is `ok` for a path it never read:
+    # its output gets cited as evidence. An adversarial round found exactly
+    # that (`family-versions /nonexistent` printed ok and exited 0).
+    assert main(["/nonexistent/path/that/does/not/exist"]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_an_empty_root_is_an_error_not_a_clean_repository(tmp_path, capsys):
+    assert main([str(tmp_path)]) == 2
+    assert "no manifest was found" in capsys.readouterr().err
+
+
+def test_the_summary_says_how_much_was_scanned(tmp_path, capsys):
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    assert main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "1 Cargo.toml" in out
+
+
+def test_a_nested_workspace_lock_is_checked_too(tmp_path):
+    # A repository whose ROOT lock is clean while a second workspace's lock
+    # holds another generation used to print `ok`. That is the shape evernight
+    # was in (`fuzz/Cargo.lock` pinned kirino 0.6.6 through an older plana).
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    _write(tmp_path / "Cargo.lock", 'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.7.2"\n')
+    nested = tmp_path / "fuzz"
+    nested.mkdir()
+    _cargo(nested, 'kirino = "0.6.6"\n')
+    _write(
+        nested / "Cargo.lock",
+        'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.6.6"\n\n'
+        '[[package]]\nname = "kirino"\nversion = "0.7.2"\n',
+    )
+    subjects = [f.subject for f in check(tmp_path)]
+    assert any("fuzz/Cargo.lock" in subject for subject in subjects), subjects
+
+
+def test_a_split_across_workspaces_is_reported(tmp_path):
+    # Each lock can be internally consistent while the repository as a whole is
+    # not: the root locked 0.7.2 and a second workspace locked 0.6.6. Reading
+    # each lock on its own called that clean — and it is the shape evernight
+    # was in.
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    _write(tmp_path / "Cargo.lock", 'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.7.2"\n')
+    nested = tmp_path / "fuzz"
+    nested.mkdir()
+    _cargo(nested, 'kirino = "^0.6"\n')
+    _write(nested / "Cargo.lock", 'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.6.6"\n')
+    subjects = [f.subject for f in check(tmp_path)]
+    assert "kirino" in subjects, subjects
+
+
+def test_a_nested_pnpm_lock_is_read(tmp_path):
+    # The Cargo side was pinned; the pnpm side was not, so a regression there
+    # would have been silent.
+    _webui(tmp_path, '"@celestia-island/hikari": "^0.55.0"')
+    _write(tmp_path / "pnpm-lock.yaml", "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies: {}\n")
+    web = tmp_path / "web"
+    web.mkdir()
+    _write(
+        web / "pnpm-lock.yaml",
+        "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n"
+        "      '@celestia-island/hikari':\n        specifier: ^0.41.0\n        version: 0.41.9\n",
+    )
+    subjects = [f.subject for f in check(tmp_path)]
+    assert any("web/pnpm-lock.yaml" in subject for subject in subjects), subjects

@@ -37,6 +37,11 @@ class TestCommandRegistry:
             # the remaining subcommands land with their own slices and fail loudly).
             "deploy",
             "e2e-sandbox",
+            # Added 2026-09-25: family dependency-identity check. The audit found
+            # kirino at two incompatible majors, plana on seven revisions and
+            # hikari declared unbounded — nothing compared how the repositories
+            # consume the shared layers.
+            "family-versions",
         }
         assert set(COMMANDS.keys()) == expected
 

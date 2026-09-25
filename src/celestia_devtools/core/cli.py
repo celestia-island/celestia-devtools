@@ -33,6 +33,7 @@ Commands::
     sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
     gate              Run the local CI gate (modes + DAG ordering + job budget)
     verify-versions   Check cargo/npm version drift across a repository
+    family-versions   Check that the shared family layers are consumed as one identity
     protocol-bundle   Vendor the five org protocol docs from docs.celestia.world
                       into packages/webui/.generated/protocols as lazy assets
     fetch-just        Stage the bundled common.just into .just/ (just fetch core)
@@ -94,6 +95,7 @@ COMMANDS: dict[str, str] = {
     "sign-agent": "celestia_devtools.agent.sign",
     "gate": "celestia_devtools.build.gate",
     "verify-versions": "celestia_devtools.repo.verify_versions",
+    "family-versions": "celestia_devtools.repo.family_versions",
     "protocol-bundle": "celestia_devtools.doc.protocol_bundle",
     "fetch-just": "celestia_devtools.repo.fetch_just",
     "build-dispatch": "celestia_devtools.build.dispatch",
