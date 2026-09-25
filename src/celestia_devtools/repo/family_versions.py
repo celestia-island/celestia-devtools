@@ -613,8 +613,16 @@ def _lock_findings(root: Path) -> list[Finding]:
     the split, so they are evidence to act on rather than a gate.
     """
     findings: list[Finding] = []
-    cargo_lock = root / "Cargo.lock"
-    if cargo_lock.is_file():
+    for cargo_lock in _manifests(root, "Cargo.lock"):
+        where = cargo_lock.relative_to(root).as_posix()
+        if where not in ("Cargo.lock",):
+            # A nested lock is a second workspace. Reporting only the root one
+            # let a repository whose root locked cleanly while `fuzz/Cargo.lock`
+            # held an older generation print `ok` — and that output gets cited
+            # as evidence, so it must not be able to miss one.
+            findings.append(Finding(
+                "info", where,
+                "this is a separate workspace's lockfile, checked on its own below"))
         try:
             data = tomllib.loads(cargo_lock.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover
@@ -637,19 +645,19 @@ def _lock_findings(root: Path) -> list[Finding]:
         for crate, versions in sorted(lines.items()):
             if len(versions) > 1:
                 findings.append(Finding(
-                    "warning", f"{crate} @ Cargo.lock",
+                    "warning", f"{crate} @ {where}",
                     "the lock links "
                     + ", ".join(f"{m}.{n}" for m, n in sorted(versions))
                     + " of the same crate ("
                     + ", ".join(sorted(seen[crate]))
                     + ") — more than one generation in one binary",
                 ))
-    lock = root / "pnpm-lock.yaml"
-    if lock.is_file():
+    for lock in _manifests(root, "pnpm-lock.yaml"):
+        where = lock.relative_to(root).as_posix()
         try:
             data = yaml.safe_load(lock.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError) as exc:  # pragma: no cover
-            findings.append(Finding("warning", "pnpm-lock.yaml", f"unreadable: {exc}"))
+            findings.append(Finding("warning", where, f"unreadable: {exc}"))
             data = {}
         importers = data.get("importers") if isinstance(data, dict) else None
         resolved: dict[str, dict[str, set[tuple[int, int]]]] = {}
@@ -676,7 +684,7 @@ def _lock_findings(root: Path) -> list[Finding]:
             below = sorted(line for line in lines if line < canonical[:2])
             if below:
                 findings.append(Finding(
-                    "warning", f"{package} @ pnpm-lock.yaml",
+                    "warning", f"{package} @ {where}",
                     "the lock resolves "
                     + ", ".join(f"{m}.{n}" for m, n in below)
                     + f" while the family line is {canonical[0]}.{canonical[1]}",
@@ -687,10 +695,20 @@ def _lock_findings(root: Path) -> list[Finding]:
                     for imp, found in sorted(per_importer.items())
                 )
                 findings.append(Finding(
-                    "warning", f"{package} @ pnpm-lock.yaml",
+                    "warning", f"{package} @ {where}",
                     f"the lock resolves {len(lines)} different lines across importers ({where})",
                 ))
     return findings
+
+
+def _scanned_counts(root: Path) -> dict[str, int]:
+    """How much was actually read — so `ok` cannot mean "found nothing"."""
+    return {
+        "Cargo.toml": len(list(_manifests(root, "Cargo.toml"))),
+        "package.json": len(list(_manifests(root, "package.json"))),
+        "Cargo.lock": len(list(_manifests(root, "Cargo.lock"))),
+        "pnpm-lock.yaml": len(list(_manifests(root, "pnpm-lock.yaml"))),
+    }
 
 
 def check(root: Path) -> list[Finding]:
@@ -735,7 +753,7 @@ def check(root: Path) -> list[Finding]:
                 ))
     findings.extend(_workspace_override_findings(root))
     findings.extend(_lock_findings(root))
-    order = {"violation": 0, "warning": 1}
+    order = {"violation": 0, "warning": 1, "info": 2}
     unique: dict[tuple[str, str, str], Finding] = {}
     for finding in findings:
         unique.setdefault((finding.level, finding.subject, finding.message), finding)
@@ -755,6 +773,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true", help="treat warnings as failures too")
     args = parser.parse_args(argv)
     root = Path(args.repo).resolve()
+    if not root.is_dir():
+        print(
+            f"::error::family-versions: {root} is not a directory — nothing was "
+            "scanned, so there is nothing to report",
+            file=sys.stderr,
+        )
+        return 2
+    scanned = _scanned_counts(root)
+    if not any(scanned.values()):
+        print(
+            f"::error::family-versions: no manifest was found under {root} — "
+            "an empty scan is not a clean repository",
+            file=sys.stderr,
+        )
+        return 2
 
     findings = check(root)
     violations = [f for f in findings if f.level == "violation"]
@@ -763,6 +796,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.json:
         print(json.dumps({
             "repo": str(root),
+            "scanned": scanned,
             "findings": [asdict(f) for f in findings],
             "violations": len(violations),
             "warnings": len(warnings),
@@ -771,11 +805,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         for finding in findings:
             stream = sys.stderr if finding.level == "violation" else sys.stdout
             print(f"{finding.level:9s} {finding.subject}: {finding.message}", file=stream)
+        summary = ", ".join(f"{count} {name}" for name, count in scanned.items() if count)
         if not findings:
-            print("ok: every family layer is consumed as one identity")
+            print(f"ok: every family layer is consumed as one identity ({summary})")
         else:
             print(
-                f"{len(violations)} violation(s), {len(warnings)} warning(s)",
+                f"{len(violations)} violation(s), {len(warnings)} warning(s) ({summary})",
                 file=sys.stderr if violations else sys.stdout,
             )
 

@@ -299,6 +299,9 @@ def test_cli_json_report_shape(tmp_path, capsys):
 
 
 def test_cli_says_ok_on_a_clean_tree(tmp_path, capsys):
+    # An EMPTY tree is not a clean tree any more: it exits 2, because an `ok`
+    # for a path with nothing in it is the answer that gets cited as evidence.
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
     assert main([str(tmp_path)]) == 0
     assert "ok:" in capsys.readouterr().out
 
@@ -618,3 +621,42 @@ def test_identical_findings_are_deduplicated(tmp_path):
     )
     subjects = [f.subject for f in check(tmp_path)]
     assert len(subjects) == len(set(subjects)), subjects
+
+
+# ── an "ok" that scanned nothing is not an ok ────────────────────────────────
+def test_a_missing_root_is_an_error_not_a_clean_repository(capsys):
+    # The worst answer this tool can give is `ok` for a path it never read:
+    # its output gets cited as evidence. An adversarial round found exactly
+    # that (`family-versions /nonexistent` printed ok and exited 0).
+    assert main(["/nonexistent/path/that/does/not/exist"]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_an_empty_root_is_an_error_not_a_clean_repository(tmp_path, capsys):
+    assert main([str(tmp_path)]) == 2
+    assert "no manifest was found" in capsys.readouterr().err
+
+
+def test_the_summary_says_how_much_was_scanned(tmp_path, capsys):
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    assert main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "1 Cargo.toml" in out
+
+
+def test_a_nested_workspace_lock_is_checked_too(tmp_path):
+    # A repository whose ROOT lock is clean while a second workspace's lock
+    # holds another generation used to print `ok`. That is the shape evernight
+    # was in (`fuzz/Cargo.lock` pinned kirino 0.6.6 through an older plana).
+    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    _write(tmp_path / "Cargo.lock", 'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.7.2"\n')
+    nested = tmp_path / "fuzz"
+    nested.mkdir()
+    _cargo(nested, 'kirino = "0.6.6"\n')
+    _write(
+        nested / "Cargo.lock",
+        'version = 4\n\n[[package]]\nname = "kirino"\nversion = "0.6.6"\n\n'
+        '[[package]]\nname = "kirino"\nversion = "0.7.2"\n',
+    )
+    subjects = [f.subject for f in check(tmp_path)]
+    assert any("fuzz/Cargo.lock" in subject for subject in subjects), subjects
