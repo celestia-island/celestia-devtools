@@ -1,6 +1,7 @@
 """Tests for the zombie-worker cancellation detector in ci_orphan_janitor."""
 
 import importlib.util
+import time as _time
 import os
 import sys
 import time
@@ -21,7 +22,6 @@ spec.loader.exec_module(jan)
 # now generated RELATIVE to the current time: "recent" means five
 # minutes ago, "old" means three days ago — the suite can never age
 # red again.
-import time as _time
 
 _NOW = _time.time()
 _RECENT_DT = datetime.fromtimestamp(_NOW - 300, tz=timezone.utc)
