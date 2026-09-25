@@ -1,0 +1,66 @@
+name: Family dependency identity
+
+# Callers: add
+#
+#   family-versions:
+#     name: Family dependency identity
+#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@master
+#
+# to the repository's workflow. `with: strict: true` also fails on warnings.
+on:
+  workflow_call:
+    inputs:
+      strict:
+        description: Fail on warnings as well as violations
+        type: boolean
+        default: false
+
+jobs:
+  family-versions:
+    name: Family dependency identity
+    # Fork PRs must not consume self-hosted runner capacity or execute
+    # untrusted code on the shared node; they need maintainer approval anyway.
+    # For workflow_call callers, github.event carries the caller's PR payload,
+    # so the same guard applies.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier).
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # The check reads every lock and manifest in the tree, including the
+          # locks of second workspaces (fuzz/ and the like), so it needs the
+          # whole checkout rather than a sparse one.
+          fetch-depth: 0
+        # Defensive: the runner env rewrites github.com/celestia-island/* to
+        # local bare mirrors (per-repo exact-prefix rules), and mirrors may lack
+        # fresh refs — clone straight from github.com instead.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Family versions
+        # Prefer the preinstalled CLI (node-1 convention, kept fresh by the
+        # mirror sync) when it already knows the command. Otherwise clone
+        # celestia-devtools@master and run the module directly with
+        # PYTHONPATH=src — deterministic, no build dependencies.
+        #
+        # Violations fail the job; warnings (a lock linking two generations, an
+        # unbounded npm range, a binding behind its crate) are printed and only
+        # fail when the caller opts into `strict`.
+        env:
+          STRICT: ${{ inputs.strict && '--strict' || '' }}
+        run: |
+          set -euo pipefail
+          if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools family-versions --help >/dev/null 2>&1; then
+            echo "Using preinstalled celestia-devtools: $(command -v celestia-devtools)"
+            celestia-devtools family-versions $STRICT "$GITHUB_WORKSPACE"
+          else
+            echo "Preinstalled CLI lacks family-versions; running from a fresh devtools clone"
+            rm -rf /tmp/celestia-devtools-fv && git clone --depth 1 https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
+            cd /tmp/celestia-devtools-fv && PYTHONPATH=src python3 -m celestia_devtools family-versions $STRICT "$GITHUB_WORKSPACE"
+          fi
