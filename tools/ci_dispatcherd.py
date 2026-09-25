@@ -615,6 +615,12 @@ def post_status(repo, sha, state_, url):
         log(f"status post failed {repo}: {redact(str(e))}")
 
 
+def _full_matrix(wf_path: str) -> bool:
+    """A full-matrix workflow (fmt/clippy/tests/DB gates) — a cargo-check
+    green cannot vouch for it, so its farm run is never spill-cancelled."""
+    return wf_path.endswith("ci.yml")
+
+
 def resolve(state):
     for run_id, t in list(state.items()):
         if run_id == "_recent":
@@ -684,8 +690,32 @@ def resolve(state):
             try:
                 run = gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}")
                 if run.get("status") == "queued":
-                    gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel", {}, method="POST")
-                    log(f"cancelled queued farm run {run_id} ({repo}) — cnb green")
+                    # Round-16's F-1 guard: the CNB spill runs cargo-check
+                    # ONLY. A queued farm run of a FULL-MATRIX workflow
+                    # (ci.yml — fmt, clippy -D warnings, the test suite,
+                    # the DB regression gates) carries checks the spill
+                    # cannot vouch for; cancelling it on a weak green let
+                    # changes merge with those gates never executed (six
+                    # consecutive chest PRs did). Full-matrix runs always
+                    # execute; lightweight siblings keep the release path.
+                    wfid = run.get("workflow_id")
+                    wf_path = ""
+                    if wfid:
+                        try:
+                            wf = gh_api(
+                                f"/repos/{ORG}/{repo}/actions/workflows/{wfid}")
+                            wf_path = wf.get("path", "")
+                        except Exception:
+                            pass
+                    if _full_matrix(wf_path):
+                        log(f"keep queued farm run {run_id} ({repo}) — "
+                            f"full-matrix workflow; cargo-check green cannot vouch")
+                    else:
+                        gh_api(
+                            f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel",
+                            {}, method="POST")
+                        log(f"cancelled queued farm run {run_id} ({repo}) "
+                            f"— cnb green (lightweight {wf_path or 'unknown'})")
             except Exception as e:
                 log(f"cancel check {run_id}: {redact(str(e))}")
             del state[run_id]
@@ -693,6 +723,16 @@ def resolve(state):
             post_status(repo, sha, "failure", url)
             log(f"spill {repo} run {run_id} cnb {st}; farm run left untouched")
             del state[run_id]
+
+
+def _self_test() -> None:
+    """Round-16's F-1 guard contract (`python3 -c \
+    'import ci_dispatcherd; ci_dispatcherd._self_test()'`)."""
+    assert _full_matrix(".github/workflows/ci.yml")
+    assert not _full_matrix(".github/workflows/cnb-overflow-lane.yml")
+    assert not _full_matrix(".github/workflows/p0-gate.yml")
+    assert not _full_matrix("")
+    print("full-matrix decision: 4/4")
 
 
 def main():
