@@ -74,6 +74,11 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
+      # The dispatched "Resolve the pull request" step calls
+      # gh api .../pulls/N; with only contents:read the GitHub App token
+      # answers 403 "Resource not accessible by integration" (observed live on
+      # the CNB dispatch path), so the PR lookup needs this grant too.
+      pull-requests: read
     steps:
       - name: Lane
         run: echo "commit-message lint served by lane ${{ inputs.lane || vars.LINT_LANE || 'hosted' }} on ${{ join(fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]'), ', ') }}"
@@ -238,12 +243,16 @@ jobs:
             RANGE="$AFTER"
           else
             # A force-push rewrites the previous head away, so the event's
-            # `before` can point at an unreachable commit the checkout does
-            # not have (git log then fails with "invalid revision range").
-            # The PR-wide lint step above already covers the full PR range
-            # with a merge-base fallback, so linting just the new head is a
-            # safe degradation for that case.
-            if ! git rev-parse --verify -q "$BEFORE" >/dev/null 2>&1; then
+            # `before` can point at a commit the clone does not carry as an
+            # object. A plain `rev-parse --verify` can still accept the full
+            # hex without reading the object, and `git log` then dies with
+            # "Invalid revision range" (exit 128) instead of degrading —
+            # observed live on a force-pushed PR whose unreachable before was
+            # still nameable. The `^{commit}` peel forces the object read the
+            # range actually needs; the PR-wide step above already covers the
+            # full PR range with a merge-base fallback, so linting just the
+            # new head remains a safe degradation.
+            if ! git rev-parse --verify -q "$BEFORE^{commit}" >/dev/null 2>&1; then
               RANGE="$AFTER"
             else
               RANGE="${BEFORE}..${AFTER}"

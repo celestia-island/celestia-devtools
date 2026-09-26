@@ -17,7 +17,11 @@ Credentials come from /etc/ci-dispatcher/env (600, root):
 
 State: /var/lib/ci-dispatcher/state.json (survives restarts; tracked spills only).
 Safety: only QUEUED runs in WATCHED repos are ever cancelled, only ones this daemon
-dispatched a spill for, and only after the CNB build proved green.
+dispatched a spill for, only after the CNB build proved green, and only when the run's
+workflow is EXPLICITLY allowlisted in DISPATCH_CANCELABLE — a green spill vouches for
+exactly the checks the spill ran (cargo-check/python-check/webui-check), so the default
+allowlist is empty (2026-09-26: the old "cancel every lightweight sibling" rule cancelled
+a queued P0 Ledger Gate run the spill never executes; "lightweight" ≠ "spill-covered").
 """
 
 import json
@@ -79,7 +83,7 @@ def lane_hosts(repo):
 
 def busy_hosts(state):
     """Host repos currently holding a tracked dev-quota workspace."""
-    return {t.get("host") for k, t in state.items() if k != "_recent"
+    return {t.get("host") for k, t in state.items() if not k.startswith("_")
             and t.get("mode") == "ws" and t.get("host")}
 
 
@@ -362,25 +366,65 @@ def census():
 
 
 RECENT_TTL_SEC = _env_int("DISPATCH_RECENT_TTL_SEC", 2700, 60, 86400)
+# Failed-spill blacklist TTL — deliberately shorter than RECENT_TTL_SEC: a spill
+# failure is usually a merge-tree conflict, which is deterministic for a given
+# (master, sha) pair but master moves, so a 30-minute cooldown re-offers the spill
+# after each realistic master advance instead of hammering the same conflict every
+# poll (285 futile spill attempts over 72 h before this blacklist existed).
+FAILED_TTL_SEC = _env_int("DISPATCH_FAILED_TTL_SEC", 1800, 60, 86400)
 
 
 def load_state():
     try:
         st = json.load(open(STATE_PATH))
     except Exception:
-        return {"_recent": {}}
+        return {"_recent": {}, "_failed": {}}
     if not isinstance(st.get("_recent"), dict):
         st["_recent"] = {}
+    if not isinstance(st.get("_failed"), dict):
+        st["_failed"] = {}
     return st
 
 
+def _prune_bookkeeping(st, now):
+    """Lazy TTL prune of both bookkeeping maps, run on every write to either."""
+    recent = st.get("_recent")
+    if isinstance(recent, dict):
+        for s, ts in list(recent.items()):
+            if now - ts > RECENT_TTL_SEC:
+                del recent[s]
+    failed = st.get("_failed")
+    if isinstance(failed, dict):
+        for k, ts in list(failed.items()):
+            if now - ts > FAILED_TTL_SEC:
+                del failed[k]
+
+
 def remember(st, sha):
-    recent = st.setdefault("_recent", {})
-    recent[sha] = time.time()
-    now = time.time()
-    for s, ts in list(recent.items()):
-        if now - ts > RECENT_TTL_SEC:
-            del recent[s]
+    st.setdefault("_recent", {})[sha] = time.time()
+    _prune_bookkeeping(st, time.time())
+
+
+def note_failure(st, repo, sha):
+    """Blacklist (repo, sha) after a failed spill attempt.
+
+    Keyed by the pair (unlike `_recent`, which is sha-only) because the failure
+    is a property of merging that repo's PR, and the key can never collide with
+    a run-id record (it carries a colon). Consulted by the main loop before any
+    spill work; see FAILED_TTL_SEC for why it expires quickly.
+    """
+    st.setdefault("_failed", {})[f"{repo}:{sha}"] = time.time()
+    _prune_bookkeeping(st, time.time())
+
+
+def failed_cooldown(st, repo, sha, now=None):
+    """Seconds left on the (repo, sha) failure blacklist, or None when clear."""
+    now = time.time() if now is None else now
+    ts = st.get("_failed", {}).get(f"{repo}:{sha}")
+    if ts is None:
+        return None
+    left = FAILED_TTL_SEC - (now - ts)
+    return left if left > 0 else None
 
 
 def save_state(st):
@@ -583,10 +627,18 @@ def spill(entry, state):
             # returned "Failed to retrieve pipeline", so `cs` stayed None and the run was
             # released at the grace window without ever posting a status or cancelling it.
             state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha,
-                                           "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
+                                           "url": redact(r.get("buildLogUrl", "")), "since": time.time(),
+                                           "task": task}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
         except Exception as e:
+            # Record the failure before the fallback: a merge-tree conflict is
+            # deterministic for (master, sha), and when the build-lane dispatch
+            # below also fails nothing else is ever recorded — the census then
+            # re-offered the same run every poll (285 futile spill attempts over
+            # 72 h). The cooldown is short because master moves: a master advance
+            # can turn the same conflict into a clean merge.
+            note_failure(state, repo, sha)
             log(f"ws-spill {repo} failed ({redact(str(e))}); falling back to build lane")
     # Build-pool gate on the fallback: same ceiling as the caller-lane router, fail-closed (the
     # farm run simply stays queued), so no path of this daemon spends build core-hours above it.
@@ -597,35 +649,77 @@ def spill(entry, state):
                if bpct is not None else "usage unknown (ledger unreadable)")
             + "; farm run stays queued")
         return False
-    r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
-                {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
-                 "title": f"daemon spill {repo} {sha[:10]}", "env": env})
+    try:
+        r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
+                    {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
+                     "title": f"daemon spill {repo} {sha[:10]}", "env": env})
+    except Exception as e:
+        # Before this handler the POST's error escaped spill() into main()'s
+        # loop-error catch: no record, no remember() — the census re-offered the
+        # run next poll and re-failed it, the other half of the hammering above.
+        note_failure(state, repo, sha)
+        log(f"spill {repo} run {entry['run_id']} build-lane dispatch failed "
+            f"({redact(str(e))}); farm run stays queued, retry in {FAILED_TTL_SEC}s")
+        return False
     state[str(entry["run_id"])] = {"mode": "build", "sn": r["sn"], "repo": repo, "sha": sha,
-                                   "url": redact(r.get("buildLogUrl", "")), "since": time.time()}
+                                   "url": redact(r.get("buildLogUrl", "")), "since": time.time(),
+                                   "task": task}
     log(f"spill {repo} run {entry['run_id']} sha {sha[:10]} -> cnb {r['sn']}")
 
 
-def post_status(repo, sha, state_, url):
+def post_status(repo, sha, state_, url, task="cargo-check"):
+    """Post the dispatcher's commit status under a per-task context.
+
+    `task` defaults to cargo-check so legacy callers — and in-flight records
+    written before contexts went per-task — keep the historical context name
+    (state.json survives the deploy restart).
+    """
     try:
         gh_api(f"/repos/{ORG}/{repo}/statuses/{sha}",
-               {"state": state_, "context": "cnb/cargo-check", "target_url": url,
+               {"state": state_, "context": f"cnb/{task}", "target_url": url,
                 "description": "dispatcher spill result"})
         log(f"status {repo} {sha[:10]} -> {state_}")
     except Exception as e:
         log(f"status post failed {repo}: {redact(str(e))}")
 
 
-def _full_matrix(wf_path: str) -> bool:
-    """A full-matrix workflow (fmt/clippy/tests/DB gates) — a cargo-check
-    green cannot vouch for it, so its farm run is never spill-cancelled."""
-    return wf_path.endswith("ci.yml")
+def _env_json(name, default):
+    """JSON object knob from the service env; malformed input falls back to
+    the default (same crash-loop discipline as _env_int)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else default
+    except ValueError:
+        return default
+
+
+# Workflows whose queued farm run MAY be cancelled once a spill goes green.
+# Round-16's F-1 guard kept ci.yml (full-matrix) runs and cancelled every
+# "lightweight sibling" — but lightweight is not spill-covered: on 2026-09-26
+# that rule cancelled a queued P0 Ledger Gate run (p0-gate.yml) whose checks
+# the cargo spill never executes, leaving the PR red on a check that was never
+# allowed to run. The default is therefore EMPTY — an operator lists a
+# workflow here only after verifying the spill covers its whole job set.
+# Env shape: DISPATCH_CANCELABLE='{"entelecheia": [".github/workflows/fuzz.yml"]}'
+CANCELABLE = _env_json("DISPATCH_CANCELABLE", {})
+
+
+def _cancelable(repo: str, wf_path: str) -> bool:
+    """Whether this repo's workflow is allowlisted for spill-green cancellation
+    (path-suffix match, repo-scoped)."""
+    return any(wf_path.endswith(suffix) for suffix in CANCELABLE.get(repo, ()))
 
 
 def resolve(state):
     for run_id, t in list(state.items()):
-        if run_id == "_recent":
-            continue  # bookkeeping dict, not a spill record
+        if run_id.startswith("_"):
+            continue  # bookkeeping dicts (_recent, _failed), not spill records
         repo, sha, sn, url = t["repo"], t["sha"], t["sn"], t.get("url", "")
+        # records written before contexts went per-task keep the old cargo-check name
+        task = t.get("task", "cargo-check")
         if time.time() - t["since"] > SPILL_TTL_SEC:
             # Same class as the grace release below: dropping the record without stopping
             # the workspace abandons a dev-quota slot, and without remember() the run is
@@ -686,18 +780,18 @@ def resolve(state):
         if st in ("success", "error", "cancel"):
             remember(state, sha)
         if st == "success":
-            post_status(repo, sha, "success", url)
+            post_status(repo, sha, "success", url, task)
             try:
                 run = gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}")
                 if run.get("status") == "queued":
-                    # Round-16's F-1 guard: the CNB spill runs cargo-check
-                    # ONLY. A queued farm run of a FULL-MATRIX workflow
-                    # (ci.yml — fmt, clippy -D warnings, the test suite,
-                    # the DB regression gates) carries checks the spill
-                    # cannot vouch for; cancelling it on a weak green let
-                    # changes merge with those gates never executed (six
-                    # consecutive chest PRs did). Full-matrix runs always
-                    # execute; lightweight siblings keep the release path.
+                    # Round-16's F-1 guard: the CNB spill runs its ONE task
+                    # (cargo-check / python-check / webui-check) only. A queued
+                    # farm run carries whatever checks its workflow defines;
+                    # cancelling it on a task-scoped green would drop checks the
+                    # spill never ran (2026-09-26: a queued P0 Ledger Gate run
+                    # was cancelled this way and showed red on the PR). Runs are
+                    # therefore kept unless explicitly allowlisted in
+                    # DISPATCH_CANCELABLE by an operator who verified coverage.
                     wfid = run.get("workflow_id")
                     wf_path = ""
                     if wfid:
@@ -707,20 +801,20 @@ def resolve(state):
                             wf_path = wf.get("path", "")
                         except Exception:
                             pass
-                    if _full_matrix(wf_path):
-                        log(f"keep queued farm run {run_id} ({repo}) — "
-                            f"full-matrix workflow; cargo-check green cannot vouch")
-                    else:
+                    if _cancelable(repo, wf_path):
                         gh_api(
                             f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel",
                             {}, method="POST")
                         log(f"cancelled queued farm run {run_id} ({repo}) "
-                            f"— cnb green (lightweight {wf_path or 'unknown'})")
+                            f"— spill-covered (allowlisted {wf_path})")
+                    else:
+                        log(f"keep queued farm run {run_id} ({repo}) — "
+                            f"spill does not vouch ({wf_path or 'unknown'})")
             except Exception as e:
                 log(f"cancel check {run_id}: {redact(str(e))}")
             del state[run_id]
         elif st in ("error", "cancel"):
-            post_status(repo, sha, "failure", url)
+            post_status(repo, sha, "failure", url, task)
             log(f"spill {repo} run {run_id} cnb {st}; farm run left untouched")
             del state[run_id]
 
@@ -728,11 +822,73 @@ def resolve(state):
 def _self_test() -> None:
     """Round-16's F-1 guard contract (`python3 -c \
     'import ci_dispatcherd; ci_dispatcherd._self_test()'`)."""
-    assert _full_matrix(".github/workflows/ci.yml")
-    assert not _full_matrix(".github/workflows/cnb-overflow-lane.yml")
-    assert not _full_matrix(".github/workflows/p0-gate.yml")
-    assert not _full_matrix("")
-    print("full-matrix decision: 4/4")
+    # cancel-on-green allowlist: empty by default (nothing is spill-covered
+    # until an operator verifies it), suffix-matched, repo-scoped.
+    saved = dict(CANCELABLE)
+    try:
+        CANCELABLE.clear()
+        assert not _cancelable("hikari", ".github/workflows/ci.yml")
+        assert not _cancelable("hikari", ".github/workflows/p0-gate.yml")
+        assert not _cancelable("hikari", "")
+        CANCELABLE["entelecheia"] = [".github/workflows/fuzz.yml"]
+        assert _cancelable("entelecheia", ".github/workflows/fuzz.yml")
+        assert not _cancelable("hikari", ".github/workflows/fuzz.yml")
+        assert not _cancelable("entelecheia", ".github/workflows/p0-gate.yml")
+    finally:
+        CANCELABLE.clear()
+        CANCELABLE.update(saved)
+    print("cancel allowlist: 6/6")
+    # spill-failure blacklist: write -> consult -> TTL expiry -> prune
+    st = {}
+    assert failed_cooldown(st, "arona", "s1") is None
+    note_failure(st, "arona", "s1")
+    left = failed_cooldown(st, "arona", "s1")
+    assert left is not None and 0 < left <= FAILED_TTL_SEC
+    assert failed_cooldown(st, "arona", "s2") is None        # keyed per sha
+    assert failed_cooldown(st, "plana", "s1") is None        # and per repo
+    st["_failed"]["arona:s1"] -= FAILED_TTL_SEC + 1          # age past the cooldown
+    assert failed_cooldown(st, "arona", "s1") is None        # expired: offered again
+    note_failure(st, "plana", "p1")
+    st["_failed"]["plana:p1"] -= FAILED_TTL_SEC + 1
+    remember(st, "s9")                                       # prune rides along
+    assert "plana:p1" not in st["_failed"] and "s9" in st["_recent"]
+    print(f"failure blacklist: write/consult/expiry/prune ok (ttl {FAILED_TTL_SEC}s)")
+    # per-task status contexts, including the legacy default for pre-deploy records
+    posted = []
+    orig_api, orig_log = gh_api, log
+    globals()["gh_api"] = lambda path, data=None, method=None: (posted.append(data), {})[1]
+    globals()["log"] = lambda msg: None
+    try:
+        post_status("arona", "a" * 40, "success", "https://example.invalid/x", "webui-check")
+        post_status("celestia-devtools", "a" * 40, "success", "https://example.invalid/x",
+                    "python-check")
+        post_status("arona", "a" * 40, "failure", "https://example.invalid/x")  # no task
+    finally:
+        globals()["gh_api"], globals()["log"] = orig_api, orig_log
+    assert [d["context"] for d in posted] == ["cnb/webui-check", "cnb/python-check",
+                                              "cnb/cargo-check"], posted
+    # a record written before the deploy resolves under the same legacy default
+    assert {"repo": "arona", "sha": "a", "sn": "s", "url": "", "since": 0.0}.get(
+        "task", "cargo-check") == "cargo-check"
+    print("status contexts: per-task + legacy default ok")
+    # state.json migration: `_failed` is initialised beside `_recent` on load
+    global STATE_PATH
+    _old_state = STATE_PATH
+    try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            STATE_PATH = os.path.join(td, "state.json")
+            fresh = load_state()
+            assert fresh == {"_recent": {}, "_failed": {}}, fresh
+            save_state({"_recent": {"a": 1.0}, "42": {"mode": "build", "sn": "x",
+                                                      "repo": "arona", "sha": "b",
+                                                      "url": "", "since": 0.0}})
+            legacy = load_state()  # written by a pre-blacklist daemon: gains _failed
+            assert legacy["_failed"] == {} and legacy["_recent"] == {"a": 1.0}
+            assert "42" in legacy
+    finally:
+        STATE_PATH = _old_state
+    print("state migration: _failed initialised beside _recent ok")
 
 
 def main():
@@ -747,10 +903,10 @@ def main():
             state = load_state()
             pools()             # monitor: logs both pools on each refresh
             q = census()
-            # state also carries the `_recent` bookkeeping dict — skip it or
-            # the comprehension raises KeyError('sha') on every loop and the
-            # daemon never spills (nor persists) anything again.
-            spilled_shas = {t["sha"] for k, t in state.items() if k != "_recent"}
+            # state also carries the `_recent`/`_failed` bookkeeping dicts — skip
+            # them or the comprehension raises KeyError('sha') on every loop and
+            # the daemon never spills (nor persists) anything again.
+            spilled_shas = {t["sha"] for k, t in state.items() if not k.startswith("_")}
             excess = len(q) - THRESHOLD
             if excess > 0:
                 now = time.time()
@@ -772,6 +928,14 @@ def main():
                     ts = recent.get(entry["sha"])
                     if ts and now - ts < RECENT_TTL_SEC:
                         continue  # recently resolved on CNB; skip re-spill
+                    cooldown = failed_cooldown(state, entry["repo"], entry["sha"], now)
+                    if cooldown is not None:
+                        # One cheap line per poll instead of a full doomed spill:
+                        # this skip sits before spill() — hence before any
+                        # mirror fetch/merge — so a blacklisted run costs nothing.
+                        log(f"skipping recently-failed spill {entry['repo']}/"
+                            f"{entry['sha'][:10]}, retry in {int(cooldown)}s")
+                        continue
                     if spill(entry, state) is False:
                         continue           # deferred: do not spend the batch budget
                     started += 1
@@ -779,7 +943,8 @@ def main():
                     save_state(state)
             resolve(state)
             save_state(state)
-            log(f"queued={len(q)} tracked={len(state) - 1} threshold={THRESHOLD}")
+            tracked = sum(1 for k in state if not k.startswith("_"))
+            log(f"queued={len(q)} tracked={tracked} threshold={THRESHOLD}")
         except Exception as e:
             log(f"loop error: {redact(str(e))}")
         time.sleep(POLL_SEC)
