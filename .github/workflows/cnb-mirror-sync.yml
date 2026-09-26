@@ -1,14 +1,21 @@
 # CNB Mirror Sync — keeps the one-way mirrors at cnb.cool/celestia-island/* in sync with GitHub.
 #
 # This is a DATA-SYNC job per the ci-ops note on sync workflows: it never pushes to GitHub,
-# so nothing it produces requires GitHub CI validation. The heavy lifting (clone/fetch/push of
-# 17 repos) runs on CNB compute via the ci_infra api_trigger_sync pipeline; this workflow only
-# triggers it and waits, passing GH_READ_PAT transiently (env of the dispatched build), so no
-# credential is ever stored on CNB. First run of the pipeline was measured at ~60s / 0.07
-# core-hours; the copy-on-write volume caches bare clones for subsequent runs.
+# so nothing it produces requires GitHub CI validation.
 #
-# Overlap guard: before dispatching, any in_progress sync build on ci_infra makes this cycle
-# skip (exit green) instead of starting a second concurrent mirror push.
+# The sync runs INLINE on this runner (GitHub fetch → direct CNB push). Until 2026-09-27 it
+# dispatched a ci_infra api_trigger_sync build on CNB instead — that build burned ~44% of the
+# free build pool's 160 monthly core-hours (48 runs/day × 4 cpu × ~45 s), which is what kept
+# the pool pegged at its 70% gate and deferred cargo spill fallbacks all month. Running inline
+# costs CNB nothing; the runner reaches github.com through the daemon proxy (env) and cnb.cool
+# directly (scoped no_proxy — through the proxy it crawls), both already-proven paths on the
+# SYNC_RUNNER lane. The legacy ci_infra pipeline stays available for manual API dispatch, and
+# GH_READ_PAT now never leaves the runner's env at all.
+#
+# Head pruning is explicit and time-gated: spill/<sha> refs on a mirror are live dispatcher
+# traffic while fresh (the spill retry TTL is 45 min, so a 2-hour gate covers re-offers); a
+# bulk `push --prune` is never used because it would also delete fresh spill refs this clone
+# has never seen. Overlap is prevented by the workflow-level concurrency group.
 
 name: CNB Mirror Sync
 
@@ -27,63 +34,67 @@ jobs:
     # the farm labels stay the default, and an operator can re-lane the sync
     # through the SYNC_RUNNER repository variable without a tree edit. `vars`
     # resolves against THIS repository (celestia-devtools), so the flip is
-    # local to the sync and re-lands nothing else. Needed because the farm's
-    # queue-cancel loop starved three scheduled syncs in a row.
+    # local to the sync and re-lands nothing else. The standing configuration
+    # since 2026-09-26 is the dispatcher node's labels — the farm's
+    # queue-cancel loop starved three scheduled syncs in a row before that.
     runs-on: ${{ fromJSON(vars.SYNC_RUNNER || '["self-hosted","linux","x64","local"]') }}
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - name: Trigger ci_infra mirror sync on CNB and wait
+      - name: Sync the mirrors inline (GitHub fetch → direct CNB push)
         env:
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           GH_READ_PAT: ${{ secrets.GH_READ_PAT }}
+          # cnb.cool must go DIRECT (the daemon proxy serves it at ~13KB/s);
+          # github.com keeps riding the env proxy. Scoped no_proxy splits the
+          # two paths; GIT_CONFIG_COUNT=0 below bypasses only the runner's
+          # insteadOf rewrite to stale local bare mirrors.
+          NO_PROXY: cnb.cool,api.cnb.cool
         run: |
-          python3 - <<'PYEOF'
-          import json, os, sys, time, urllib.request
-
-          tok = os.environ.get("CNB_TOKEN", "")
-          pat = os.environ.get("GH_READ_PAT", "")
-          if not tok or not pat:
-              print("FATAL: CNB_TOKEN / GH_READ_PAT secrets missing"); sys.exit(1)
-
-          def cnb(url, data=None):
-              req = urllib.request.Request(url,
-                  data=json.dumps(data).encode() if data is not None else None,
-                  headers={"Authorization": "Bearer " + tok,
-                           "Content-Type": "application/json",
-                           "Accept": "application/vnd.cnb.api+json"},
-                  method="POST" if data is not None else "GET")
-              with urllib.request.urlopen(req, timeout=60) as r:
-                  return json.load(r)
-
-          # Overlap guard: skip this cycle if a sync build is already in flight on CNB.
-          # Response shape: {"total": "0", "data": [], "timestamp": ...} (total is a string).
-          try:
-              inflight = cnb("https://api.cnb.cool/celestia-island/ci_infra/-/build/logs"
-                             "?status=in_progress&page=1&page_size=5")
-              n = int(inflight.get("total", 0) or 0)
-              if n > 0 or inflight.get("data"):
-                  print(f"{n} in_progress sync build(s) already on CNB — skipping this cycle")
-                  sys.exit(0)
-          except Exception as e:
-              print("overlap preflight failed (proceeding):", e)
-
-          r = cnb("https://api.cnb.cool/celestia-island/ci_infra/-/build/start",
-                  {"event": "api_trigger_sync", "branch": "master",
-                   "title": "scheduled mirror sync", "env": {"GH_READ_PAT": pat}})
-          sn = r["sn"]
-          print("sync sn:", sn, r.get("buildLogUrl", ""))
-
-          deadline = time.time() + 12 * 60
-          while time.time() < deadline:
-              time.sleep(30)
-              try:
-                  st = cnb(f"https://api.cnb.cool/celestia-island/ci_infra/-/build/status/{sn}")["status"]
-              except Exception as e:
-                  print("poll error (continuing):", e)
-                  continue
-              print("status:", st)
-              if st in ("success", "error", "cancel"):
-                  print("FINAL:", st)
-                  sys.exit(0 if st == "success" else 1)
-          print("sync still running past 12min; leaving it running, check CNB build logs")
-          PYEOF
+          set -u
+          REPOS="shittim-chest entelecheia arona malkuth plana hikari kirino evernight celestia-devtools evernight-appliance celestia-integration akivili hifumi cherino kei noa yuuka"
+          BASE="${RUNNER_TEMP:-/tmp}/cnb-mirrors"
+          mkdir -p "$BASE"
+          fail=0
+          cutoff=$(date -d '2 hours ago' +%s)
+          for r in $REPOS; do
+            m="$BASE/$r.git"
+            gh_url="https://langyo:${GH_READ_PAT}@github.com/celestia-island/$r.git"
+            cnb_url="https://cnb:${CNB_TOKEN}@cnb.cool/celestia-island/$r.git"
+            # Seed the bare clone from the CNB mirror (direct, fast); fall back
+            # to GitHub for a repo the mirror does not carry yet.
+            if [ ! -d "$m" ]; then
+              GIT_CONFIG_COUNT=0 git clone -q --bare "$cnb_url" "$m" 2>/dev/null \
+                || GIT_CONFIG_COUNT=0 git clone -q --bare "$gh_url" "$m" 2>/dev/null \
+                || { echo "$r: CLONE_FAIL"; fail=1; continue; }
+            fi
+            if ! GIT_CONFIG_COUNT=0 git -C "$m" fetch -q "$gh_url" \
+                 '+refs/heads/master:refs/heads/master' '+refs/tags/*:refs/tags/*' 2>/dev/null; then
+              echo "$r: FETCH_FAIL"; fail=1; continue
+            fi
+            # Explicit, time-gated head pruning (see header): local delete then
+            # a per-ref remote delete; a rejected remote delete is tolerated
+            # (the ref may already be gone on the mirror).
+            stale=$(GIT_CONFIG_COUNT=0 git -C "$m" for-each-ref \
+              --format='%(refname) %(committerdate:unix)' refs/heads \
+              | awk -v c="$cutoff" '$1 != "refs/heads/master" && $2 < c {print $1}')
+            for ref in $stale; do
+              git -C "$m" update-ref -d "$ref"
+              GIT_CONFIG_COUNT=0 git -C "$m" push -q "$cnb_url" --delete "$ref" 2>/dev/null \
+                || echo "$r: stale-ref delete rejected ($ref) — tolerated"
+            done
+            if ! GIT_CONFIG_COUNT=0 git -C "$m" push -q "$cnb_url" \
+                 '+refs/heads/master:refs/heads/master' '+refs/tags/*:refs/tags/*' 2>/dev/null; then
+              echo "$r: PUSH_FAIL"; fail=1; continue
+            fi
+            local_master=$(git -C "$m" rev-parse refs/heads/master 2>/dev/null || echo none)
+            if [ "$local_master" != "none" ] \
+               && GIT_CONFIG_COUNT=0 git ls-remote "$cnb_url" refs/heads/master 2>/dev/null | grep -q "$local_master"; then
+              echo "$r: OK ${local_master:0:10}"
+            else
+              echo "$r: MASTER_MISMATCH"; fail=1
+            fi
+          done
+          echo "SYNC_DONE fail=$fail"
+          exit $fail
