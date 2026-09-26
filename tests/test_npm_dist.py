@@ -1,6 +1,7 @@
 """Tests for the npm-dist generator (npm/packager.py + npm/dist.py)."""
 
 import json
+import shutil
 import subprocess
 import sys
 
@@ -15,8 +16,11 @@ from celestia_devtools.npm.packager import (
 from celestia_devtools.npm.platforms import PLATFORMS, find_platform
 from celestia_devtools.npm.dist import main as dist_main
 
+# shutil.which, not a probe run: a missing binary raises FileNotFoundError
+# AT COLLECTION (round-18: this took the whole devtools CI pytest job down
+# on node-less runners) — which() never executes anything.
 _HAS_NODE = pytest.mark.skipif(
-    subprocess.run(["node", "--version"], capture_output=True).returncode != 0,
+    shutil.which("node") is None,
     reason="node not available to validate generated JS syntax",
 )
 
