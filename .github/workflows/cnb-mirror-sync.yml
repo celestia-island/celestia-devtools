@@ -23,7 +23,13 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: [self-hosted, linux, x64, local]
+    # Lane escape hatch, same pattern as the lint callee's runner resolution:
+    # the farm labels stay the default, and an operator can re-lane the sync
+    # through the SYNC_RUNNER repository variable without a tree edit. `vars`
+    # resolves against THIS repository (celestia-devtools), so the flip is
+    # local to the sync and re-lands nothing else. Needed because the farm's
+    # queue-cancel loop starved three scheduled syncs in a row.
+    runs-on: ${{ fromJSON(vars.SYNC_RUNNER || '["self-hosted","linux","x64","local"]') }}
     timeout-minutes: 15
     steps:
       - name: Trigger ci_infra mirror sync on CNB and wait

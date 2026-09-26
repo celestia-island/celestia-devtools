@@ -455,7 +455,9 @@ class TestBuildPoolFallbackGate:
         """The production shape: the repo IS in DEV_QUOTA (WATCHED == DEV_QUOTA) and its
         workspace start fails, so the spill would fall through to the build lane. Scoping the
         build gate to repos *outside* DEV_QUOTA survived the suite and would spend build
-        core-hours above the line (found by the round-A verifier)."""
+        core-hours above the line (found by the round-A verifier). The failed ws attempt
+        lands on the `_failed` blacklist: with the gate deferring too, nothing else would
+        be recorded and the census would re-offer the run every poll."""
         built = []
         monkeypatch.setattr(dsp, "cnb_api",
                             lambda path, data=None: (built.append(path), {"sn": "sn-build"})[1])
@@ -467,8 +469,10 @@ class TestBuildPoolFallbackGate:
         monkeypatch.setattr(dsp, "charge_volume",
                             lambda: ledger(dev_hours=1.0, build_hours=dsp.BUILD_CAP_H * 0.71))
         result, state = spill(repo="hikari", run_id=77)
-        assert result is False and state == {} and built == [], \
+        assert result is False and built == [], \
             "a dev-lane fallback must not spend build core-hours above the line"
+        assert set(state) == {"_failed"} and "77" not in state, \
+            "no spill record, but the failed attempt is blacklisted"
 
     def test_the_real_fallback_from_a_dev_lane_repo_still_works_below_the_line(
             self, monkeypatch, ws_env):

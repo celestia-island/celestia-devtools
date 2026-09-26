@@ -74,6 +74,11 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
+      # The dispatched "Resolve the pull request" step calls
+      # gh api .../pulls/N; with only contents:read the GitHub App token
+      # answers 403 "Resource not accessible by integration" (observed live on
+      # the CNB dispatch path), so the PR lookup needs this grant too.
+      pull-requests: read
     steps:
       - name: Lane
         run: echo "commit-message lint served by lane ${{ inputs.lane || vars.LINT_LANE || 'hosted' }} on ${{ join(fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]'), ', ') }}"

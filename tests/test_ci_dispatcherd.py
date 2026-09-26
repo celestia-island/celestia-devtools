@@ -987,9 +987,11 @@ def test_resolve_falls_back_to_the_target_repo_for_legacy_records(monkeypatch):
     assert polled == ["/celestia-island/hikari/-/build/status/sn-legacy"]
 
 
-def test_ws_success_reports_and_cancels_on_the_target_repo(monkeypatch):
+def test_ws_success_reports_and_keeps_the_farm_run_by_default(monkeypatch):
     """The verdict belongs to the target repo's SHA even though the workspace ran on the host:
-    posting to the host (or cancelling there) would be invisible where it matters."""
+    posting to the host (or cancelling there) would be invisible where it matters. The queued
+    farm run is KEPT: the empty default allowlist means nothing is spill-covered (2026-09-26:
+    the old rule cancelled a queued P0 Ledger Gate run the spill never executes)."""
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
         "status": "success",
         "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "success"}]}}})
@@ -998,7 +1000,9 @@ def test_ws_success_reports_and_cancels_on_the_target_repo(monkeypatch):
     monkeypatch.setattr(dsp, "log", lambda *_: None)
     stopped, posted, gh = [], [], []
     monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
-    monkeypatch.setattr(dsp, "post_status", lambda repo, sha, state_, url: posted.append((repo, sha, state_)))
+    monkeypatch.setattr(dsp, "post_status",
+                        lambda repo, sha, state_, url, task="cargo-check":
+                            posted.append((repo, sha, state_, task)))
 
     def fake_gh(path, data=None, method=None):
         gh.append((path, method))
@@ -1008,11 +1012,46 @@ def test_ws_success_reports_and_cancels_on_the_target_repo(monkeypatch):
     state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
                       "sha": "a" * 40, "url": "u", "since": 999_999.0}}
     dsp.resolve(state)
-    assert posted == [("hikari", "a" * 40, "success")]
+    assert posted == [("hikari", "a" * 40, "success", "cargo-check")]
     assert stopped == ["sn-1"]
-    assert gh == [("/repos/celestia-island/hikari/actions/runs/4242", None),
-                  ("/repos/celestia-island/hikari/actions/runs/4242/cancel", "POST")]
+    # Run looked up; nothing cancelled (no allowlist entry, no workflow id).
+    assert gh == [("/repos/celestia-island/hikari/actions/runs/4242", None)]
     assert state["_recent"]["a" * 40] == 1_000_000.0
+
+
+def test_ws_success_cancels_only_an_allowlisted_workflow(monkeypatch):
+    """An operator who verified the spill covers a workflow lists it in
+    DISPATCH_CANCELABLE; only then does a green spill cancel the queued run."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "success",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "success"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: None)
+    monkeypatch.setattr(dsp, "post_status", lambda *a, **k: None)
+    saved = dict(dsp.CANCELABLE)
+    try:
+        dsp.CANCELABLE.clear()
+        dsp.CANCELABLE["hikari"] = [".github/workflows/fuzz.yml"]
+        gh = []
+
+        def fake_gh(path, data=None, method=None):
+            gh.append((path, method))
+            if path.endswith("/workflows/77"):
+                return {"path": ".github/workflows/fuzz.yml"}
+            if method is None:
+                return {"status": "queued", "workflow_id": 77}
+            return {}
+
+        monkeypatch.setattr(dsp, "gh_api", fake_gh)
+        state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
+                          "sha": "a" * 40, "url": "u", "since": 999_999.0}}
+        dsp.resolve(state)
+        assert ("/repos/celestia-island/hikari/actions/runs/4242/cancel", "POST") in gh
+    finally:
+        dsp.CANCELABLE.clear()
+        dsp.CANCELABLE.update(saved)
 
 
 def test_ws_failure_keeps_the_farm_run(monkeypatch):
@@ -1028,12 +1067,13 @@ def test_ws_failure_keeps_the_farm_run(monkeypatch):
     stopped, posted, gh = [], [], []
     monkeypatch.setattr(dsp, "ws_stop", lambda sn: stopped.append(sn))
     monkeypatch.setattr(dsp, "post_status",
-                        lambda repo, sha, state_, url: posted.append((repo, sha, state_)))
+                        lambda repo, sha, state_, url, task="cargo-check":
+                            posted.append((repo, sha, state_, task)))
     monkeypatch.setattr(dsp, "gh_api", lambda path, data=None, method=None: gh.append((path, method)))
     state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
                       "sha": "a" * 40, "url": "u", "since": 999_999.0}}
     dsp.resolve(state)
-    assert posted == [("hikari", "a" * 40, "failure")]
+    assert posted == [("hikari", "a" * 40, "failure", "cargo-check")]
     assert gh == []                       # no run lookup, no cancel
     assert stopped == ["sn-1"]
     assert "4242" not in state
@@ -1110,3 +1150,208 @@ def test_grace_release_never_posts_a_green(monkeypatch):
     assert posted == [] and gh == []          # nothing claimed, nothing cancelled
     assert stopped == ["sn-1"] and "7" not in state
     assert state["_recent"]["a" * 40] == now  # and not re-spilled immediately
+
+
+# ── spill-failure blacklist ───────────────────────────────────────────────────────
+
+
+def test_note_failure_blacklist_write_expiry_and_prune(monkeypatch):
+    """(repo, sha) semantics: scoped per repo and per sha, expiring after
+    FAILED_TTL_SEC, and pruned alongside `_recent` by the next bookkeeping write."""
+    monkeypatch.setattr(dsp, "time", type("T", (), {"time": staticmethod(lambda: 10_000.0)}))
+    st = {}
+    assert dsp.failed_cooldown(st, "hikari", "a" * 40) is None
+    dsp.note_failure(st, "hikari", "a" * 40)
+    left = dsp.failed_cooldown(st, "hikari", "a" * 40)
+    assert left is not None and 0 < left <= dsp.FAILED_TTL_SEC
+    assert dsp.failed_cooldown(st, "hikari", "b" * 40) is None   # sha-scoped
+    assert dsp.failed_cooldown(st, "plana", "a" * 40) is None    # repo-scoped
+    # expiry: once the cooldown window passes, the run is offered again
+    st["_failed"][f"hikari:{'a' * 40}"] = 10_000.0 - dsp.FAILED_TTL_SEC - 1
+    assert dsp.failed_cooldown(st, "hikari", "a" * 40) is None
+    # prune: an expired entry is dropped by the next write to either map
+    dsp.remember(st, "c" * 40)
+    assert f"hikari:{'a' * 40}" not in st["_failed"]
+    assert st["_recent"]["c" * 40] == 10_000.0
+
+
+def test_ws_spill_failure_blacklists_before_the_fallback(monkeypatch):
+    """The chest scenario: a merge-tree conflict fails the ws-spill, the fallback
+    may still land, but the (repo, sha) pair must be blacklisted in the same state
+    object either way — nothing used to be recorded on failure, so the census
+    re-offered the same run every poll (285 futile attempts / 72 h)."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    err = _called_process_error_with_cred_urls()
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror",
+                        lambda repo, sha: (_ for _ in ()).throw(err))
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-build"})
+    state = {}
+    dsp.spill({"repo": "shittim-chest", "run_id": 91, "sha": "b" * 40}, state)
+    assert dsp.failed_cooldown(state, "shittim-chest", "b" * 40) is not None
+    assert state["91"]["mode"] == "build"  # the fallback still ran for THIS attempt
+
+
+def test_build_lane_dispatch_failure_blacklists_and_defers(monkeypatch):
+    """A build-lane POST error used to escape spill() into main()'s loop-error
+    catch: no record, no remember(), census re-offer next poll. It must blacklist
+    and defer (return False) like every other nothing-started path."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror",
+                        lambda repo, sha: (_ for _ in ()).throw(RuntimeError("merge-tree conflict")))
+
+    def boom(path, data=None):
+        raise RuntimeError("cnb unreachable")
+
+    monkeypatch.setattr(dsp, "cnb_api", boom)
+    state = {}
+    ret = dsp.spill({"repo": "hikari", "run_id": 92, "sha": "c" * 40}, state)
+    assert ret is False                       # deferred: no batch budget spent
+    assert "92" not in state                  # no record: the farm run stays queued
+    assert dsp.failed_cooldown(state, "hikari", "c" * 40) is not None
+
+
+def _blacklist_loop(monkeypatch, entries, state):
+    """main() one-poll harness with log capture; sleep raises to stop the loop."""
+    class _Stop(BaseException):
+        pass
+
+    monkeypatch.setattr(dsp, "THRESHOLD", 0)
+    monkeypatch.setattr(dsp, "GH", "g")
+    monkeypatch.setattr(dsp, "CNB", "c")
+    monkeypatch.setattr(dsp, "FETCH", "f")
+    monkeypatch.setattr(dsp, "CNB_WS", "w")
+    monkeypatch.setattr(dsp, "load_state", lambda: state)
+    monkeypatch.setattr(dsp, "census", lambda: entries)
+    monkeypatch.setattr(dsp, "save_state", lambda st: None)
+    monkeypatch.setattr(dsp, "resolve", lambda st: None)
+    logs, spilled = [], []
+    monkeypatch.setattr(dsp, "log", logs.append)
+    monkeypatch.setattr(dsp, "spill",
+                        lambda entry, st: spilled.append(entry["run_id"]))
+    monkeypatch.setattr(dsp, "time", type("T", (), {
+        "sleep": staticmethod(lambda s: (_ for _ in ()).throw(_Stop())),
+        "time": staticmethod(lambda: 0.0)}))
+    return logs, spilled, _Stop
+
+
+def test_blacklisted_run_is_skipped_with_one_line_and_no_spill(monkeypatch):
+    """The consult sits in the batch loop BEFORE spill() — hence before
+    ensure_sha_on_mirror — and costs one skip line instead of a doomed spill."""
+    sha = "b" * 40
+    entries = [{"repo": "hikari", "run_id": 93, "sha": sha}]
+    # the loop clock sits at t=0, so -60 means "failed a minute ago"
+    state = {"_failed": {f"hikari:{sha}": -60.0}}
+    logs, spilled, stop = _blacklist_loop(monkeypatch, entries, state)
+    with pytest.raises(stop):
+        dsp.main()
+    assert spilled == []
+    skips = [m for m in logs if "skipping recently-failed spill" in m]
+    assert len(skips) == 1, f"expected exactly one skip line, got {skips}"
+    assert f"hikari/{sha[:10]}" in skips[0] and "retry in" in skips[0]
+
+
+def test_blacklist_expiry_re_offers_the_run(monkeypatch):
+    """After FAILED_TTL_SEC the same run is spillable again — master moved, the
+    deterministic conflict may have dissolved."""
+    sha = "b" * 40
+    entries = [{"repo": "hikari", "run_id": 94, "sha": sha}]
+    state = {"_failed": {f"hikari:{sha}": -dsp.FAILED_TTL_SEC - 1.0}}
+    logs, spilled, stop = _blacklist_loop(monkeypatch, entries, state)
+    with pytest.raises(stop):
+        dsp.main()
+    assert spilled == [94]
+    assert not any("skipping recently-failed" in m for m in logs)
+
+
+# ── per-task status contexts ──────────────────────────────────────────────────────
+
+
+def test_post_status_context_names_the_task(monkeypatch):
+    """cargo repos keep cnb/cargo-check byte-identical; python/webui repos stop
+    posting a misleading cargo context; a task-less call keeps the legacy default."""
+    posted = []
+    monkeypatch.setattr(dsp, "gh_api",
+                        lambda path, data=None, method=None: (posted.append(data), {})[1])
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    dsp.post_status("arona", "a" * 40, "success", "https://example.invalid/x", "webui-check")
+    dsp.post_status("celestia-devtools", "a" * 40, "success", "https://example.invalid/x",
+                    "python-check")
+    dsp.post_status("hikari", "a" * 40, "success", "https://example.invalid/x")
+    assert [d["context"] for d in posted] == ["cnb/webui-check", "cnb/python-check",
+                                              "cnb/cargo-check"]
+
+
+def test_spill_records_carry_the_task(monkeypatch):
+    """Without the task on the record, resolve() cannot know which check the
+    verdict belongs to and posts the wrong context."""
+    monkeypatch.setattr(dsp, "CNB_WS", "ws-present")
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ensure_sha_on_mirror", lambda r, sha: "e" * 40)
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha, host=None: ("spill/x", True))
+    monkeypatch.setattr(dsp, "ws_start", lambda r, ref: {"sn": "sn-ws"})
+    state = {}
+    dsp.spill({"repo": "celestia-devtools", "run_id": 95, "sha": "b" * 40}, state)
+    assert state["95"]["task"] == "python-check"
+    # build-lane records carry it too (the fallback inherits the same task)
+    monkeypatch.setattr(dsp, "publish_lane_ref",
+                        lambda r, sha, host=None: (_ for _ in ()).throw(RuntimeError("no lane")))
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {"sn": "sn-b"})
+    dsp.spill({"repo": "evernight-appliance", "run_id": 96, "sha": "c" * 40}, state)
+    assert state["96"]["task"] == "webui-check"
+
+
+def test_resolve_posts_the_status_under_the_records_task(monkeypatch):
+    """Records written before the deploy carry no task and must resolve under the
+    historical cargo-check context; new records post under their own task."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "error",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "error"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    monkeypatch.setattr(dsp, "ws_stop", lambda sn: None)
+    posted = []
+    monkeypatch.setattr(dsp, "post_status",
+                        lambda repo, sha, state_, url, task="cargo-check":
+                            posted.append((repo, task, state_)))
+    state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "s1",
+                      "repo": "celestia-devtools", "sha": "a" * 40, "url": "u",
+                      "since": 999_999.0, "task": "python-check"},
+             "4243": {"mode": "ws", "host": "ci-infra-hikari", "sn": "s2", "repo": "hikari",
+                      "sha": "b" * 40, "url": "u", "since": 999_999.0}}  # legacy: no task
+    dsp.resolve(state)
+    assert posted == [("celestia-devtools", "python-check", "failure"),
+                      ("hikari", "cargo-check", "failure")]
+
+
+def test_load_state_initialises_the_blacklist_beside_recent(tmp_path, monkeypatch):
+    """A state.json written by the previous daemon has no `_failed`; the next load
+    must gain an empty one (and a corrupt/missing file both bookkeeping maps)."""
+    monkeypatch.setattr(dsp, "STATE_PATH", str(tmp_path / "state.json"))
+    assert dsp.load_state() == {"_recent": {}, "_failed": {}}
+    dsp.save_state({"_recent": {"a": 1.0},
+                    "42": {"mode": "build", "sn": "x", "repo": "arona", "sha": "b",
+                           "url": "", "since": 0.0}})
+    legacy = dsp.load_state()
+    assert legacy["_failed"] == {} and legacy["_recent"] == {"a": 1.0} and "42" in legacy
+
+
+def test_resolve_and_census_ignore_the_failed_bookkeeping_dict(monkeypatch):
+    """`_failed` rides in the same state dict as run records; every iterating
+    site must skip underscore keys or resolve() dies on t['repo'] (and the whole
+    loop with it — the exception escapes to main's loop-error catch)."""
+    monkeypatch.setattr(dsp, "cnb_api", lambda path, data=None: {
+        "status": "running",
+        "pipelinesStatus": {"p1": {"stages": [{"name": dsp.WS_CHECK_STAGE, "status": "running"}]}}})
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: None),
+                                                    "time": staticmethod(lambda: 1_000_000.0)}))
+    monkeypatch.setattr(dsp, "log", lambda *_: None)
+    state = {"_recent": {}, "_failed": {f"hikari:{'a' * 40}": 999_999.0},
+             "7": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-1", "repo": "hikari",
+                   "sha": "a" * 40, "url": "", "since": 999_999.5}}
+    dsp.resolve(state)                       # must survive the bookkeeping dict
+    assert "7" in state
+    assert dsp.busy_hosts(state) == {"ci-infra-hikari"}
+    assert dsp.failed_cooldown(state, "hikari", "a" * 40, now=1_000_000.0) is not None
