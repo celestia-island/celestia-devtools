@@ -9,6 +9,13 @@ a unified repository silently reverted it, and a draft PR flipped to "ready for 
 produced no lint run at all — the §8.3.6 deadlock: the required check never appears and
 the merge is refused. A template nobody compares against the fleet is a regression vector,
 so these tests fail the moment the constant drifts.
+
+*2026-09-26 lane migration:* the canonical bytes became the lane-carrying form
+(1170 B, sha256 ``620d511f…``, byte-identical to the shittim-chest production caller
+that already serves the check through ``vars.LINT_RUNNER``/``vars.LINT_LANE``). The
+pre-lane 273 B bytes live on as ``WORKFLOW_COMMIT_LINT_LEGACY`` — the audit reports
+them as a *warning* so the fleet can regenerate repo by repo instead of going 38-red
+in one wave. These tests pin both constants, and pin that they stay distinct.
 """
 
 from __future__ import annotations
@@ -21,13 +28,18 @@ import yaml
 from celestia_devtools.repo.init import (
     WORKFLOW_CI_CACHE,
     WORKFLOW_COMMIT_LINT,
+    WORKFLOW_COMMIT_LINT_LEGACY,
     WORKFLOW_PR_TITLE_CHECK,
     _ensure_workflows,
 )
 
-#: sha256 of the canonical caller shipped in every celestia-island repository.
-CANONICAL_SHA256 = "106a93d0ca2bb1db223ef0fc82b72a53a58ea0ebcbd44bbd2eb8539be8b27342"
-CANONICAL_BYTES = 273
+#: sha256 of the canonical (lane-carrying) caller shipped in celestia-island repositories.
+CANONICAL_SHA256 = "620d511f256c4b73522b75beecc33509aa1401d2ca808efacde866b03126f75f"
+CANONICAL_BYTES = 1170
+
+#: The pre-lane canonical (2026-09-15 → 2026-09-26): audit-only migration marker.
+LEGACY_SHA256 = "106a93d0ca2bb1db223ef0fc82b72a53a58ea0ebcbd44bbd2eb8539be8b27342"
+LEGACY_BYTES = 273
 
 
 def _on(doc):
@@ -43,8 +55,36 @@ class TestCanonicalBytes:
         assert len(WORKFLOW_COMMIT_LINT.encode()) == CANONICAL_BYTES
 
     def test_template_ends_with_a_single_newline(self):
-        assert WORKFLOW_COMMIT_LINT.endswith("master\n")
+        assert WORKFLOW_COMMIT_LINT.endswith("pr: ${{ inputs.pr }}\n")
         assert not WORKFLOW_COMMIT_LINT.endswith("\n\n")
+
+
+class TestLegacyBytes:
+    """The pre-lane template: the audit's migration marker, frozen on purpose.
+
+    ``_canonical_caller_findings`` reports exactly these bytes as a warning, so a
+    stray edit to the legacy constant would silently re-classify the un-migrated
+    fleet as hand-edited (error) — or worse, make legacy equal canonical and kill
+    the migration signal entirely.
+    """
+
+    def test_legacy_hashes_to_the_historical_file(self):
+        assert (
+            hashlib.sha256(WORKFLOW_COMMIT_LINT_LEGACY.encode()).hexdigest()
+            == LEGACY_SHA256
+        )
+
+    def test_legacy_length_is_the_pre_lane_fleet(self):
+        assert len(WORKFLOW_COMMIT_LINT_LEGACY.encode()) == LEGACY_BYTES
+
+    def test_legacy_is_distinct_from_canonical(self):
+        assert WORKFLOW_COMMIT_LINT != WORKFLOW_COMMIT_LINT_LEGACY
+
+    def test_canonical_carries_the_lane_passthrough(self):
+        """The whole point of the migration: canonical must express the lane vars."""
+        assert "vars.LINT_RUNNER" in WORKFLOW_COMMIT_LINT
+        assert "vars.LINT_LANE" in WORKFLOW_COMMIT_LINT
+        assert "vars.LINT_RUNNER" not in WORKFLOW_COMMIT_LINT_LEGACY
 
 
 class TestTriggerShape:
@@ -81,10 +121,14 @@ class TestTriggerShape:
 
 
 class TestCallerJobShape:
-    def test_job_carries_only_uses(self):
-        """A caller job accepts nine keys; anything else makes the whole file invalid."""
+    def test_job_carries_only_uses_and_with(self):
+        """A caller job accepts nine legal keys; this one uses ``uses`` + ``with``.
+
+        The ``with`` block is the lane passthrough (2026-09-26): anything else —
+        ``timeout-minits`` in particular — makes the whole file invalid.
+        """
         job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
-        assert list(job) == ["uses"]
+        assert list(job) == ["uses", "with"]
 
     def test_job_has_no_timeout_minutes(self):
         """The key is illegal on ``uses:`` jobs — GitHub then runs zero jobs (§8.1)."""
@@ -96,6 +140,30 @@ class TestCallerJobShape:
         assert job["uses"] == (
             "celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master"
         )
+
+
+class TestLanePassthrough:
+    """The 2026-09-26 canonical additions: dispatch fallback + lane variables.
+
+    Without these, moving the single required check off the (broken) hosted lane
+    required editing every repository's tree — the W-2 "one lane of rescue" defect.
+    """
+
+    def test_workflow_dispatch_declares_required_pr_input(self):
+        dispatch = _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["workflow_dispatch"]
+        assert dispatch["inputs"]["pr"]["required"] is True
+
+    def test_runner_defaults_to_hosted_and_reads_the_repo_variable(self):
+        job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
+        assert job["with"]["runner"] == "${{ vars.LINT_RUNNER || '[\"ubuntu-latest\"]' }}"
+
+    def test_lane_defaults_to_hosted_and_reads_the_repo_variable(self):
+        job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
+        assert job["with"]["lane"] == "${{ vars.LINT_LANE || 'hosted' }}"
+
+    def test_pr_passthrough_feeds_the_dispatch_fallback(self):
+        job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
+        assert job["with"]["pr"] == "${{ inputs.pr }}"
 
 
 class TestGeneratedFile:

@@ -40,8 +40,9 @@ jobs:
         # mirror sync) when it already knows the command. Otherwise clone
         # celestia-devtools@master and run the module directly with
         # PYTHONPATH=src — deterministic, no build dependencies. Drift always
-        # fails the job; CHANGELOG warnings are non-fatal unless the caller
-        # opts into --strict. The checked-out repo is the target.
+        # fails the job (CHANGELOG.md is deliberately not consulted: the org
+        # bans maintained changelogs, squashed PRs are the changelog). The
+        # checked-out repo is the target.
         run: |
           if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
             echo "Using preinstalled celestia-devtools: $(command -v celestia-devtools)"
