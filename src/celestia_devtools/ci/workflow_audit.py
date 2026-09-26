@@ -89,7 +89,12 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 # canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
-from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT
+# LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
+# _canonical_caller_findings。
+from celestia_devtools.repo.init import (
+    WORKFLOW_COMMIT_LINT,
+    WORKFLOW_COMMIT_LINT_LEGACY,
+)
 
 try:
     import yaml
@@ -420,12 +425,39 @@ def _calls_shared_commit_lint(jobs: MappingNode) -> bool:
 def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
     """Byte-compare the caller against the template the generator ships.
 
-    Only the committed template counts: ``celestia-devtools init --with-workflows`` writes
-    exactly these bytes, so a divergence means the file was hand-edited (or written by an
-    older generator) and the repository no longer matches the fleet.
+    Three outcomes (2026-09-26, the lane-carrying canonical migration):
+
+    * byte-identical to the canonical template → clean;
+    * byte-identical to the **legacy** pre-lane template → WARNING, the migration
+      path: the file is still generator-owned (not a hand edit), it just lacks
+      the ``vars.LINT_RUNNER``/``vars.LINT_LANE`` passthrough, so moving the
+      required check to the self-hosted farm still requires a tree change —
+      exactly the W-2 single-lane-of-rescue defect. Warnings stay non-fatal so
+      the fleet migrates by regeneration instead of a 38-repo red wave;
+    * anything else → ERROR: hand-edited or from an older generator, and a
+      variant that drops ``ready_for_review``/``synchronize`` stops re-running
+      the required check (the merge then cannot proceed).
     """
     if text == WORKFLOW_COMMIT_LINT:
         return []
+    if text == WORKFLOW_COMMIT_LINT_LEGACY:
+        return [
+            Finding(
+                path=path,
+                line=1,
+                rule=RULE_CALLER_NOT_CANONICAL,
+                severity=SEVERITY_WARNING,
+                message=(
+                    f"this commit-lint caller is the legacy pre-lane template "
+                    f"({len(WORKFLOW_COMMIT_LINT_LEGACY.encode())} bytes); regenerate it with "
+                    f"`celestia-devtools init --with-workflows --force` to gain the "
+                    f"`vars.LINT_RUNNER`/`vars.LINT_LANE` passthrough, so the required check "
+                    f"can be served from the self-hosted farm by setting repository "
+                    f"variables instead of editing this tree"
+                ),
+                excerpt="",
+            )
+        ]
     return [
         Finding(
             path=path,

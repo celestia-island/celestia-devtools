@@ -176,11 +176,51 @@ def main() -> int:
     return 0
 
 
-# 规范形态（canonical）：全 org 42 个 caller **逐字节**相同，改这里等于改全部仓的模板。
+# 规范形态（canonical）：全 org caller **逐字节**相同，改这里等于改全部仓的模板。
 # 2026-09-15：此前这里缺 `ready_for_review`，导致 `init --force --with-workflows` 会把
 # 已统一的仓退回旧变体，而缺该类型正是 §8.3.6 的死锁形态（draft 转 ready 不触发 lint
 # ⇒ 必需 check 不出现 ⇒ 合并被判 BLOCKED）。模板变更必须同步 tests/test_caller_template.py 的钉死用例。
+# 2026-09-26（S5-4/W-2 批次 2①）：canonical 采纳车道透传形态（= shittim-chest 已在生产
+# 验证的 caller 字节）。此前 canonical 不表达车道 ⇒ hosted 额度失效时想切自托管只能改
+# 每个仓的树；现在设 repo 变量 `LINT_RUNNER`/`LINT_LANE` 即可无树切换，且「私仓 hosted
+# 绕行 vs 模板合规」的互斥解除。旧 273B 字节保留为 LEGACY（audit 降级 warning，见
+# workflow_audit._canonical_caller_findings），存量仓用 `init --with-workflows --force` 渐进迁移。
 WORKFLOW_COMMIT_LINT = """\
+name: Commit Message Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+  # Fallback entry for the CNB lane (or an operator): dispatch this workflow on
+  # the pull request's head branch, so the single required check is served by
+  # the lane that can actually run. See the devtools callee for the lane rules.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to lint"
+        required: true
+        type: string
+
+jobs:
+  lint-commits:
+    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
+    with:
+      # Lane switch without touching this tree: set the repository variable to
+      # '["self-hosted","linux","x64","local"]' to serve the check from the farm
+      # (e.g. while the hosted-lane quota for private repos is broken), or clear
+      # it to go back to hosted. GitHub requires every check run with this name
+      # to succeed, so only one lane reports at a time.
+      runner: ${{ vars.LINT_RUNNER || '["ubuntu-latest"]' }}
+      lane: ${{ vars.LINT_LANE || 'hosted' }}
+      pr: ${{ inputs.pr }}
+"""
+
+#: 2026-09-15–2026-09-26 期间的旧 canonical（273 B，sha256 106a93d0…）：仅作审计的
+#: 迁移判据——等于它 ⇒ warning（缺车道变量，请再生成）；等于新 canonical ⇒ 干净；
+#: 其它 ⇒ error（手改漂移）。新模板落地后**不得**再写这个形态。
+WORKFLOW_COMMIT_LINT_LEGACY = """\
 name: Commit Message Lint
 
 on:

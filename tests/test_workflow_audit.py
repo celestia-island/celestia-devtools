@@ -25,7 +25,7 @@ import json
 
 import pytest
 
-from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT
+from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY
 from celestia_devtools.ci import workflow_audit
 from celestia_devtools.ci.workflow_audit import (
     CALLER_LEGAL_KEYS,
@@ -1003,6 +1003,31 @@ class TestCanonicalCaller:
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 0
         assert _findings(capsys)["findings"] == []
+
+    def test_legacy_caller_warns_but_does_not_fail(self, tmp_path, monkeypatch, capsys):
+        """2026-09-26 迁移路径：旧 273B 模板 = warning（非 error）。
+
+        38 个未迁移仓在 canonical 车道化之后必须保持可合并——否则一次模板升级
+        就把全群打成 38 红（红色常驻的门禁必然被忽略）。变异哨兵：把本函数的
+        severity 断言改成 error、或把 _canonical_caller_findings 的 LEGACY 分支
+        删掉，本用例变红。
+        """
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT_LEGACY, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0  # warnings alone keep the gate green
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["severity"] == "warning"
+        assert "legacy pre-lane template" in finding["message"]
+        assert "vars.LINT_RUNNER" in finding["message"]
+        assert report["summary"]["warnings"] == 1
+        assert report["summary"]["failed"] is False
+
+    def test_legacy_caller_fails_under_strict(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT_LEGACY, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", "--strict"]) == 1
 
     def test_missing_ready_for_review_is_reported(self, tmp_path, monkeypatch, capsys):
         drifted = WORKFLOW_COMMIT_LINT.replace(

@@ -4,7 +4,12 @@
 A celestia-island repo may carry **two independent version lines** (e.g. hikari:
 Rust crates at ``0.3.19`` and the Vue/npm port at ``0.4.5``).  ``verify-versions``
 gates against *drift* — a package in one track silently diverging from that
-track's baseline — and warns when the changelog top entry lags behind both.
+track's baseline.
+
+(2026-09-26) The former CHANGELOG.md rule is gone: the org bans maintained
+changelogs outright (squashed PRs are the changelog), so consulting one both
+endorsed a banned file and could never fire on a compliant repository. A stale
+``CHANGELOG.md`` is now simply ignored.
 
 Rules
 -----
@@ -22,10 +27,7 @@ Rules
     (publishable) packages wins.  Any ``package.json`` whose ``version`` differs
     is DRIFT — ``private: true`` packages are included in the comparison (their
     versions must still agree).
-3.  **CHANGELOG.md** — the topmost version heading (e.g. ``## [v0.3.14]``) must
-    match at least one track's baseline, otherwise WARN (not a failure by
-    default).  ``--strict`` escalates that warning to a failure.
-4.  **Exemptions** — an optional ``.versions.toml`` overrides the baselines and
+3.  **Exemptions** — an optional ``.versions.toml`` overrides the baselines and
     skips whole packages::
 
         [track]
@@ -38,13 +40,13 @@ Rules
         [exempt.npm]
         "packages/theme" = "vendored fork"
 
-5.  **Output** — a human-readable drift table (package → actual → expected →
+4.  **Output** — a human-readable drift table (package → actual → expected →
     suggestion); exit 1 when drift is present, exit 0 otherwise.  ``--json``
     emits the same report as machine-readable JSON.
 
 Usage::
 
-    celestia-devtools verify-versions [REPO] [--json] [--strict]
+    celestia-devtools verify-versions [REPO] [--json]
 """
 
 from __future__ import annotations
@@ -52,7 +54,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
@@ -78,14 +79,6 @@ _SKIP_DIRS = frozenset(
 # ``exclude = ["examples/*"]`` convention).
 _EXAMPLE_SEGMENT = "examples"
 
-# Topmost version heading in a Keep-a-Changelog style file.  ``## [v0.3.14]``,
-# ``## [0.2.10] - date`` and ``## 1.2.3`` are recognised; ``[Unreleased]`` and
-# prose headings ("Version lines", "Changelog") are skipped because they carry
-# no version number.
-_CHANGELOG_VERSION_RE = re.compile(
-    r"^\s*#{1,6}\s+\[?([vV]?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?)"
-)
-
 
 @dataclass
 class Drift:
@@ -106,8 +99,6 @@ class VerifyResult:
     cargo_base: Optional[str] = None
     npm_base: Optional[str] = None
     drifts: List[Drift] = field(default_factory=list)
-    changelog_version: Optional[str] = None
-    changelog_warning: bool = False
 
     @property
     def has_drift(self) -> bool:
@@ -130,10 +121,6 @@ class VerifyResult:
             "repo": self.repo,
             "cargo": {"base": self.cargo_base, "drifts": _drift_dict("cargo")},
             "npm": {"base": self.npm_base, "drifts": _drift_dict("npm")},
-            "changelog": {
-                "version": self.changelog_version,
-                "warning": self.changelog_warning,
-            },
         }
 
 
@@ -325,23 +312,6 @@ def collect_npm_drifts(
     return drifts
 
 
-# ── CHANGELOG track ──────────────────────────────────────────────────────────
-
-
-def detect_changelog_version(repo: Path) -> Optional[str]:
-    """Return the topmost version heading from ``CHANGELOG.md`` (normalised)."""
-    changelog = repo / "CHANGELOG.md"
-    try:
-        lines = changelog.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    for line in lines:
-        match = _CHANGELOG_VERSION_RE.match(line)
-        if match:
-            return _norm_version(match.group(1))
-    return None
-
-
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 
@@ -360,20 +330,11 @@ def verify(repo: Path) -> VerifyResult:
     drifts.extend(collect_npm_drifts(repo, npm_base, exempt.get("npm", set())))
     drifts.sort(key=lambda d: (d.track, d.package))
 
-    changelog_version = detect_changelog_version(repo)
-    changelog_warning = False
-    if changelog_version is not None:
-        baselines = {b for b in (cargo_base, npm_base) if b is not None}
-        if baselines and changelog_version not in baselines:
-            changelog_warning = True
-
     return VerifyResult(
         repo=str(repo),
         cargo_base=cargo_base,
         npm_base=npm_base,
         drifts=drifts,
-        changelog_version=changelog_version,
-        changelog_warning=changelog_warning,
     )
 
 
@@ -409,16 +370,6 @@ def _render_text(result: VerifyResult) -> str:
         detail = f" ({', '.join(summary)})" if summary else ""
         lines.append(f"No version drift detected{detail}.")
 
-    if result.changelog_warning:
-        tracks = []
-        if result.cargo_base is not None:
-            tracks.append(f"cargo ({result.cargo_base})")
-        if result.npm_base is not None:
-            tracks.append(f"npm ({result.npm_base})")
-        lines.append(
-            f"WARN: CHANGELOG.md top version {result.changelog_version} "
-            f"matches neither {' nor '.join(tracks)}."
-        )
     return "\n".join(lines)
 
 
@@ -444,10 +395,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--json", action="store_true",
         help="emit a machine-readable JSON report instead of the drift table",
     )
-    parser.add_argument(
-        "--strict", action="store_true",
-        help="escalate a CHANGELOG version mismatch from a warning to a failure",
-    )
     args = parser.parse_args(argv)
 
     repo = Path(args.repo)
@@ -456,7 +403,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     result = verify(repo)
-    failed = result.has_drift or (args.strict and result.changelog_warning)
+    failed = result.has_drift
 
     if args.json:
         print(_render_json(result, ok=not failed))

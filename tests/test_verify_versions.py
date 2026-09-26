@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from celestia_devtools.repo.verify_versions import main, verify
 
 
@@ -134,22 +136,28 @@ def test_track_override_in_config(tmp_path, capsys):
     assert rc == 0
 
 
-def test_changelog_warning_default_non_fatal(tmp_path, capsys):
+def test_changelog_file_is_ignored(tmp_path, capsys):
+    """2026-09-26：CHANGELOG 规则已按 §4.2（禁维护 CHANGELOG）删除。
+
+    组织规定 squash 后的 PR 历史本身就是 changelog——工具去咨询一个被禁的
+    文件，既endorse 了违规范式、又永远不可能在合规仓上触发。遗留的陈旧
+    CHANGELOG.md 现在必须被完全无视：不告警、不影响退出码。
+    """
     _cargo_workspace(tmp_path)
-    _changelog(tmp_path, "0.3.18")  # mismatched against cargo 0.3.19
+    _changelog(tmp_path, "0.3.18")  # stale on purpose; must not matter
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "WARN" in out
-    assert "0.3.18" in out
+    assert "WARN" not in out
+    assert "0.3.18" not in out
 
 
-def test_changelog_warning_strict_fails(tmp_path, capsys):
+def test_strict_flag_is_gone(tmp_path, capsys):
+    """--strict 只服务于 CHANGELOG 告警；规则删了，旗子也删（未知参数必须报错）。"""
     _cargo_workspace(tmp_path)
-    _changelog(tmp_path, "0.3.18")
-    rc = main([str(tmp_path), "--strict"])
-    assert rc == 1
-    assert "WARN" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        main([str(tmp_path), "--strict"])
+    assert exc.value.code == 2
 
 
 def test_json_output_drift(tmp_path, capsys):
