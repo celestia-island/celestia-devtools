@@ -53,23 +53,42 @@ jobs:
           NO_PROXY: cnb.cool,api.cnb.cool
         run: |
           set -u
+          # Curl lets a lowercase no_proxy (if a runner .env ever sets one)
+          # take precedence over the step's uppercase NO_PROXY — mirror it so
+          # the direct-CNB path cannot be silently re-proxied.
+          export no_proxy="$NO_PROXY"
           REPOS="shittim-chest entelecheia arona malkuth plana hikari kirino evernight celestia-devtools evernight-appliance celestia-integration akivili hifumi cherino kei noa yuuka"
           BASE="${RUNNER_TEMP:-/tmp}/cnb-mirrors"
           mkdir -p "$BASE"
           fail=0
+          # The 2h gate below must stay ABOVE the dispatcher's reuse window:
+          # SPILL_TTL_SEC + RECENT_TTL_SEC (default 2700s each, env-tunable up
+          # to 86400) — raising either knob toward its cap silently shrinks
+          # this gate's margin. 2h = 2700s + 2700s + 30min slack.
           cutoff=$(date -d '2 hours ago' +%s)
           for r in $REPOS; do
             m="$BASE/$r.git"
             gh_url="https://langyo:${GH_READ_PAT}@github.com/celestia-island/$r.git"
             cnb_url="https://cnb:${CNB_TOKEN}@cnb.cool/celestia-island/$r.git"
             # Seed the bare clone from the CNB mirror (direct, fast); fall back
-            # to GitHub for a repo the mirror does not carry yet.
+            # to GitHub for a repo the mirror does not carry yet. The seed URL
+            # carries credentials, so the origin remote is removed right after
+            # (every later op passes its URL explicitly and never reads the
+            # config) — no token then persists in .git/config across runs.
             if [ ! -d "$m" ]; then
-              GIT_CONFIG_COUNT=0 git clone -q --bare "$cnb_url" "$m" 2>/dev/null \
-                || GIT_CONFIG_COUNT=0 git clone -q --bare "$gh_url" "$m" 2>/dev/null \
+              timeout 300 env GIT_CONFIG_COUNT=0 git clone -q --bare "$cnb_url" "$m" 2>/dev/null \
+                || timeout 300 env GIT_CONFIG_COUNT=0 git clone -q --bare "$gh_url" "$m" 2>/dev/null \
                 || { echo "$r: CLONE_FAIL"; fail=1; continue; }
+              git -C "$m" remote remove origin 2>/dev/null || true
             fi
-            if ! GIT_CONFIG_COUNT=0 git -C "$m" fetch -q "$gh_url" \
+            # Refresh the mirror's heads into the local view so the age-gate
+            # sees spill refs created after this clone was seeded (without
+            # this, a persistent RUNNER_TEMP freezes pruning at the seed
+            # state). Tolerated on failure — the gate then runs on the older
+            # view, exactly the pre-fetch behaviour.
+            timeout 120 env GIT_CONFIG_COUNT=0 git -C "$m" fetch -q "$cnb_url" \
+              '+refs/heads/*:refs/heads/*' 2>/dev/null || true
+            if ! timeout 240 env GIT_CONFIG_COUNT=0 git -C "$m" fetch -q "$gh_url" \
                  '+refs/heads/master:refs/heads/master' '+refs/tags/*:refs/tags/*' 2>/dev/null; then
               echo "$r: FETCH_FAIL"; fail=1; continue
             fi
@@ -81,16 +100,16 @@ jobs:
               | awk -v c="$cutoff" '$1 != "refs/heads/master" && $2 < c {print $1}')
             for ref in $stale; do
               git -C "$m" update-ref -d "$ref"
-              GIT_CONFIG_COUNT=0 git -C "$m" push -q "$cnb_url" --delete "$ref" 2>/dev/null \
+              timeout 120 env GIT_CONFIG_COUNT=0 git -C "$m" push -q "$cnb_url" --delete "$ref" 2>/dev/null \
                 || echo "$r: stale-ref delete rejected ($ref) — tolerated"
             done
-            if ! GIT_CONFIG_COUNT=0 git -C "$m" push -q "$cnb_url" \
+            if ! timeout 240 env GIT_CONFIG_COUNT=0 git -C "$m" push -q "$cnb_url" \
                  '+refs/heads/master:refs/heads/master' '+refs/tags/*:refs/tags/*' 2>/dev/null; then
               echo "$r: PUSH_FAIL"; fail=1; continue
             fi
             local_master=$(git -C "$m" rev-parse refs/heads/master 2>/dev/null || echo none)
             if [ "$local_master" != "none" ] \
-               && GIT_CONFIG_COUNT=0 git ls-remote "$cnb_url" refs/heads/master 2>/dev/null | grep -q "$local_master"; then
+               && timeout 120 env GIT_CONFIG_COUNT=0 git ls-remote "$cnb_url" refs/heads/master 2>/dev/null | grep -q "$local_master"; then
               echo "$r: OK ${local_master:0:10}"
             else
               echo "$r: MASTER_MISMATCH"; fail=1
