@@ -15,7 +15,11 @@ Rules
 -----
 
 1.  **cargo track** — if the repo root has a ``Cargo.toml`` with
-    ``[workspace.package].version``, that value is the baseline.  Every crate
+    ``[workspace.package].version``, that value is the baseline; otherwise the
+    root ``[package].version`` is the baseline (this fallback also applies
+    when a ``[workspace]`` table exists without ``[workspace.package]`` —
+    e.g. a vestigial ``[workspace.lints]`` on a single-crate repo, or a
+    root-crate + members layout whose members track the root line).  Every crate
     manifest in the repo (workspace members *and* adjacent standalone crates
     such as ``packages/e2e``) is checked: ``version.workspace = true`` passes,
     a hardcoded ``version`` equal to the baseline passes, anything else is DRIFT
@@ -40,9 +44,17 @@ Rules
         [exempt.npm]
         "packages/theme" = "vendored fork"
 
-4.  **Output** — a human-readable drift table (package → actual → expected →
-    suggestion); exit 1 when drift is present, exit 0 otherwise.  ``--json``
-    emits the same report as machine-readable JSON.
+4.  **Fail-closed baselines (2026-09-27, structural scan S1-1)** — a track
+    that *exists* (any gated ``Cargo.toml`` declaring ``[package].version`` or
+    ``[workspace.package].version``, or any ``package.json`` declaring a
+    ``version``) must resolve to a baseline.  An unresolvable baseline is a
+    hard error, not a silent pass: a repo whose gate cannot decide must not
+    get a green gate.  Remediation: add ``[workspace.package].version`` +
+    ``version.workspace = true``, or pin ``[track]`` in ``.versions.toml``.
+5.  **Output** — a human-readable drift table (package → actual → expected →
+    suggestion) plus baseline errors; exit 1 when drift is present **or** a
+    baseline cannot be resolved, exit 0 otherwise.  ``--json`` emits the same
+    report as machine-readable JSON.
 
 Usage::
 
@@ -99,10 +111,17 @@ class VerifyResult:
     cargo_base: Optional[str] = None
     npm_base: Optional[str] = None
     drifts: List[Drift] = field(default_factory=list)
+    # Non-drift failures: a present track whose baseline could not be resolved.
+    # These fail the gate exactly like drifts do (fail-closed, S1-1).
+    errors: List[str] = field(default_factory=list)
 
     @property
     def has_drift(self) -> bool:
         return bool(self.drifts)
+
+    @property
+    def has_error(self) -> bool:
+        return bool(self.errors)
 
     def to_dict(self) -> dict:
         def _drift_dict(track: str) -> List[dict]:
@@ -121,6 +140,7 @@ class VerifyResult:
             "repo": self.repo,
             "cargo": {"base": self.cargo_base, "drifts": _drift_dict("cargo")},
             "npm": {"base": self.npm_base, "drifts": _drift_dict("npm")},
+            "errors": list(self.errors),
         }
 
 
@@ -172,6 +192,42 @@ def _is_example_crate(repo: Path, manifest: Path) -> bool:
     return _EXAMPLE_SEGMENT in manifest.parent.relative_to(repo).parts
 
 
+# ── Track presence (fail-closed baselines, S1-1) ─────────────────────────────
+
+
+def cargo_track_present(repo: Path) -> bool:
+    """True when any gated Cargo.toml in the repo declares a version at all.
+
+    Presence is what turns "no baseline" from an acceptable "track absent"
+    into a gate failure: versioned manifests exist, so a baseline must exist
+    too.  Example crates are excluded exactly as in drift collection.
+    """
+    for manifest in _iter_manifests(repo, "Cargo.toml"):
+        if _is_example_crate(repo, manifest):
+            continue
+        data = _load_toml(manifest)
+        if not data:
+            continue
+        pkg = data.get("package")
+        if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
+            return True
+        workspace = data.get("workspace")
+        if isinstance(workspace, dict):
+            wp = workspace.get("package")
+            if isinstance(wp, dict) and isinstance(wp.get("version"), str):
+                return True
+    return False
+
+
+def npm_track_present(repo: Path) -> bool:
+    """True when any package.json in the repo declares a version at all."""
+    for manifest in _iter_manifests(repo, "package.json"):
+        pkg = _load_json(manifest)
+        if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
+            return True
+    return False
+
+
 # ── Exemption config (.versions.toml) ────────────────────────────────────────
 
 
@@ -219,6 +275,19 @@ def detect_cargo_base(repo: Path, override: Optional[str]) -> Optional[str]:
         wp = workspace.get("package")
         if isinstance(wp, dict) and isinstance(wp.get("version"), str):
             return _norm_version(wp["version"])
+        # A [workspace] table without [workspace.package].version may be a
+        # real multi-crate workspace (baseline must come from an override,
+        # see below) — but it may also be a single-crate repo carrying a
+        # vestigial [workspace.lints] table.  In both cases the root
+        # [package].version, when present, is a meaningful baseline: for the
+        # vestigial case it is the only crate; for the mixed root-crate +
+        # members case it is the flagship line members are expected to track
+        # (or be exempted from).  Falling through here instead of returning
+        # None keeps real coverage on shapes that previously skipped the
+        # whole track silently (2026-09-26 structural scan S1-1).
+        pkg = root.get("package")
+        if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
+            return _norm_version(pkg["version"])
         return None
     pkg = root.get("package")
     if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
@@ -315,6 +384,42 @@ def collect_npm_drifts(
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 
+def _cargo_root_drifts(repo: Path, base: str) -> List[Drift]:
+    """Compare the root manifest's own declared version against a pinned base.
+
+    Only meaningful when the baseline came from a ``[track]`` override: with
+    inference (or fallback) the root *is* the baseline and would trivially
+    agree with itself.
+    """
+    root = _load_toml(repo / "Cargo.toml")
+    if not root:
+        return []
+    declared: Optional[str] = None
+    pkg = root.get("package")
+    if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
+        declared = _norm_version(pkg["version"])
+    else:
+        workspace = root.get("workspace")
+        if isinstance(workspace, dict):
+            wp = workspace.get("package")
+            if isinstance(wp, dict) and isinstance(wp.get("version"), str):
+                declared = _norm_version(wp["version"])
+    if declared is None or declared == base:
+        return []
+    return [
+        Drift(
+            track="cargo",
+            package=".",
+            actual=declared,
+            expected=base,
+            suggestion=(
+                "root manifest version diverged from the [track] cargo pin — "
+                "bump the pin in .versions.toml in the same release commit"
+            ),
+        )
+    ]
+
+
 def verify(repo: Path) -> VerifyResult:
     """Run the whole detection and return a :class:`VerifyResult`."""
     repo = repo.resolve()
@@ -322,11 +427,39 @@ def verify(repo: Path) -> VerifyResult:
     track = config.get("track", {})
     exempt = config.get("exempt", {})
 
-    cargo_base = detect_cargo_base(repo, track.get("cargo"))
+    cargo_override = track.get("cargo")
+    cargo_base = detect_cargo_base(repo, cargo_override)
     npm_base = detect_npm_base(repo, track.get("npm"))
+
+    errors: List[str] = []
+    if cargo_track_present(repo) and cargo_base is None:
+        errors.append(
+            "cargo track is present (versioned Cargo.toml manifests exist) but "
+            "no baseline could be resolved: the root manifest declares neither "
+            "[workspace.package].version nor [package].version, and "
+            ".versions.toml pins no [track] cargo. Pin the baseline (add "
+            "[workspace.package].version + version.workspace = true, or set "
+            "[track] cargo in .versions.toml) — an unresolvable baseline must "
+            "fail the gate, not pass it."
+        )
+    if npm_track_present(repo) and npm_base is None:
+        errors.append(
+            "npm track is present (package.json files declare versions) but no "
+            "baseline could be resolved: no root package.json version and no "
+            "majority among publishable packages. Pin [track] npm in "
+            ".versions.toml."
+        )
 
     drifts: List[Drift] = []
     drifts.extend(collect_cargo_drifts(repo, cargo_base, exempt.get("cargo", set())))
+    # F9 (R2, 2026-09-27): collect_cargo_drifts skips the root manifest as the
+    # "baseline definer" — but when the baseline actually comes from a
+    # [track] pin, that skip lets a root-only bump escape all comparison
+    # (the kirino S3 shape: root at 0.7.6, members and pin at 0.7.5, gate
+    # green). The npm track compares the root package.json already; compare
+    # the cargo root's own declared version against the pin for symmetry.
+    if cargo_override is not None and cargo_base is not None:
+        drifts.extend(_cargo_root_drifts(repo, cargo_base))
     drifts.extend(collect_npm_drifts(repo, npm_base, exempt.get("npm", set())))
     drifts.sort(key=lambda d: (d.track, d.package))
 
@@ -335,6 +468,7 @@ def verify(repo: Path) -> VerifyResult:
         cargo_base=cargo_base,
         npm_base=npm_base,
         drifts=drifts,
+        errors=errors,
     )
 
 
@@ -343,6 +477,12 @@ def verify(repo: Path) -> VerifyResult:
 
 def _render_text(result: VerifyResult) -> str:
     lines: List[str] = []
+    if result.errors:
+        lines.append("Version baseline errors (gate fails closed):")
+        lines.append("")
+        for err in result.errors:
+            lines.append(f"  error: {err}")
+        lines.append("")
     if result.drifts:
         lines.append("Version drift detected:")
         lines.append("")
@@ -361,7 +501,7 @@ def _render_text(result: VerifyResult) -> str:
         lines.append(fmt.format(*header))
         for row in rows:
             lines.append(fmt.format(*row))
-    else:
+    elif not result.errors:
         summary = []
         if result.cargo_base is not None:
             summary.append(f"cargo={result.cargo_base}")
@@ -403,7 +543,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     result = verify(repo)
-    failed = result.has_drift
+    failed = result.has_drift or result.has_error
 
     if args.json:
         print(_render_json(result, ok=not failed))

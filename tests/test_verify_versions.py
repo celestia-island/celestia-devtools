@@ -129,7 +129,11 @@ def test_exemption_skips_cargo_package(tmp_path, capsys):
 
 
 def test_track_override_in_config(tmp_path, capsys):
-    _cargo_workspace(tmp_path)
+    # The override mechanism itself: pinning the baseline to the line the
+    # workspace already declares stays green (a pin that diverges from the
+    # root's declared line is the F9 blind spot and must be red — see the
+    # stale-pin tests below).
+    _cargo_workspace(tmp_path, base="0.4.0")
     _hardcode_member(tmp_path, "crates/b", "0.4.0")
     _write(tmp_path / ".versions.toml", '[track]\ncargo = "0.4.0"\n')
     rc = main([str(tmp_path)])
@@ -189,3 +193,187 @@ def test_verify_returns_report(tmp_path):
     assert result.cargo_base == "0.3.19"
     assert result.npm_base is None
     assert result.has_drift is False
+
+# ── fail-closed baselines & cargo fallback (2026-09-27, structural scan S1-1) ─
+
+
+def _pure_workspace_shape(root):
+    """Root [workspace] without [workspace.package] and without [package].
+
+    The only shape left with an unresolvable cargo baseline: members carry
+    hardcoded versions and no pin exists.  Must fail the gate closed.
+    """
+    _write(
+        root / "Cargo.toml",
+        '[workspace]\nmembers = ["crates/a", "crates/b"]\n',
+    )
+    _write(
+        root / "crates/a/Cargo.toml",
+        '[package]\nname = "a"\nversion = "0.1.0"\n',
+    )
+    _write(
+        root / "crates/b/Cargo.toml",
+        '[package]\nname = "b"\nversion = "0.1.0"\n',
+    )
+
+
+def _vestigial_workspace_shape(root, version="0.3.2"):
+    """Single crate with a [workspace.lints]-style vestigial [workspace] table.
+
+    Before 2026-09-27 the mere presence of a ``[workspace]`` dict blocked the
+    root ``[package].version`` fallback, silently skipping the whole track.
+    """
+    _write(
+        root / "Cargo.toml",
+        f'[package]\nname = "solo"\nversion = "{version}"\n\n'
+        '[workspace.lints.rust]\nwarnings = "deny"\n',
+    )
+
+
+def test_root_package_version_falls_through_vestigial_workspace(tmp_path, capsys):
+    _vestigial_workspace_shape(tmp_path)
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "cargo=0.3.2" in out
+
+
+def test_root_crate_plus_members_uses_root_line_as_baseline(tmp_path, capsys):
+    # kirino's real shape: root [package].version + real members; with the
+    # fallback the track gains coverage — a member left behind (kirino-macro
+    # at 0.7.0 while the root moved to 0.7.5) is now DRIFT, not silence.
+    _write(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "root-crate"\nversion = "0.7.5"\n\n'
+        '[workspace]\nmembers = ["packages/macro"]\n',
+    )
+    _write(
+        tmp_path / "packages/macro/Cargo.toml",
+        '[package]\nname = "macro"\nversion = "0.7.0"\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "packages/macro" in out
+    assert "0.7.5" in out
+
+
+def test_unresolvable_cargo_baseline_fails_closed(tmp_path, capsys):
+    _pure_workspace_shape(tmp_path)
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "baseline" in out
+    assert "workspace.package" in out
+
+
+def test_track_override_rescues_unresolvable_baseline(tmp_path, capsys):
+    _pure_workspace_shape(tmp_path)
+    _write(
+        tmp_path / ".versions.toml",
+        '[track]\ncargo = "0.1.0"\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "cargo=0.1.0" in out
+
+
+def test_exempt_alone_does_not_rescue_baseline(tmp_path):
+    _pure_workspace_shape(tmp_path)
+    _write(
+        tmp_path / ".versions.toml",
+        '[exempt.cargo]\n"crates/a" = "parked"\n',
+    )
+    rc = main([str(tmp_path)])
+    assert rc == 1
+
+
+def test_no_cargo_track_at_all_still_passes(tmp_path, capsys):
+    _write(tmp_path / "README.md", "no rust here\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "No version drift" in out
+
+
+def test_versionless_workspace_manifest_passes(tmp_path):
+    # A bare [workspace] with no versioned manifests anywhere: nothing to gate.
+    _write(tmp_path / "Cargo.toml", '[workspace]\nmembers = []\n')
+    rc = main([str(tmp_path)])
+    assert rc == 0
+
+
+def test_unresolvable_npm_baseline_fails_closed(tmp_path, capsys):
+    # All packages private → no publishable majority → baseline unresolvable,
+    # yet versions exist, so the track is present and must be pinned.
+    _package(tmp_path, "apps/web", "1.2.3", private=True)
+    _package(tmp_path, "apps/cli", "1.2.3", private=True)
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[track] npm" in out
+
+
+def test_json_output_includes_baseline_errors(tmp_path, capsys):
+    _pure_workspace_shape(tmp_path)
+    rc = main([str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["ok"] is False
+    assert payload["errors"]
+    assert "cargo" in payload["errors"][0]
+
+
+# ── F9 (R2): a stale [track] cargo pin must not hide a root-only bump ────────
+
+
+def _root_crate_pin_shape(root, root_version, pin="0.7.5"):
+    _write(
+        root / "Cargo.toml",
+        f'[package]\nname = "root-crate"\nversion = "{root_version}"\n\n'
+        '[workspace]\nmembers = ["packages/macro"]\n',
+    )
+    _write(
+        root / "packages/macro/Cargo.toml",
+        '[package]\nname = "macro"\nversion = "0.7.5"\n',
+    )
+    _write(root / ".versions.toml", f'[track]\ncargo = "{pin}"\n')
+
+
+def test_stale_pin_hides_root_only_bump_no_longer_green(tmp_path, capsys):
+    # R2's S3 shape: root bumped to 0.7.6 while the pin and members stay at
+    # 0.7.5 — the root used to escape all comparison; now it must be red.
+    _root_crate_pin_shape(tmp_path, root_version="0.7.6")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "  cargo  ." in out
+    assert "bump the pin" in out
+
+
+def test_pin_matching_root_stays_green(tmp_path, capsys):
+    _root_crate_pin_shape(tmp_path, root_version="0.7.5")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "cargo=0.7.5" in out
+
+
+def test_root_not_compared_without_pin(tmp_path, capsys):
+    # Without an override the root IS the baseline (fallback), so a
+    # root-only move must flag the members it left behind, not the root.
+    _write(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "root-crate"\nversion = "0.7.6"\n\n'
+        '[workspace]\nmembers = ["packages/macro"]\n',
+    )
+    _write(
+        tmp_path / "packages/macro/Cargo.toml",
+        '[package]\nname = "macro"\nversion = "0.7.5"\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "packages/macro" in out
+    assert "  cargo  ." not in out
