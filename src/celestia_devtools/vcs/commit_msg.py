@@ -8,7 +8,10 @@ Rules (applied to the subject line — first line of the commit message):
 1.  Must start with a gitmoji from gitmoji.dev.
 2.  Must NOT use Conventional Commits prefixes (``feat:``, ``fix:``, etc.) —
     the emoji **is** the type marker.
-3.  First letter after the emoji must be uppercase (``[A-Z]``).
+3.  First letter after the emoji must be uppercase (``[A-Z]``).  For
+    CJK-led summaries under ``allow_cjk`` this rule is skipped — English
+    tokens appearing mid-sentence ("base_qty", "ERP") are not the subject's
+    first letter.
 4.  Must NOT start with a bare version number or filler phrase (``v1.2.3``,
     ``bump version``, ``update to``, etc.).
 5.  Must end with a period (``.``).
@@ -27,7 +30,10 @@ a violation, not an exemption.
 Easy Hydro repositories (``easy-hydro-erp`` / ``easy-hydro-miniprogram``) are
 exempt from Rule 6 (English-only/CJK) but still recommended to use a gitmoji;
 pass ``--repo <name>`` or ``--allow-cjk`` to the CLI (or ``allow_cjk=True`` to
-``lint()``).
+``lint()``).  The ``gh`` / ``pr-merge`` wrappers resolve the repo automatically
+from a ``--repo`` flag or the ``origin`` remote of the cwd via
+``repo_name_from_gh_flag()`` / ``repo_name_from_git_remote()`` +
+``repo_allows_cjk()``.
 
 The ``lint()`` function returns a list of violation strings; an empty list means
 the message passes all rules.
@@ -37,8 +43,9 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
-from typing import List
+from typing import List, Optional
 
 # ── gitmoji.dev canonical emoji set ───────────────────────────────────────────
 # Sourced from https://gitmoji.dev.  Each entry is the raw emoji character
@@ -191,6 +198,51 @@ def _trim_gitmoji(subject: str) -> str:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+def repo_allows_cjk(repo: Optional[str]) -> bool:
+    """True when *repo* (bare name, e.g. ``easy-hydro-miniprogram``) is exempt
+    from the English-only rule per the org decision.  ``None``/unknown repos
+    keep the strict English convention."""
+    return (repo or "") in EASY_HYDRO_REPOS
+
+
+def repo_name_from_gh_flag(args: List[str]) -> Optional[str]:
+    """Extract the bare repo name from a gh ``--repo owner/name`` / ``-R`` flag
+    anywhere in *args*; ``None`` when the flag is absent."""
+    for i, a in enumerate(args):
+        if a in ("--repo", "-R") and i + 1 < len(args):
+            return args[i + 1].split("/")[-1].removesuffix(".git") or None
+        if a.startswith("--repo="):
+            return a.split("=", 1)[1].split("/")[-1].removesuffix(".git") or None
+    return None
+
+
+def repo_name_from_git_remote(cwd: Optional[str] = None) -> Optional[str]:
+    """Bare repo name from the ``origin`` remote URL of *cwd* (best effort;
+    mirrors gate.py's ``_repo_name`` remote branch).  Falls back to the
+    directory name, then ``None`` outside any repository."""
+    url = ""
+    try:
+        url = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if url:
+        name = url.rstrip("/").split("/")[-1]
+        if name.endswith(".git"):
+            name = name[:-4]
+        if name:
+            return name
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=cwd, capture_output=True, text=True, timeout=5,
+        ).stdout.strip().replace("\\", "/").rstrip("/").split("/")[-1] or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
     """Validate a single commit-message subject line.
 
@@ -242,15 +294,20 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
         )
 
     # Rule 3 — first letter after emoji must be uppercase.
-    alpha = _FIRST_ALPHA_RE.search(tail)
-    if alpha is not None:
-        if not alpha.group()[0].isupper():
-            violations.append(
-                "first letter after the emoji must be uppercase; "
-                f"found lowercase '{alpha.group()}'"
-            )
-    elif not allow_cjk:
-        violations.append("summary must contain at least one English letter")
+    # For CJK-led summaries (allow_cjk), English tokens appearing later in the
+    # sentence ("base_qty", "ERP") must not trigger the uppercase check.
+    if allow_cjk and _CJK_RE.match(tail):
+        pass
+    else:
+        alpha = _FIRST_ALPHA_RE.search(tail)
+        if alpha is not None:
+            if not alpha.group()[0].isupper():
+                violations.append(
+                    "first letter after the emoji must be uppercase; "
+                    f"found lowercase '{alpha.group()}'"
+                )
+        elif not allow_cjk:
+            violations.append("summary must contain at least one English letter")
 
     # Rule 4 — no version-number / filler start.
     if _VERSION_OR_FILLER_START_RE.match(tail):

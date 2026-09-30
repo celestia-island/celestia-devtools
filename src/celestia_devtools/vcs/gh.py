@@ -69,7 +69,12 @@ def main() -> int:
     has_merge = is_pr and len(argv) > 1 and argv[1] == "merge"
 
     if is_pr_merge or has_merge:
-        from celestia_devtools.vcs.commit_msg import lint
+        from celestia_devtools.vcs.commit_msg import (
+            lint,
+            repo_allows_cjk,
+            repo_name_from_git_remote,
+            repo_name_from_gh_flag,
+        )
 
         # Extract --subject from args
         subject: str | None = None
@@ -90,7 +95,12 @@ def main() -> int:
                 break
 
         if subject:
-            violations = lint(subject)
+            # Repo-aware CJK exemption: the linter exempts easy-hydro repos
+            # from the English-only rule, but that needs the repo name — take
+            # it from an explicit --repo/-R flag, else from the origin remote
+            # of the cwd (gh pr merge is typically run inside the checkout).
+            repo = repo_name_from_gh_flag(argv) or repo_name_from_git_remote()
+            violations = lint(subject, allow_cjk=repo_allows_cjk(repo))
             if violations:
                 print("\n  " + "\n  ".join(violations), file=sys.stderr)
                 print(
