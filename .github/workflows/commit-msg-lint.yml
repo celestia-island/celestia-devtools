@@ -203,8 +203,11 @@ jobs:
           set -o pipefail
           [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
           echo "PR title: $PR_TITLE"
+          # --repo enables the per-repo CJK exemption (easy-hydro writes
+          # Chinese subjects); celestia repos keep the English-only rule.
           printf '%s\n' "$PR_TITLE" | \
-          $DT_CMD commit-msg-lint check --stdin-subjects
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"
 
       - name: Lint all commits in the PR
         if: (github.event.pull_request || inputs.pr != '') && github.actor != 'dependabot[bot]'
@@ -229,7 +232,8 @@ jobs:
           RANGE="${MERGE_BASE}..${HEAD_SHA}"
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
-          $DT_CMD commit-msg-lint check --stdin-subjects
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"
 
       - name: Lint all new commits on push
         # github.event.before is a 40-hex string on push payloads (inherited by
@@ -260,4 +264,5 @@ jobs:
           fi
           echo "Linting commits in range: $RANGE"
           git log --format='%s' "$RANGE" | \
-          $DT_CMD commit-msg-lint check --stdin-subjects
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"

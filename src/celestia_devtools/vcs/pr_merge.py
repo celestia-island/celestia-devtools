@@ -13,7 +13,11 @@ import argparse
 import subprocess
 import sys
 
-from celestia_devtools.vcs.commit_msg import lint
+from celestia_devtools.vcs.commit_msg import (
+    lint,
+    repo_allows_cjk,
+    repo_name_from_git_remote,
+)
 
 
 def main() -> int:
@@ -62,7 +66,12 @@ def main() -> int:
         print("\nerror: subject is required", file=sys.stderr)
         return 2
 
-    violations = lint(subject)
+    # Repo-aware CJK exemption (easy-hydro repos use Chinese subjects):
+    # explicit --repo wins, else the origin remote of the cwd.
+    repo = (
+        args.repo.split("/")[-1].removesuffix(".git") if args.repo else None
+    ) or repo_name_from_git_remote()
+    violations = lint(subject, allow_cjk=repo_allows_cjk(repo))
     if violations:
         print("\n  " + "\n  ".join(violations), file=sys.stderr)
         print(

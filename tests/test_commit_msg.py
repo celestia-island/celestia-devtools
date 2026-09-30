@@ -216,3 +216,93 @@ class TestRegressionRealHistory:
         assert lint(
             "\U0001f41b Use license-file only so crates.io accepts the non-SPDX SySL license."
         ) == []
+
+
+class TestCjkLedUppercaseRule:
+    """Rule 3 must not fire on English tokens inside CJK-led summaries."""
+
+    def test_cjk_led_with_english_token_passes(self):
+        # easy-hydro-miniprogram #42: lowercase token "base_qty" mid-sentence.
+        assert lint(
+            "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。",
+            allow_cjk=True,
+        ) == []
+
+    def test_cjk_led_no_period_passes(self):
+        assert lint("✨ 修复解析器", allow_cjk=True) == []
+
+    def test_gitmoji_still_required_with_cjk(self):
+        v = lint("修复解析器。", allow_cjk=True)
+        assert any("gitmoji" in violation for violation in v)
+
+    def test_english_led_lowercase_still_flagged_under_cjk(self):
+        v = lint("✨ fix 解析器。", allow_cjk=True)
+        assert any("uppercase" in violation for violation in v)
+
+    def test_cjk_rejected_without_flag(self):
+        v = lint("✨ 修复解析器。")
+        assert any("CJK" in violation for violation in v)
+
+
+class TestRegressionEasyHydroHistory:
+    """Real squash-merge subjects from easy-hydro master (Chinese + gitmoji)."""
+
+    SUBJECTS = [
+        "✨ 登录补齐手机号一键授权弹窗并修复重登后重复索要手机号。 (#44)",
+        "🐛 修复订单卡片溢出与详情页静默卡死，增加超时与重试。 (#29)",
+        "💄 交互防误触：点按统一改 tap 语义并把过小热区提到微信规范尺寸。 (#43)",
+        "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。 (#42)",
+    ]
+
+    def test_all_pass_with_allow_cjk(self):
+        for subject in self.SUBJECTS:
+            assert lint(subject, allow_cjk=True) == [], subject
+
+
+class TestRepoDetectionHelpers:
+    def test_allows_cjk_for_easy_hydro_repos(self):
+        from celestia_devtools.vcs.commit_msg import repo_allows_cjk
+
+        assert repo_allows_cjk("easy-hydro-erp") is True
+        assert repo_allows_cjk("easy-hydro-miniprogram") is True
+
+    def test_strict_for_unknown_or_missing_repo(self):
+        from celestia_devtools.vcs.commit_msg import repo_allows_cjk
+
+        assert repo_allows_cjk("celestia-devtools") is False
+        assert repo_allows_cjk(None) is False
+        assert repo_allows_cjk("") is False
+
+    def test_gh_flag_long_form(self):
+        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
+
+        assert (
+            repo_name_from_gh_flag(
+                ["pr", "merge", "44", "--repo", "langyo/easy-hydro-miniprogram"]
+            )
+            == "easy-hydro-miniprogram"
+        )
+
+    def test_gh_flag_short_form_with_git_suffix(self):
+        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
+
+        assert repo_name_from_gh_flag(["-R", "owner/repo.git"]) == "repo"
+
+    def test_gh_flag_equals_form(self):
+        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
+
+        assert repo_name_from_gh_flag(["--repo=owner/repo"]) == "repo"
+
+    def test_gh_flag_absent(self):
+        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
+
+        assert repo_name_from_gh_flag(["pr", "merge", "44", "--squash"]) is None
+
+    def test_git_remote_of_this_checkout(self):
+        # This test suite runs inside the celestia-devtools checkout itself.
+        import os
+
+        from celestia_devtools.vcs.commit_msg import repo_name_from_git_remote
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        assert repo_name_from_git_remote(root) == "celestia-devtools"
