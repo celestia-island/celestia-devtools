@@ -1,3 +1,10 @@
+# One in-flight run per ref: a superseded push cancels its
+# predecessor instead of queueing behind it (farm-pressure
+# relief, AGENTS ci-ops 8.3.3).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Reusable rules-tree lint for repositories that carry an AGENTS.md.
 #
 # Why this exists: a repository's own AGENTS.md is injected into every agent that
