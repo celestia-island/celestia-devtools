@@ -1,10 +1,3 @@
-# One in-flight run per ref: a superseded push cancels its
-# predecessor instead of queueing behind it (farm-pressure
-# relief, AGENTS ci-ops 8.3.3).
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 # CNB Overflow Router — dispatches CI overflow to cnb.cool when the self-hosted farm is saturated.
 #
 # Design (see the originating PR description for the full architecture):
@@ -55,6 +48,13 @@ concurrency:
 # cross-repo). Cross-repo dispatches (manual tests) skip the status post by design.
 
 name: CNB Overflow Router
+
+# One in-flight run per ref: a superseded push cancels its
+# predecessor instead of queueing behind it (farm-pressure
+# relief, AGENTS ci-ops 8.3.3).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 on:
   workflow_call:
