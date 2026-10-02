@@ -1,3 +1,10 @@
+# One in-flight run per ref: a superseded push cancels its
+# predecessor instead of queueing behind it (farm-pressure
+# relief, AGENTS ci-ops 8.3.3).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # CNB Overflow Router — dispatches CI overflow to cnb.cool when the self-hosted farm is saturated.
 #
 # Design (see the originating PR description for the full architecture):
