@@ -181,6 +181,22 @@ def unit_exists(unit):
     return r.returncode == 0 and r.stdout.strip() == "loaded"
 
 
+def unit_serves_home(unit, home):
+    """Does that unit actually run this runner home?
+
+    LoadState alone is not enough: a home whose .runner names another slot's agent would
+    otherwise map to that other slot's unit, and a zombie here would restart - and kill a
+    live job in - the wrong slot. Read-only check, capped like the other systemctl calls.
+    """
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "WorkingDirectory", "--value", unit],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    w = r.stdout.strip()
+    return r.returncode == 0 and bool(w) and os.path.realpath(w) == os.path.realpath(home)
+
+
 def units_by_home(homes):
     """home -> unit, asked of systemd directly (the naming convention is not guessable)."""
     out = {}
@@ -207,19 +223,21 @@ def units_by_home(homes):
 
 
 def slot_units(homes):
-    """home -> systemd unit, from .runner when readable and from systemd otherwise."""
+    """home -> systemd unit, from .runner when it checks out and from systemd otherwise."""
     units = {}
+    discovered = None
     for home in homes:
         name = read_agent_name(home)
         unit = f"actions.runner.celestia-island.{name}.service" if name else None
-        if unit and unit_exists(unit):
+        if unit and unit_exists(unit) and unit_serves_home(unit, home):
             units[home] = unit
             continue
-        discovered = units_by_home([home]).get(home)
-        if discovered:
-            units[home] = discovered
+        if discovered is None:
+            discovered = units_by_home(homes)  # one scan covers every home
+        if discovered.get(home):
+            units[home] = discovered[home]
         else:
-            print(f"janitor: WARN no runner unit found for {os.path.basename(home)}; "
+            print(f"janitor: WARN no runner unit serving {os.path.basename(home)}; "
                   f"its zombie check is skipped")
     return units
 
@@ -850,8 +868,8 @@ def main():
                     help="seconds after an unacknowledged job cancellation "
                          "before the runner unit is restarted")
     ap.add_argument("--unit", default=None,
-                    help="runner systemd unit to restart (default: per slot, from "
-                         "<runner_home>/.runner agentName)")
+                    help="with --diag-dir: the unit to restart. Requires --diag-dir, and "
+                         "is refused if it does not serve that diag's runner home.")
     ap.add_argument("--diag-dir", default=None,
                     help="override: use this single _diag dir and --unit only")
     ap.add_argument("--skip-zombie", action="store_true")
@@ -863,6 +881,11 @@ def main():
     if args.selftest:
         return selftest()
 
+    if args.unit and not args.diag_dir:
+        print("janitor: --unit needs --diag-dir; the per-slot units are resolved "
+              "automatically otherwise", file=sys.stderr)
+        return 2
+
     homes = runner_homes()
     if not args.skip_zombie:
         if args.diag_dir:
@@ -871,7 +894,14 @@ def main():
             # <hostname>.service would target the first slot for a second-slot diag
             home = slot_home_for_diag(args.diag_dir)
             unit = args.unit
-            if unit is None and home is not None:
+            if unit is not None:
+                # the cancellation was read from this home's diag, so the unit that gets
+                # restarted must be the one serving it
+                if home is None or not unit_serves_home(unit, home):
+                    print(f"janitor: WARN --unit {unit} does not serve {args.diag_dir}; "
+                          f"refusing to restart it")
+                    unit = None
+            elif home is not None:
                 unit = slot_units([home]).get(home)
             slots = [(home, unit, args.diag_dir)]
         else:
