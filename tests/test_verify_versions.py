@@ -377,3 +377,117 @@ def test_root_not_compared_without_pin(tmp_path, capsys):
     assert rc == 1
     assert "packages/macro" in out
     assert "  cargo  ." not in out
+
+
+# ── corruption must fail loudly (2026-10-03 master incident) ─────────────────
+# A squash merge shipped duplicate `version` keys: Cargo.toml carried two
+# `version =` lines in [workspace.package] (invalid TOML) and the npm
+# manifests two "version" keys (valid JSON that last-wins silently). The
+# gate answered "no drift" and exit 0 — corruption used to be
+# indistinguishable from absence at the loader boundary.
+
+
+def test_duplicate_toml_version_keys_fail_loudly(tmp_path, capsys):
+    """The exact master-incident shape: two version lines in
+    [workspace.package]."""
+    _write(
+        tmp_path / "Cargo.toml",
+        '[workspace]\nmembers = ["crates/a"]\n\n'
+        '[workspace.package]\nversion = "0.1.334"\nversion = "0.1.331"\nedition = "2024"\n',
+    )
+    _write(
+        tmp_path / "crates/a/Cargo.toml",
+        '[package]\nname = "a"\nversion.workspace = true\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, f"invalid TOML must fail the gate, got exit {rc}: {out}"
+    assert "Cargo.toml unparseable" in out
+    assert "Cannot overwrite a value" in out  # tomllib names the duplicate
+
+
+def test_duplicate_json_version_keys_fail_loudly(tmp_path, capsys):
+    """json.loads silently last-wins a duplicate key — the hook must turn
+    that into a gate failure naming the file."""
+    _write(
+        tmp_path / "package.json",
+        '{\n  "name": "x",\n  "version": "0.1.369",\n  "version": "0.1.367"\n}\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "duplicate key 'version'" in out
+
+
+def test_malformed_json_manifest_fails_loudly(tmp_path, capsys):
+    _write(tmp_path / "package.json", "{ not json")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "package.json unparseable" in out
+
+
+def test_corrupt_member_manifest_is_named(tmp_path, capsys):
+    """A corrupt NON-root manifest must be named and fail the gate too —
+    skipping just its version check would under-report the track."""
+    _package(tmp_path, "packages/webui", "0.3.19")
+    _package(tmp_path, "packages/ide", "0.3.19")
+    _write(tmp_path / "package.json", '{"name": "root", "version": "0.3.19"}\n')
+    _write(tmp_path / "packages/broken/package.json", "{ oops")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "packages/broken/package.json unparseable" in out
+
+
+def test_corrupt_versions_config_fails_loudly(tmp_path, capsys):
+    """A present-but-corrupt .versions.toml must not silently disable
+    exemptions/overrides."""
+    _cargo_workspace(tmp_path)
+    _write(tmp_path / ".versions.toml", "[exempt\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert ".versions.toml unparseable" in out
+
+
+def test_healthy_repo_still_green(tmp_path, capsys):
+    """Positive control: absence of files stays fine; nothing new fires."""
+    _cargo_workspace(tmp_path)
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "unparseable" not in out
+
+
+def test_corrupt_root_under_track_pin_fails_loudly(tmp_path, capsys):
+    """R1 F1: with a [track] cargo pin, detect_cargo_base returns the
+    override without ever loading the root — a corrupt root must still
+    fail the gate (the pinned-repo variant of the master incident)."""
+    _write(
+        tmp_path / "Cargo.toml",
+        '[workspace.package]\nversion = "0.1.334"\nversion = "0.1.331"\n',
+    )
+    _write(
+        tmp_path / ".versions.toml",
+        '[track]\ncargo = "0.1.331"\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, f"corrupt root under a pin must fail, got exit {rc}: {out}"
+    assert "Cargo.toml unparseable" in out
+
+
+def test_sole_corrupt_member_without_baseline_fails_loudly(tmp_path, capsys):
+    """R1 F2: unversioned root + a sole CORRUPT versioned member — no
+    baseline resolves and the collector never walks; the presence probe
+    must both count it as present and name it."""
+    _write(tmp_path / "Cargo.toml", '[workspace]\nmembers = ["crates/a"]\n')
+    _write(
+        tmp_path / "crates/a/Cargo.toml",
+        '[package]\nname = "a"\nversion = "0.1.1"\nversion = "0.1.0"\n',
+    )
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "crates/a/Cargo.toml unparseable" in out

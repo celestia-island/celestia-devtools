@@ -147,23 +147,60 @@ class VerifyResult:
 # ── Manifest helpers ─────────────────────────────────────────────────────────
 
 
-def _load_toml(path: Path) -> Optional[dict]:
-    """Parse a TOML file, returning ``None`` on any read/parse failure."""
+def _load_toml(path: Path) -> tuple[Optional[dict], Optional[str]]:
+    """Parse a TOML file.
+
+    Returns ``(data, None)`` on success, ``(None, None)`` when the file is
+    absent (absence is a structural answer the callers interpret), and
+    ``(None, reason)`` when a PRESENT file cannot be parsed. The split
+    matters: the old shape swallowed corruption into the same ``None`` as
+    absence, so an unparseable manifest was silently skipped — a repo whose
+    Cargo.toml carried duplicate keys (invalid TOML) sailed through the
+    gate green (2026-10-03 master incident: two ``version =`` lines in
+    [workspace.package] survived a squash merge).
+    """
+    if not path.is_file():
+        return None, None
     if _toml is None:
-        return None
+        return None, "no TOML parser available (python < 3.11 without tomli)"
     try:
-        return _toml.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+        return _toml.loads(path.read_text(encoding="utf-8")), None
+    except Exception as exc:  # tomllib raises TOMLDecodeError on dup keys
+        return None, f"{type(exc).__name__}: {exc}"
 
 
-def _load_json(path: Path) -> Optional[dict]:
-    """Parse a JSON file, returning ``None`` on any read/parse failure."""
+class _JsonDuplicateKey(ValueError):
+    """Raised by the object_pairs hook — json.loads would silently
+    last-win a duplicate key, hiding exactly the corruption this gate
+    exists to catch."""
+
+
+def _no_duplicate_keys(pairs):
+    seen: set = set()
+    for key, _ in pairs:
+        if key in seen:
+            raise _JsonDuplicateKey(f"duplicate key {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _load_json(path: Path) -> tuple[Optional[dict], Optional[str]]:
+    """Parse a JSON object file; see :func:`_load_toml` for the contract
+    (absent → ``(None, None)``; corrupt → ``(None, reason)``, with
+    duplicate keys detected explicitly)."""
+    if not path.is_file():
+        return None, None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    return data if isinstance(data, dict) else None
+        data = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys
+        )
+    except _JsonDuplicateKey as exc:
+        return None, f"invalid JSON: {exc}"
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(data, dict):
+        return None, "invalid JSON: top-level value is not an object"
+    return data, None
 
 
 def _norm_version(value: object) -> str:
@@ -195,17 +232,26 @@ def _is_example_crate(repo: Path, manifest: Path) -> bool:
 # ── Track presence (fail-closed baselines, S1-1) ─────────────────────────────
 
 
-def cargo_track_present(repo: Path) -> bool:
+def cargo_track_present(repo: Path, errors: Optional[List[str]] = None) -> bool:
     """True when any gated Cargo.toml in the repo declares a version at all.
 
     Presence is what turns "no baseline" from an acceptable "track absent"
     into a gate failure: versioned manifests exist, so a baseline must exist
     too.  Example crates are excluded exactly as in drift collection.
+
+    A CORRUPT manifest counts as present (it may well be versioned — we
+    cannot know) and is recorded into ``errors``: without this, a repo whose
+    only versioned manifest is corrupt would resolve no baseline, skip the
+    whole track, and sail green with zero diagnostics (R1 F2, 2026-10-03).
     """
     for manifest in _iter_manifests(repo, "Cargo.toml"):
         if _is_example_crate(repo, manifest):
             continue
-        data = _load_toml(manifest)
+        data, reason = _load_toml(manifest)
+        if reason and errors is not None:
+            errors.append(
+                f"{_norm_path(str(manifest.relative_to(repo)))} unparseable, its version unknown: {reason}"
+            )
         if not data:
             continue
         pkg = data.get("package")
@@ -222,7 +268,7 @@ def cargo_track_present(repo: Path) -> bool:
 def npm_track_present(repo: Path) -> bool:
     """True when any package.json in the repo declares a version at all."""
     for manifest in _iter_manifests(repo, "package.json"):
-        pkg = _load_json(manifest)
+        pkg, _reason = _load_json(manifest)
         if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
             return True
     return False
@@ -231,9 +277,17 @@ def npm_track_present(repo: Path) -> bool:
 # ── Exemption config (.versions.toml) ────────────────────────────────────────
 
 
-def load_versions_config(repo: Path) -> dict:
-    """Load ``.versions.toml`` if present, else an empty config dict."""
-    data = _load_toml(repo / ".versions.toml")
+def load_versions_config(repo: Path, errors: Optional[List[str]] = None) -> dict:
+    """Load ``.versions.toml`` if present, else an empty config dict.
+
+    A PRESENT but unparseable config is recorded into ``errors`` when a
+    sink is given: a corrupt file silently disabling exemptions/overrides
+    is a gate malfunction, not a no-config repo."""
+    data, reason = _load_toml(repo / ".versions.toml")
+    if reason and errors is not None:
+        errors.append(
+            f".versions.toml unparseable, exemptions/overrides ignored: {reason}"
+        )
     if not data:
         return {}
     result: dict = {"exempt": {"cargo": set(), "npm": set()}}
@@ -264,10 +318,17 @@ def _norm_path(path: str) -> str:
 # ── cargo track ──────────────────────────────────────────────────────────────
 
 
-def detect_cargo_base(repo: Path, override: Optional[str]) -> Optional[str]:
+def detect_cargo_base(
+    repo: Path, override: Optional[str], errors: Optional[List[str]] = None
+) -> Optional[str]:
     if override is not None:
         return _norm_version(override)
-    root = _load_toml(repo / "Cargo.toml")
+    root, reason = _load_toml(repo / "Cargo.toml")
+    if reason and errors is not None:
+        # The root manifest IS the baseline source; a corrupt one must not
+        # read as "no cargo track" (which would skip the whole track
+        # silently) — the 2026-10-03 master incident shape.
+        errors.append(f"Cargo.toml unparseable, cargo track skipped: {reason}")
     if not root:
         return None
     workspace = root.get("workspace")
@@ -296,7 +357,10 @@ def detect_cargo_base(repo: Path, override: Optional[str]) -> Optional[str]:
 
 
 def collect_cargo_drifts(
-    repo: Path, base: Optional[str], exempt: set[str]
+    repo: Path,
+    base: Optional[str],
+    exempt: set[str],
+    errors: Optional[List[str]] = None,
 ) -> List[Drift]:
     if base is None:
         return []
@@ -309,7 +373,11 @@ def collect_cargo_drifts(
             continue
         if _package_id(repo, manifest) in exempt:
             continue
-        data = _load_toml(manifest)
+        data, reason = _load_toml(manifest)
+        if reason and errors is not None:
+            errors.append(
+                f"{_norm_path(str(manifest.relative_to(repo)))} unparseable, its version unchecked: {reason}"
+            )
         if not data:
             continue
         pkg = data.get("package")
@@ -336,16 +404,26 @@ def collect_cargo_drifts(
 # ── npm track ────────────────────────────────────────────────────────────────
 
 
-def detect_npm_base(repo: Path, override: Optional[str]) -> Optional[str]:
+def detect_npm_base(
+    repo: Path, override: Optional[str], errors: Optional[List[str]] = None
+) -> Optional[str]:
     if override is not None:
         return _norm_version(override)
-    root_pkg = _load_json(repo / "package.json")
+    root_pkg, reason = _load_json(repo / "package.json")
+    if reason and errors is not None:
+        errors.append(
+            f"package.json unparseable, npm baseline fell back to majority vote: {reason}"
+        )
     if root_pkg is not None and isinstance(root_pkg.get("version"), str):
         return _norm_version(root_pkg["version"])
     # No (versioned) root package: majority version among publishable packages.
     publishable: List[str] = []
     for manifest in _iter_manifests(repo, "package.json"):
-        pkg = _load_json(manifest)
+        pkg, reason = _load_json(manifest)
+        if reason and errors is not None:
+            errors.append(
+                f"{_norm_path(str(manifest.relative_to(repo)))} unparseable, its version unchecked: {reason}"
+            )
         if not pkg or not isinstance(pkg.get("version"), str):
             continue
         if pkg.get("private") is not True:
@@ -356,7 +434,10 @@ def detect_npm_base(repo: Path, override: Optional[str]) -> Optional[str]:
 
 
 def collect_npm_drifts(
-    repo: Path, base: Optional[str], exempt: set[str]
+    repo: Path,
+    base: Optional[str],
+    exempt: set[str],
+    errors: Optional[List[str]] = None,
 ) -> List[Drift]:
     if base is None:
         return []
@@ -364,7 +445,11 @@ def collect_npm_drifts(
     for manifest in _iter_manifests(repo, "package.json"):
         if _package_id(repo, manifest) in exempt:
             continue
-        pkg = _load_json(manifest)
+        pkg, reason = _load_json(manifest)
+        if reason and errors is not None:
+            errors.append(
+                f"{_norm_path(str(manifest.relative_to(repo)))} unparseable, its version unchecked: {reason}"
+            )
         if not pkg or not isinstance(pkg.get("version"), str):
             continue
         actual = _norm_version(pkg["version"])
@@ -384,14 +469,26 @@ def collect_npm_drifts(
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 
-def _cargo_root_drifts(repo: Path, base: str) -> List[Drift]:
+def _cargo_root_drifts(
+    repo: Path, base: str, errors: Optional[List[str]] = None
+) -> List[Drift]:
     """Compare the root manifest's own declared version against a pinned base.
 
     Only meaningful when the baseline came from a ``[track]`` override: with
     inference (or fallback) the root *is* the baseline and would trivially
     agree with itself.
     """
-    root = _load_toml(repo / "Cargo.toml")
+    root, reason = _load_toml(repo / "Cargo.toml")
+    if reason:
+        # Record it HERE: under a [track] pin detect_cargo_base returns the
+        # override before ever loading the root, so nobody else diagnoses a
+        # corrupt root in that shape (R1 F1, 2026-10-03 — the pinned-repo
+        # variant of the master incident shipped green).
+        if errors is not None:
+            errors.append(
+                f"Cargo.toml unparseable, root version unchecked: {reason}"
+            )
+        return []
     if not root:
         return []
     declared: Optional[str] = None
@@ -423,16 +520,19 @@ def _cargo_root_drifts(repo: Path, base: str) -> List[Drift]:
 def verify(repo: Path) -> VerifyResult:
     """Run the whole detection and return a :class:`VerifyResult`."""
     repo = repo.resolve()
-    config = load_versions_config(repo)
+    # The parse-error sink comes FIRST so every detection stage can append
+    # corruption findings into the same fail-closed list as the baseline
+    # errors below (an unparseable manifest used to be silently skipped —
+    # the 2026-10-03 master incident shipped duplicate version keys green).
+    errors: List[str] = []
+    config = load_versions_config(repo, errors)
     track = config.get("track", {})
     exempt = config.get("exempt", {})
 
     cargo_override = track.get("cargo")
-    cargo_base = detect_cargo_base(repo, cargo_override)
-    npm_base = detect_npm_base(repo, track.get("npm"))
-
-    errors: List[str] = []
-    if cargo_track_present(repo) and cargo_base is None:
+    cargo_base = detect_cargo_base(repo, cargo_override, errors)
+    npm_base = detect_npm_base(repo, track.get("npm"), errors)
+    if cargo_track_present(repo, errors) and cargo_base is None:
         errors.append(
             "cargo track is present (versioned Cargo.toml manifests exist) but "
             "no baseline could be resolved: the root manifest declares neither "
@@ -451,7 +551,9 @@ def verify(repo: Path) -> VerifyResult:
         )
 
     drifts: List[Drift] = []
-    drifts.extend(collect_cargo_drifts(repo, cargo_base, exempt.get("cargo", set())))
+    drifts.extend(
+        collect_cargo_drifts(repo, cargo_base, exempt.get("cargo", set()), errors)
+    )
     # F9 (R2, 2026-09-27): collect_cargo_drifts skips the root manifest as the
     # "baseline definer" — but when the baseline actually comes from a
     # [track] pin, that skip lets a root-only bump escape all comparison
@@ -459,8 +561,8 @@ def verify(repo: Path) -> VerifyResult:
     # green). The npm track compares the root package.json already; compare
     # the cargo root's own declared version against the pin for symmetry.
     if cargo_override is not None and cargo_base is not None:
-        drifts.extend(_cargo_root_drifts(repo, cargo_base))
-    drifts.extend(collect_npm_drifts(repo, npm_base, exempt.get("npm", set())))
+        drifts.extend(_cargo_root_drifts(repo, cargo_base, errors))
+    drifts.extend(collect_npm_drifts(repo, npm_base, exempt.get("npm", set()), errors))
     drifts.sort(key=lambda d: (d.track, d.package))
 
     return VerifyResult(
