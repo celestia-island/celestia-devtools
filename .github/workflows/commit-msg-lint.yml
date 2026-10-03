@@ -251,8 +251,19 @@ jobs:
           set -o pipefail
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.event.after }}"
+          # A branch deletion (after = zero sha) has nothing to lint —
+          # without this guard the happy-path range below becomes
+          # "$BEFORE..0000…" and git log dies with exit 128.
+          if [ "$AFTER" = "0000000000000000000000000000000000000000" ]; then
+            echo "branch deletion — nothing to lint"
+            exit 0
+          fi
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            RANGE="$AFTER"
+            # `^!` = exactly this commit, none of its parents. A BARE sha
+            # would make `git log` walk the FULL ancestor history and fail
+            # on pre-rule subjects (observed live: chest PRs whose history
+            # contains the pre-2026-09 #682 subject; 2026-10-03 ledger).
+            RANGE="${AFTER}^!"
           else
             # A force-push rewrites the previous head away, so the event's
             # `before` can point at a commit the clone does not carry as an
@@ -265,7 +276,13 @@ jobs:
             # full PR range with a merge-base fallback, so linting just the
             # new head remains a safe degradation.
             if ! git rev-parse --verify -q "$BEFORE^{commit}" >/dev/null 2>&1; then
-              RANGE="$AFTER"
+              # Same trap as the new-branch branch above: the degradation
+              # is "lint just the new head", and a bare sha does NOT mean
+              # that — `git log <sha>` walks every ancestor. `^!` keeps
+              # the degradation honest (single subject) while the PR-wide
+              # step above still covers the full range with merge-base
+              # fallback.
+              RANGE="${AFTER}^!"
             else
               RANGE="${BEFORE}..${AFTER}"
             fi
