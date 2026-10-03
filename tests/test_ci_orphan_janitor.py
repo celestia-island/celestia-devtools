@@ -55,8 +55,12 @@ def test_cancel_re_ignores_other_lines():
         "haven't exit within cancellation timout, kill running worker.") is None
 
 
-def _write_log(tmp_path, body, name=None):
-    d = tmp_path / "_diag"
+def _write_log(tmp_path, body, name=None, slot="actions-runner"):
+    # a real _diag lives inside a runner home (…/actions-runner/_work exists), which is
+    # how the tool attributes a cancellation to a slot before it restarts anything
+    home = tmp_path / slot
+    (home / "_work").mkdir(parents=True, exist_ok=True)
+    d = home / "_diag"
     d.mkdir(exist_ok=True)
     if name is None:
         name = "Runner_" + _RECENT_DT.strftime("%Y%m%d-%H%M%S") + "-utc.log"
@@ -93,16 +97,16 @@ def test_zombie_restart_when_worker_predates_cancel(tmp_path, monkeypatch):
 
     started_before = cancel_ts - 100
     started_after = cancel_ts + 100
-    monkeypatch.setattr(jan, "worker_pids", lambda: [4242])
+    monkeypatch.setattr(jan, "worker_pids", lambda home=None: [4242])
     monkeypatch.setattr(jan, "starttime_epoch", lambda pid: started_before)
     calls = []
     monkeypatch.setattr(jan.subprocess, "run",
-                        lambda cmd: calls.append(cmd) or type("R", (), {"returncode": 0})())
+                        lambda cmd, timeout=None: calls.append(cmd) or type("R", (), {"returncode": 0})())
 
     fired = jan.zombie_worker_check(diag, cancel_grace=600, dry_run=False,
                                     unit="actions.runner.celestia-island.node-ci-1.service")
     assert fired is True
-    assert calls == [["systemctl", "restart",
+    assert calls == [["systemctl", "try-restart",
                       "actions.runner.celestia-island.node-ci-1.service"]]
 
     # a worker started after the cancellation is a live job, not a zombie
@@ -115,7 +119,7 @@ def test_zombie_restart_when_worker_predates_cancel(tmp_path, monkeypatch):
 
 def test_zombie_respects_grace(tmp_path, monkeypatch):
     diag = _write_log(tmp_path, CANCEL_LINE + "\n")
-    monkeypatch.setattr(jan, "worker_pids", lambda: [1])
+    monkeypatch.setattr(jan, "worker_pids", lambda home=None: [1])
     monkeypatch.setattr(jan, "starttime_epoch", lambda pid: time.time() - 9999)
     # cancel timestamp is fixed in the log; force tiny grace and a worker
     # that predates it -> would fire, but only if age >= grace
@@ -129,17 +133,70 @@ def test_zombie_respects_grace(tmp_path, monkeypatch):
 
 def test_zombie_no_worker_is_noop(tmp_path, monkeypatch):
     diag = _write_log(tmp_path, CANCEL_LINE + "\n")
-    monkeypatch.setattr(jan, "worker_pids", lambda: [])
+    monkeypatch.setattr(jan, "worker_pids", lambda home=None: [])
     assert jan.zombie_worker_check(diag, cancel_grace=0, dry_run=True,
                                    unit="u") is False
 
 
 def test_dry_run_does_not_restart(tmp_path, monkeypatch):
     diag = _write_log(tmp_path, CANCEL_LINE + "\n")
-    monkeypatch.setattr(jan, "worker_pids", lambda: [7])
+    monkeypatch.setattr(jan, "worker_pids", lambda home=None: [7])
     monkeypatch.setattr(jan, "starttime_epoch", lambda pid: 1.0)
     calls = []
     monkeypatch.setattr(jan.subprocess, "run",
-                        lambda cmd: calls.append(cmd) or type("R", (), {"returncode": 0})())
+                        lambda cmd, timeout=None: calls.append(cmd) or type("R", (), {"returncode": 0})())
     assert jan.zombie_worker_check(diag, cancel_grace=0, dry_run=True, unit="u") is True
+    assert calls == []
+
+
+class _FakeProc:
+    """Only cmdline/starttime matter for the worker scan."""
+
+    def __init__(self, table):
+        self.table = table
+
+    def pids(self):
+        return sorted(self.table)
+
+    def cmdline(self, pid):
+        return self.table[pid]["cmdline"]
+
+    def starttime(self, pid):
+        return self.table[pid]["start"]
+
+    def read_text(self, path):
+        return jan.read_text_file(path)
+
+
+def test_zombie_never_uses_another_slots_worker(tmp_path, monkeypatch):
+    """A cancellation in slot A must not be justified by a Worker in slot B."""
+    diag_a = _write_log(tmp_path, CANCEL_LINE + "\n", slot="actions-runner")
+    home_b = tmp_path / "actions-runner-2"
+    (home_b / "_work").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(jan, "PROC", _FakeProc({
+        4242: {"cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2",
+               "start": jan.last_cancel_request(diag_a) - 100},
+    }))
+    calls = []
+    monkeypatch.setattr(jan.subprocess, "run",
+                        lambda cmd, timeout=None: calls.append(cmd)
+                        or type("R", (), {"returncode": 0})())
+    assert jan.zombie_worker_check(diag_a, cancel_grace=600, dry_run=False,
+                                   unit="u-b") is False
+    assert calls == []
+
+
+def test_zombie_refuses_when_the_slot_is_unattributable(tmp_path, monkeypatch):
+    """An unattributable cancellation is never acted on (no machine-wide fallback)."""
+    d = tmp_path / "elsewhere" / "_diag"
+    d.mkdir(parents=True)
+    (d / "Runner_20260101-000000-utc.log").write_text(CANCEL_LINE + "\n")
+    monkeypatch.setattr(jan, "worker_pids", lambda home=None: [4242])
+    monkeypatch.setattr(jan, "starttime_epoch", lambda pid: 1.0)
+    calls = []
+    monkeypatch.setattr(jan.subprocess, "run",
+                        lambda cmd, timeout=None: calls.append(cmd)
+                        or type("R", (), {"returncode": 0})())
+    assert jan.zombie_worker_check(str(d), cancel_grace=600, dry_run=False,
+                                   unit="u") is False
     assert calls == []

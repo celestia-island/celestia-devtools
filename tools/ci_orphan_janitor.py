@@ -28,10 +28,24 @@ Criterion 3 already protected a live job's own build tree, and criterion 5 prote
 processes the job deliberately detached (an sccache server that outlives its client):
 if a slot has a live Worker, only processes *older* than that Worker can be orphans.
 
+Known limitation (evidence in the PR): a detached build helper that predates the
+slot's live Worker and whose cwd sits inside a work dir is reaped, even if a live job
+depends on it. The sccache daemon actually observed on the CI VMs keeps cwd=/ and is
+therefore excluded by criterion 2, so this is latent rather than live; keeping a helper
+across jobs should be done with a systemd unit whose cwd is outside _work.
+
+Known limitation (deliberate, follow-up): a slot whose Worker hangs without any
+cancellation request produces no restart trigger, and that hung Worker also counts as
+"live" for criterion 5, so new processes behind it are spared. The farm watchdog and
+ci-reaper are likewise slot-1-only for that class. Sparing is the intended direction
+of every ambiguous case here: a wrong SIGKILL or a wrong runner restart costs a live
+job, while a missed orphan is reaped on the next cycle once the slot goes idle.
+
 Usage: ci-orphan-janitor.py [--grace SEC] [--cancel-grace SEC] [--dry-run]
                             [--selftest] [--skip-zombie] [--skip-orphans]
 Exit 0 normally (also when nothing matched); exit 3 on internal error.
 """
+import copy
 import glob
 import json
 import os
@@ -40,6 +54,7 @@ import sys
 import time
 import signal
 import socket
+import tempfile
 import argparse
 import subprocess
 from datetime import datetime, timezone
@@ -47,6 +62,11 @@ from datetime import datetime, timezone
 RUNNER_PARENT = "/home/lab"
 RUNNER_HOME = os.path.join(RUNNER_PARENT, "actions-runner")  # default/primary slot
 BUILD_COMMS = {"rustc", "cargo", "clippy-driver", "rustdoc", "sccache"}
+
+
+def read_text_file(path):
+    with open(path, errors="replace") as f:
+        return f.read()
 
 
 class RealProc:
@@ -102,8 +122,7 @@ class RealProc:
             return 0.0
 
     def read_text(self, path):
-        with open(path, errors="replace") as f:
-            return f.read()
+        return read_text_file(path)
 
 
 PROC = RealProc()
@@ -246,9 +265,23 @@ CANCEL_RE = re.compile(
 )
 
 
-def worker_pids():
-    return [p for p in PROC.pids()
-            if "Runner.Worker spawnclient" in PROC.cmdline(p)]
+def worker_pids(home=None):
+    """Live Runner.Worker pids, optionally only those belonging to one slot.
+
+    The home filter is not cosmetic: the cancellation timestamp comes from one
+    slot's _diag, so pairing it with a machine-wide worker list lets an old Worker
+    in slot A justify restarting slot B - killing a healthy job there, and doing it
+    again on every timer tick while the cancel line and that Worker both survive.
+    """
+    out = []
+    for p in PROC.pids():
+        cmd = PROC.cmdline(p)
+        if "Runner.Worker spawnclient" not in cmd:
+            continue
+        if home is not None and not cmd.startswith(home + "/"):
+            continue
+        out.append(p)
+    return out
 
 
 def last_cancel_request(diag_dir):
@@ -260,7 +293,11 @@ def last_cancel_request(diag_dir):
                 if n.startswith("Runner_") and n.endswith(".log")]
     except OSError:
         return 0.0
-    for path in sorted(logs, key=os.path.getmtime, reverse=True)[:2]:
+    try:
+        logs = sorted(logs, key=os.path.getmtime, reverse=True)[:2]
+    except OSError:  # a log rotated away between listdir and stat
+        return 0.0
+    for path in logs:
         try:
             lines = PROC.read_text(path).splitlines()[-500:]
         except OSError:
@@ -280,22 +317,51 @@ def last_cancel_request(diag_dir):
     return best
 
 
-def zombie_worker_check(diag_dir, cancel_grace, dry_run, unit):
+def slot_home_for_diag(diag_dir):
+    """Runner home a _diag dir belongs to, or None when it cannot be attributed."""
+    home = os.path.dirname(os.path.normpath(diag_dir))
+    return home if os.path.isdir(os.path.join(home, "_work")) else None
+
+
+def zombie_worker_check(diag_dir, cancel_grace, dry_run, unit, home=None):
+    """Restart `unit` when a Worker in *its own* slot ignored a cancellation.
+
+    The slot is derived from the _diag dir when the caller does not supply it, and
+    a cancellation that cannot be attributed to a slot is never acted on: pairing one
+    slot's cancellation with a machine-wide Worker list is how an old Worker in slot A
+    could justify restarting slot B, killing a healthy job there on every timer tick.
+    """
+    if home is None:
+        home = slot_home_for_diag(diag_dir)
+    if home is None:
+        print(f"janitor: WARN cannot attribute {diag_dir} to a runner slot; "
+              f"refusing to restart {unit}")
+        return False
     last_cancel = last_cancel_request(diag_dir)
     if not last_cancel:
         return False
     age = time.time() - last_cancel
     if age < cancel_grace:
         return False
-    for pid in worker_pids():
+    for pid in worker_pids(home):
         st = starttime_epoch(pid)
         if st and st < last_cancel:
-            print(f"janitor: zombie worker pid={pid} predates cancellation "
-                  f"request from {int(age)}s ago -> {'DRYRUN ' if dry_run else ''}"
-                  f"restart {unit}")
+            print(f"janitor: zombie worker pid={pid} in "
+                  f"{os.path.basename(home)} predates the "
+                  f"cancellation request from {int(age)}s ago -> "
+                  f"{'DRYRUN ' if dry_run else ''}restart {unit}")
             if not dry_run:
-                rc = subprocess.run(["systemctl", "restart", unit]).returncode
-                print(f"janitor: systemctl restart {unit} rc={rc}")
+                # try-restart, not restart: a slot the slot governor deliberately
+                # stopped must not be started again by the janitor.
+                try:
+                    rc = subprocess.run(["systemctl", "try-restart", unit],
+                                        timeout=60).returncode
+                except subprocess.TimeoutExpired:
+                    rc = 124
+                print(f"janitor: systemctl try-restart {unit} rc={rc}")
+                if rc:
+                    print(f"janitor: WARN cannot restart {unit} (rc={rc}) - check the "
+                          f"unit name derived from .runner agentName")
             return True
     return False
 
@@ -307,7 +373,8 @@ def zombie_worker_check(diag_dir, cancel_grace, dry_run, unit):
 def orphan_candidates(grace, homes):
     """Victims as (pid, comm, etimes, home, repo, cmdline); pure over PROC."""
     live = live_worker_starts(homes)
-    victims = []
+    tentative = []
+    spared_recent = set()
     for pid in PROC.pids():
         comm = PROC.comm(pid)
         if comm not in BUILD_COMMS:
@@ -325,10 +392,19 @@ def orphan_candidates(grace, homes):
             st = PROC.starttime(pid)
             if not st or st >= oldest_worker:
                 # started during this slot's live job: it may belong to that job
-                # (e.g. an sccache server outliving its client) -> leave it alone
+                spared_recent.add(pid)
                 continue
-        victims.append((pid, comm, et, home, repo, PROC.cmdline(pid)[:90]))
-    return victims
+        tentative.append((pid, comm, et, home, repo, PROC.cmdline(pid)[:90]))
+
+    # Deliberately NOT protecting the ancestors of the spared set. It would save a
+    # detached helper that predates the live job, but it cannot tell that helper apart
+    # from a real orphan that is still spawning children: an hours-old `cargo bench`
+    # keeps starting rustc that is "recent" by criterion 5, so its own ancestor rule
+    # would shield the very process this tool exists to reap. The observed sccache
+    # daemon is caught by criterion 2 instead (its cwd is /, not a work dir); a future
+    # long-lived helper must be a systemd unit with a cwd outside _work.
+    del spared_recent
+    return tentative
 
 
 def reap(grace, homes, dry_run):
@@ -360,7 +436,7 @@ def reap(grace, homes, dry_run):
 
 H1 = "/home/lab/actions-runner"
 H2 = "/home/lab/actions-runner-2"
-NOW = 1_700_000_000.0
+NOW = time.time()  # real clock: --grace must actually bite in the fixtures
 
 
 class FakeProc:
@@ -389,7 +465,12 @@ class FakeProc:
         return self._f(pid, "start", 0.0)
 
     def read_text(self, path):
-        return self.table.get(path, {}).get("text", "")
+        # real files (a temp _diag in the zombie cases) must stay readable while the
+        # process table is faked, otherwise the cancellation line is never parsed
+        entry = self.table.get(path)
+        if isinstance(entry, dict) and "text" in entry:
+            return entry["text"]
+        return read_text_file(path)
 
 
 def _case(name, table, homes, expect, grace=900):
@@ -421,52 +502,105 @@ def selftest():
     }
     cases = []
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     cases.append(_case("live job's own tree is untouched", t, [H1, H2], []))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[20] = {"comm": "cargo", "cmdline": "cargo bench", "ppid": 1,
              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 20 * 3600}
     cases.append(_case("orphan older than the live worker is reaped", t, [H1, H2], [20]))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[21] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
              "cwd": f"{H2}/_work/entelecheia/entelecheia", "start": NOW - 20 * 3600}
     cases.append(_case("orphan in the second slot is reaped", t, [H1, H2], [21]))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[101]["start"] = NOW - 3600
     t[22] = {"comm": "sccache", "cmdline": "sccache rustc", "ppid": 1,
              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 600}
     cases.append(_case("detached helper of the live job is spared", t, [H1, H2], []))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[23] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 100}
     cases.append(_case("young process is spared", t, [H1, H2], []))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[24] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
              "cwd": "/home/lab/elsewhere", "start": NOW - 20 * 3600}
     cases.append(_case("build tool outside any work dir is ignored", t, [H1, H2], []))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[25] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": 0.0}
     cases.append(_case("unknown start time with a live job is spared", t, [H1, H2], []))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[101]["comm"] = "bash"
     t[25] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 20 * 3600}
     cases.append(_case("idle slot1: old process is reaped", t, [H1, H2], [25]))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[29] = {"comm": "rustc", "cmdline": "rustc", "ppid": 999, "cwd": f"{H1}/_work/plana/plana",
              "start": NOW - 20 * 3600}  # 999 is absent from the table -> unreadable chain
     cases.append(_case("unreadable ancestry is spared", t, [H1, H2], []))
 
-    t = dict(base)
+    # grace boundary in an IDLE slot: the fixture clock is real now, so these two
+    # discriminate the --grace rule (a fixed clock made every age ~1053 days)
+    t = copy.deepcopy(base)
+    for pid in (101, 10, 11, 102):
+        del t[pid]  # no live job in slot 1
+    t[40] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 100}
+    cases.append(_case("idle slot: process inside --grace is spared", t, [H1, H2], []))
+
+    t = copy.deepcopy(base)
+    for pid in (101, 10, 11, 102):
+        del t[pid]
+    t[41] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 1200}
+    cases.append(_case("idle slot: process past --grace is reaped", t, [H1, H2], [41]))
+
+    # the cancellation timestamp comes from one slot's _diag, so the Worker that
+    # justifies a restart must belong to that same slot
+    with tempfile.TemporaryDirectory() as tmp:
+        home_a = os.path.join(tmp, "actions-runner")
+        home_b = os.path.join(tmp, "actions-runner-2")
+        diag = os.path.join(home_a, "_diag")
+        os.makedirs(diag)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(time.time() - 1200))
+        with open(os.path.join(diag, "Runner_20260101-000000-utc.log"), "w") as fh:
+            fh.write(f"[{ts}Z INFO HostContext] Job cancellation request "
+                     f"11111111-2222-3333-4444-555555555555 received\n")
+        # only slot B has a Worker, and it predates the cancellation
+        table = {500: {"comm": "Runner.Worker",
+                       "cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2",
+                       "ppid": 1, "start": time.time() - 5000}}
+        saved = PROC
+        globals()["PROC"] = FakeProc(table)
+        try:
+            fired_wrong = zombie_worker_check(diag, 600, True,
+                                              "actions.runner.x.node-b.service", home_a)
+            fired_right = zombie_worker_check(diag, 600, True,
+                                              "actions.runner.x.node-b.service", home_b)
+        finally:
+            globals()["PROC"] = saved
+        cases.append((not fired_wrong,
+                      f"zombie check ignores another slot's Worker (fired={fired_wrong})"))
+        cases.append((fired_right,
+                      f"zombie check fires for its own slot's Worker (fired={fired_right})"))
+
+    # the observed sccache daemon lives with cwd=/ (probed on node-ci-2 and node-ci-4,
+    # 2026-10-03), which criterion 2 excludes no matter how old it is
+    t = copy.deepcopy(base)
+    t[60] = {"comm": "sccache", "cmdline": "sccache --start-server",
+             "ppid": 1, "cwd": "/", "start": NOW - 6 * 3600}
+    cases.append(_case("the sccache daemon outside a work dir is never a candidate",
+                       t, [H1, H2], []))
+
+    t = copy.deepcopy(base)
     # both slots busy with the *same* repo, and one stale same-repo orphan in each:
     # the pre-fix repo exemption would have spared both
     t[101]["start"] = NOW - 1800
@@ -479,13 +613,13 @@ def selftest():
     cases.append(_case("same-repo orphans are reaped while the repo runs in both slots",
                        t, [H1, H2], [26, 27]))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[400] = {"comm": "RunnerService", "cmdline": "RunnerService", "ppid": 1}
     t[31] = {"comm": "rustc", "cmdline": "rustc", "ppid": 400,
              "cwd": f"{H1}/_work/plana/plana", "start": NOW - 20 * 3600}
     cases.append(_case("RunnerService ancestry still protects", t, [H1, H2], []))
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[101] = {"comm": "Runner.Worker", "cmdline": "Runner.Worker spawnclient 1 2",
               "ppid": 100, "start": NOW - 1800}
     t[28] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
@@ -531,7 +665,7 @@ def selftest():
         finally:
             globals()["PROC"] = saved
 
-    t = dict(base)
+    t = copy.deepcopy(base)
     t[20] = {"comm": "cargo", "cmdline": "cargo bench", "ppid": 1,
              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 20 * 3600}
     t[21] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
@@ -540,6 +674,10 @@ def selftest():
     controls = [
         (old == [], f"old rules saw {old} (repo exemption + single home hide both)"),
     ]
+
+    # fixtures must not alias each other (shallow copies once leaked a mutation)
+    cases.append((base[101]["comm"] == "Runner.Worker" and base[10]["ppid"] == 102,
+                  "selftest fixtures do not leak into each other"))
 
     rc = 0
     for ok, detail in cases:
@@ -576,14 +714,17 @@ def main():
     homes = runner_homes()
     if not args.skip_zombie:
         if args.diag_dir:
-            slots = {args.unit or ("actions.runner.celestia-island.%s.service"
-                                   % socket.gethostname()): args.diag_dir}
+            # an unattributable override is refused inside zombie_worker_check
+            slots = [(slot_home_for_diag(args.diag_dir),
+                      args.unit or ("actions.runner.celestia-island.%s.service"
+                                    % socket.gethostname()),
+                      args.diag_dir)]
         else:
-            slots = {unit: os.path.join(home, "_diag")
-                     for home, unit in slot_units(homes).items()}
-        for unit, diag in slots.items():
-            if zombie_worker_check(diag, args.cancel_grace, args.dry_run, unit):
-                return 0
+            slots = [(home, unit, os.path.join(home, "_diag"))
+                     for home, unit in slot_units(homes).items()]
+        for home, unit, diag in slots:
+            # a restart must not swallow this cycle's orphan reaping
+            zombie_worker_check(diag, args.cancel_grace, args.dry_run, unit, home)
 
     if args.skip_orphans:
         return 0
