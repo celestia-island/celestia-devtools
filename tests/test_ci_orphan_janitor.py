@@ -1,6 +1,7 @@
 """Tests for the zombie-worker cancellation detector in ci_orphan_janitor."""
 
 import importlib.util
+import re
 import subprocess
 import time as _time
 import os
@@ -276,16 +277,70 @@ def test_worker_pids_attributes_a_relative_argv_by_cwd(tmp_path, monkeypatch):
 
 
 def test_selftest_panel_passes():
-    """CI runs pytest only, so the tool's own 30-case panel must be exercised here.
+    """CI runs pytest only, so the tool's own panel must be exercised here.
 
     Several orphan criteria (the criterion-5 tie, the renamed-Worker comm fallback) are
     pinned by --selftest and by nothing else; without this test they could rot unnoticed
-    because no workflow invokes the flag.
+    because no workflow invokes the flag. The case count is asserted as well: a panel
+    that reports "0/0 passed" is empty, not green.
     """
     r = subprocess.run([sys.executable, TOOL, "--selftest"],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "passed" in r.stdout and "FAIL" not in r.stdout, r.stdout
+    assert "FAIL" not in r.stdout, r.stdout
+    m = re.search(r"selftest: (\d+)/(\d+) passed", r.stdout)
+    assert m, r.stdout
+    passed, total = int(m.group(1)), int(m.group(2))
+    assert total >= 30 and passed == total, r.stdout
+
+
+class _Result:
+    def __init__(self, stdout, returncode=0):
+        self.stdout, self.returncode = stdout, returncode
+
+
+def test_unit_serves_home_rejects_a_unit_for_another_home(monkeypatch):
+    """LoadState alone is not enough - the unit must serve THIS home."""
+    monkeypatch.setattr(jan.subprocess, "run",
+                        lambda *a, **k: _Result("/home/lab/actions-runner-2\n"))
+    assert jan.unit_serves_home("u", "/home/lab/actions-runner") is False
+
+
+def test_unit_serves_home_accepts_slashes_and_symlinks(tmp_path, monkeypatch):
+    home = tmp_path / "actions-runner"
+    home.mkdir()
+    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _Result(f"{home}/\n"))
+    assert jan.unit_serves_home("u", str(home)) is True
+    link = tmp_path / "linked-runner"
+    link.symlink_to(home)
+    assert jan.unit_serves_home("u", str(link)) is True
+
+
+def test_unit_serves_home_rejects_an_empty_working_directory(tmp_path, monkeypatch):
+    """A nonexistent unit answers rc=0 with empty stdout; that must not read as a match.
+
+    The cwd is set to the home on purpose: realpath("") is the cwd, so without the empty
+    guard this would compare equal and restart the wrong unit.
+    """
+    home = tmp_path / "actions-runner"
+    home.mkdir()
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _Result("\n"))
+    assert jan.unit_serves_home("u", str(home)) is False
+
+
+def test_units_by_home_normalises_the_home(tmp_path, monkeypatch):
+    """The fallback must resolve the same paths unit_serves_home accepts."""
+    home = tmp_path / "actions-runner"
+    home.mkdir()
+
+    def fake(cmd, **kwargs):
+        if cmd[1] == "list-units":
+            return _Result("actions.runner.o.n.service loaded active running GitHub\n")
+        return _Result(f"{home}/\n")  # trailing slash in WorkingDirectory
+
+    monkeypatch.setattr(jan.subprocess, "run", fake)
+    assert jan.units_by_home([str(home)]) == {str(home): "actions.runner.o.n.service"}
 
 
 def test_unit_without_diag_dir_is_rejected():
