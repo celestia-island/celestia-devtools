@@ -53,7 +53,6 @@ import re
 import sys
 import time
 import signal
-import socket
 import tempfile
 import argparse
 import subprocess
@@ -154,17 +153,74 @@ def runner_homes():
     return homes or [RUNNER_HOME]
 
 
+def read_agent_name(home):
+    """agentName from the runner's .runner registration file, BOM tolerated.
+
+    The runner writes that file with a UTF-8 BOM on these VMs, and json.loads rejects
+    it - so a bare parse silently yields no unit at all and the whole zombie check
+    becomes inert (field-found 2026-10-03: both nodes' .runner start with \ufeff).
+    """
+    try:
+        raw = PROC.read_text(os.path.join(home, ".runner"))
+    except OSError:
+        return None
+    try:
+        name = json.loads(raw.lstrip("\ufeff")).get("agentName")
+    except ValueError:
+        return None
+    return name or None
+
+
+def unit_exists(unit):
+    """Is that unit actually loaded? A wrong name would make a restart a silent no-op."""
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "LoadState", "--value", unit],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0 and r.stdout.strip() == "loaded"
+
+
+def units_by_home(homes):
+    """home -> unit, asked of systemd directly (the naming convention is not guessable)."""
+    out = {}
+    try:
+        r = subprocess.run(["systemctl", "list-units", "--type=service", "--all",
+                            "--no-legend", "--plain", "actions.runner.*"],
+                           capture_output=True, text=True, timeout=30)
+        listing = r.stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for line in listing.splitlines():
+        parts = line.split()
+        if not parts or not parts[0].endswith(".service"):
+            continue
+        unit = parts[0]
+        try:
+            w = subprocess.run(["systemctl", "show", "-p", "WorkingDirectory", "--value", unit],
+                               capture_output=True, text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if w in homes:
+            out[w] = unit
+    return out
+
+
 def slot_units(homes):
-    """home -> systemd unit, from the runner's own .runner registration file."""
+    """home -> systemd unit, from .runner when readable and from systemd otherwise."""
     units = {}
     for home in homes:
-        name = None
-        try:
-            name = json.loads(PROC.read_text(os.path.join(home, ".runner"))).get("agentName")
-        except (OSError, ValueError):
-            name = None
-        if name:
-            units[home] = f"actions.runner.celestia-island.{name}.service"
+        name = read_agent_name(home)
+        unit = f"actions.runner.celestia-island.{name}.service" if name else None
+        if unit and unit_exists(unit):
+            units[home] = unit
+            continue
+        discovered = units_by_home([home]).get(home)
+        if discovered:
+            units[home] = discovered
+        else:
+            print(f"janitor: WARN no runner unit found for {os.path.basename(home)}; "
+                  f"its zombie check is skipped")
     return units
 
 
@@ -637,6 +693,49 @@ def selftest():
     cases.append(_case("slot 2 uses its own Worker, not slot 1's", t, [H1, H2], [56],
                        grace=300))
 
+    # the tie must be tested with a fixture where criterion 4 cannot spare it, or the
+    # case passes for the wrong reason (this is how the >= boundary stayed invisible)
+    t = copy.deepcopy(base)
+    t[101]["start"] = NOW - 3600
+    t[57] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 3600}
+    cases.append(_case("candidate starting exactly with the Worker is spared", t,
+                       [H1, H2], [], grace=300))
+
+    # criterion 5 must stay armed when the runner renames its argv: comm is the fallback
+    t = copy.deepcopy(base)
+    t[101] = {"comm": "Runner.Worker", "cmdline": f"{H1}/bin/Runner.Worker",
+              "ppid": 100, "start": NOW - 3600}
+    t[58] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 1000}
+    cases.append(_case("a renamed Worker still protects its slot", t, [H1, H2], [],
+                       grace=300))
+
+    # ... and the slot must still be attributable when the argv carries no path
+    t = copy.deepcopy(base)
+    t[101] = {"comm": "Runner.Worker", "cmdline": "Runner.Worker spawnclient 1 2",
+              "ppid": 100, "cwd": H1, "start": NOW - 3600}
+    t[59] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 1000}
+    cases.append(_case("a Worker without an absolute argv is attributed by cwd", t,
+                       [H1, H2], [], grace=300))
+
+    # the runner writes .runner with a UTF-8 BOM; a bare json.loads fails on it and the
+    # whole zombie check goes inert
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "actions-runner")
+        os.makedirs(os.path.join(home, "_work"))
+        runner = os.path.join(home, ".runner")
+        saved = PROC
+        globals()["PROC"] = FakeProc(
+            {runner: {"text": "\ufeff" + json.dumps({"agentName": "node-ci-9"})}})
+        try:
+            name = read_agent_name(home)
+        finally:
+            globals()["PROC"] = saved
+        cases.append((name == "node-ci-9",
+                      f"read_agent_name tolerates the .runner BOM (got {name!r})"))
+
     # sccache is a build tool too
     t = copy.deepcopy(base)
     for pid in (101, 10, 11, 102):
@@ -767,15 +866,21 @@ def main():
     homes = runner_homes()
     if not args.skip_zombie:
         if args.diag_dir:
-            # an unattributable override is refused inside zombie_worker_check
-            slots = [(slot_home_for_diag(args.diag_dir),
-                      args.unit or ("actions.runner.celestia-island.%s.service"
-                                    % socket.gethostname()),
-                      args.diag_dir)]
+            # an unattributable override is refused inside zombie_worker_check, and the
+            # unit is derived from the diag's own slot - defaulting to
+            # <hostname>.service would target the first slot for a second-slot diag
+            home = slot_home_for_diag(args.diag_dir)
+            unit = args.unit
+            if unit is None and home is not None:
+                unit = slot_units([home]).get(home)
+            slots = [(home, unit, args.diag_dir)]
         else:
             slots = [(home, unit, os.path.join(home, "_diag"))
                      for home, unit in slot_units(homes).items()]
         for home, unit, diag in slots:
+            if unit is None:
+                print(f"janitor: WARN no unit for {diag}; skipping its zombie check")
+                continue
             # a restart must not swallow this cycle's orphan reaping
             zombie_worker_check(diag, args.cancel_grace, args.dry_run, unit, home)
 

@@ -203,6 +203,56 @@ def test_zombie_refuses_when_the_slot_is_unattributable(tmp_path, monkeypatch):
     monkeypatch.setattr(jan.subprocess, "run",
                         lambda cmd, timeout=None: calls.append(cmd)
                         or type("R", (), {"returncode": 0})())
-    assert jan.zombie_worker_check(str(d), cancel_grace=600, dry_run=False,
+    # cancel_grace=0 so the check reaches the refusal instead of stopping at the grace
+    # comparison (with a 300s-old line and grace 600 this test passed even with the
+    # refusal removed)
+    assert jan.zombie_worker_check(str(d), cancel_grace=0, dry_run=False,
                                    unit="u") is False
     assert calls == []
+
+
+def test_slot_units_tolerates_the_runner_bom(tmp_path, monkeypatch):
+    """The runner writes .runner with a UTF-8 BOM; a bare json.loads silently gives none."""
+    home = tmp_path / "actions-runner"
+    (home / "_work").mkdir(parents=True)
+    (home / ".runner").write_bytes(
+        b"\xef\xbb\xbf" + b'{"agentName": "node-ci-9"}')
+    monkeypatch.setattr(jan, "unit_exists", lambda unit: True)
+    assert jan.slot_units([str(home)]) == {
+        str(home): "actions.runner.celestia-island.node-ci-9.service"}
+
+
+def test_slot_units_falls_back_to_systemd(tmp_path, monkeypatch):
+    """A .runner that cannot be parsed must not leave the slot without a unit."""
+    home = tmp_path / "actions-runner-2"
+    (home / "_work").mkdir(parents=True)  # no .runner at all
+    monkeypatch.setattr(jan, "unit_exists", lambda unit: False)
+    monkeypatch.setattr(jan, "units_by_home", lambda homes: {str(home): "u-discovered"})
+    assert jan.slot_units([str(home)]) == {str(home): "u-discovered"}
+
+
+def test_worker_pids_attributes_a_relative_argv_by_cwd(tmp_path, monkeypatch):
+    """A Worker whose argv carries no path must still be found for its own slot."""
+    home_a = tmp_path / "actions-runner"
+    home_b = tmp_path / "actions-runner-2"
+    for h in (home_a, home_b):
+        (h / "_work").mkdir(parents=True)
+
+    class _P:
+        def pids(self):
+            return [700, 701]
+
+        def cmdline(self, pid):
+            # 700: relative argv, cwd identifies the slot; 701: absolute argv for slot B
+            return ("Runner.Worker spawnclient 1 2" if pid == 700
+                    else f"{home_b}/bin/Runner.Worker spawnclient 3 4")
+
+        def comm(self, pid):
+            return "Runner.Worker"
+
+        def cwd(self, pid):
+            return str(home_a) if pid == 700 else str(home_b)
+
+    monkeypatch.setattr(jan, "PROC", _P())
+    assert jan.worker_pids(str(home_a)) == [700]
+    assert jan.worker_pids(str(home_b)) == [701]
