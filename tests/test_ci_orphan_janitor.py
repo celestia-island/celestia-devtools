@@ -161,6 +161,12 @@ class _FakeProc:
     def cmdline(self, pid):
         return self.table[pid]["cmdline"]
 
+    def comm(self, pid):
+        return self.table[pid].get("comm", "")
+
+    def cwd(self, pid):
+        return self.table[pid].get("cwd", "")
+
     def starttime(self, pid):
         return self.table[pid]["start"]
 

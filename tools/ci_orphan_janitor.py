@@ -128,26 +128,6 @@ class RealProc:
 PROC = RealProc()
 
 
-def all_pids():
-    return PROC.pids()
-
-
-def read_cmdline(pid):
-    return PROC.cmdline(pid)
-
-
-def read_comm(pid):
-    return PROC.comm(pid)
-
-
-def read_cwd(pid):
-    return PROC.cwd(pid)
-
-
-def read_ppid(pid):
-    return PROC.ppid(pid)
-
-
 def starttime_epoch(pid):
     return PROC.starttime(pid)
 
@@ -213,10 +193,9 @@ def live_worker_starts(homes):
     """home -> start time of the oldest currently live Runner.Worker in that slot."""
     out = {}
     for pid in PROC.pids():
-        cmd = PROC.cmdline(pid)
-        if "Runner.Worker spawnclient" not in cmd:
+        if not is_worker_proc(pid):
             continue
-        home = next((h for h in homes if cmd.startswith(h + "/")), None)
+        home = worker_home(pid, homes)
         if home is None:
             continue
         st = PROC.starttime(pid)
@@ -265,23 +244,36 @@ CANCEL_RE = re.compile(
 )
 
 
-def worker_pids(home=None):
-    """Live Runner.Worker pids, optionally only those belonging to one slot.
+def worker_home(pid, homes):
+    """Runner home a Worker belongs to, from its argv or failing that its cwd."""
+    cmd = PROC.cmdline(pid)
+    home = next((h for h in homes if cmd.startswith(h + "/")), None)
+    if home is None:
+        home = home_of(PROC.cwd(pid), homes)
+    return home
 
-    The home filter is not cosmetic: the cancellation timestamp comes from one
-    slot's _diag, so pairing it with a machine-wide worker list lets an old Worker
-    in slot A justify restarting slot B - killing a healthy job there, and doing it
-    again on every timer tick while the cancel line and that Worker both survive.
+
+def is_worker_proc(pid, home=None):
+    """A Runner.Worker process, optionally restricted to one slot.
+
+    Recognition falls back to the comm name because criterion 5 is the only guard for
+    a live job's *detached* build processes: if a runner release renames the argv (the
+    literal `Runner.Worker spawnclient`), criterion 5 would go silently vacuous and the
+    tool would start killing live compiles - it has to fail toward sparing, not toward
+    killing. The home filter is not cosmetic either: the cancellation timestamp comes
+    from one slot's _diag, and pairing it with a machine-wide Worker list lets an old
+    Worker in slot A justify restarting slot B, killing a healthy job there on every
+    timer tick while the cancel line and that Worker both survive.
     """
-    out = []
-    for p in PROC.pids():
-        cmd = PROC.cmdline(p)
-        if "Runner.Worker spawnclient" not in cmd:
-            continue
-        if home is not None and not cmd.startswith(home + "/"):
-            continue
-        out.append(p)
-    return out
+    cmd = PROC.cmdline(pid)
+    if "Runner.Worker spawnclient" not in cmd and PROC.comm(pid) != "Runner.Worker":
+        return False
+    return home is None or worker_home(pid, [home]) == home
+
+
+def worker_pids(home=None):
+    """Live Runner.Worker pids, optionally only those belonging to one slot."""
+    return [p for p in PROC.pids() if is_worker_proc(p, home)]
 
 
 def last_cancel_request(diag_dir):
@@ -591,6 +583,67 @@ def selftest():
                       f"zombie check ignores another slot's Worker (fired={fired_wrong})"))
         cases.append((fired_right,
                       f"zombie check fires for its own slot's Worker (fired={fired_right})"))
+
+    # criterion 5 coverage: spared ONLY because it started after the live Worker
+    # (age is past grace, so criterion 4 cannot spare it)
+    t = copy.deepcopy(base)
+    t[101]["start"] = NOW - 600
+    t[50] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 400}
+    cases.append(_case("detached process started with the live job is spared", t,
+                       [H1, H2], [], grace=300))
+
+    # two Workers in one slot: the OLDEST decides, so a process that started after it
+    # is still part of a live job even though the newer Worker is younger than it
+    t = copy.deepcopy(base)
+    t[101]["start"] = NOW - 7200
+    t[103] = {"comm": "Runner.Worker", "cmdline": f"{H1}/bin/Runner.Worker spawnclient 3 4",
+              "ppid": 100, "start": NOW - 600}
+    t[51] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 3600}
+    cases.append(_case("the oldest Worker of the slot decides", t, [H1, H2], []))
+
+    # actions-runner vs actions-runner-2 must not be confused by prefix
+    t = copy.deepcopy(base)
+    for pid in (101, 10, 11, 102):
+        del t[pid]
+    t[103] = {"comm": "Runner.Worker", "cmdline": f"{H2}/bin/Runner.Worker spawnclient 3 4",
+              "ppid": 200, "start": NOW - 600}
+    t[52] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 400}
+    cases.append(_case("a Worker in the other slot does not spare this slot", t,
+                       [H1, H2], [52], grace=300))
+
+    # exactly at the grace boundary: the rule reaps at >= grace
+    t = copy.deepcopy(base)
+    for pid in (101, 10, 11, 102):
+        del t[pid]
+    t[53] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 900}
+    cases.append(_case("process exactly at --grace is reaped", t, [H1, H2], [53]))
+
+    # a candidate that starts at the same instant as the slot's Worker is spared
+    t = copy.deepcopy(base)
+    t[101]["start"] = NOW - 600
+    t[55] = {"comm": "rustc", "cmdline": "rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 600}
+    cases.append(_case("candidate starting with the Worker is spared", t, [H1, H2], []))
+
+    # ... and criterion 5 must consult THIS slot's Worker, not the first slot's
+    t = copy.deepcopy(base)
+    t[101]["start"] = NOW - 600
+    t[56] = {"comm": "cargo", "cmdline": "cargo check", "ppid": 1,
+             "cwd": f"{H2}/_work/plana/plana", "start": NOW - 400}
+    cases.append(_case("slot 2 uses its own Worker, not slot 1's", t, [H1, H2], [56],
+                       grace=300))
+
+    # sccache is a build tool too
+    t = copy.deepcopy(base)
+    for pid in (101, 10, 11, 102):
+        del t[pid]
+    t[54] = {"comm": "sccache", "cmdline": "sccache rustc", "ppid": 1,
+             "cwd": f"{H1}/_work/plana/plana", "start": NOW - 7200}
+    cases.append(_case("a stale sccache wrapper is reaped", t, [H1, H2], [54]))
 
     # the observed sccache daemon lives with cwd=/ (probed on node-ci-2 and node-ci-4,
     # 2026-10-03), which criterion 2 excludes no matter how old it is
