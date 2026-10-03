@@ -217,8 +217,12 @@ def units_by_home(homes):
                                capture_output=True, text=True, timeout=30).stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
             continue
-        if w in homes:
-            out[w] = unit
+        for home in homes:
+            # realpath, like unit_serves_home: a trailing slash or a symlinked home must
+            # not make this fallback miss the unit that unit_serves_home would accept
+            if w and os.path.realpath(w) == os.path.realpath(home):
+                out[home] = unit
+                break
     return out
 
 
