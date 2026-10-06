@@ -185,7 +185,54 @@ def main() -> int:
 # 每个仓的树；现在设 repo 变量 `LINT_RUNNER`/`LINT_LANE` 即可无树切换，且「私仓 hosted
 # 绕行 vs 模板合规」的互斥解除。旧 273B 字节保留为 LEGACY（audit 降级 warning，见
 # workflow_audit._canonical_caller_findings），存量仓用 `init --with-workflows --force` 渐进迁移。
+#: Canonical caller since 2026-10-06 (1504 B). It is the lane-carrying form **plus** the
+#: explicit `permissions` grant the reusable lint declares: the org default token
+#: permissions were tightened on 2026-10-02, and a caller that withholds
+#: `pull-requests: read` makes the callee fail as `startup_failure` (zero jobs) so the
+#: single required check never reports — unmergeable on a protected repository. Thirty
+#: repositories were missed that day; this template is what `init --with-workflows`
+#: writes and what `workflow_audit` compares against.
 WORKFLOW_COMMIT_LINT = """\
+name: Commit Message Lint
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+  # Fallback entry for the CNB lane (or an operator): dispatch this workflow on
+  # the pull request's head branch, so the single required check is served by
+  # the lane that can actually run. See the devtools callee for the lane rules.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to lint"
+        required: true
+        type: string
+
+permissions:
+  # A called workflow cannot grant itself a permission the caller withholds —
+  # the mismatch reads as startup_failure. The org default token permissions
+  # were tightened on 2026-10-02 and this caller was missed, so the single
+  # required check stopped reporting entirely. Grant exactly what the reusable
+  # lint declares and nothing more.
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint-commits:
+    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
+    with:
+      # Lane switch without touching this tree: the org variables resolve to the
+      # self-hosted fleet while the hosted lane is down (2026-09-24 account
+      # payments: a job sent there sits fifteen minutes with no runner before
+      # being cancelled, indistinguishable from "the check never reports").
+      runner: ${{ vars.LINT_RUNNER || '["ubuntu-latest"]' }}
+      lane: ${{ vars.LINT_LANE || 'hosted' }}
+      pr: ${{ inputs.pr }}
+"""
+
+WORKFLOW_COMMIT_LINT_NO_PERMS = """\
 name: Commit Message Lint
 
 on:

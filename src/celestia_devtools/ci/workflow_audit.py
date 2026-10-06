@@ -94,6 +94,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 from celestia_devtools.repo.init import (
     WORKFLOW_COMMIT_LINT,
     WORKFLOW_COMMIT_LINT_LEGACY,
+    WORKFLOW_COMMIT_LINT_NO_PERMS,
 )
 
 try:
@@ -434,12 +435,34 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
       required check to the self-hosted farm still requires a tree change —
       exactly the W-2 single-lane-of-rescue defect. Warnings stay non-fatal so
       the fleet migrates by regeneration instead of a 38-repo red wave;
+    * the lane-carrying form without the `permissions` grant → WARNING: the check
+      still cannot start (2026-10-02 tightened the org default token permissions);
     * anything else → ERROR: hand-edited or from an older generator, and a
       variant that drops ``ready_for_review``/``synchronize`` stops re-running
       the required check (the merge then cannot proceed).
     """
     if text == WORKFLOW_COMMIT_LINT:
         return []
+    if text == WORKFLOW_COMMIT_LINT_NO_PERMS:
+        return [
+            Finding(
+                path=path,
+                line=1,
+                rule=RULE_CALLER_NOT_CANONICAL,
+                severity=SEVERITY_WARNING,
+                message=(
+                    f"this commit-lint caller carries the lane passthrough but not the "
+                    f"`permissions` grant the reusable lint declares "
+                    f"({len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode())} bytes). The org default "
+                    f"token permissions were tightened on 2026-10-02; without an explicit "
+                    f"`pull-requests: read` the callee fails as `startup_failure` with zero "
+                    f"jobs, so the required check never reports and a protected repository "
+                    f"cannot be merged at all. Regenerate it with "
+                    f"`celestia-devtools init --with-workflows --force`"
+                ),
+                excerpt="",
+            )
+        ]
     if text == WORKFLOW_COMMIT_LINT_LEGACY:
         return [
             Finding(
