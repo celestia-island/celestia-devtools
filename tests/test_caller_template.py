@@ -29,13 +29,24 @@ from celestia_devtools.repo.init import (
     WORKFLOW_CI_CACHE,
     WORKFLOW_COMMIT_LINT,
     WORKFLOW_COMMIT_LINT_LEGACY,
+    WORKFLOW_COMMIT_LINT_NO_PERMS,
     WORKFLOW_PR_TITLE_CHECK,
     _ensure_workflows,
 )
 
-#: sha256 of the canonical (lane-carrying) caller shipped in celestia-island repositories.
-CANONICAL_SHA256 = "620d511f256c4b73522b75beecc33509aa1401d2ca808efacde866b03126f75f"
-CANONICAL_BYTES = 1170
+#: sha256 of the canonical caller shipped in celestia-island repositories: the
+#: lane-carrying form **plus** the explicit `permissions` grant. A caller that
+#: withholds `pull-requests: read` makes the reusable lint fail as
+#: `startup_failure` (zero jobs) — the required check never reports, and a
+#: protected repository cannot be merged. Thirty repositories were missed when the
+#: org default token permissions were tightened on 2026-10-02.
+CANONICAL_SHA256 = "46ef1a7308c735fb2edcd2eacc59acd40b303b95648097baddfcfc7c25703e49"
+CANONICAL_BYTES = 1504
+
+#: The lane-carrying template without the grant (2026-09-26 → 2026-10-06): audit
+#: reports it as a warning, because the check still cannot start.
+NO_PERMS_SHA256 = "620d511f256c4b73522b75beecc33509aa1401d2ca808efacde866b03126f75f"
+NO_PERMS_BYTES = 1170
 
 #: The pre-lane canonical (2026-09-15 → 2026-09-26): audit-only migration marker.
 LEGACY_SHA256 = "106a93d0ca2bb1db223ef0fc82b72a53a58ea0ebcbd44bbd2eb8539be8b27342"
@@ -85,6 +96,51 @@ class TestLegacyBytes:
         assert "vars.LINT_RUNNER" in WORKFLOW_COMMIT_LINT
         assert "vars.LINT_LANE" in WORKFLOW_COMMIT_LINT
         assert "vars.LINT_RUNNER" not in WORKFLOW_COMMIT_LINT_LEGACY
+
+
+class TestNoPermsBytes:
+    """The lane-carrying template that predates the permission grant.
+
+    ``_canonical_caller_findings`` reports exactly these bytes as a warning, so a
+    stray edit here would re-classify thirty fixed repositories as hand-edited
+    (error) — or, worse, make it equal canonical and remove the migration signal
+    that tells the fleet to regenerate.
+    """
+
+    def test_hashes_to_the_pre_grant_file(self):
+        assert (
+            hashlib.sha256(WORKFLOW_COMMIT_LINT_NO_PERMS.encode()).hexdigest()
+            == NO_PERMS_SHA256
+        )
+
+    def test_length_is_the_pre_grant_fleet(self):
+        assert len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode()) == NO_PERMS_BYTES
+
+    def test_carries_the_lane_passthrough_but_not_the_grant(self):
+        assert "vars.LINT_RUNNER" in WORKFLOW_COMMIT_LINT_NO_PERMS
+        assert "permissions" not in WORKFLOW_COMMIT_LINT_NO_PERMS
+        assert "permissions" in WORKFLOW_COMMIT_LINT
+
+    def test_distinct_from_both_other_forms(self):
+        assert WORKFLOW_COMMIT_LINT_NO_PERMS not in (
+            WORKFLOW_COMMIT_LINT,
+            WORKFLOW_COMMIT_LINT_LEGACY,
+        )
+
+
+class TestPermissionGrant:
+    """The grant is the fix for the 2026-10-02 regression: without it the called
+    workflow cannot start, the required check never reports, and a repository with
+    `enforce_admins` on cannot be merged by anyone."""
+
+    def test_canonical_grants_exactly_what_the_callee_declares(self):
+        doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
+        assert doc["permissions"] == {"contents": "read", "pull-requests": "read"}
+
+    def test_grant_is_workflow_level(self):
+        """A job-level grant would not cover the reusable call's own resolution."""
+        doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
+        assert "permissions" not in doc["jobs"]["lint-commits"]
 
 
 class TestTriggerShape:
