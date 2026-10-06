@@ -7,17 +7,31 @@
 so a pull request from a fork skipped the job. A skipped job reports no check
 run, and a required context that never reports leaves the pull request
 ``BLOCKED`` forever — not "failed", not "pending", just unmergeable by anyone
-except a maintainer willing to pass ``--admin``. The intent was narrow (keep
-untrusted content off the shared self-hosted farm) but the effect was a blanket
-"we take no outside patches", a policy nobody had decided. It went unnoticed
-until 2026-10-06, when seven outside patches to a public repository turned out
-to have been sitting unmergeable for a month.
+except a maintainer willing to pass ``--admin`` (and the public repositories
+also set ``enforce_admins``, so even that is refused). The intent was narrow
+(keep untrusted content off the shared self-hosted farm) but the effect was a
+blanket "we take no outside patches", a policy nobody had decided. It went
+unnoticed until 2026-10-06, when seven outside patches to a public repository
+turned out to have been sitting unmergeable for a month.
 
-The fix keeps the original intent and drops the side effect: fork PRs are
-served, and they are pinned to the GitHub-hosted lane, which is free and
-unlimited for public repositories. The two assertions below are the contract —
-if either regresses, outside contributions silently become unmergeable again,
-which is exactly the failure mode that produced this test.
+The fix keeps the reachability and bounds the exposure: fork PRs are served,
+and they are served on whatever lane the repository resolves — the farm
+included (owner decision, 2026-10-06). Pinning forks to GitHub-hosted runners
+was tried first and rejected: this org's hosted lane went dark on 2026-09-24
+over account payments, so jobs sit fifteen minutes with no runner assigned and
+the pin would have kept outside contributions BLOCKED while looking fixed.
+
+What makes serving a fork here acceptable is that neither job can touch the
+pull request's code or secrets:
+
+* ``commit-msg-lint`` reads commit messages; it checks out the tree but never
+  executes it, and holds ``contents: read`` + ``pull-requests: read``.
+* ``pr-title-check`` never checks out anything — the title comes from the event
+  payload.
+
+So the contract below is: a fork must reach the job, and the job must not
+require a secret (a fork run gets none, so any required secret would turn every
+outside PR red).
 
 *A note on scope:* the other reusable workflows (``p0-gate``,
 ``family-versions``, ``verify-versions``; ``rules-lint`` takes its lane as an
@@ -40,12 +54,8 @@ WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
 #: The clause that makes a fork PR reachable, whitespace-normalised so that
 #: reformatting the YAML does not break the contract while a semantic flip
-#: (``== false``, a dropped clause, a reordered lane) still does.
+#: (``== false``, a dropped clause) still does.
 FORK_CLAUSE = "head.repo.fork==true"
-
-
-def _normalise(expr: object) -> str:
-    return re.sub(r"\s+", "", str(expr))
 
 #: Reusable workflows served to the fleet as required checks and reachable by
 #: fork PRs after the fix: both jobs are sub-minute, stdlib-only, hold no
@@ -60,6 +70,10 @@ FORK_SERVED = {
 FARM_PINNED = ("p0-gate.yml", "family-versions.yml", "verify-versions.yml")
 
 FORK_MARKER = "head.repo.fork"
+
+
+def _normalise(expr: object) -> str:
+    return re.sub(r"\s+", "", str(expr))
 
 
 def _job(filename: str, job_id: str) -> dict:
@@ -83,20 +97,19 @@ class TestForkPullRequestsAreServed:
             "and this test exists to prevent."
         )
 
-    def test_fork_runs_are_pinned_to_hosted(self, filename: str, job_id: str) -> None:
-        """Untrusted fork content must never land on the shared farm."""
-        runs_on = _normalise(_job(filename, job_id)["runs-on"])
-        assert FORK_CLAUSE in runs_on, (
-            f"{filename}:{job_id} does not pin a lane for forks; a caller input or an "
-            "org variable could then route untrusted content onto the farm"
+    def test_job_requires_no_secret(self, filename: str, job_id: str) -> None:
+        """A fork run gets no secrets, so a required one would fail every outside PR."""
+        job = _job(filename, job_id)
+        assert "secrets" not in job, (
+            f"{filename}:{job_id} now consumes secrets, which are withheld from fork "
+            "runs; outside contributions would go red instead of green"
         )
-        assert "ubuntu-latest" in runs_on, (
-            f"{filename}:{job_id} must fall back to GitHub-hosted runners for forks"
-        )
-        assert runs_on.index(FORK_CLAUSE) < runs_on.index("inputs.runner"), (
-            f"{filename}:{job_id} consults the caller's runner input before the fork "
-            "check, so a caller can re-lane a fork onto the farm"
-        )
+        doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding="utf-8"))
+        for name, other in doc["jobs"].items():
+            assert "secrets" not in other, (
+                f"{filename}:{name} now consumes secrets, which are withheld from "
+                "fork runs"
+            )
 
 
 @pytest.mark.parametrize("filename", FARM_PINNED)

@@ -59,11 +59,20 @@ jobs:
     # Same lane resolution as commit-msg-lint.yml: caller input > org/repo
     # variable > hosted, so private repos stop drawing paid minutes when the
     # quota fails while public repos keep free hosted minutes.
-    # A fork's PR payload pins the lane to hosted BEFORE the caller input and
-    # the org variable are consulted, so no caller and no repo/org variable can
-    # route untrusted fork content onto the shared farm. Non-fork runs keep the
-    # documented order: caller input > LINT_RUNNER variable > hosted.
-    runs-on: ${{ fromJSON((github.event.pull_request.head.repo.fork == true && '["ubuntu-latest"]') || inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
+    # A fork is served on whatever lane the repository resolves — the farm
+    # included. An earlier revision of this fix pinned forks to GitHub-hosted
+    # runners on the assumption that public-repo hosted minutes are free and
+    # always available; that assumption is dead in this org (the hosted lane
+    # went dark on 2026-09-24 over account payments and jobs now sit 15 minutes
+    # with no runner assigned), so pinning forks there would have kept every
+    # outside contribution BLOCKED while looking fixed. Owner decision
+    # 2026-10-06: serve forks on the same lane as everything else. The exposure
+    # is bounded and deliberate — this job never checks out the pull request at
+    # all; it reads the title straight from the event payload and holds no
+    # secrets on a fork run.
+    # Non-fork runs keep the documented order: caller input > LINT_RUNNER
+    # variable > hosted.
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
     steps:

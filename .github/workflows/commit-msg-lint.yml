@@ -92,11 +92,20 @@ jobs:
     # re-lanes every caller at once) > hosted. With the org variable set to
     # the farm labels and visible to private repos only, public repos keep
     # free hosted minutes while private repos stop drawing paid minutes.
-    # A fork's PR payload pins the lane to hosted BEFORE the caller input and
-    # the org variable are consulted, so no caller and no repo/org variable can
-    # route untrusted fork content onto the shared farm. Non-fork runs keep the
-    # documented order: caller input > LINT_RUNNER variable > hosted.
-    runs-on: ${{ fromJSON((github.event.pull_request.head.repo.fork == true && '["ubuntu-latest"]') || inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
+    # A fork is served on whatever lane the repository resolves — the farm
+    # included. An earlier revision of this fix pinned forks to GitHub-hosted
+    # runners on the assumption that public-repo hosted minutes are free and
+    # always available; that assumption is dead in this org (the hosted lane
+    # went dark on 2026-09-24 over account payments and jobs now sit 15 minutes
+    # with no runner assigned), so pinning forks there would have kept every
+    # outside contribution BLOCKED while looking fixed. Owner decision
+    # 2026-10-06: serve forks on the same lane as everything else. The exposure
+    # is bounded and deliberate — this job reads commit messages only, never
+    # executes the pull request's code, holds `contents: read` +
+    # `pull-requests: read`, and gets no secrets on a fork run.
+    # Non-fork runs keep the documented order: caller input > LINT_RUNNER
+    # variable > hosted.
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
       # The dispatched "Resolve the pull request" step calls
