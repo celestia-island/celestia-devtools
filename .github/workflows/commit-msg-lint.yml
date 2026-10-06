@@ -60,11 +60,24 @@ permissions:
 jobs:
   lint:
     name: Lint commit messages
-    # Fork PRs run no lint here: they need maintainer approval anyway, and a
-    # fork's run must not spend shared org runner time on untrusted content.
+    # Fork PRs ARE served here — pinned to the hosted lane below.
+    # History: 466d207 skipped fork PRs outright to keep untrusted content off
+    # the shared farm. The cost was never accounted for: with the job skipped,
+    # the required check never reports for an outside contributor, so their PR
+    # stays BLOCKED forever and nobody can merge it without --admin. Found
+    # 2026-10-06: a public repo's seven outside patches had sat unmergeable for
+    # a month, i.e. it read as "we take no outside patches", which nobody had
+    # actually decided. Same guard exists in pr-title-check.yml.
+    # The farm still stays off-limits: forks are forced onto GitHub-hosted
+    # runners below, which are free and unlimited for public repos. This job
+    # only reads commit messages, holds `contents: read` + `pull-requests: read`,
+    # and a fork run gets no secrets.
     # Guard applies both to direct pull_request triggers and to workflow_call
     # callers (github.event then carries the caller's PR payload).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      github.event.pull_request.head.repo.fork == true
     # Message lint is a sub-minute, stdlib-only job. Hosted stays the default:
     # provisioning is instant and parallel, and a queued lint check must never
     # hold a PR behind real builds (the 4-VM node-ci pool produced ~1h queues for
@@ -79,6 +92,19 @@ jobs:
     # re-lanes every caller at once) > hosted. With the org variable set to
     # the farm labels and visible to private repos only, public repos keep
     # free hosted minutes while private repos stop drawing paid minutes.
+    # A fork is served on whatever lane the repository resolves — the farm
+    # included. An earlier revision of this fix pinned forks to GitHub-hosted
+    # runners on the assumption that public-repo hosted minutes are free and
+    # always available; that assumption is dead in this org (the hosted lane
+    # went dark on 2026-09-24 over account payments and jobs now sit 15 minutes
+    # with no runner assigned), so pinning forks there would have kept every
+    # outside contribution BLOCKED while looking fixed. Owner decision
+    # 2026-10-06: serve forks on the same lane as everything else. The exposure
+    # is bounded and deliberate — this job reads commit messages only, never
+    # executes the pull request's code, holds `contents: read` +
+    # `pull-requests: read`, and gets no secrets on a fork run.
+    # Non-fork runs keep the documented order: caller input > LINT_RUNNER
+    # variable > hosted.
     runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
     permissions:
       contents: read
