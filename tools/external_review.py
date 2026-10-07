@@ -11,7 +11,7 @@ The CLI surface, output files and exit codes are preserved exactly:
                                           #   （收录前复算证据包封印；动过包则拒绝）
   external_review.py verify [--pack DIR]  # 复算封印：封口后被改动则退出 1
 
-Exit codes: 0 ok, 1 overdue / isolation failure, 2 usage error.
+Exit codes: 0 ok, 1 overdue / isolation failure / seal drift, 2 usage error.
 Environment: ``WORKSPACE_ROOT`` (default /mnt/codespace), ``EXTERNAL_REVIEW_DAYS``
 (default 14).
 """
@@ -605,7 +605,11 @@ def _sha256_file(path: Path) -> str:
 def _pack_files(out: Path):
     """包内全部文件（封印自身除外），按相对 posix 路径排序。"""
     return sorted(
-        (p for p in out.rglob("*") if p.is_file() and p.name != SEAL_NAME),
+        (
+            p
+            for p in out.rglob("*")
+            if p.is_file() and p.relative_to(out).as_posix() != SEAL_NAME
+        ),
         key=lambda p: p.relative_to(out).as_posix(),
     )
 
@@ -675,6 +679,11 @@ def verify_pack(out: Path) -> dict:
     current = {
         path.relative_to(out).as_posix(): _sha256_file(path) for path in _pack_files(out)
     }
+    # 目录符号链接：rglob 不下钻、也不把它当 file——封印覆盖不到，而直读包目录的
+    # 评审（10-08 事故形状）能读到里面的内容。按夹带处理，fail-closed。
+    for path in out.rglob("*"):
+        if path.is_symlink() and path.is_dir():
+            current[path.relative_to(out).as_posix() + "/（符号链接目录）"] = "<symlink-dir>"
     verdict["missing"] = sorted(set(sealed) - set(current))
     verdict["unexpected"] = sorted(set(current) - set(sealed))
     verdict["modified"] += sorted(
@@ -758,10 +767,12 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print("   封印功能上线（2026-10-08）之前打的 legacy 包没有封印；")
         print("   需要收录 legacy 结论时用 record --allow-unsealed 显式放行。")
         return EXIT_FAILURE
-    drift = format_drift(verdict)
-    if drift:
+    # 判据必须是 ok（= 文件集/逐文件哈希/总摘要三者全对），不能只看 drift：
+    # 伪造者改文件后补 entries 的 sha256、保留旧 seal_hash 时 drift 为空而 ok=False。
+    if not verdict["ok"]:
         print(f"❌ 封印不匹配：{out}")
-        print(drift)
+        drift = format_drift(verdict)
+        print(drift if drift else f"  封印本体不自洽：entries 复算摘要 ≠ 声明的 seal_hash（{verdict['seal_hash']}）")
         return EXIT_FAILURE
     print(f"✅ 封印一致：{out}（seal_hash={verdict['seal_hash']}）")
     return EXIT_OK
@@ -776,6 +787,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         if args.pack is not None
         else args.workspace / "_lens" / datetime.now().strftime("%Y-%m-%d")
     )
+    if args.pack is not None and not pack.is_dir():
+        die(f"--pack 指向的证据包目录不存在：{pack}")
     verdict = verify_pack(pack)
     seal_note = ""
     if not verdict["present"]:
@@ -792,7 +805,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         )
     elif not verdict["ok"]:
         print(f"❌ 拒绝收录：证据包封印不匹配（{pack}）——封口后有人动过包。", file=sys.stderr)
-        print(format_drift(verdict), file=sys.stderr)
+        drift = format_drift(verdict)
+        print(drift if drift else "  封印本体不自洽：entries 复算摘要 ≠ 声明的 seal_hash", file=sys.stderr)
         print("   修法：重新 `pack` 一个干净包，把新包交给验证者。", file=sys.stderr)
         return EXIT_FAILURE
     else:
@@ -806,8 +820,8 @@ def cmd_record(args: argparse.Namespace) -> int:
     dst = reports / f"external-review-{today}.md"
     body = (
         f"# 外部视角验证记录（{today}）\n\n"
-        "> 由 `_tools/external-review.sh record` 收录。验证者的**输入**仅为当日证据包\n"
-        f"> （`_lens/{today}/`），包内不含本工作区任何规则、计划或历史审计。\n"
+        "> 由 `_tools/external-review.sh record` 收录。验证者的**输入**仅为被评审的证据包\n"
+        f"> （`{pack}`），包内不含本工作区任何规则、计划或历史审计。\n"
         "> ⚠️ **但运行环境不受本工具控制**：若验证者是在本工作区内启动的 agent，它的上下文里\n"
         "> 会被自动注入工作区规则文件（验证者无法拒绝）。2026-09-20 的第一次实跑即为此种情况，\n"
         "> 验证者已主动披露；该轮按**弱证据**对待。严格包外验证需另一台机 / 另一个工具链 / 一个人。\n\n"

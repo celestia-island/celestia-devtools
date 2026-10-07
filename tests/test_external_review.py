@@ -419,17 +419,27 @@ def _pack_once(fake_ws: Path, monkeypatch, capsys) -> Path:
 
 
 def test_pack_writes_seal_covering_every_file(fake_ws, monkeypatch, capsys):
+    # 夹具注入一个 .json 进包（封口前）——封印必须覆盖它，否则"排除一切 .json"
+    # 这类过滤器变异会静默存活（评审 MX4 实证过的盲区）
+    original = external_review.write_manifest
+
+    def with_json(out, skipped=None):
+        original(out, skipped)
+        target = out / "code" / "evidence.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('{"k": 1}\n', encoding="utf-8")
+
+    monkeypatch.setattr(external_review, "write_manifest", with_json)
     out = _pack_once(fake_ws, monkeypatch, capsys)
     payload = _seal_payload(out)
-    on_disk = {
-        p.relative_to(out).as_posix()
-        for p in out.rglob("*")
-        if p.is_file() and p.name != external_review.SEAL_NAME
-    }
-    assert {e["path"] for e in payload["entries"]} == on_disk  # 一个不多一个不少
-    assert payload["file_count"] == len(on_disk)
+    # 独立口径：包内**所有**文件去掉根封印本身——不借用实现的过滤表达式
+    every = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
+    assert {e["path"] for e in payload["entries"]} == every - {external_review.SEAL_NAME}
+    assert "code/evidence.json" in {e["path"] for e in payload["entries"]}
+    assert payload["file_count"] == len(every) - 1
     assert len(payload["seal_hash"]) == 64
     capsys.readouterr()
+    assert run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch) == 0
 
 
 def test_pack_prints_seal_line(fake_ws, monkeypatch, capsys):
@@ -475,7 +485,7 @@ def test_verify_catches_modification_and_deletion(fake_ws, monkeypatch, capsys):
     assert "02-recent-changes.md" in text and "缺失" in text
 
 
-def test_verify_missing_pack_dir_reports_unsealed(workspace, monkeypatch):
+def test_verify_missing_pack_dir_is_usage_error(workspace, monkeypatch):
     rc = run_main(["verify", "--pack", str(workspace / "nope")], workspace, monkeypatch)
     assert rc == 2  # die(): 目录不存在是用法错误
 
@@ -500,7 +510,6 @@ def test_record_stamps_seal_into_report(fake_ws, monkeypatch, capsys):
     answer.write_text("回答\n", encoding="utf-8")
     proc = run_cli(["record", str(answer), "--pack", str(out)], fake_ws)
     assert proc.returncode == 0, proc.stderr
-    report = (fake_ws / "_reports" / "external-review-2026-10-08.md")
     reports = sorted((fake_ws / "_reports").glob("external-review-*.md"))
     assert len(reports) == 1
     report = reports[0]
@@ -545,3 +554,85 @@ def test_status_quiet_when_record_carries_seal_stamp(workspace):
     proc = run_cli(["status"], workspace)
     assert proc.returncode == 0
     assert "没有封印戳" not in proc.stdout
+
+
+# ── 评审 R3（2026-10-08）抓到的洞的钉子 ──────────────────────────────────────
+
+
+def test_nested_seal_named_file_cannot_escape(fake_ws, monkeypatch, capsys):
+    """P1：包内任何位置的 `PACK-SEAL.json` 都不得因同名而逃逸封印。"""
+    import json as _json
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    smuggled = out / "code" / "nested" / external_review.SEAL_NAME
+    smuggled.parent.mkdir(parents=True)
+    smuggled.write_text(_json.dumps({"fake": True}), encoding="utf-8")
+    capsys.readouterr()
+    rc = run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch)
+    assert rc == 1
+    text = capsys.readouterr().out
+    assert f"code/nested/{external_review.SEAL_NAME}" in text
+
+
+def test_verify_rejects_forged_entries_with_stale_seal_hash(fake_ws, monkeypatch, capsys):
+    """P1：改文件 + 补正 entries 的 sha256 + 保留旧 seal_hash —— drift 为空但不 ok。
+
+    修前 `cmd_verify` 只看 drift 非空，会打印 ✅ 并 exit 0（评审最小复现）。
+    """
+    import hashlib
+    import json as _json
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    payload = _seal_payload(out)
+    target = out / "01-repos.md"
+    target.write_text("forged content\n", encoding="utf-8")
+    for entry in payload["entries"]:
+        if entry["path"] == "01-repos.md":
+            entry["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+    (out / external_review.SEAL_NAME).write_text(
+        _json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    capsys.readouterr()
+    rc = run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch)
+    assert rc == 1
+    assert "不自洽" in capsys.readouterr().out
+    # record 同样必须拒绝（且不落 _reports）
+    answer = fake_ws / "answer.md"
+    answer.write_text("回答\n", encoding="utf-8")
+    proc = run_cli(["record", str(answer), "--pack", str(out)], fake_ws)
+    assert proc.returncode == 1 and "不自洽" in proc.stderr
+
+
+def test_verify_flags_directory_symlink_as_smuggled(fake_ws, monkeypatch, capsys, tmp_path):
+    """P2：目录符号链接 rglob 不下钻、封印盖不到，而直读包目录的评审读得到。"""
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    hidden = tmp_path / "hidden-src"
+    hidden.mkdir()
+    (hidden / "relay.rs").write_text("// 夹带\n", encoding="utf-8")
+    (out / "code" / "extra").symlink_to(hidden)
+    capsys.readouterr()
+    rc = run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch)
+    assert rc == 1
+    assert "符号链接目录" in capsys.readouterr().out
+
+
+def test_record_explicit_missing_pack_dir_dies_even_with_allow_unsealed(workspace):
+    """P2：--allow-unsealed 只放行「存在但无封印」，不放行「目录不存在」。"""
+    answer = workspace / "answer.md"
+    answer.write_text("回答\n", encoding="utf-8")
+    proc = run_cli(
+        ["record", str(answer), "--pack", str(workspace / "nope"), "--allow-unsealed"],
+        workspace,
+    )
+    assert proc.returncode == 2
+    assert "不存在" in proc.stderr
+    assert not (workspace / "_reports").exists()
+
+
+def test_verify_corrupt_seal_variants(fake_ws, monkeypatch, capsys):
+    """损坏封印（截断 / 非 dict payload）都必须 fail-closed。"""
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    seal = out / external_review.SEAL_NAME
+    for corrupt in ('{"entries": [', "[]", "null", ""):
+        seal.write_text(corrupt, encoding="utf-8")
+        capsys.readouterr()
+        assert run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch) == 1, corrupt
+        assert "封印" in capsys.readouterr().out
