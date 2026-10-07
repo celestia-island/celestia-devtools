@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -238,7 +239,10 @@ def test_pack_content_leak_gate(fake_ws: Path, monkeypatch, capsys):
 def test_record_writes_report_and_resets_cycle(workspace: Path):
     src = workspace / "answer.md"
     src.write_text("外部验证者的回答\n", encoding="utf-8")
+    # 本工作区没有当天的封印包 → 默认拒绝；legacy 包须显式放行
     proc = run_cli(["record", str(src)], workspace)
+    assert proc.returncode == 2
+    proc = run_cli(["record", str(src), "--allow-unsealed"], workspace)
     assert proc.returncode == 0
     reports = sorted((workspace / "_reports").glob("external-review-*.md"))
     assert len(reports) == 1
@@ -398,3 +402,146 @@ def test_manifest_injection_note_does_not_trip_the_isolation_gate(fake_ws: Path,
     manifest = (out / "00-manifest.md").read_text(encoding="utf-8")
     assert "自动注入" in manifest and "弱证据" in manifest
     assert external_review._content_leak_hits(manifest) == []
+
+
+# ── 封印：pack 封、verify 验、record 拒绝动过的包（2026-10-08 加料洞） ────────
+
+
+def _seal_payload(out: Path) -> dict:
+    return json.loads((out / external_review.SEAL_NAME).read_text(encoding="utf-8"))
+
+
+def _pack_once(fake_ws: Path, monkeypatch, capsys) -> Path:
+    out = fake_ws / "pack"
+    rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
+    assert rc == 0, capsys.readouterr().err
+    return out
+
+
+def test_pack_writes_seal_covering_every_file(fake_ws, monkeypatch, capsys):
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    payload = _seal_payload(out)
+    on_disk = {
+        p.relative_to(out).as_posix()
+        for p in out.rglob("*")
+        if p.is_file() and p.name != external_review.SEAL_NAME
+    }
+    assert {e["path"] for e in payload["entries"]} == on_disk  # 一个不多一个不少
+    assert payload["file_count"] == len(on_disk)
+    assert len(payload["seal_hash"]) == 64
+    capsys.readouterr()
+
+
+def test_pack_prints_seal_line(fake_ws, monkeypatch, capsys):
+    _pack_once(fake_ws, monkeypatch, capsys)
+    out_text = capsys.readouterr().out
+    assert "封印" in out_text and external_review.SEAL_NAME in out_text
+
+
+def test_verify_green_right_after_pack(fake_ws, monkeypatch, capsys):
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    capsys.readouterr()
+    rc = run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+
+
+def test_verify_catches_post_seal_injection(fake_ws, monkeypatch, capsys):
+    """复刻 2026-10-08 的实际形状：manifest 封口后往 code/ 里塞源文件。
+
+    当天 7 个 evernight/chest 源文件在 manifest 写完 17-49 秒后落进 code/，
+    收录的评审恰好逐行引用它们——封印就是为这个形状存在的。
+    """
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    smuggled = out / "code" / "evernight" / "src" / "relay.rs"
+    smuggled.parent.mkdir(parents=True)
+    smuggled.write_text("// 夹带的源文件\n", encoding="utf-8")
+    capsys.readouterr()
+    rc = run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch)
+    assert rc == 1
+    text = capsys.readouterr().out
+    assert "relay.rs" in text and "封印后新增" in text
+
+
+def test_verify_catches_modification_and_deletion(fake_ws, monkeypatch, capsys):
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    target = out / "01-repos.md"
+    target.write_text("被改过的内容\n", encoding="utf-8")
+    (out / "02-recent-changes.md").unlink()
+    capsys.readouterr()
+    rc = run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch)
+    assert rc == 1
+    text = capsys.readouterr().out
+    assert "01-repos.md" in text and "被改写" in text
+    assert "02-recent-changes.md" in text and "缺失" in text
+
+
+def test_verify_missing_pack_dir_reports_unsealed(workspace, monkeypatch):
+    rc = run_main(["verify", "--pack", str(workspace / "nope")], workspace, monkeypatch)
+    assert rc == 2  # die(): 目录不存在是用法错误
+
+
+def test_record_refuses_drifted_pack(fake_ws, monkeypatch, capsys):
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    smuggled = out / "code" / "chest-core" / "engines.rs"
+    smuggled.parent.mkdir(parents=True)
+    smuggled.write_text("// 夹带\n", encoding="utf-8")
+    answer = fake_ws / "answer.md"
+    answer.write_text("回答\n", encoding="utf-8")
+    proc = run_cli(["record", str(answer), "--pack", str(out)], fake_ws)
+    assert proc.returncode == 1
+    assert "拒绝收录" in proc.stderr and "engines.rs" in proc.stderr
+    assert not (fake_ws / "_reports").exists()  # 没有留下半成品记录
+
+
+def test_record_stamps_seal_into_report(fake_ws, monkeypatch, capsys):
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    seal = _seal_payload(out)["seal_hash"]
+    answer = fake_ws / "answer.md"
+    answer.write_text("回答\n", encoding="utf-8")
+    proc = run_cli(["record", str(answer), "--pack", str(out)], fake_ws)
+    assert proc.returncode == 0, proc.stderr
+    report = (fake_ws / "_reports" / "external-review-2026-10-08.md")
+    reports = sorted((fake_ws / "_reports").glob("external-review-*.md"))
+    assert len(reports) == 1
+    report = reports[0]
+    text = report.read_text(encoding="utf-8")
+    assert f"pack_seal={seal}" in text
+    assert "复算一致" in text
+
+
+def test_record_unsealed_without_flag_is_refused_with_instructions(workspace):
+    answer = workspace / "answer.md"
+    answer.write_text("回答\n", encoding="utf-8")
+    proc = run_cli(["record", str(answer)], workspace)
+    assert proc.returncode == 2
+    assert "--allow-unsealed" in proc.stderr
+    assert not (workspace / "_reports").exists()
+
+
+def test_record_allow_unsealed_leaves_explicit_mark(workspace):
+    answer = workspace / "answer.md"
+    answer.write_text("回答\n", encoding="utf-8")
+    proc = run_cli(["record", str(answer), "--allow-unsealed"], workspace)
+    assert proc.returncode == 0
+    [report] = (workspace / "_reports").glob("external-review-*.md")
+    assert "无封印收录" in report.read_text(encoding="utf-8")
+
+
+def test_status_flags_record_without_seal_stamp(workspace):
+    make_report(workspace, "external-review-2026-01-01.md", int(time.time()))
+    proc = run_cli(["status"], workspace)
+    assert proc.returncode == 0
+    assert "没有封印戳" in proc.stdout
+    due = (workspace / "_lens" / "DUE.md").read_text(encoding="utf-8")
+    assert "没有封印戳" in due  # DUE.md 也带着，别只在终端响
+
+
+def test_status_quiet_when_record_carries_seal_stamp(workspace):
+    make_report(workspace, "external-review-2026-01-01.md", int(time.time()))
+    stamp = "pack_seal=" + "a" * 64
+    (workspace / "_reports" / "external-review-2026-01-01.md").write_text(
+        stamp + "\n正文\n", encoding="utf-8"
+    )
+    proc = run_cli(["status"], workspace)
+    assert proc.returncode == 0
+    assert "没有封印戳" not in proc.stdout
