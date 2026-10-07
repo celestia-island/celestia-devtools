@@ -416,7 +416,7 @@ def test_copy_file_strict_refuses_symlink_swap(tmp_path):
     dst = tmp_path / "dst.txt"
     with _pytest.raises((RuntimeError, OSError)):
         engine_drop.copy_file_strict(link, dst)
-    assert not dst.exists() or dst.read_text(encoding="utf-8") != "SECRET" or True
+    assert not dst.exists()  # 拷贝失败不得留下半成品
     # 真文件仍然可拷
     dst2 = tmp_path / "dst2.txt"
     engine_drop.copy_file_strict(real, dst2)
@@ -432,3 +432,31 @@ def test_check_repo_regex_unit(tmp_path):
     # 合法形状 + 位置一致 + 在 drop-root 下 → 无违规
     ok = drop_root / "evernight" / "d"
     assert engine_drop.check_repo(ok, drop_root, "evernight") == []
+
+
+def test_drop_outside_drop_root_is_rejected(repo_env, tmp_path, monkeypatch, capsys):
+    """R3 复审 P3-1：drop-root 包含判定要有自己的钉子（删掉检查必须红）。"""
+    outside = tmp_path / "elsewhere" / REPO_NAME / "outsider"
+    files_dir = outside / "files" / "src"
+    files_dir.mkdir(parents=True)
+    (files_dir / "main.rs").write_text("x\n", encoding="utf-8")
+    (outside / "MANIFEST.json").write_text(json.dumps({
+        "repo": REPO_NAME, "base": "origin/master", "branch": "engine/outsider",
+        "description": GOOD_DESC, "files": ["src/main.rs"],
+    }), encoding="utf-8")
+    rc = run_main(argv_for(repo_env, tmp_path, "gates", str(outside)), monkeypatch)
+    assert rc == 1
+    assert "drop-root" in capsys.readouterr().out
+
+
+def test_copy_file_strict_rejects_hardlink(tmp_path):
+    """R3 复审 P3-2：拷贝端的 st_nlink 复核要有独立钉子（不只靠门禁侧）。"""
+    import pytest as _pytest
+    real = tmp_path / "origin.txt"
+    real.write_text("TOPSECRET", encoding="utf-8")
+    link = tmp_path / "hard.txt"
+    os.link(real, link)
+    dst = tmp_path / "out.txt"
+    with _pytest.raises((RuntimeError, OSError)):
+        engine_drop.copy_file_strict(link, dst)
+    assert not dst.exists()
