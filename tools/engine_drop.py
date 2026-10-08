@@ -155,6 +155,20 @@ def check_paths(files_dir: Path, files: List[str]) -> List[str]:
         if reason:
             violations.append(reason)
             continue
+        # 父目录任一组件是符号链接同样拒绝（防穿越）。必须在 lstat 之前独立检查、
+        # 与其它门并列——放在末尾会被前面所有 continue 短路成不可达兜底
+        # （自迭代引擎自分析发现，2026-10-08：穿越目标只要再命中任一前置拒绝，
+        # 该独立风险就被静默吞掉）。
+        cur = files_dir
+        parent_symlink = False
+        for part in components[:-1]:
+            cur = cur / part
+            if cur.is_symlink():
+                violations.append(f"父目录是符号链接：{rel}（{cur.name}）")
+                parent_symlink = True
+                break
+        if parent_symlink:
+            continue
         src = files_dir / rel
         try:
             st = src.lstat()
@@ -174,13 +188,6 @@ def check_paths(files_dir: Path, files: List[str]) -> List[str]:
             violations.append(f"单文件超 {MAX_FILE_BYTES} 字节：{rel}（{st.st_size}）")
             continue
         total_bytes += st.st_size
-        # 父目录任一组件是符号链接同样拒绝（防穿越）
-        cur = files_dir
-        for part in components[:-1]:
-            cur = cur / part
-            if cur.is_symlink():
-                violations.append(f"父目录是符号链接：{rel}（{cur.name}）")
-                break
     if total_bytes > MAX_TOTAL_BYTES:
         violations.append(f"总量超 {MAX_TOTAL_BYTES} 字节：{total_bytes}")
     return violations
