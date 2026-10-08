@@ -67,8 +67,14 @@ MAX_TOTAL_BYTES = 10_000_000
 
 REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 BRANCH_RE = re.compile(r"^engine/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_EMOJI_CLASS = (
+    "\U0001F300-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF"
+)
+# 基 emoji 后可跟最多 6 个续字符（VS16 / ZWJ / 序列里的后续 emoji）——
+# 🛡️(U+1F6E1+FE0F) 与 🏳️‍🌈(1F3F3 FE0F 200D 1F308) 都是生态常见标题写法；
+# 首个真实 drop（selfanalysis-01）就因 VS16 被误拒过。
 DESC_RE = re.compile(
-    r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF]" r" [A-Z].+\.$"
+    rf"^[{_EMOJI_CLASS}][{_EMOJI_CLASS}\uFE0F\u200D]{{0,6}} [A-Z].+\.$"
 )
 
 GOVERNANCE_NAMES = {"agents.md", "plan.md", "claude.md"}  # casefolded 比较
