@@ -460,3 +460,47 @@ def test_copy_file_strict_rejects_hardlink(tmp_path):
     with _pytest.raises((RuntimeError, OSError)):
         engine_drop.copy_file_strict(link, dst)
     assert not dst.exists()
+
+
+# ── 引擎自分析轮 1（drop selfanalysis-01 → PR #165）的钉子 ────────────────────
+
+
+def test_parent_dir_symlink_is_rejected_at_gate_level(repo_env, tmp_path, monkeypatch, capsys):
+    """父目录（任意组件）是符号链接 → gates 层即拒，不靠 apply 侥幸。"""
+    drop = make_drop(tmp_path, "pds", {"ok.rs": "x\n"}, listed=["ok.rs", "evil/passwd.rs"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "passwd.rs").write_text("secret\n", encoding="utf-8")
+    (drop / "files" / "evil").symlink_to(outside)
+    rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), monkeypatch)
+    out = capsys.readouterr().out
+    assert rc == 1 and "父目录是符号链接" in out and "evil/passwd.rs" in out
+
+
+def test_parent_symlink_violation_survives_earlier_rejection(repo_env, tmp_path, monkeypatch, capsys):
+    """引擎发现的核心属性：父目录符号链接必须与其它门**并列**，不被前面的
+    continue 短路——穿越目标即使同时命中更早的拒绝（如超单文件字节上限），
+    「父目录是符号链接」这条独立风险仍必须出现在违禁清单里。"""
+    drop = make_drop(tmp_path, "pds2", {"ok.rs": "x\n"}, listed=["ok.rs", "evil/big.rs"])
+    outside = tmp_path / "outside2"
+    outside.mkdir()
+    (outside / "big.rs").write_text("x" * (engine_drop.MAX_FILE_BYTES + 1), encoding="utf-8")
+    (drop / "files" / "evil").symlink_to(outside)
+    rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), monkeypatch)
+    out = capsys.readouterr().out
+    assert rc == 1
+    # 修复后父目录检查先于 lstat/字节闸触发——这条独立风险必须在场。
+    # （旧实现：文件先命中字节闸 continue，父目录违规被静默吞掉。）
+    assert "父目录是符号链接" in out and "evil/big.rs" in out
+
+
+@pytest.mark.parametrize("desc", [
+    "🛡️ Check the parent symlink gate ordering.",   # U+1F6E1 + VS16
+    "✨ Add the emoji variation selector support.",  # U+2728 无 VS16
+    "🏳️‍🌈 Support the flag emoji in titles.",        # ZWJ 序列
+])
+def test_description_accepts_emoji_variation_sequences(repo_env, tmp_path, monkeypatch, desc):
+    """G6 VS16/ZWJ 修复：生态常见 emoji 写法不得误拒（首跑 selfanalysis-01 实证）。"""
+    drop = make_drop(tmp_path, "vs16", {"README.md": "x\n"}, desc=desc)
+    rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), monkeypatch)
+    assert rc == 0, desc
