@@ -42,6 +42,7 @@ class TestCommandRegistry:
             # hikari declared unbounded — nothing compared how the repositories
             # consume the shared layers.
             "family-versions",
+            "version-string",
         }
         assert set(COMMANDS.keys()) == expected
 

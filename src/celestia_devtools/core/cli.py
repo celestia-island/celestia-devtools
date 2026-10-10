@@ -77,6 +77,7 @@ COMMANDS: dict[str, str] = {
     "link-npm-siblings": "celestia_devtools.npm.link_siblings",
     "init": "celestia_devtools.repo.init",
     "commit-msg-lint": "celestia_devtools.vcs.commit_msg",
+    "version-string": "celestia_devtools.vcs.version_string",
     "hook": "celestia_devtools.vcs.hook",
     "pr-merge": "celestia_devtools.vcs.pr_merge",
     "nav-lint": "celestia_devtools.lint.nav_lint",
