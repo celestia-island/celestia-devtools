@@ -1,8 +1,10 @@
 """`version-string` — the family's version-line facility (2026-10-08).
 
-User direction: every engine drops its drifting patch counter and reports
-`<base> <branch>::<hash7>` (e.g. `0.1 master::aB12345`) — the branch and
-the exact commit ARE the identity; the numeric tail is retired.
+User direction 2026-10-08 (base refined 2026-10-10): every engine drops
+its drifting patch counter and reports `<base> <branch>::<hash7>`
+(e.g. `0.1.0 master::aB12345`) — the branch and the exact commit ARE the
+identity, and the base is the honest FULL package version, never a
+truncated major.minor.
 
 `build.rs` scripts across the family call this (via the installed
 celestia-devtools) at every build and inject the result with
@@ -59,6 +61,23 @@ def version_string(repo: Path, base: str) -> str:
     return f"{base} {branch}::{short}"
 
 
+def default_base(repo: Path) -> str:
+    """The identity base for a checkout without an explicit --base: the
+    honest FULL version parsed from the workspace Cargo.toml (2026-10-10
+    direction — plana #424 passes CARGO_PKG_VERSION through verbatim; this
+    default keeps the CLI honest for direct calls too). The "0.1.0"
+    fallback matches the family baseline for trees without Cargo.toml."""
+    for candidate in (repo / "Cargo.toml", repo / "packages/core/Cargo.toml"):
+        if candidate.exists():
+            for line in candidate.read_text(encoding="utf-8").splitlines():
+                if line.startswith("version"):
+                    return line.split("=", 1)[1].strip().strip('"')
+            else:
+                continue
+            break
+    return "0.1.0"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="celestia-devtools version-string",
@@ -68,24 +87,12 @@ def main() -> int:
     ap.add_argument(
         "--base",
         default=None,
-        help="base version (default: major.minor parsed from the workspace Cargo.toml)",
+        help="base version (default: the full version parsed from the workspace Cargo.toml)",
     )
     args = ap.parse_args()
     repo = Path(args.dir).resolve()
 
-    base = args.base
-    if base is None:
-        base = "0.1"
-        for candidate in (repo / "Cargo.toml", repo / "packages/core/Cargo.toml"):
-            if candidate.exists():
-                for line in candidate.read_text(encoding="utf-8").splitlines():
-                    if line.startswith("version"):
-                        v = line.split("=", 1)[1].strip().strip('"')
-                        base = ".".join(v.split(".")[:2])
-                        break
-                else:
-                    continue
-                break
+    base = args.base or default_base(repo)
 
     try:
         print(version_string(repo, base))
