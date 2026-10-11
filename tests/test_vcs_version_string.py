@@ -65,4 +65,33 @@ def test_version_string_keeps_the_caller_base(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path, "0.1.0")
     line = version_string(repo, "2.7.9-rc.3")
     assert line.startswith("2.7.9-rc.3 "), f"line {line} keeps the caller base"
-    assert "::" in line, f"line {line} carries branch::hash"
+    assert ":" in line, f"line {line} carries branch:hash"
+
+
+def test_version_string_emits_the_single_colon_shape(tmp_path: Path) -> None:
+    """The 2026-10-11 narrowing: the identity token is `<branch>:<hash7>`
+    with ONE colon. Restoring the 2026-10-08 double-colon emit makes this
+    red — down-stream parsers accept both, but fresh lines speak the
+    single-colon shape."""
+    import subprocess
+
+    repo = _git_repo(tmp_path, "0.1.0")
+    branch = (
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        .stdout.strip()
+    )
+    line = version_string(repo, "0.1.0")
+    token = line.split()[-1]
+    name, sep, hash7 = token.rpartition(":")
+    assert sep == ":", f"line {line} carries a colon separator"
+    assert name == branch and not name.endswith(":"), (
+        f"line {line} keeps a clean branch name"
+    )
+    assert len(hash7) == 7 and all(c in "0123456789abcdef" for c in hash7), (
+        f"line {line} ends in the short hex hash"
+    )

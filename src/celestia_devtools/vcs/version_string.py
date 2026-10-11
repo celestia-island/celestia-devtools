@@ -1,10 +1,13 @@
 """`version-string` — the family's version-line facility (2026-10-08).
 
-User direction 2026-10-08 (base refined 2026-10-10): every engine drops
-its drifting patch counter and reports `<base> <branch>::<hash7>`
-(e.g. `0.1.0 master::aB12345`) — the branch and the exact commit ARE the
-identity, and the base is the honest FULL package version, never a
-truncated major.minor.
+User direction 2026-10-08 (base refined 2026-10-10, separator narrowed
+2026-10-11): every engine drops its drifting patch counter and reports
+`<base> <branch>:<hash7>` (e.g. `0.1.0 master:aB12345`) — the branch and
+the exact commit ARE the identity, and the base is the honest FULL
+package version, never a truncated major.minor. The double-colon
+`<branch>::<hash7>` shape of the 2026-10-08..10 lines stays readable
+everywhere: every parser in the family accepts both separators, so
+mixed build hosts during the transition never misreport an identity.
 
 `build.rs` scripts across the family call this (via the installed
 celestia-devtools) at every build and inject the result with
@@ -58,7 +61,7 @@ def version_string(repo: Path, base: str) -> str:
                 resolved = None
         branch = resolved or "detached"
     short = _git(repo, "rev-parse", "--short=7", "HEAD")
-    return f"{base} {branch}::{short}"
+    return f"{base} {branch}:{short}"
 
 
 def default_base(repo: Path) -> str:
@@ -81,7 +84,7 @@ def default_base(repo: Path) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="celestia-devtools version-string",
-        description="Emit `<base> <branch>::<hash7>` for a repo checkout.",
+        description="Emit `<base> <branch>:<hash7>` for a repo checkout.",
     )
     ap.add_argument("--dir", default=".", help="repo checkout (default: cwd)")
     ap.add_argument(
