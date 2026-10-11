@@ -18,6 +18,7 @@ to direct git when the devtools binary is not on the build host's PATH.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,24 +33,76 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def _env_identity(repo: Path) -> str | None:
+    """The engine passthrough (2026-10-11 mislabel incident): a builder that
+    checked out a known ref — celestia-build, which synced ``CB_REF`` at
+    wave start — states it as ``CELESTIA_BUILD_BRANCH`` pinned to this
+    checkout by ``CELESTIA_BUILD_HASH``. Honored only as a pair and only
+    when the hash equals the checkout's HEAD, so a stale or stray
+    branch-only env can never relabel a build."""
+    branch = os.environ.get("CELESTIA_BUILD_BRANCH", "")
+    pinned = os.environ.get("CELESTIA_BUILD_HASH", "")
+    if not branch or not pinned:
+        return None
+    try:
+        head = _git(repo, "rev-parse", "HEAD")
+    except subprocess.CalledProcessError:
+        return None
+    return branch if pinned == head else None
+
+
+def _default_branch_tip(repo: Path) -> str | None:
+    """The default branch's EXACT tip wins the detached naming (2026-10-11
+    mislabel incident): deploy waves always build the default branch tip as
+    a detached checkout, while parallel lanes leave same-tip feature
+    branches in the shared refstore — ``name-rev`` then steals the identity
+    (``feat/model-usage-selfhosted:770f625`` on a ``master`` build). When
+    HEAD IS the default tip, local ref or remote-tracking ref, the default
+    name is the truth; neither matching means HEAD is genuinely off-tip and
+    the ladder answers instead."""
+    try:
+        sym = _git(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        head = _git(repo, "rev-parse", "HEAD")
+    except subprocess.CalledProcessError:
+        return None
+    # Strip the remote prefix at the FIRST slash so a slash-named default
+    # (``origin/release/2026-10`` → ``release/2026-10``) keeps its full
+    # name — taking the last component would probe a ref that never exists
+    # and silently disarm the guard (R2 2026-10-11).
+    name = sym.split("/", 1)[-1]
+    if not name or name == "HEAD":
+        return None
+    for ref in (f"refs/heads/{name}", f"refs/remotes/origin/{name}"):
+        try:
+            if _git(repo, "rev-parse", "--verify", ref) == head:
+                return name
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
+
 def version_string(repo: Path, base: str) -> str:
-    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    stated = _env_identity(repo)
+    branch = stated or _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     if branch == "HEAD":
         # Detached build worktrees: resolve the branch name, not "HEAD".
-        # Local heads first; a freshly-fetched squash sha may only exist
-        # on the remote — fall through to remotes before giving up.
-        resolved = None
-        for refs in ("refs/heads/*", "refs/remotes/origin/*"):
-            named = _git(
-                repo,
-                "name-rev",
-                "--name-only",
-                f"--refs={refs}",
-                "HEAD",
-            )
-            if named and named not in ("undefined", "remotes/origin/HEAD"):
-                resolved = named.rsplit("~", 1)[0].replace("remotes/origin/", "")
-                break
+        # The exact default-branch tip claims it first (see
+        # _default_branch_tip); otherwise local heads first, and a freshly
+        # fetched squash sha may only exist on the remote — fall through to
+        # remotes before giving up.
+        resolved = _default_branch_tip(repo)
+        if not resolved:
+            for refs in ("refs/heads/*", "refs/remotes/origin/*"):
+                named = _git(
+                    repo,
+                    "name-rev",
+                    "--name-only",
+                    f"--refs={refs}",
+                    "HEAD",
+                )
+                if named and named not in ("undefined", "remotes/origin/HEAD"):
+                    resolved = named.rsplit("~", 1)[0].replace("remotes/origin/", "")
+                    break
         if not resolved:
             # A freshly-fetched squash sha may sit only on origin/master
             # while name-rev answers through the symbolic HEAD — resolve
