@@ -53,13 +53,138 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from celestia_devtools.npm.register_patches import (
-    NpmPackage,
-    _resolve_scan_dir,
-    detect_package_manager,
-    is_celestia_repo,
-    scan_celestia_npm_packages,
-)
+
+class NpmPackage(NamedTuple):
+    """An npm package discovered inside a sibling repo."""
+
+    name: str       # full package name (e.g. "@celestia-island/hikari")
+    path: Path      # absolute path to the directory containing package.json
+    repo: str       # repo name (e.g. "hikari")
+    version: str    # declared version (e.g. "0.4.0")
+
+
+# ── sibling repo discovery ────────────────────────────────────────────────
+
+
+def _git_remote_origin(repo_path: Path) -> str | None:
+    """Return the raw origin URL for *repo_path*, or ``None``.
+
+    Reads ``remote.origin.url`` from config directly: ``git remote get-url``
+    applies ``url.<x>.insteadOf`` rewrites (active on self-hosted runners,
+    which map github.com/celestia-island/* onto local bare mirrors) and would
+    hide the canonical URL this regex needs to match.
+    """
+    try:
+        import subprocess as _subprocess
+
+        r = _subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except (OSError, _subprocess.SubprocessError):
+        pass
+    return None
+
+
+def is_celestia_repo(repo_path: Path) -> str | None:
+    """Check if *repo_path* is a celestia-island git repo."""
+    url = _git_remote_origin(repo_path)
+    if not url:
+        return None
+    m = re.search(r"celestia-island[:/]([^/]+?)(?:\.git)?$", url)
+    return m.group(1) if m else None
+
+
+def discover_npm_packages(repo_path: Path, repo_name: str) -> list[NpmPackage]:
+    """Find all ``@celestia-island/*`` npm packages inside *repo_path*.
+
+    Scans the ``packages/*/package.json`` level of the repo only.
+    """
+    packages: list[NpmPackage] = []
+    try:
+        for pkg_json in sorted(repo_path.glob("packages/*/package.json")):
+            if not pkg_json.is_file():
+                continue
+            try:
+                data = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
+            except json.JSONDecodeError:
+                continue
+            name = data.get("name")
+            version = data.get("version", "0.0.0")
+            if isinstance(name, str) and name.startswith("@celestia-island/"):
+                packages.append(NpmPackage(
+                    name=name,
+                    path=pkg_json.parent.resolve(),
+                    repo=repo_name,
+                    version=version,
+                ))
+    except OSError:
+        pass
+    return packages
+
+
+def scan_celestia_npm_packages(scan_dir: Path, *, exclude_repo: str | None = None) -> list[NpmPackage]:
+    """Scan *scan_dir* for celestia-island sibling repos with npm packages.
+
+    If *exclude_repo* is provided, packages whose repo name matches are skipped
+    (prevents self-references when scanning from within the target repo).
+    """
+    packages: list[NpmPackage] = []
+    if not scan_dir.is_dir():
+        return packages
+
+    for entry in sorted(scan_dir.iterdir()):
+        if entry.name.startswith("."):
+            continue
+        try:
+            if not entry.is_dir() or not (entry / ".git").exists():
+                continue
+        except OSError:
+            # Unreadable directories (permission, stale NFS entries) are
+            # simply not candidate sibling repos.
+            continue
+        repo_name = is_celestia_repo(entry)
+        if not repo_name:
+            continue
+        if exclude_repo and repo_name == exclude_repo:
+            continue
+        found = discover_npm_packages(entry, repo_name)
+        packages.extend(found)
+
+    return packages
+
+
+def detect_package_manager(target_dir: Path) -> str:
+    """Detect which package manager is in use.
+
+    Returns one of: ``"pnpm"``, ``"npm"``, ``"yarn"``, ``"unknown"``.
+    """
+    files = sorted(os.listdir(target_dir)) if target_dir.is_dir() else []
+
+    # pnpm
+    if "pnpm-lock.yaml" in files or "pnpm-workspace.yaml" in files:
+        return "pnpm"
+
+    # yarn
+    if "yarn.lock" in files:
+        return "yarn"
+
+    # npm
+    if "package-lock.json" in files:
+        return "npm"
+
+    return "unknown"
+
+
+def _resolve_scan_dir(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit)
+    env_root = os.environ.get("CELESTIA_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path.cwd().parent
 
 STATE_FILENAME = ".celestia-linked-siblings.json"
 
@@ -376,8 +501,9 @@ def warn_legacy_sibling_refs(repo_root: Path) -> None:
             file=sys.stderr,
         )
         print(
-            "\033[33mWorkspace manifests should stay registry-only; migrate with "
-            "`register-npm-patches --remove` and drop the '../' members.\033[0m",
+            "\033[33mWorkspace manifests should stay registry-only; delete the legacy "
+            "auto-registered overrides block (marker: '# \u2500\u2500 celestia-devtools "
+            "auto-registered npm overrides \u2500\u2500') and drop the '../' members.\033[0m",
             file=sys.stderr,
         )
 

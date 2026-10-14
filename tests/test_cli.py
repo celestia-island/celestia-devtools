@@ -17,7 +17,7 @@ class TestCommandRegistry:
         expected = {
             "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
             "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite",
-            "serve", "locate", "register-patches", "register-npm-patches", "init",
+            "serve", "locate", "register-patches", "init",
             "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
             "daemon", "mock-start", "mock-status", "mock-stop",
             "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
