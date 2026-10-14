@@ -18,7 +18,6 @@ Commands::
     serve             Shared process-supervision (ProcessManager) for dev scripts
     locate            Locate a celestia-island crate checkout
     register-patches  Auto-register local repos as cargo [patch] entries
-    register-npm-patches  RETIRED — remove legacy link: overrides (--remove)
     link-npm-siblings Symlink local @celestia-island sibling checkouts into node_modules
     init              Symlink common.just into a repo for justfile import
     include-path      Print the path to the bundled common.just
@@ -73,7 +72,6 @@ COMMANDS: dict[str, str] = {
     "serve": "celestia_devtools.env.serve",
     "locate": "celestia_devtools.repo.locate",
     "register-patches": "celestia_devtools.repo.register_patches",
-    "register-npm-patches": "celestia_devtools.npm.register_patches",
     "link-npm-siblings": "celestia_devtools.npm.link_siblings",
     "init": "celestia_devtools.repo.init",
     "commit-msg-lint": "celestia_devtools.vcs.commit_msg",
