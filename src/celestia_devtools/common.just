@@ -394,3 +394,19 @@ mock-stop:
 # Show status of all registered mock servers.
 mock-status:
     {{ _devtools }} mock-status
+
+# ── Dev-mode gateway environment (DEBUG_* injection) ─────────────────
+#
+# Local iteration replaces the production gateways (*.celestia.world and
+# its .cw alias, the baked-in cloud defaults like auth.celestia.ac.cn)
+# with environment variables: DEBUG_* names that participating binaries
+# read ONLY in debug builds, plus the existing per-repo variables, so the
+# whole loop agrees on local addresses. No hosts files, no proxy — and
+# no public-internet reachability (accepted: debug injection is local).
+#
+#   just devenv print                    export lines for the native profile
+#   just devenv print --profile mock     the mock-stack addresses
+#   just devenv print --format json      machine-readable
+#   just devenv run -- cargo tauri dev   launch with the set injected
+devenv *ARGS='':
+    {{ _devtools }} devenv {{ARGS}}

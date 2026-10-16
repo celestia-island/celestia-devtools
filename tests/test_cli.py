@@ -43,6 +43,10 @@ class TestCommandRegistry:
             # consume the shared layers.
             "family-versions",
             "version-string",
+            # Added 2026-10-16: dev-mode gateway environment — the DEBUG_* +
+            # per-repo variable set for a run profile, with an injecting
+            # launcher (replaces the abandoned hosts-file hostmap approach).
+            "devenv",
         }
         assert set(COMMANDS.keys()) == expected
 
