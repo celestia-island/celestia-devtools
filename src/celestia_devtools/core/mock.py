@@ -66,8 +66,12 @@ def discover_sibling_repos() -> dict[str, Path]:
 
 # ── Mock addresses ──────────────────────────────────────────────────────────
 
+# arona's mock script listens on ARONA_MOCK_PORT, whose default is 8429
+# (arona/scripts/mock/server.py) — NOT 8420, the stale value this table
+# carried until 2026-10-16; mock-start's peer URLs, status and stop all
+# derive from here.
 MOCK_PORTS: dict[str, dict] = {
-    "arona":        {"port": 8420, "protocol": "http"},
+    "arona":        {"port": 8429, "protocol": "http"},
     "entelecheia":  {"port": 8424, "protocol": "ws"},
     "shittim-chest": {"port": 8428, "protocol": "ws"},
 }
@@ -77,7 +81,7 @@ def discover_mocks() -> dict:
     """Build the complete mock registry from sibling repo discovery.
 
     Returns a dict like:
-    { "arona": {"path": "/path/to/arona", "port": 8420, "url": "http://127.0.0.1:8420", "script": "/path/to/arona/scripts/mock/server.py"}, ... }
+    { "arona": {"path": "/path/to/arona", "port": 8429, "url": "http://127.0.0.1:8429", "script": "/path/to/arona/scripts/mock/server.py"}, ... }
     Only includes repos that actually have a mock script.
     """
     repos = discover_sibling_repos()
@@ -109,9 +113,16 @@ def start_mock(info: dict, peer_urls: dict[str, str]) -> subprocess.Popen | None
         return None
 
     env = os.environ.copy()
-    env["ARONA_MOCK_URL"]  = peer_urls.get("arona", "http://127.0.0.1:8420")
-    env["ENTE_MOCK_URL"]   = peer_urls.get("entelecheia", "ws://127.0.0.1:8424")
-    env["CHEST_MOCK_URL"]  = peer_urls.get("shittim-chest", "ws://127.0.0.1:8428")
+    # Fallbacks derive from MOCK_PORTS so the table stays the single
+    # source of truth — the 8420 arona fallback silently pointed peers at
+    # a port the mock server never listens on.
+    def _fallback(name: str) -> str:
+        info = MOCK_PORTS[name]
+        return f"{info['protocol']}://127.0.0.1:{info['port']}"
+
+    env["ARONA_MOCK_URL"]  = peer_urls.get("arona", _fallback("arona"))
+    env["ENTE_MOCK_URL"]   = peer_urls.get("entelecheia", _fallback("entelecheia"))
+    env["CHEST_MOCK_URL"]  = peer_urls.get("shittim-chest", _fallback("shittim-chest"))
 
     proc = subprocess.Popen(
         [sys.executable, "-u", str(script)],
