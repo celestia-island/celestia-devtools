@@ -52,6 +52,9 @@ Commands::
                       per-repo) gateway variables for a run profile
                       (native | daemon | mock) and launch commands with them
                       injected (print | run)
+    ports             Per-app port allocation for tauri dev stacks: unique
+                      vite/CDP ports per app so two debug shells never
+                      cross-wire (acquire | env | list | release)
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -122,6 +125,7 @@ COMMANDS: dict[str, str] = {
     "ci-cache": "celestia_devtools.ci.cache_policy",
     "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
     "devenv": "celestia_devtools.env.devenv",
+    "ports": "celestia_devtools.env.ports",
 }
 
 

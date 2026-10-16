@@ -410,3 +410,18 @@ mock-status:
 #   just devenv run -- cargo tauri dev   launch with the set injected
 devenv *ARGS='':
     {{ _devtools }} devenv {{ARGS}}
+
+# ── Per-app port allocation (tauri dev stacks) ───────────────────────
+#
+# Two tauri debug apps on one machine fight over the SAME sockets: the
+# WebView2 CDP port (9222) and the vite devUrl server (5173) — whichever
+# boots first owns them and the second app's webview loads the FIRST
+# app's frontend (seen live between WoWSP and shittim-chest). These
+# recipes hand every app its own deterministic-but-unique ports:
+#
+#   just ports acquire --app shittim-chest --kind vite   # bare port
+#   just ports env --app shittim-chest                   # export lines
+#   just ports list                                      # live claims
+#   just ports release --app shittim-chest
+ports *ARGS='':
+    {{ _devtools }} ports {{ARGS}}
