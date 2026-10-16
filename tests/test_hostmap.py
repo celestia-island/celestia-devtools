@@ -20,6 +20,8 @@ import asyncio
 import http.client
 import json
 import socket
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -163,6 +165,61 @@ class TestHostsBlock:
 
     def test_missing_file_reads_empty(self, tmp_path):
         assert hostmap.read_managed_domains(tmp_path / "nope") == []
+
+
+# ── Elevation ────────────────────────────────────────────────────────────────
+
+class TestElevation:
+    def test_script_uses_parenthesised_array_literal(self):
+        """`-ArgumentList @('a','b')` — without the parentheses PowerShell
+        parses `@'` as a here-string opener and the attempt dies with
+        UnexpectedCharactersAfterHereStringHeader before any UAC dialog
+        appears (the live-fire bug caught verifying PR #171)."""
+        script = hostmap._elevation_script(
+            r"C:\Program Files\Python\python.exe",
+            ["-m", "celestia_devtools", "hostmap", "hosts-sync"],
+        )
+        assert "-ArgumentList @('-m', 'celestia_devtools'" in script
+        assert "@'" not in script.replace("@('", "")  # no bare @-quote anywhere
+        assert "exit $p.ExitCode } catch { exit 1223 }" in script
+        assert "Start-Process -Verb RunAs -Wait -PassThru" in script
+
+    def test_script_quotes_embedded_single_quotes(self):
+        script = hostmap._elevation_script("py", ["it's", "x"])
+        assert "'it''s'" in script
+
+    def test_relaunch_retries_in_process_until_approved(self, monkeypatch, capsys):
+        """Simulates antivirus holding the first elevation attempt: the
+        spawn fails twice (rc 1223), the user approves, the third attempt
+        succeeds — the tool must still be alive to see it through."""
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            rc = 1223 if len(calls) < 3 else 0
+            return subprocess.CompletedProcess(cmd, rc, b"", b"")
+
+        monkeypatch.setattr(hostmap.subprocess, "run", fake_run)
+        monkeypatch.setattr(hostmap.time, "sleep", lambda s: None)
+        if sys.platform == "win32":
+            assert hostmap.relaunch_elevated(["hosts-sync"]) == 0
+            assert len(calls) == 3
+            out = capsys.readouterr().out
+            assert "attempt 1/3" in out and "antivirus" in out
+        else:  # POSIX path is a single sudo attempt by design
+            assert hostmap.relaunch_elevated(["hosts-sync"]) == 0
+            assert len(calls) == 1
+
+    def test_relaunch_gives_up_after_max_attempts(self, monkeypatch, capsys):
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1223, b"", b"cancelled")
+
+        monkeypatch.setattr(hostmap.subprocess, "run", fake_run)
+        monkeypatch.setattr(hostmap.time, "sleep", lambda s: None)
+        if sys.platform == "win32":
+            assert hostmap.relaunch_elevated(["hosts-sync"]) == 1223
+            out = capsys.readouterr().out
+            assert "attempt 1/3" in out and "attempt 2/3" in out  # both retries fired
 
 
 # ── Proxy (end-to-end over loopback) ─────────────────────────────────────────

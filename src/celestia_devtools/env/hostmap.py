@@ -64,6 +64,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -89,12 +90,14 @@ DEFAULT_LANES: dict[str, dict[str, object]] = {
         "arona.cw": 8405,
         "evernight.cw": 8443,
     },
-    # mock-stack ports (core/mock.py MOCK_PORTS)
+    # mock-stack ports (core/mock.py MOCK_PORTS). NOTE: arona's mock script
+    # listens on ARONA_MOCK_PORT default 8429 (arona/scripts/mock/server.py),
+    # not the 8420 that MOCK_PORTS still records.
     "mock": {
         "dev.cw": 8428,
         "auth.cw": 8428,
         "scepter.cw": 8424,
-        "arona.cw": 8420,
+        "arona.cw": 8429,
         "evernight.cw": 8443,
     },
 }
@@ -299,6 +302,12 @@ def read_managed_domains(hosts: Path) -> list[str]:
 
 # ── Elevation ────────────────────────────────────────────────────────────────
 
+# Antivirus/UAC approvals can land after the first spawn already failed —
+# stay in-process and retry instead of exiting (the Huorong lesson).
+ELEVATE_RETRY_ATTEMPTS = 3
+ELEVATE_RETRY_DELAY = 2.0
+
+
 def is_elevated() -> bool:
     if sys.platform == "win32":
         import ctypes
@@ -311,43 +320,112 @@ def relaunch_elevated(args: Sequence[str]) -> int:
 
     UAC prompt on Windows (via PowerShell ``Start-Process -Verb RunAs``),
     ``sudo`` everywhere else. The subcommand re-run this way must be
-    side-effect-complete on its own (``hosts-sync`` / ``hosts-remove``)."""
+    side-effect-complete on its own (``hosts-sync`` / ``hosts-remove``).
+    The elevated copy's exit code propagates back through ``-PassThru``;
+    its console output cannot cross the UAC boundary, so failures surface
+    via the return code plus whatever PowerShell itself reports.
+
+    Security software (Huorong, Defender SmartScreen, …) may hold the
+    elevation request pending an out-of-band user decision, then report
+    failure while the user is still approving it. One failed attempt must
+    therefore NOT exit the tool: on Windows we retry in-process
+    (ELEVATE_RETRY_ATTEMPTS times, ELEVATE_RETRY_DELAY apart) so an
+    approval that lands late still succeeds. Exit code 1223
+    (ERROR_CANCELLED) marks a declined prompt vs a failed elevated copy.
+    """
     argv = ["-m", "celestia_devtools", "hostmap", *args]
     if sys.platform == "win32":
-        quoted = ", ".join("'" + a.replace("'", "''") + "'" for a in argv)
-        script = (
-            f"Start-Process -Verb RunAs -Wait -FilePath '{sys.executable}' "
-            f"-ArgumentList @{quoted}"
-        )
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True, text=True,
-        )
-        return result.returncode
-    result = subprocess.run(["sudo", sys.executable, *argv])
+        result = None
+        for attempt in range(1, ELEVATE_RETRY_ATTEMPTS + 1):
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 _elevation_script(sys.executable, argv)],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                return 0
+            if attempt < ELEVATE_RETRY_ATTEMPTS:
+                print(
+                    f"[hostmap] elevation attempt {attempt}/{ELEVATE_RETRY_ATTEMPTS} "
+                    "failed — if an antivirus prompt or UAC dialog is showing, "
+                    f"approve it; retrying in {ELEVATE_RETRY_DELAY:.0f}s"
+                )
+                time.sleep(ELEVATE_RETRY_DELAY)
+        # PowerShell 5.1 prints its own errors in the legacy console
+        # codepage (GBK on zh-CN hosts) — capture bytes and decode lossily,
+        # never let a decode error kill the subprocess reader thread.
+        detail = ((result.stderr if result else None) or (result.stdout if result else None) or b"")
+        detail_text = detail.decode("utf-8", errors="replace").strip()
+        if detail_text:
+            print(f"[hostmap] powershell: {detail_text}", file=sys.stderr)
+        return (result.returncode if result else 1)
+    # Plain `sudo` scrubs PYTHONPATH, so a checkout-based invocation would
+    # lose sight of the package in the re-spawn; `sudo env VAR=… cmd` sets
+    # it back without needing the sudoers SETENV privilege. Sudo prompts on
+    # the inherited tty — run from an interactive terminal when a password
+    # is required, or configure NOPASSWD for non-tty contexts.
+    pkg_root = str(Path(__file__).resolve().parents[2])  # …/celestia-devtools/src
+    pythonpath = pkg_root + os.pathsep + (os.environ.get("PYTHONPATH") or "")
+    result = subprocess.run(
+        ["sudo", "env", f"PYTHONPATH={pythonpath}", sys.executable, *argv]
+    )
     return result.returncode
 
 
-def _sync_hosts_elevated_if_needed(domains: Sequence[str], hosts: Path, remove: bool) -> int:
+def _elevation_script(interpreter: str, argv: Sequence[str]) -> str:
+    """The PowerShell body for one elevation attempt.
+
+    The ArgumentList array literal MUST be ``@('a','b')`` — parentheses
+    included. ``@'a', 'b'`` (bare @-quote) parses as a here-string opener
+    and dies with UnexpectedCharactersAfterHereStringHeader before any UAC
+    dialog can appear; the regression test pins this.
+    """
+    quoted = ", ".join("'" + a.replace("'", "''") + "'" for a in argv)
+    return (
+        "try { $p = Start-Process -Verb RunAs -Wait -PassThru "
+        f"-FilePath '{interpreter}' -ArgumentList @({quoted}); "
+        "exit $p.ExitCode } catch { exit 1223 }"
+    )
+
+
+def _sync_hosts_elevated_if_needed(
+    domains: Sequence[str], hosts: Path, remove: bool,
+    respawn_args: Sequence[str] = (),
+) -> int:
     """Apply the block change in-process when the file is writable, else
-    re-spawn the side-effect subcommand elevated once."""
+    re-spawn the side-effect subcommand elevated once. *respawn_args* carries
+    the lane-selection flags (``--profile``/``--config``) so the elevated
+    copy resolves the same domains as the caller."""
     action = "hosts-remove" if remove else "hosts-sync"
-    args = [action, "--hosts-file", str(hosts)]
+    args = [action, *respawn_args, "--hosts-file", str(hosts)]
     try:
         if remove:
             changed = remove_hosts_block(hosts)
         else:
             changed = sync_hosts_block(hosts, domains)
     except PermissionError:
-        if is_elevated():  # already root/admin and still denied — a real ACL issue
-            raise
+        if is_elevated():
+            # Root/admin and still denied — a real ACL or filesystem issue
+            # (e.g. DrvFs mapping the Windows hosts read-only to WSL root).
+            print(f"[hostmap] cannot write {hosts} even elevated — check ACLs", file=sys.stderr)
+            if str(hosts).startswith("/mnt/"):
+                print(
+                    "[hostmap] inside WSL, run hostmap from the Windows side, or pass "
+                    "--hosts-file /etc/hosts for distro-local lanes", file=sys.stderr,
+                )
+            return 1
         print(f"[hostmap] needs elevation to edit {hosts}")
         rc = relaunch_elevated(args)
         if rc != 0:
             print(f"[hostmap] elevated {action} failed (rc={rc})", file=sys.stderr)
+            if sys.platform == "win32":
+                print("[hostmap] the UAC prompt must be approved", file=sys.stderr)
             return rc
         return 0
-    print(f"[hostmap] {hosts}: block {'updated' if changed else 'already current'}")
+    if remove:
+        print(f"[hostmap] {hosts}: {'block removed' if changed else 'nothing to remove'}")
+    else:
+        print(f"[hostmap] {hosts}: block {'updated' if changed else 'already current'}")
     return 0
 
 
@@ -477,6 +555,17 @@ def _port_listening(port: int, host: str = "127.0.0.1") -> bool:
         return s.connect_ex((host, port)) == 0
 
 
+def _selection_args(args: argparse.Namespace) -> list[str]:
+    """Lane-selection flags to replay in the elevated copy (``--profile`` /
+    ``--config``) — losing them would write the default profile's domains."""
+    out: list[str] = []
+    if getattr(args, "profile", None):
+        out += ["--profile", args.profile]
+    if getattr(args, "config", None):
+        out += ["--config", args.config]
+    return out
+
+
 # ── Commands ─────────────────────────────────────────────────────────────────
 
 def cmd_up(args: argparse.Namespace) -> int:
@@ -488,7 +577,9 @@ def cmd_up(args: argparse.Namespace) -> int:
     domains = hosts_domains(lanes)
     hosts = hosts_file_path(args.hosts_file)
     if not args.no_hosts:
-        rc = _sync_hosts_elevated_if_needed(domains, hosts, remove=False)
+        rc = _sync_hosts_elevated_if_needed(
+            domains, hosts, remove=False, respawn_args=_selection_args(args)
+        )
         if rc != 0:
             return rc
         print(f"[hostmap] lanes: {', '.join(domains)} → 127.0.0.1 (profile {profile})")
@@ -589,8 +680,10 @@ def cmd_hosts_sync(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"[hostmap] {exc}", file=sys.stderr)
         return 2
-    rc = _sync_hosts_elevated_if_needed(hosts_domains(lanes), hosts_file_path(args.hosts_file), False)
-    return rc
+    return _sync_hosts_elevated_if_needed(
+        hosts_domains(lanes), hosts_file_path(args.hosts_file),
+        remove=False, respawn_args=_selection_args(args),
+    )
 
 
 def cmd_hosts_remove(args: argparse.Namespace) -> int:
