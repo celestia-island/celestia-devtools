@@ -79,13 +79,34 @@ fetch URL='':
     else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
 ```
 
-`import?` (optional import) lets a fresh clone parse the justfile before staging, so your own recipes always work. Run `just fetch` (or `celestia-devtools init`) to stage the shared recipes — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, etc. All recipes are overridable — redefine any after the `import?` line.
+`import?` (optional import) lets a fresh clone parse the justfile before staging, so your own recipes always work. Run `just fetch` (or `celestia-devtools init`) to stage the shared recipes — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, `devenv`, etc. All recipes are overridable — redefine any after the `import?` line.
 
 **Windows note:** if `bash` resolves to WSL (`just windows-shell-check` reports a hijack), prepend Git's `usr/bin` to PATH:
 
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## Dev-mode gateway environment
+
+Production fronts its services at `*.celestia.world` hosts (`.cw` is only the fleet's short alias), and cloud-built clients bake those gateways in — the shittim-chest desktop defaults to `https://auth.celestia.ac.cn`. Local iteration does **not** reproduce the domain shape (no hosts files, no reverse proxy, no certificates): instead, a `DEBUG_`-prefixed variable set replaces the gateway addresses, read **only in debug builds** (`cfg!(debug_assertions)` in Rust), so dev builds talk to the local stack while shipped binaries cannot be redirected. The tradeoff is inherent: environment injection is per-process and local — it cannot serve public-internet traffic the way the production vhosts do.
+
+`devenv` computes the set for a run profile and launches commands with it injected (caller-set variables are never overwritten):
+
+```bash
+just devenv print                     # export lines, native profile
+just devenv print --profile mock      # the mock-stack addresses
+just devenv run -- cargo tauri dev    # desktop dev build → local chest
+```
+
+| Variable | Read by | `native` | `daemon` | `mock` |
+| --- | --- | --- | --- | --- |
+| `DEBUG_CHEST_URL` (`SHITTIM_CHEST_URL`) | chest desktop (debug builds) | `:3000` | `:8400` | `:8428` |
+| `DEBUG_SCEPTER_URL` / `_WS_URL` (`ENTELECHEIA_SCEPTER_URL` / `_WS_URL`) | chest core outbound | `:8424` | `:8410` | `:8424` |
+| `DEBUG_ARONA_URL` | arona-facing clients | `:8420` | `:8405` | `:8429` |
+| `DEBUG_EVERNIGHT_URL` (`ARONA_EVERNIGHT_URL`) | evernight bridge clients | `:8443` | `:8443` | `:8443` |
+
+The parenthesised names are the pre-existing per-repo variables, injected with identical values so unmodified checkouts work today. Custom ports live in a `devenv.toml` (cwd or the celestia config dir) with `[profiles.<name>]` tables.
 
 ## Commit Message Governance
 

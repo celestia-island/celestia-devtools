@@ -48,6 +48,10 @@ Commands::
     e2e-sandbox       Run e2e/browser jobs in an isolated, always-cleaned TMPDIR
                       sandbox; sweep stale sandbox dirs and orphan chromium
                       profiles from /tmp (run | sweep | sweep-tmp)
+    devenv            Dev-mode gateway environment: compute the DEBUG_* (and
+                      per-repo) gateway variables for a run profile
+                      (native | daemon | mock) and launch commands with them
+                      injected (print | run)
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -117,6 +121,7 @@ COMMANDS: dict[str, str] = {
     "ci-audit": "celestia_devtools.ci.workflow_audit",
     "ci-cache": "celestia_devtools.ci.cache_policy",
     "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
+    "devenv": "celestia_devtools.env.devenv",
 }
 
 
