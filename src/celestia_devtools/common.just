@@ -394,3 +394,22 @@ mock-stop:
 # Show status of all registered mock servers.
 mock-status:
     {{ _devtools }} mock-status
+
+# ── Local domain hostmap (temporary *.cw lanes) ──────────────────────
+#
+# Reproduce the production short-domain shape (dev.cw, auth.cw, …) on one
+# machine: a managed block in the OS hosts file points the lane domains at
+# 127.0.0.1, and a zero-dependency reverse proxy routes each request by its
+# Host header (WebSocket upgrades included) to the local stack — native dev
+# ports, the malkuth daemon pod ports, or the mock stack, per profile.
+# Fully reversible: `just hostmap down` removes the hosts block again.
+#
+#   just hostmap up                  hosts + proxy, Ctrl-C stops the proxy
+#   just hostmap up --profile mock   front the mock stack ports
+#   just hostmap up --port 8080      unprivileged port (non-Windows <1024)
+#   just hostmap up --no-hosts       proxy only, never touch the hosts file
+#   just hostmap down                remove the managed hosts block
+#   just hostmap status              lanes + hosts entries + port states
+#   just hostmap lanes               print the resolved mapping table
+hostmap *ARGS='':
+    {{ _devtools }} hostmap {{ARGS}}

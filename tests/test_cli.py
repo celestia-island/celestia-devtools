@@ -43,6 +43,9 @@ class TestCommandRegistry:
             # consume the shared layers.
             "family-versions",
             "version-string",
+            # Added 2026-10-16: local domain lanes — managed hosts block +
+            # Host-routing reverse proxy for dev.cw-style domains.
+            "hostmap",
         }
         assert set(COMMANDS.keys()) == expected
 

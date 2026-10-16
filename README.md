@@ -79,13 +79,41 @@ fetch URL='':
     else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
 ```
 
-`import?` (optional import) lets a fresh clone parse the justfile before staging, so your own recipes always work. Run `just fetch` (or `celestia-devtools init`) to stage the shared recipes — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, etc. All recipes are overridable — redefine any after the `import?` line.
+`import?` (optional import) lets a fresh clone parse the justfile before staging, so your own recipes always work. Run `just fetch` (or `celestia-devtools init`) to stage the shared recipes — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, `hostmap`, etc. All recipes are overridable — redefine any after the `import?` line.
 
 **Windows note:** if `bash` resolves to WSL (`just windows-shell-check` reports a hijack), prepend Git's `usr/bin` to PATH:
 
 ```powershell
 [Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
 ```
+
+## Local domain hostmap
+
+Production fronts its services with short `*.cw` vhosts (`demo.dev.cw`, `gateway.cw`, …) at a remote nginx. Locally the stack is reached as bare `localhost:<port>` pairs, so origin-dependent client code (redirects, OAuth callbacks, cookie scoping) can only be exercised against the real servers. `hostmap` closes that gap on one machine, with zero extra dependencies: a **managed block** in the OS hosts file points the lane domains at `127.0.0.1`, and a small asyncio reverse proxy routes each request by its `Host` header — WebSocket upgrades included, plain byte relay after the routing decision — to the active profile's upstreams.
+
+```bash
+just hostmap up                  # hosts block + proxy on :80, Ctrl-C stops
+just hostmap up --profile mock   # front the mock stack (arona/scepter/chest mocks)
+just hostmap up --port 8080      # unprivileged port (non-Windows ports <1024)
+just hostmap down                # remove the managed hosts block
+just hostmap status              # lanes + hosts entries + upstream port states
+```
+
+Three built-in profiles mirror the three ways the stack runs locally; `hostmap lanes` prints the resolved table:
+
+| Domain | `native` | `daemon` | `mock` |
+| --- | --- | --- | --- |
+| `dev.cw` / `auth.cw` | chest `:3000` | pod `:8400` | mock `:8428` |
+| `scepter.cw` | scepter `:8424` | pod `:8410` | mock `:8424` |
+| `arona.cw` | arona `:8420` | pod `:8405` | mock `:8420` |
+| `evernight.cw` | `:8443` in all profiles | | |
+
+Notes:
+
+- Editing the hosts file needs admin once per `up`/`down` — the tool self-elevates (UAC prompt on Windows, `sudo` elsewhere); `--no-hosts` skips hosts entirely and runs the proxy alone.
+- Custom lanes live in a `hostmap.toml` (cwd or the celestia config dir): `[lanes.mine]` tables with `"domain" = port` (or `"host:port"`) entries, `"*.suffix.cw"` wildcards supported.
+- Inside WSL the Windows hosts file is auto-detected; start the proxy with `--bind 0.0.0.0` so Windows-side browsers reach it through localhost forwarding.
+- HTTP only: the local stacks are plain-HTTP; TLS termination is deliberately out of scope.
 
 ## Commit Message Governance
 
