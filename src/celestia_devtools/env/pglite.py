@@ -21,13 +21,23 @@ Lifecycle:
   stop    → kill the recorded PID, clear the sidecar.
   status  → is a recorded instance still alive + listening?
 
+Named instances:
+  Multiple PGlite servers can run side by side (e.g. one database per
+  service under test) by giving each a `--name`; each name gets its own
+  sidecar file. The nameless invocation is the `default` instance and
+  stays compatible with the pre-name sidecar location.
+
 Usage::
 
     celestia-devtools pglite start                 # spawn, print DATABASE_URL
     celestia-devtools pglite start --port 5433     # pin a port
     celestia-devtools pglite start --persist /path # persistent data dir
+    celestia-devtools pglite start --name arona    # a second, parallel instance
     celestia-devtools pglite stop
+    celestia-devtools pglite stop --name arona
+    celestia-devtools pglite stop --all
     celestia-devtools pglite status
+    celestia-devtools pglite status --all
 
 Runs inside the celestia-dev WSL2 distro (or any Linux/WSL with node+npm).
 """
@@ -37,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -57,7 +68,13 @@ PACKAGES = [
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 0  # 0 = let the OS pick a free port (reported back via stdout)
+# Sidecar layout: the default instance keeps the historical single sidecar
+# `pglite-instance.json`; named instances get `pglite-instance-<name>.json`.
 SIDECAR_NAME = "pglite-instance.json"
+DEFAULT_INSTANCE = "default"
+# Instance names become sidecar filename suffixes, so keep them tight and
+# filesystem-safe (also keeps `pglite-instance-<name>.json` grep-friendly).
+_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
 def _log(level: str, msg: str) -> None:
@@ -81,8 +98,32 @@ def _node_dir() -> Path:
     return d
 
 
-def _sidecar_path() -> Path:
-    return _data_dir() / SIDECAR_NAME
+def _sidecar_path(name: str = DEFAULT_INSTANCE) -> Path:
+    if name == DEFAULT_INSTANCE:
+        return _data_dir() / SIDECAR_NAME
+    return _data_dir() / f"pglite-instance-{name}.json"
+
+
+def _iter_sidecar_names() -> list[str]:
+    """Names of every recorded instance (default + named), sorted."""
+    names: list[str] = []
+    for p in _data_dir().glob("pglite-instance*.json"):
+        if p.name == SIDECAR_NAME:
+            names.append(DEFAULT_INSTANCE)
+        else:
+            stem = p.name[: -len(".json")]
+            prefix = "pglite-instance-"
+            if stem.startswith(prefix):
+                names.append(stem[len(prefix):])
+    return sorted(set(names))
+
+
+def _validate_name(name: str) -> str:
+    if not _NAME_RE.match(name):
+        raise SystemExit(
+            f"invalid instance name {name!r}: expected [a-z0-9][a-z0-9-]* (max 32)"
+        )
+    return name
 
 
 # ── The embedded Node launcher script ─────────────────────────────────
@@ -199,18 +240,26 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _read_sidecar() -> dict:
+def _read_sidecar(name: str = DEFAULT_INSTANCE) -> dict:
     try:
-        return json.loads(_sidecar_path().read_text())
+        return json.loads(_sidecar_path(name).read_text())
     except Exception:
         return {}
 
 
-def _write_sidecar(data: dict) -> None:
+def _write_sidecar(data: dict, name: str = DEFAULT_INSTANCE) -> None:
     try:
-        _sidecar_path().write_text(json.dumps(data))
+        _sidecar_path(name).write_text(json.dumps(data))
     except OSError as e:
         _log("warn", f"could not write sidecar: {e}")
+
+
+def _clear_sidecar(name: str = DEFAULT_INSTANCE) -> None:
+    """Remove the sidecar outright so `--all` sweeps don't re-see dead ones."""
+    try:
+        _sidecar_path(name).unlink(missing_ok=True)
+    except OSError as e:
+        _log("warn", f"could not remove sidecar: {e}")
 
 
 def _proc_alive(pid: int) -> bool:
@@ -227,16 +276,19 @@ def _proc_alive(pid: int) -> bool:
 
 
 def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-          persist: str | None = None, force: bool = False) -> int:
+          persist: str | None = None, force: bool = False,
+          name: str = DEFAULT_INSTANCE) -> int:
+    _validate_name(name)
     # Fail fast with a clear hint if node/npm are missing — otherwise the
     # user gets an opaque FileNotFoundError from deep inside npm install.
     _require_tools("node", "npm")
 
-    # If an instance is already recorded and alive, reuse it (unless --force).
+    # If an instance of this name is already recorded and alive, reuse it
+    # (unless --force).
     if not force:
-        sc = _read_sidecar()
+        sc = _read_sidecar(name)
         if sc and _proc_alive(sc.get("pid", 0)):
-            _log("info", f"PGlite already running → {sc['url']}")
+            _log("info", f"PGlite[{name}] already running → {sc['url']}")
             print(sc["url"])
             return 0
 
@@ -299,21 +351,21 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
         return 1
 
     _write_sidecar({"pid": proc.pid, "port": chosen, "url": url,
-                    "host": host, "data_dir": data_dir,
-                    "started_at": time.time()})
-    _log("info", f"✓ PGlite ready → {url}  (pid {proc.pid}, log {log_path})")
+                    "host": host, "data_dir": data_dir, "name": name,
+                    "started_at": time.time()}, name)
+    _log("info", f"✓ PGlite[{name}] ready → {url}  (pid {proc.pid}, log {log_path})")
     print(url)
     return 0
 
 
-def stop() -> int:
-    sc = _read_sidecar()
+def _stop_one(name: str) -> bool:
+    """Stop the named instance if recorded. Returns True if a live one was killed."""
+    sc = _read_sidecar(name)
     pid = sc.get("pid", 0)
     if not pid or not _proc_alive(pid):
-        _log("info", "no running PGlite instance recorded.")
-        _write_sidecar({})
-        return 0
-    _log("info", f"stopping PGlite pid {pid} ...")
+        _clear_sidecar(name)
+        return False
+    _log("info", f"stopping PGlite[{name}] pid {pid} ...")
     try:
         os.kill(pid, 15)  # SIGTERM
     except ProcessLookupError:
@@ -325,13 +377,42 @@ def stop() -> int:
         if not _proc_alive(pid):
             break
         time.sleep(0.1)
-    _write_sidecar({})
-    _log("info", "✓ PGlite stopped.")
+    _clear_sidecar(name)
+    _log("info", f"✓ PGlite[{name}] stopped.")
+    return True
+
+
+def stop(name: str = DEFAULT_INSTANCE, all_: bool = False) -> int:
+    if all_:
+        names = _iter_sidecar_names()
+        if not names:
+            _log("info", "no running PGlite instances recorded.")
+            return 0
+        stopped = [n for n in names if _stop_one(n)]
+        _log("info", f"✓ stopped {len(stopped)}/{len(names)} instance(s): {', '.join(stopped) or 'none alive'}")
+        return 0
+    _validate_name(name)
+    sc = _read_sidecar(name)
+    pid = sc.get("pid", 0)
+    if not pid or not _proc_alive(pid):
+        _log("info", f"no running PGlite[{name}] instance recorded.")
+        _clear_sidecar(name)
+        return 0
+    _stop_one(name)
     return 0
 
 
-def status() -> int:
-    sc = _read_sidecar()
+def status(name: str = DEFAULT_INSTANCE, all_: bool = False) -> int:
+    if all_:
+        live = []
+        for n in _iter_sidecar_names():
+            sc = _read_sidecar(n)
+            if sc and _proc_alive(sc.get("pid", 0)):
+                live.append({"name": n, **{k: v for k, v in sc.items() if k != "name"}})
+        print(json.dumps({"running": bool(live), "instances": live}, indent=2))
+        return 0 if live else 1
+    _validate_name(name)
+    sc = _read_sidecar(name)
     pid = sc.get("pid", 0)
     alive = _proc_alive(pid) if pid else False
     if alive:
@@ -353,17 +434,23 @@ def main() -> int:
     sp.add_argument("--port", type=int, default=DEFAULT_PORT, help="0 = auto-pick free port")
     sp.add_argument("--persist", default=None, help="data dir path (default: in-memory)")
     sp.add_argument("--force", action="store_true", help="restart even if one is running")
+    sp.add_argument("--name", default=DEFAULT_INSTANCE,
+                    help="instance name (own sidecar + reuse slot; default: 'default')")
 
-    sub.add_parser("stop", help="stop the recorded PGlite instance")
-    sub.add_parser("status", help="show the recorded instance state")
+    sp = sub.add_parser("stop", help="stop the recorded PGlite instance")
+    sp.add_argument("--name", default=DEFAULT_INSTANCE, help="instance name to stop")
+    sp.add_argument("--all", dest="all_", action="store_true", help="stop every recorded instance")
+    sp = sub.add_parser("status", help="show the recorded instance state")
+    sp.add_argument("--name", default=DEFAULT_INSTANCE, help="instance name to query")
+    sp.add_argument("--all", dest="all_", action="store_true", help="list every recorded instance")
 
     args = p.parse_args()
     if args.cmd == "start":
-        return start(args.host, args.port, args.persist, args.force)
+        return start(args.host, args.port, args.persist, args.force, args.name)
     if args.cmd == "stop":
-        return stop()
+        return stop(args.name, args.all_)
     if args.cmd == "status":
-        return status()
+        return status(args.name, args.all_)
     return 2
 
 
