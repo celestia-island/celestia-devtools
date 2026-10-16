@@ -54,6 +54,20 @@ def _get(url: str, accept: str | None = "text/html,application/xhtml+xml,*/*"):
         return exc.code, exc.read().decode(errors="replace")
 
 
+class TestPortResolution:
+    def test_env_port_used_when_flag_absent(self, monkeypatch):
+        monkeypatch.setenv("CELESTIA_VITE_PORT", "5204")
+        assert vite._port_of([]) == "5204"
+
+    def test_flag_beats_env(self, monkeypatch):
+        monkeypatch.setenv("CELESTIA_VITE_PORT", "5204")
+        assert vite._port_of(["--port", "6000"]) == "6000"
+
+    def test_garbage_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("CELESTIA_VITE_PORT", "not-a-port")
+        assert vite._port_of([]) == vite.DEFAULT_PORT
+
+
 class TestServesTheGivenDirectory:
     def test_directory_wins_over_process_cwd(self, tmp_path, monkeypatch):
         """Regression (2026-10-16 live bite): without directory=, the handler

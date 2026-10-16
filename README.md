@@ -108,6 +108,19 @@ just devenv run -- cargo tauri dev    # desktop dev build → local chest
 
 The parenthesised names are the pre-existing per-repo variables, injected with identical values so unmodified checkouts work today. Custom ports live in a `devenv.toml` (cwd or the celestia config dir) with `[profiles.<name>]` tables.
 
+## Per-app port allocation
+
+Two tauri debug apps on one machine fight over the same two sockets: the WebView2 CDP port (`9222` — first app to boot owns it, the other's devtools silently die) and the vite devUrl server (`5173` — the second app's webview loads the **first** app's frontend; seen live between WoWSP and shittim-chest). `ports` gives every app deterministic-but-unique ports, coordinated through a per-user registry:
+
+```bash
+just ports acquire --app shittim-chest --kind vite   # bare port, script-friendly
+just ports env --app shittim-chest                   # CELESTIA_VITE_PORT / CELESTIA_CDP_PORT + the WebView2 CDP line
+just ports list                                      # live claims
+just ports release --app shittim-chest
+```
+
+Same app → same ports across runs (URLs and CDP targets feel permanent); different apps → different ports; claims owned by dead pids are garbage-collected automatically. Consumers: pass the allocated port to `vite-serve --port`, and for WebView2 shells export `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` (the `env` output carries it) so each app's CDP lands on its own port.
+
 ## Commit Message Governance
 
 `celestia-devtools` enforces the org gitmoji convention — every commit and PR merge must start with a gitmoji, use uppercase English, and end with a period (`.`). See `celestia-devtools commit-msg-lint check --help` for the full rule set.

@@ -47,6 +47,9 @@ class TestCommandRegistry:
             # per-repo variable set for a run profile, with an injecting
             # launcher (replaces the abandoned hosts-file hostmap approach).
             "devenv",
+            # Added 2026-10-17: per-app vite/CDP port allocation — two
+            # tauri debug shells on one machine must never cross-wire.
+            "ports",
         }
         assert set(COMMANDS.keys()) == expected
 

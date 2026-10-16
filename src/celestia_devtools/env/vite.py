@@ -44,12 +44,22 @@ def _dist_dir() -> Path:
 
 
 def _port_of(args: list[str]) -> str:
+    """--port flag > CELESTIA_VITE_PORT env > 5173.
+
+    The env rung is the ports-facility seam: a tauri shell launched with
+    `ports env` exports carries CELESTIA_VITE_PORT, its beforeDevCommand
+    (vite-serve) inherits it, and the shell navigates to the same port —
+    one variable threads the loop, and two apps on one machine never
+    land on the same devUrl."""
     it = iter(range(len(args)))
     for i in it:
         if args[i] == "--port" and i + 1 < len(args):
             return args[i + 1]
         if args[i].startswith("--port="):
             return args[i].split("=", 1)[1]
+    env = os.environ.get("CELESTIA_VITE_PORT", "").strip()
+    if env.isdigit():
+        return env
     return DEFAULT_PORT
 
 
