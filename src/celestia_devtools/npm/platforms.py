@@ -51,7 +51,8 @@ class Platform:
 #:
 #: - **linux-x64 / linux-arm64** — the two server CPU classes (x86_64 cloud +
 #:   AWS Graviton / Ampere ARM).
-#: - **linux-x64-musl** — Alpine and distroless containers (statically linked).
+#: - **linux-x64-musl / linux-arm64-musl** — Alpine, distroless and any distro
+#:   whose glibc is older than the build host (statically linked).
 #: - **darwin-arm64** — Apple Silicon Macs (M1–M4).
 #: - **darwin-x64** — Intel Macs (Rosetta cannot run arm64 binaries on x64).
 #: - **win32-x64** — Windows on Intel/AMD.
@@ -76,6 +77,15 @@ PLATFORMS: tuple[Platform, ...] = (
         # Alpine/musl is still linux-x64 from Node's perspective; the suffix
         # distinguishes the dynamically-vs-statically linked variants so a user
         # on musl can opt in explicitly, while glibc users get the default.
+        musl=True,
+    ),
+    Platform(
+        rust_target="aarch64-unknown-linux-musl",
+        npm_suffix="-linux-arm64-musl",
+        node_os="linux",
+        node_cpu="arm64",
+        # Static counterpart for ARM64 servers (Graviton, Ampere) whose distro
+        # glibc is older than the ubuntu-latest build host.
         musl=True,
     ),
     Platform(

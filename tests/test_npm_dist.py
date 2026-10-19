@@ -29,12 +29,13 @@ _HAS_NODE = pytest.mark.skipif(
 
 
 class TestPlatforms:
-    def test_canonical_matrix_has_six_targets(self):
+    def test_canonical_matrix_has_seven_targets(self):
         targets = {p.rust_target for p in PLATFORMS}
         assert targets == {
             "x86_64-unknown-linux-gnu",
             "aarch64-unknown-linux-gnu",
             "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
             "x86_64-pc-windows-msvc",
