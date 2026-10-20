@@ -57,7 +57,7 @@ jobs:
           # take precedence over the step's uppercase NO_PROXY — mirror it so
           # the direct-CNB path cannot be silently re-proxied.
           export no_proxy="$NO_PROXY"
-          REPOS="shittim-chest entelecheia arona malkuth plana hikari kirino evernight celestia-devtools evernight-appliance celestia-integration akivili hifumi cherino kei noa yuuka"
+          REPOS="shittim-chest entelecheia arona malkuth plana hikari kirino evernight celestia-devtools evernight-appliance celestia-integration akivili hifumi cherino kei kei-wire noa yuuka"
           BASE="${RUNNER_TEMP:-/tmp}/cnb-mirrors"
           mkdir -p "$BASE"
           fail=0
