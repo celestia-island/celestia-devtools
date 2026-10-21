@@ -22,7 +22,8 @@ crc = importlib.util.module_from_spec(_SPEC)
 sys.modules.setdefault("ci_runner_credentials", crc)
 _SPEC.loader.exec_module(crc)
 
-REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest")
+REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest",
+        "kei-wire")
 
 
 # ── ssh_config structure ─────────────────────────────────────────────────────
@@ -95,9 +96,9 @@ def test_strip_block_idempotent():
 # ── gitconfig insteadOf rules ────────────────────────────────────────────────
 
 
-def test_insteadof_rules_cover_exactly_five_private_repos():
+def test_insteadof_rules_cover_the_private_repos():
     rules = crc.insteadof_rules()
-    assert len(rules) == 5
+    assert len(rules) == len(REPOS)
     for (key, value), repo in zip(rules, REPOS, strict=True):
         assert key == f"url.gh-ci-{repo}:celestia-island/{repo}.git.insteadOf"
         assert value == f"https://github.com/celestia-island/{repo}.git"
