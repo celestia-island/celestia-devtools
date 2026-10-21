@@ -5,9 +5,9 @@ Idempotently installs the read-only deploy-key SSH credentials for the org's
 PRIVATE git dependencies onto a celestia-island self-hosted CI runner
 (node-ci-1..4, AGENTS §8.4), so ``cargo`` can fetch private git deps:
 
-  1. ``~/.ssh/id_ed25519_ci_<repo>``      the five private keys, mode 600
-  2. ``~/.ssh/config``                    five managed ``Host gh-ci-<repo>`` blocks
-  3. ``~/.gitconfig``                     exactly five ``url.<alias>.insteadOf`` rules
+  1. ``~/.ssh/id_ed25519_ci_<repo>``      the private keys, mode 600
+  2. ``~/.ssh/config``                    managed ``Host gh-ci-<repo>`` blocks
+  3. ``~/.gitconfig``                     the ``url.<alias>.insteadOf`` rules
   4. ``~/.cargo/config.toml``             ``[net] git-fetch-with-cli = true``
                                           (existing content preserved, backup kept)
   5. runner-unit env drop-in              ``CARGO_NET_GIT_FETCH_WITH_CLI=true``
@@ -18,7 +18,7 @@ PRIVATE git dependencies onto a celestia-island self-hosted CI runner
 Design notes carried over verbatim from the bash original (do not "improve" away):
 
 * ONE KEY PER REPO (a GitHub deploy key cannot be reused across repos).
-* NO BLANKET ``https://github.com/`` rewrite -- only the five exact private repo
+* NO BLANKET ``https://github.com/`` rewrite -- only the exact private repo
   URLs are rewritten; public repos keep anonymous HTTPS.
 * ADDITIVE ONLY: existing ssh config / gitconfig / cargo config content is
   preserved; only the marked managed block is replaced.
@@ -59,10 +59,13 @@ EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_USAGE = 2
 
-# The five private repos Rust CI actually needs, and the local key basename for
-# each.  akivili's key is the pre-existing gh-ci-readonly; the other four are
-# gh-ci-readonly-<repo>.
-REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest")
+# The private repos Rust CI actually needs, and the local key basename for
+# each.  akivili's key is the pre-existing gh-ci-readonly; the others are
+# gh-ci-readonly-<repo>.  kei-wire joined 2026-10-20 when #582 pointed the
+# bridge dependency at it -- the runners had no key, so every cargo job
+# fetching the graph failed (the 09-13 incident class, one repo deeper).
+REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest",
+         "kei-wire")
 
 MANAGED_BEGIN = "# >>> celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
 MANAGED_END = "# <<< celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
@@ -129,7 +132,7 @@ def apply_managed_ssh_block(existing: str | None) -> str:
 
 
 def insteadof_rules() -> list[tuple[str, str]]:
-    """The exactly-five gitconfig rewrite rules (key, value) pairs."""
+    """The gitconfig rewrite rules (key, value) pairs, one per repo."""
     return [
         (
             f"url.gh-ci-{repo}:celestia-island/{repo}.git.insteadOf",
@@ -299,7 +302,7 @@ def ssh_config_emitter() -> str:
         '  printf \'%s\\n\' "$END"',
         '} >> "$CFG"',
         "",
-        "# --- 3. ~/.gitconfig: exactly five insteadOf rules, nothing global -----------",
+        "# --- 3. ~/.gitconfig: the insteadOf rules, nothing global -------------------",
     ]
     for key, value in insteadof_rules():
         lines.append("git config --global " + shlex.quote(key) + " " + shlex.quote(value))
