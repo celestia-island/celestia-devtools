@@ -36,6 +36,8 @@ class TestCommandRegistry:
             # Added 2026-09-20: production-target lifecycle group (deploy doctor;
             # the remaining subcommands land with their own slices and fail loudly).
             "deploy",
+            # Added 2026-10-22: local branch hygiene sweeper.
+            "git-sweep",
             "e2e-sandbox",
             # Added 2026-09-25: family dependency-identity check. The audit found
             # kirino at two incompatible majors, plana on seven revisions and
