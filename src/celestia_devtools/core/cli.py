@@ -24,6 +24,7 @@ Commands::
     commit-msg-lint   Validate commit messages against the org gitmoji convention
     hook              Manage the celestia-devtools commit-msg hook lifecycle
     pr-merge          Validate subject and merge via gh pr merge.
+    git-sweep         Sweep local branches whose work already lives on the base branch
     nav-lint          Gate navigation call sites against poisoned/off-origin targets
     p0-gate           Fail a repo covered by an unresolved P0 finding (explicit ack to pass)
     rules-lint        Lint a split workspace-rules tree (core AGENTS.md + ledgers + skills)
@@ -85,6 +86,7 @@ COMMANDS: dict[str, str] = {
     "version-string": "celestia_devtools.vcs.version_string",
     "hook": "celestia_devtools.vcs.hook",
     "pr-merge": "celestia_devtools.vcs.pr_merge",
+    "git-sweep": "celestia_devtools.vcs.branch_sweep",
     "nav-lint": "celestia_devtools.lint.nav_lint",
     "p0-gate": "celestia_devtools.lint.p0_gate",
     "rules-lint": "celestia_devtools.lint.rules_lint",
