@@ -64,19 +64,28 @@ def _content_leak_hits(text: str) -> "List[str]":
 # 逐字源码里对内部文档的引用：只登记、不判失败
 CODE_REF_RE = re.compile(r"AGENTS\.md|PLAN\.md|§[0-9]")
 
+# 取材 = 当前活实例链（2026-10-24 改版；此前停在 2026-10-08 的工业 IoT 样例）：
+#   electrode_recon  e-001 引擎编排层（init → CBD 生长 → 退火 → 校验 → 产出）
+#   entelecheia      scepter 运行时消费 AgentKey + 插件 res 树（L2 平台 W2）
+#   evernight        Plugin.Push 分发协议（L2 平台 W3 安装链）
+#   shittim-chest    suite enrollment 铸造端点（本地套件上云 S4）
+#   plana            AgentKey 契约本体（L2 平台 W2 切片 1）
+# 每仓至多 1 件、总数 ≤6；换链路时同步换这里，并先用 git cat-file -e
+# origin/<默认分支>:<路径> 核对存在。
 SAMPLE_FILES = (
-    "entelecheia/packages/domain_agents/industrial_iot/src/tools/tools/modbus_write.rs",
-    "entelecheia/packages/shared/security_policy/src/industrial_write_policy.rs",
-    "evernight/src/serial/modbus.rs",
-    "entelecheia/scripts/deploy/backup.py",
+    "electrode_recon/service/pipeline.py",
+    "entelecheia/packages/scepter/src/services/l2_plugin_agents.rs",
+    "evernight/src/plugin_push.rs",
+    "shittim-chest/packages/core/src/suite.rs",
+    "plana/packages/state_types/src/agent_key.rs",
 )
 LOG_REPOS = ("entelecheia", "evernight", "plana", "shittim-chest", "arona", "hikari")
-# 健康探针目标：默认 RFC 5737 文档地址；真实部署用环境变量 EXTERNAL_REVIEW_HEALTH_URLS
-# （空格分隔）注入，禁止把内网地址写进仓库树。
+# 健康探针目标：默认 = 当前真实公网面（生产 dev / 实验 demo / evernight gateway）。
+# 公网域名可以入树；内网 IP / 内网域名一律禁止写进仓库树（示例值用 RFC 5737 文档地址）。
+# 整组可用环境变量 EXTERNAL_REVIEW_HEALTH_URLS（空格分隔）覆盖。
 DEFAULT_HEALTH_URLS = (
-    "http://192.0.2.10:3005/api/health",
-    "http://192.0.2.10:3009/api/health",
     "https://dev.celestia.world/api/health",
+    "https://demo.dev.celestia.world/api/health",
     "https://gateway.celestia.world/api/health",
 )
 HEALTH_URLS = tuple(
@@ -519,6 +528,10 @@ def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
     code_files = sorted(
         str(p.relative_to(out)) for p in (out / "code").rglob("*") if p.is_file()
     )
+    # 「只有提交标题」的仓必须**排除**已取源码的仓——否则 manifest 与自己的
+    # code/ 清单自相矛盾（改 SAMPLE_FILES 而忘改这句话就会把读包人带偏）。
+    sampled_repos = {rel.split("/", 1)[0] for rel in SAMPLE_FILES}
+    log_only_repos = [repo for repo in LOG_REPOS if repo not in sampled_repos]
     lines = [
         "# 证据包构成说明\n",
         f"生成于 {now_iso()}。本包**只有**四样东西：仓库规模数字、近期提交标题、"
@@ -530,8 +543,8 @@ def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
         "- `code/` 只有下面这些文件，**不是**每个仓都取，也**不是**沿调用链取全：\n\n```",
         *code_files,
         "```\n",
-        "- 其它仓库（plana / kirino / hikari / shittim-chest / arona / malkuth 等）"
-        "**只有提交标题**，没有源码。\n",
+        f"- 其它仓库（{' / '.join(log_only_repos)} 等，见 `01-repos.md`）"
+        "**只有提交标题**（或仅有仓库规模数字），没有源码。\n",
         "- **外部依赖的源码完全没有**。若代码调用了一个包外实现（第三方 crate / 另一个服务），\n"
         "  本包**无法**证实或证伪那个实现的行为——请把这类判断标成'输入不足'，而不是'未实现'。\n",
         "- 服务端入口（RPC / HTTP handler）、CI workflow、systemd 单元、部署脚本："

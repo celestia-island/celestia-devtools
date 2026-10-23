@@ -134,6 +134,58 @@ def test_external_review_days_env_override(workspace: Path):
     assert proc.returncode == 1  # ...but overdue on a 7-day cadence
 
 
+# ── 取材约束：活实例链、每仓一件、公网健康面（2026-10-24 改版） ────────────────
+
+
+def test_sample_files_map_live_chains_one_per_repo_within_cap():
+    """取材 = 活实例链代表文件；每仓至多 1 件、总数 4-6，且全部是仓内路径。"""
+    repos = [rel.split("/", 1)[0] for rel in external_review.SAMPLE_FILES]
+    assert 4 <= len(repos) <= 6, "取材总数必须保持在 4-6 件"
+    assert len(repos) == len(set(repos)), "每仓至多 1 件"
+    for rel in external_review.SAMPLE_FILES:
+        assert "/" in rel, f"采样路径必须是 <仓>/<路径> 形态：{rel}"
+        assert not rel.startswith("/"), f"采样路径必须是工作区相对路径：{rel}"
+
+
+def test_default_health_urls_are_real_public_surface():
+    """默认健康面 = 三个真实公网域名；不得再留 RFC 5737 文档假地址或 IP 字面量。"""
+    urls = external_review.DEFAULT_HEALTH_URLS
+    assert set(urls) == {
+        "https://dev.celestia.world/api/health",
+        "https://demo.dev.celestia.world/api/health",
+        "https://gateway.celestia.world/api/health",
+    }
+    for url in urls:
+        assert url.startswith("https://"), f"公网面一律 TLS：{url}"
+        host = url.split("//", 1)[1].split("/", 1)[0]
+        assert not host[0].isdigit(), f"默认值必须是域名，不得是 IP 字面量：{url}"
+    joined = " ".join(urls)
+    for doc_net in ("192.0.2.", "198.51.100.", "203.0.113."):
+        assert doc_net not in joined, f"文档示例网段 {doc_net} 不得再出现在默认值里"
+
+
+def test_health_urls_env_override_still_wins():
+    """EXTERNAL_REVIEW_HEALTH_URLS 覆盖机制保持不变：整组替换，空值回落默认。"""
+    code = (
+        "import sys; sys.path.insert(0, {tools!r}); import external_review as m; "
+        "print('\\n'.join(m.HEALTH_URLS))"
+    ).format(tools=str(TOOLS_DIR))
+    override = "https://a.example/api/health https://b.example/api/health"
+    env = dict(os.environ)
+    env["EXTERNAL_REVIEW_HEALTH_URLS"] = override
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert tuple(proc.stdout.split()) == tuple(override.split())
+    env.pop("EXTERNAL_REVIEW_HEALTH_URLS")
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert tuple(proc.stdout.split()) == external_review.DEFAULT_HEALTH_URLS
+
+
 # ── pack command file assembly ───────────────────────────────────────────────
 
 
@@ -143,7 +195,9 @@ def fake_ws(workspace: Path, monkeypatch) -> Path:
     repo = workspace / "entelecheia"
     (repo / ".git").mkdir(parents=True)
     # use one of the real SAMPLE_FILES paths so pack() picks it up
-    sample = repo / "scripts" / "deploy" / "backup.py"
+    sample = (
+        repo / "packages" / "scepter" / "src" / "services" / "l2_plugin_agents.rs"
+    )
     sample.parent.mkdir(parents=True)
     sample.write_text("# example\n", encoding="utf-8")
 
@@ -181,7 +235,11 @@ def test_pack_assembles_expected_files(fake_ws: Path, monkeypatch, capsys):
     ):
         assert (out / name).is_file(), name
     # the sampled working-tree file lands under code/ (no origin ref in fake repo)
-    assert (out / "code" / "entelecheia" / "scripts" / "deploy" / "backup.py").is_file()
+    sampled = (
+        out / "code" / "entelecheia" / "packages" / "scepter" / "src" / "services"
+        / "l2_plugin_agents.rs"
+    )
+    assert sampled.is_file()
     provenance = (out / "00-code-provenance.md").read_text(encoding="utf-8")
     assert "工作树（无 origin ref）" in provenance  # explicit downgrade, not silent
     repos = (out / "01-repos.md").read_text(encoding="utf-8")
@@ -402,6 +460,27 @@ def test_manifest_injection_note_does_not_trip_the_isolation_gate(fake_ws: Path,
     manifest = (out / "00-manifest.md").read_text(encoding="utf-8")
     assert "自动注入" in manifest and "弱证据" in manifest
     assert external_review._content_leak_hits(manifest) == []
+
+
+def test_manifest_does_not_disclaim_source_for_sampled_repos(fake_ws, monkeypatch, capsys):
+    """「其它仓库只有提交标题」必须排除已取源码的仓——改取材而忘改这句话时，
+    manifest 会与自己的 code/ 清单自相矛盾，把读包人带偏（2026-10-24 改版时钉住）。"""
+    import re as _re
+
+    out = _pack_once(fake_ws, monkeypatch, capsys)
+    manifest = (out / "00-manifest.md").read_text(encoding="utf-8")
+    m = _re.search(r"其它仓库（([^）]*)）", manifest)
+    assert m, "manifest 必须保留『其它仓库…』边界声明"
+    listed = {
+        name.strip().rstrip("等").strip()
+        for name in m.group(1).split("/")
+        if name.strip()
+    }
+    sampled = {rel.split("/", 1)[0] for rel in external_review.SAMPLE_FILES}
+    assert listed, "声明不得为空"
+    assert not (listed & sampled), (
+        f"已取源码的仓不得出现在『只有提交标题』清单里：{listed & sampled}"
+    )
 
 
 # ── 封印：pack 封、verify 验、record 拒绝动过的包（2026-10-08 加料洞） ────────
