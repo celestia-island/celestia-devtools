@@ -1,0 +1,12 @@
+fn main() {
+    // The family brand stamp (celestia-devtools brand-stamp): embeds
+    // brand/icon.ico into the Windows executable's resources at build
+    // time. winresource no-ops on non-Windows targets, so the same
+    // wiring serves every platform.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        winresource::WindowsResource::new()
+            .set_icon("brand/icon.ico")
+            .compile()
+            .expect("brand icon embed");
+    }
+}
