@@ -38,7 +38,22 @@ SEP = "@@\n"  # record separator for for-each-ref
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    # UTF-8 is pinned: git speaks UTF-8, but a Windows console's locale
+    # codec (cp936 on a Chinese install) cannot decode it — the reader
+    # thread died and left stdout=None, crashing the sweep with an
+    # AttributeError on the first CJK repo path or branch name.
+    # core.quotepath=off keeps non-ASCII paths raw: with the default
+    # octal-escaped spelling ("\346\226\207.txt") a CJK filename handed
+    # back to `git diff -- <path>` matches nothing, so unique content
+    # read as "identical on base" and the branch was swept (false
+    # DELETE).
+    return subprocess.run(
+        ["git", "-c", "core.quotepath=false", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def _base_ref(repo: Path, requested: str | None) -> str | None:
@@ -111,7 +126,10 @@ def sweep_repo(
     report: dict = {"repo": str(repo), "base": base_ref, "verdicts": [],
                     "deleted": [], "failed": [], "backup_dir": None}
     if base_ref is None:
-        report["error"] = "no base branch found (tried master, main)"
+        # Not sweepable — and not a sweep failure either: `--root` walks
+        # arbitrary checkouts (scratch/verify dirs) that legitimately
+        # carry no master/main. main() decides how loudly to report it.
+        report["skipped"] = "no base branch found (tried master, main)"
         return report
 
     current = _current_branch(repo)
@@ -168,9 +186,19 @@ def sweep_repo(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A cp936/legacy Windows console chokes printing branch names or repo
+    # paths outside its codec (an emoji-named branch would crash the
+    # report); degrade unencodable characters instead of dying.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):  # pragma: no cover - wrapped streams
+            pass
     ap = argparse.ArgumentParser(prog="git-sweep", description=__doc__.splitlines()[0])
     ap.add_argument("--repo", help="repository to sweep (default: cwd)")
-    ap.add_argument("--root", help="sweep every git repository directly under DIR")
+    ap.add_argument("--root",
+                    help="sweep every git repository directly under DIR "
+                         "(checkouts without master/main are skipped)")
     ap.add_argument("--base", help="base branch (default: master, then main)")
     ap.add_argument("--apply", action="store_true",
                     help="delete swept branches (default: dry run)")
@@ -198,9 +226,15 @@ def main(argv: list[str] | None = None) -> int:
         for f in report["failed"]:
             print(f"ERROR  {f['branch']}  {f['error']}", file=sys.stderr)
             failed = True
-        if report.get("error"):
-            print(f"error: {report['repo']}: {report['error']}", file=sys.stderr)
-            failed = True
+        if report.get("skipped"):
+            # A base-less checkout is not sweepable, not a failure: `--root`
+            # legitimately walks scratch dirs. An explicit `--repo` run still
+            # surfaces it through the exit code — the caller asked for THAT
+            # repo and got nothing swept.
+            reason = report["skipped"]
+            print(f"skip   {report['repo']}: {reason}", file=sys.stderr)
+            if not args.root:
+                failed = True
 
     if args.json:
         print(json.dumps(reports, ensure_ascii=False, indent=2))
