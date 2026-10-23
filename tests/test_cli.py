@@ -52,6 +52,7 @@ class TestCommandRegistry:
             # Added 2026-10-17: per-app vite/CDP port allocation — two
             # tauri debug shells on one machine must never cross-wire.
             "ports",
+            "brand-stamp",
         }
         assert set(COMMANDS.keys()) == expected
 

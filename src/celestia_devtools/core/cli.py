@@ -56,6 +56,8 @@ Commands::
     ports             Per-app port allocation for tauri dev stacks: unique
                       vite/CDP ports per app so two debug shells never
                       cross-wire (acquire | env | list | release)
+    brand-stamp       Wire the family icon into a Rust project's Windows
+                      build (build.rs + winresource + icon asset; idempotent)
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -128,6 +130,7 @@ COMMANDS: dict[str, str] = {
     "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
     "devenv": "celestia_devtools.env.devenv",
     "ports": "celestia_devtools.env.ports",
+    "brand-stamp": "celestia_devtools.brand.stamp",
 }
 
 
