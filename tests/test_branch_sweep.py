@@ -10,8 +10,12 @@ from celestia_devtools.vcs.branch_sweep import sweep_repo
 
 
 def _git(repo: Path, *args: str) -> str:
+    # Same UTF-8 pin the tool itself uses: git speaks UTF-8 and the CJK
+    # branch-name test would otherwise trip the test helper's own
+    # locale-codec decode on a cp936 console.
     r = subprocess.run(["git", "-C", str(repo), *args], check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     return r.stdout.strip()
 
 
@@ -134,4 +138,73 @@ def test_main_dry_run_via_cli(repo: Path):
     )
     assert r.returncode == 0
     assert "dry run" in r.stdout
+
+
+def test_cjk_named_file_unique_content_kept(repo: Path):
+    """A CJK-named file with unique content must keep its branch.
+
+    Regression: `git diff --name-only` quoted non-ASCII paths as octal
+    escapes ("\\346\\226\\207.txt" for 文件.txt); handing that quoted
+    spelling back to `git diff -- <path>` matched nothing, so a
+    uniquely-changed CJK file read as "identical on base" and the branch
+    was swept (false DELETE - real content loss behind a backup patch
+    nobody looks at).
+    """
+    _git(repo, "switch", "-c", "feat/cjk-file")
+    _write(repo, "文件.txt", "branch\n")
+    _commit(repo, "cjk file work")
+    _git(repo, "switch", "master")
+    _write(repo, "文件.txt", "master\n")
+    _commit(repo, "master moved on")
+    report = sweep_repo(repo)
+    assert _verdicts(report)["feat/cjk-file"] == "KEEP"
+
+
+def test_cjk_branch_name_decodes(repo: Path):
+    """A non-ASCII branch name must survive git output decoding.
+
+    On a cp936 (GBK) Windows console the tool's subprocess reader decoded
+    git's UTF-8 output with the locale codec, the reader thread died and
+    `stdout` became None - the sweep crashed with an AttributeError.
+    """
+    _git(repo, "switch", "-c", "feat/中文-分支")
+    _write(repo, "m.txt", "1\n")
+    _commit(repo, "work")
+    _git(repo, "switch", "master")
+    _git(repo, "merge", "feat/中文-分支")
+    report = sweep_repo(repo)
+    assert _verdicts(report)["feat/中文-分支"] == "DELETE"
+
+
+def test_root_skips_repo_without_base(tmp_path: Path, capsys):
+    """--root must not turn a base-less checkout into a sweep failure.
+
+    A workspace walk hits stray/temporary git dirs (e.g. a `.pr-verify`
+    scratch repo) that carry neither master nor main; those are not
+    sweepable, and reporting them as failures made the whole run exit 1.
+    """
+    import subprocess as sp
+
+    from celestia_devtools.vcs.branch_sweep import main as sweep_main
+
+    def git_init(path: Path, branch: str) -> None:
+        path.mkdir()
+        for argv in (["init", "-b", branch],
+                     ["config", "user.email", "test@example.com"],
+                     ["config", "user.name", "tester"]):
+            sp.run(["git", "-C", str(path), *argv],
+                   check=True, capture_output=True, text=True)
+
+    ok = tmp_path / "ok"
+    git_init(ok, "master")
+    (ok / "a.txt").write_text("a\n", encoding="utf-8")
+    sp.run(["git", "-C", str(ok), "add", "-A"], check=True, capture_output=True)
+    sp.run(["git", "-C", str(ok), "commit", "-m", "base"],
+           check=True, capture_output=True)
+
+    stray = tmp_path / "stray"
+    git_init(stray, "trunk")
+
+    assert sweep_main(["--root", str(tmp_path)]) == 0
+    assert "no base branch" in capsys.readouterr().err
 
