@@ -41,3 +41,10 @@ def test_stamp_requires_manifest(tmp_path: Path) -> None:
     empty = tmp_path / "empty"
     empty.mkdir()
     assert _stamp(empty, "icon") == 2
+
+
+def test_stamp_evernight_icon(tmp_path: Path) -> None:
+    """The per-member icon wires identically to the family default."""
+    proj = _mk_project(tmp_path / "x")
+    assert _stamp(proj, "evernight") == 0
+    assert (proj / "brand" / "evernight.ico").is_file()

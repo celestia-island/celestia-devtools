@@ -29,7 +29,7 @@ import shutil
 import sys
 from pathlib import Path
 
-ICON_NAMES = ("icon",)
+ICON_NAMES = ("icon", "evernight")
 BUILD_RS = Path(__file__).resolve().parent / "build.rs.tmpl"
 
 EXIT_USAGE = 2
