@@ -75,6 +75,7 @@ packages = ["src/celestia_devtools"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/celestia_devtools/common.just" = "celestia_devtools/common.just"
 "src/celestia_devtools/lint/p0_ledger.toml" = "celestia_devtools/lint/p0_ledger.toml"
+"src/celestia_devtools/repo/family_layers.toml" = "celestia_devtools/repo/family_layers.toml"
 
 [tool.ruff]
 target-version = "py311"
