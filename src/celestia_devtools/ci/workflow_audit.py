@@ -15,8 +15,9 @@ This CLI makes that shape loud.
 only place an upper bound can live is the callee — the reusable workflow named by ``uses:``,
 on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has none.
 
-*Rules* (each finding carries ``path:line`` and a recomputable criterion; all six are
-``error`` severity today):
+*Rules* (each finding carries ``path:line`` and a recomputable criterion; all seven are listed
+here — six carry ``error`` severity, and ``self-hosted-pr-without-fork-guard`` is ``warning``
+so the fleet can adopt the guard repository by repository instead of in one red wave):
 
 ``invalid-caller-key``
     a job that has ``uses:`` **and** a key outside the nine caller keys — the incident.
@@ -43,6 +44,20 @@ on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has 
     silently, so ``safe_load``-based auditors stay blind — GitHub's parser instead rejects
     the whole file, zero jobs, nothing red (the ``dev.celestia.world`` job with two ``if:``
     keys produced fourteen pseudo-runs).
+``self-hosted-pr-without-fork-guard`` (warning)
+    a job that runs **directly** on a self-hosted runner — ``runs-on`` naming
+    ``self-hosted``, or an expression over ``vars.`` whose value cannot be resolved offline
+    (``fromJSON(vars.CI_RUNNER)``) — inside a workflow whose ``on`` includes
+    ``pull_request``, without an ``if:`` carrying the org's fork guard
+    (``github.event.pull_request.head.repo.full_name == github.repository``, or the
+    equivalent ``github.event.pull_request.head.repo.fork == false``). Such a workflow lets
+    a pull request opened from a fork execute untrusted code inside the org network and
+    spend shared runner capacity. A job that calls a reusable workflow (``uses:``) is **not**
+    reported: its guard lives in the callee, so flagging callers would bury the real
+    findings under every canonical caller in the fleet. Warning, not error, because the
+    private half of the fleet still has to grow the guard one repository at a time; a
+    repository that must stay unguarded records it with
+    ``--allow self-hosted-pr-without-fork-guard=<glob>``.
 
 *Structure:* the workflow AST is composed with PyYAML (a declared runtime dependency), so
 line numbers come from node marks and validity comes from the composer itself — a file that
@@ -119,6 +134,7 @@ RULE_SELF_HOSTED_MISSING_TIMEOUT = "self-hosted-missing-timeout"
 RULE_YAML_PARSE_ERROR = "yaml-parse-error"
 RULE_CALLER_NOT_CANONICAL = "caller-not-canonical"
 RULE_YAML_DUPLICATE_KEY = "yaml-duplicate-key"
+RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD = "self-hosted-pr-without-fork-guard"
 
 RULE_NAMES: Tuple[str, ...] = (
     RULE_INVALID_CALLER_KEY,
@@ -127,6 +143,7 @@ RULE_NAMES: Tuple[str, ...] = (
     RULE_YAML_PARSE_ERROR,
     RULE_CALLER_NOT_CANONICAL,
     RULE_YAML_DUPLICATE_KEY,
+    RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD,
 )
 
 #: The file every repository ships for the shared commit-lint caller.
@@ -135,8 +152,10 @@ CANONICAL_CALLER_NAME = "commit-msg-lint.yml"
 #: Substring that identifies a job calling the shared commit-lint reusable workflow.
 SHARED_COMMIT_LINT_REF = "celestia-devtools/.github/workflows/commit-msg-lint.yml"
 
-# 今天五条规则全是 error；severity 与 --strict 是留给将来 warning 级规则的机制
-# （判据在 has_failure 里，测试用合成 finding 覆盖），不是死代码。
+# Two severities: ``error`` for what GitHub silently refuses to run (or what silently stops a
+# required check), ``warning`` for a shape the fleet has to adopt incrementally —
+# ``self-hosted-pr-without-fork-guard`` is the latter, and ``--strict`` turns warnings into a
+# non-zero exit for a repository that has finished the migration and wants to stay finished.
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
 
@@ -159,6 +178,27 @@ SELF_HOSTED_LABEL = "self-hosted"
 
 #: The ``on`` member that turns a workflow into a reusable-workflow callee.
 WORKFLOW_CALL_KEY = "workflow_call"
+
+#: The event that carries a head repository, i.e. the one a fork pull request arrives on.
+PULL_REQUEST_EVENT = "pull_request"
+
+#: The org's canonical fork guard, verbatim from every workflow that has one. A fork PR
+#: must neither execute code on the org's self-hosted runners nor spend their capacity.
+FORK_GUARD = (
+    "github.event_name != 'pull_request' || "
+    "github.event.pull_request.head.repo.full_name == github.repository"
+)
+
+#: Substrings that identify a guarded job. Whitespace-stripped, because YAML authors fold and
+#: reflow ``if:`` freely (``>``/``>-`` blocks, ``||`` on its own line), and the guard must be
+#: recognised in every spelling of the same expression.
+#:
+#: The second form (``head.repo.fork == false``) is the equivalent test — a fork has a head
+#: repository that is not ``github.repository`` — and repositories already using it are clean.
+FORK_GUARD_MARKERS: Tuple[str, ...] = (
+    "github.event.pull_request.head.repo.full_name==github.repository",
+    "github.event.pull_request.head.repo.fork==false",
+)
 
 #: Legal-key list as it appears in messages (kept in one place so it cannot drift).
 _CALLER_KEY_LIST = "/".join(CALLER_LEGAL_KEYS)
@@ -212,8 +252,9 @@ class Finding:
 def has_failure(findings: Sequence[Finding], strict: bool = False) -> bool:
     """Whether the run must exit non-zero: any error, or (with *strict*) any warning.
 
-    Every rule is an ``error`` today, so ``--strict`` is inert in practice; the predicate is
-    still the single place the exit-code rule lives, and is covered with a synthetic warning.
+    ``self-hosted-pr-without-fork-guard`` is a warning so the fleet can grow the guard one
+    repository at a time without a red wave, which makes ``--strict`` the switch a repository
+    flips once its own tree is guarded to keep it that way.
     """
     for finding in findings:
         if finding.severity == SEVERITY_ERROR:
@@ -259,27 +300,66 @@ def _scalar_labels(node: Optional[Node]) -> List[str]:
     return []
 
 
-def _declares_workflow_call(on_node: Optional[Node]) -> bool:
-    """Whether the top-level ``on`` includes ``workflow_call``.
+def _triggers(on_node: Optional[Node], event: str) -> bool:
+    """Whether the top-level ``on`` includes *event*.
 
     All three shapes GitHub accepts are covered::
 
-        on: workflow_call
-        on: [push, workflow_call]
+        on: pull_request
+        on: [push, pull_request]
         on:
-          workflow_call:
+          pull_request:
     """
     if isinstance(on_node, ScalarNode):
-        return on_node.value == WORKFLOW_CALL_KEY
+        return on_node.value == event
     if isinstance(on_node, SequenceNode):
-        return any(
-            _scalar_text(child) == WORKFLOW_CALL_KEY for child in on_node.value
-        )
+        return any(_scalar_text(child) == event for child in on_node.value)
     if isinstance(on_node, MappingNode):
         return any(
-            _scalar_text(key_node) == WORKFLOW_CALL_KEY for key_node, _ in on_node.value
+            _scalar_text(key_node) == event for key_node, _ in on_node.value
         )
     return False
+
+
+def _declares_workflow_call(on_node: Optional[Node]) -> bool:
+    """Whether the top-level ``on`` includes ``workflow_call`` (a reusable-workflow callee)."""
+    return _triggers(on_node, WORKFLOW_CALL_KEY)
+
+
+def _is_self_hosted(runs_on: Optional[Node]) -> bool:
+    """Whether a ``runs-on`` value puts the job on the org farm (rule 7's reading).
+
+    Two things count, and the second is the interesting one:
+
+    * a label naming ``self-hosted``;
+    * an expression over ``vars.`` — ``runs-on: ${{ fromJSON(vars.CI_RUNNER) }}``. The
+      repository variable is not in the tree, so the audit cannot know whether it resolves
+      to the farm or to ``ubuntu-latest``. It reads as self-hosted, because the two mistakes
+      are not symmetric: a false positive costs one warning a repository silences with
+      ``--allow``, while a false negative means a fork pull request runs inside the org
+      network.
+
+    Rules 2 and 3 deliberately keep the literal reading (``self-hosted`` in a label): turning
+    their existing ``error`` into "the expression might name the farm" would redden builds
+    across the fleet, which is a different decision from adding this warning.
+    """
+    for label in _scalar_labels(runs_on):
+        lowered = label.lower()
+        if SELF_HOSTED_LABEL in lowered:
+            return True
+        if "${{" in label and "vars." in lowered:
+            return True
+    return False
+
+
+def _has_fork_guard(entries: Dict[str, Tuple[Node, Node]]) -> bool:
+    """Whether the job's own ``if:`` carries the fork guard, in any accepted spelling."""
+    entry = entries.get("if")
+    if entry is None:
+        return False
+    text = _scalar_text(entry[1]) or ""
+    compact = "".join(text.split())  # `if: >-` folds, `||` may sit on its own line
+    return any(marker in compact for marker in FORK_GUARD_MARKERS)
 
 
 def _job_entries(body: MappingNode) -> Dict[str, Tuple[Node, Node]]:
@@ -407,6 +487,36 @@ def _missing_timeout_finding(
         line=line,
         rule=rule,
         severity=SEVERITY_ERROR,
+        message=message,
+        excerpt=_line_excerpt(lines, line),
+    )
+
+
+def _fork_guard_finding(
+    job_id: str,
+    runs_on_key: Node,
+    runs_on_value: Node,
+    path: str,
+    lines: Sequence[str],
+) -> Finding:
+    """Rule 7: a self-hosted job reachable by ``pull_request`` without the fork guard."""
+    labels = ", ".join(_scalar_labels(runs_on_value)) or "an expression"
+    message = (
+        f"job {job_id!r} has no fork guard: it runs directly on a self-hosted runner "
+        f"(runs-on: {labels}) in a workflow triggered by pull_request, so a pull request "
+        f"whose head branch lives in a fork would execute untrusted code inside the org "
+        f"network and spend the shared runner capacity same-repo PRs need. Add the org's "
+        f"canonical guard to the job — same-repo PRs, pushes and workflow_dispatch keep "
+        f"running: if: {FORK_GUARD} (github.event.pull_request.head.repo.fork == false is "
+        f"accepted as the equivalent form). A repository that must stay unguarded records "
+        f"it with --allow self-hosted-pr-without-fork-guard=<glob>"
+    )
+    line = _line_of(runs_on_key)
+    return Finding(
+        path=path,
+        line=line,
+        rule=RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD,
+        severity=SEVERITY_WARNING,
         message=message,
         excerpt=_line_excerpt(lines, line),
     )
@@ -599,7 +709,11 @@ def audit_text(text: str, path: str) -> List[Finding]:
     if not isinstance(jobs, MappingNode):
         return findings
 
-    is_callee = _declares_workflow_call(_mapping_value(root, "on"))
+    on_node = _mapping_value(root, "on")
+    is_callee = _declares_workflow_call(on_node)
+    # 规则 7 只看 pull_request 触发的 workflow：push / workflow_dispatch 事件里
+    # `github.event.pull_request` 是 null，守卫无从谈起。
+    pr_triggered = _triggers(on_node, PULL_REQUEST_EVENT)
 
     if _calls_shared_commit_lint(jobs):
         if Path(path).name == CANONICAL_CALLER_NAME:
@@ -615,14 +729,24 @@ def audit_text(text: str, path: str) -> List[Finding]:
 
         if "uses" in entries:
             # caller 作业：只查合法键集。它的 runner 由 callee 决定，因此不再套用
-            # 自托管规则（否则 `uses` + `runs-on` 会被重复计一次）。
+            # 自托管规则（否则 `uses` + `runs-on` 会被重复计一次）。fork guard 同理：
+            # 守卫在 callee 里，在 caller 上要求一份会把 34 个私有仓的 canonical caller
+            # 全部误报成 warning，真问题被噪音埋掉。
             findings.extend(_caller_findings(job_id, entries, path, lines))
             continue
 
         runs_on = entries.get("runs-on")
-        if runs_on is None or "timeout-minutes" in entries:
+        if runs_on is None:
             continue
         runs_on_key, runs_on_value = runs_on
+
+        if pr_triggered and _is_self_hosted(runs_on_value) and not _has_fork_guard(entries):
+            findings.append(
+                _fork_guard_finding(job_id, runs_on_key, runs_on_value, path, lines)
+            )
+
+        if "timeout-minutes" in entries:
+            continue
         labels = _scalar_labels(runs_on_value)
         if not any(SELF_HOSTED_LABEL in label.lower() for label in labels):
             continue
@@ -867,7 +991,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "Fail GitHub Actions workflows that GitHub would silently refuse to run: "
             "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted "
             "jobs without timeout-minutes, and files that are not valid YAML. The caller "
-            "side cannot express a timeout upper bound; it belongs on the callee."
+            "side cannot express a timeout upper bound; it belongs on the callee. "
+            "Self-hosted jobs reachable by pull_request also have to keep fork PRs out "
+            "(warning)."
         ),
     )
     parser.add_argument(
@@ -884,7 +1010,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="treat warning-severity findings as failures too (every rule is an error today)",
+        help=(
+            "treat warning-severity findings as failures too "
+            "(self-hosted-pr-without-fork-guard is the warning-severity rule)"
+        ),
     )
     parser.add_argument(
         "--allow",
