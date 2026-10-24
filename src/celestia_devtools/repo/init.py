@@ -530,12 +530,8 @@ def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Optio
 
     return None
 
-def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
-    """Missing/drifted canonical callers under *workflows_dir*.
-
-    Returns the mandatory-caller problems (the ones that fail ``--check``) and
-    warns about drifted opt-in callers. A callee definition is never compared.
-    """
+def workflow_drift_problems(workflows_dir: Path) -> list[str]:
+    """Missing/drifted mandatory callers under *workflows_dir* (pure)."""
     problems: list[str] = []
 
     for filename, template, _label in REQUIRED_WORKFLOWS:
@@ -546,7 +542,6 @@ def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
             alias = _canonical_alias(workflows_dir, template, filename)
 
             if alias is not None:
-                logger.warn(f"{rel} missing, but {alias.name} carries the canonical caller — " f"rename it to {filename} (regenerating would install a second caller)")
                 continue
 
             problems.append(f"{rel} missing — run: celestia-devtools init --with-workflows")
@@ -558,7 +553,28 @@ def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
             continue
 
         if text != template:
-            problems.append(f"{rel} drifted ({len(text.encode('utf-8'))} B ≠ canonical " f"{len(template.encode('utf-8'))} B) — run: celestia-devtools " f"init --with-workflows --force")
+            problems.append(f"{rel} drifted ({len(text.encode('utf-8'))} B ≠ canonical {len(template.encode('utf-8'))} B) — run: celestia-devtools init --with-workflows --force")
+
+    return problems
+
+def alias_warnings(workflows_dir: Path) -> list[str]:
+    """Mandatory callers that exist under a different (canonical-bytes) name."""
+    warnings: list[str] = []
+
+    for filename, template, _label in REQUIRED_WORKFLOWS:
+        if (workflows_dir / filename).is_file():
+            continue
+
+        alias = _canonical_alias(workflows_dir, template, filename)
+
+        if alias is not None:
+            warnings.append(f".github/workflows/{filename} present only as {alias.name} — rename it to {filename} (regenerating would install a second caller)")
+
+    return warnings
+
+def opt_in_drift_warnings(workflows_dir: Path) -> list[str]:
+    """Drifted opt-in callers (warnings, not failures — inputs are hand-edited)."""
+    warnings: list[str] = []
 
     for name, (filename, template, label) in OPT_IN_GATES.items():
         path = workflows_dir / filename
@@ -572,7 +588,16 @@ def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
             continue
 
         if text != template:
-            logger.warn(f".github/workflows/{filename} drifted from the {label} template — " f"regenerate with: celestia-devtools init --with-workflows --gate {name} --force" " (hand-edited inputs are why this is a warning, not a failure)")
+            warnings.append(f".github/workflows/{filename} drifted from the {label} template — regenerate with: celestia-devtools init --with-workflows --gate {name} --force (hand-edited inputs are why this is a warning, not a failure)")
+
+    return warnings
+
+def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
+    """``init --check`` view: mandatory problems plus logged opt-in warnings."""
+    problems = workflow_drift_problems(workflows_dir)
+
+    for warning in alias_warnings(workflows_dir) + opt_in_drift_warnings(workflows_dir):
+        logger.warn(warning)
 
     return problems
 
