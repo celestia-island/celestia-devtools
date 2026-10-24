@@ -15,8 +15,10 @@ committed copy" model (the gradlew-style per-repo duplicate that drifted).
 hook. Run it once on a fresh checkout, or after upgrading celestia-devtools.
 
 ``--check`` is the CI gate: it reports a staging drift, a missing
-``.gitignore`` rule, and — since the 2026-10-25 structural audit (SR-01) — a
-missing or drifted **canonical caller** in ``.github/workflows``.  A reusable
+``.gitignore`` rule, a local ``fetch`` recipe or obsolete Git-Bash import that
+shadows the shared justfile (SR-24/SR-25), and — since the 2026-10-25 structural
+audit (SR-01) — a missing or drifted **canonical caller** in
+``.github/workflows``.  A reusable
 workflow definition (``on: workflow_call``) in the same directory is the callee
 itself, not a caller, and is skipped.  Opt-in gate callers are only compared
 when the file already exists; their drift is reported as a warning because some
@@ -110,6 +112,8 @@ def main() -> int:
             problems.append(f".gitignore missing rule(s) {missing_rules} — run: celestia-devtools init")
 
         problems.extend(_workflow_drift_problems(Path.cwd() / ".github" / "workflows"))
+
+        problems.extend(_justfile_shadow_problems(Path.cwd()))
 
         if problems:
             for p in problems:
@@ -569,6 +573,35 @@ def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
 
         if text != template:
             logger.warn(f".github/workflows/{filename} drifted from the {label} template — " f"regenerate with: celestia-devtools init --with-workflows --gate {name} --force" " (hand-edited inputs are why this is a warning, not a failure)")
+
+    return problems
+
+def _justfile_shadow_problems(repo_root: Path) -> list[str]:
+    """Local copies of the shared recipes that shadow the staged justfile.
+
+    ``common.just`` provides ``fetch`` and imports are optional, so a repository
+    that also defines its own ``fetch`` silently overrides the shared one (the
+    fleet audit found 37 such copies — 28 still on the retired ``dev`` fallback
+    URL and 9 on ``master`` (SR-24)). The Git-Bash interop import is obsolete
+    since bash was banned in recipes (SR-25); ``init`` warns about it,
+    ``--check`` fails.
+    """
+    justfile = repo_root / "justfile"
+
+    if not justfile.is_file():
+        return []
+
+    text = justfile.read_text(encoding = "utf-8", errors = "replace")
+    problems: list[str] = []
+
+    # `fetch := "…"` is a variable assignment, not the recipe; and an indented
+    # `fetch:` is a recipe-body line. The fleet has both real `fetch URL='':`
+    # recipes and `fetch-icons:`-style prefixes, so the lookaheads are load-bearing.
+    if re.search(r"(?m)^fetch(?!\s*:=)(?=\s|:)", text):
+        problems.append("justfile defines a local `fetch` recipe — delete it; the shared common.just provides fetch (a local copy shadows it and its fallback URL drifts)")
+
+    if re.search(r"(?m)^\s*import\??\s+[\"'][^\"']*git-bash-interop\.just[\"']", text):
+        problems.append("justfile imports the obsolete .just/git-bash-interop.just — delete the import line (bash is banned in shared recipes)")
 
     return problems
 
