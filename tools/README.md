@@ -141,6 +141,25 @@ celestia-devtools e2e-sandbox sweep-tmp
 
 **建议**：e2e 作业的 cron / 农场看门狗定期跑 `sweep-tmp` 作为最后防线。
 
+## engine_drop 三步流水（`stage` → `gates` → `apply`）
+
+引擎在干净 worktree 写完后，宿主机侧一条线走完：
+
+```bash
+python3 tools/engine_drop.py stage <worktree> --repo <仓名> \
+    --description "<gitmoji> 英文陈述句."
+python3 tools/engine_drop.py gates  <drop-root>/<仓名>/<drop-id>   # 只读预检
+python3 tools/engine_drop.py apply  <drop-root>/<仓名>/<drop-id>   # 门禁→worktree→push→PR
+```
+
+`stage` 从 `git status --porcelain --untracked-files=all` 取改动清单（删除的文件与
+重命名的旧侧不进 drop——drop 只承载现存内容文件，删除类改动留给人工；untracked
+文件视作新内容文件正常入 drop）。条目级 fail-closed：G3 禁区、符号链接（防借道读
+worktree 之外的文件）、目录（嵌套 git 仓/子模）一律拒；`--base` 只收 `origin/*`、
+`--description` 同 G6 格式（与 gates 同口径，不产死 drop）；`--drop-id` 只收单段名。
+drop id 默认 `auto-<UTC 时间戳>-<diff 短哈希>`，绝不覆盖已存在的 drop 目录。stage
+自身零 git 写操作；合并仍由人做。
+
 ## engine_drop exit codes（`tools/engine_drop.py`）
 
 进程退出码只有三枚，由 `EXIT_OK` / `EXIT_FAILURE` / `EXIT_USAGE` 三个常量定义，`__main__` 以 `sys.exit(main())` 收口：

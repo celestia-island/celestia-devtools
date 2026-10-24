@@ -504,3 +504,174 @@ def test_description_accepts_emoji_variation_sequences(repo_env, tmp_path, monke
     drop = make_drop(tmp_path, "vs16", {"README.md": "x\n"}, desc=desc)
     rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), monkeypatch)
     assert rc == 0, desc
+
+
+# ── stage ────────────────────────────────────────────────────────────────────
+
+
+class TestStage:
+    @staticmethod
+    def _stage_argv(repo, drop_root, *extra):
+        return ["--drop-root", str(drop_root), "stage", str(repo),
+                "--repo", REPO_NAME,
+                "--description", "📝 Document the exit codes.", *extra]
+
+    def _run_stage(self, repo, drop_root, description="📝 Document the exit codes."):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "engine_drop_stage", Path(__file__).parent.parent / "tools" / "engine_drop.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.main([
+            "--drop-root", str(drop_root),
+            "stage", str(repo),
+            "--repo", REPO_NAME,
+            "--description", description,
+        ])
+
+    def test_stage_builds_a_gates_passing_drop(self, repo_env, tmp_path, capsys):
+        repo = repo_env / REPO_NAME
+        (repo / "README.md").write_text("base\nstaged line\n", encoding="utf-8")
+        drop_root = tmp_path / "drops"
+        rc = self._run_stage(repo, drop_root)
+        assert rc == 0, capsys.readouterr().out
+        drops = list((drop_root / REPO_NAME).iterdir())
+        assert len(drops) == 1
+        drop = drops[0]
+        manifest = json.loads((drop / "MANIFEST.json").read_text(encoding="utf-8"))
+        assert manifest["repo"] == REPO_NAME
+        assert manifest["base"] == "origin/master"
+        assert manifest["branch"].startswith("engine/auto-")
+        assert manifest["files"] == ["README.md"]
+        staged = (drop / "files" / "README.md").read_text(encoding="utf-8")
+        assert "staged line" in staged
+
+        # The staged drop must pass the read-only gates as-is.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "engine_drop_gates", Path(__file__).parent.parent / "tools" / "engine_drop.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        gates_rc = mod.main([
+            "--repo-root", str(repo_env), "--drop-root", str(drop_root),
+            "gates", str(drop),
+        ])
+        assert gates_rc == 0, "staged drop must clear all gates"
+
+    def test_stage_refuses_clean_worktree(self, repo_env, tmp_path, capsys):
+        rc = self._run_stage(repo_env / REPO_NAME, tmp_path / "drops")
+        assert rc == 1
+        assert "没有可 stage" in capsys.readouterr().out
+
+    def test_stage_refuses_to_overwrite_existing_drop(
+            self, repo_env, tmp_path, capsys):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "engine_drop_stage2", Path(__file__).parent.parent / "tools" / "engine_drop.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        repo = repo_env / REPO_NAME
+        (repo / "README.md").write_text("base\nv2\n", encoding="utf-8")
+        drop_root = tmp_path / "drops"
+        argv = [
+            "--drop-root", str(drop_root), "stage", str(repo),
+            "--repo", REPO_NAME, "--drop-id", "fixed-id",
+            "--description", "📝 Document the exit codes.",
+        ]
+        assert mod.main(argv) == 0
+        # Re-staging the same drop id must die() → SystemExit(EXIT_USAGE).
+        with pytest.raises(SystemExit) as exc:
+            mod.main(argv)
+        assert exc.value.code == 2, "refusing to overwrite must exit USAGE via die()"
+        assert "已存在" in capsys.readouterr().err
+
+    def test_stage_carries_renames_and_new_dirs_and_skips_deletions(
+            self, repo_env, tmp_path, capsys):
+        """混合 worktree：改 + git mv 重命名 + 删 + 新目录新文件 → 只搬现存内容文件，
+        产出的 drop 过 gates 且 apply --dry-run 走通（含 engine/auto-* 分支过 G1）。"""
+        repo = repo_env / REPO_NAME
+        (repo / "docs").mkdir()
+        (repo / "docs" / "old.md").write_text("gone\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "--no-verify", "-m",
+                        "📝 Seed docs."], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "push"], check=True, capture_output=True)
+        (repo / "README.md").write_text("base\nstaged line\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "mv", "src/main.rs", "src/moved.rs"],
+                       check=True, capture_output=True)
+        (repo / "docs" / "old.md").unlink()
+        (repo / "newdir").mkdir()
+        (repo / "newdir" / "feat.py").write_text("print('new')\n", encoding="utf-8")
+        drop_root = tmp_path / "drops"
+        rc = self._run_stage(repo, drop_root)
+        assert rc == 0, capsys.readouterr().out
+        drop = next((drop_root / REPO_NAME).iterdir())
+        manifest = json.loads((drop / "MANIFEST.json").read_text(encoding="utf-8"))
+        assert set(manifest["files"]) == {"README.md", "src/moved.rs", "newdir/feat.py"}
+        assert manifest["branch"].startswith("engine/auto-")
+        assert "src/main.rs" not in manifest["files"], "rename old side must not ride the drop"
+        assert "docs/old.md" not in manifest["files"], "deleted file must not ride the drop"
+        # 整条流水：gates 只读预检 + apply --dry-run（建 worktree、过 G1/G7）。
+        gates_rc = run_main(
+            argv_for(repo_env, tmp_path, "gates", str(drop)), None)
+        assert gates_rc == 0, "staged drop must clear all gates"
+        apply_rc = run_main(
+            argv_for(repo_env, tmp_path, "apply", str(drop), "--dry-run"), None)
+        assert apply_rc == 0, "staged drop must survive apply --dry-run"
+        records = audit_records(tmp_path)
+        assert records and records[-1]["outcome"] == "dry-run"
+
+    def test_stage_dies_on_symlink_and_directory_entries(
+            self, repo_env, tmp_path, capsys):
+        """符号链接（防借道读 worktree 之外）与目录条目（嵌套 git 仓）→ die，
+        且不留任何半成品 drop。"""
+        repo = repo_env / REPO_NAME
+        drop_root = tmp_path / "drops"
+        (repo / "leak.txt").symlink_to(repo / "README.md")
+        with pytest.raises(SystemExit) as exc:
+            engine_drop.main(self._stage_argv(repo, drop_root))
+        assert exc.value.code == 2
+        assert "符号链接" in capsys.readouterr().err
+        (repo / "leak.txt").unlink()
+        (repo / "nested").mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "master", str(repo / "nested")],
+                       check=True, capture_output=True)
+        with pytest.raises(SystemExit) as exc:
+            engine_drop.main(self._stage_argv(repo, drop_root))
+        assert exc.value.code == 2
+        assert "普通文件" in capsys.readouterr().err
+        assert not drop_root.exists(), "a die() must not leave a half-built drop"
+
+    def test_stage_pure_deletion_is_not_reported_clean(
+            self, repo_env, tmp_path, capsys):
+        """纯删除的 worktree 不是「干净」：信息必须区分，且不产 drop。"""
+        repo = repo_env / REPO_NAME
+        (repo / "src" / "main.rs").unlink()
+        rc = self._run_stage(repo, tmp_path / "drops")
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "没有可 stage" in out
+        assert "删除" in out, "pure deletion must not be reported as a clean worktree"
+        assert "干净" not in out
+        assert not (tmp_path / "drops").exists()
+
+    def test_stage_rejects_non_origin_base_bad_description_and_escaping_drop_id(
+            self, repo_env, tmp_path, capsys):
+        """与 gates 同口径的前置校验：base 形状（G5）、description（G6）、
+        drop-id 单段名（防路径穿越）——不产死 drop。"""
+        repo = repo_env / REPO_NAME
+        (repo / "README.md").write_text("base\nv2\n", encoding="utf-8")
+        drop_root = tmp_path / "drops"
+        with pytest.raises(SystemExit) as exc:
+            engine_drop.main(self._stage_argv(repo, drop_root, "--base", "refs/heads/master"))
+        assert exc.value.code == 2
+        assert "origin/" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exc:
+            engine_drop.main(self._stage_argv(repo, drop_root, "--description", "fix: nope"))
+        assert exc.value.code == 2
+        assert "description" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exc:
+            engine_drop.main(self._stage_argv(repo, drop_root, "--drop-id", "../escape"))
+        assert exc.value.code == 2
+        assert "单段名" in capsys.readouterr().err
+        assert not drop_root.exists(), "dead-on-arrival inputs must not materialize drops"
