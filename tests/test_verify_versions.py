@@ -397,20 +397,20 @@ def test_sole_corrupt_member_without_baseline_fails_loudly(tmp_path, capsys):
     assert rc == 1
     assert "crates/a/Cargo.toml unparseable" in out
 
-
 # ── python track (2026-10-25, structural audit SR-21) ───────────────────────
 
-
-def _pyproject(root, rel_dir, version, dynamic=False, poetry=False):
+def _pyproject(root, rel_dir, version, dynamic = False, poetry = False):
     body = f'[project]\nname = "{rel_dir.split("/")[-1] or "root"}"\n'
+
     if dynamic:
         body += 'dynamic = ["version"]\n'
     else:
         body += f'version = "{version}"\n'
+
     if poetry:
         body += f'\n[tool.poetry]\nversion = "{version}"\n'
-    _write(root / rel_dir / "pyproject.toml", body)
 
+    _write(root / rel_dir / "pyproject.toml", body)
 
 def test_python_drift_exit_1(tmp_path, capsys):
     _pyproject(tmp_path, ".", "0.2.0")
@@ -420,8 +420,7 @@ def test_python_drift_exit_1(tmp_path, capsys):
     assert rc == 1
     assert "python" in out
     assert "packages/sdk" in out
-    assert "0.1.0" in out and "0.2.0" in out
-
+    assert ("0.1.0" in out) and ("0.2.0" in out)
 
 def test_python_consistent_is_clean_and_reported(tmp_path, capsys):
     _pyproject(tmp_path, ".", "0.2.0")
@@ -431,7 +430,6 @@ def test_python_consistent_is_clean_and_reported(tmp_path, capsys):
     assert rc == 0
     assert "python=0.2.0" in out
 
-
 def test_python_json_track_is_reported(tmp_path, capsys):
     _pyproject(tmp_path, ".", "0.2.0")
     _pyproject(tmp_path, "packages/sdk", "0.1.0")
@@ -440,7 +438,6 @@ def test_python_json_track_is_reported(tmp_path, capsys):
     assert rc == 1
     assert payload["python"]["base"] == "0.2.0"
     assert payload["python"]["drifts"][0]["package"] == "packages/sdk"
-
 
 def test_python_helper_projects_are_not_drift(tmp_path, capsys):
     """A test harness under tests/ follows what it imports, not the release line."""
@@ -452,28 +449,25 @@ def test_python_helper_projects_are_not_drift(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
 
-
 def test_dynamic_root_pyproject_is_not_a_track(tmp_path, capsys):
     """No static identity to compare: absence of a track, not a missing baseline."""
-    _pyproject(tmp_path, ".", "", dynamic=True)
+    _pyproject(tmp_path, ".", "", dynamic = True)
     _pyproject(tmp_path, "packages/sdk", "0.1.0")
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0
     assert "python" not in out
 
-
 def test_python_poetry_version_is_the_baseline(tmp_path, capsys):
-    _pyproject(tmp_path, ".", "0.4.0", poetry=True)
+    _pyproject(tmp_path, ".", "0.4.0", poetry = True)
     _pyproject(tmp_path, "packages/sdk", "0.4.0")
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0
     assert "python=0.4.0" in out
 
-
 def test_python_track_pin_overrides_and_compares_root(tmp_path, capsys):
-    _pyproject(tmp_path, ".", "0.2.0", dynamic=True)
+    _pyproject(tmp_path, ".", "0.2.0", dynamic = True)
     _write(tmp_path / ".versions.toml", '[track]\npython = "0.3.0"\n')
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
@@ -486,60 +480,43 @@ def test_python_track_pin_overrides_and_compares_root(tmp_path, capsys):
     assert "python" in out
     assert "root pyproject.toml version diverged" in out
 
-
 # ── glob exemptions (2026-10-25, structural audit SR-22) ────────────────────
-
 
 def test_glob_exemption_covers_a_vendored_tree(tmp_path, capsys):
     _cargo_workspace(tmp_path)
     _hardcode_member(tmp_path, "packages/vendor/dep", "9.9.9")
-    _write(
-        tmp_path / ".versions.toml",
-        '[exempt.cargo]\n"packages/vendor/*" = "vendored upstream copy"\n',
-    )
+    _write(tmp_path / ".versions.toml", '[exempt.cargo]\n"packages/vendor/*" = "vendored upstream copy"\n')
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0, out
 
-
 def test_glob_exemption_covers_patch_family(tmp_path, capsys):
     _cargo_workspace(tmp_path)
+
     for name in ("boa_engine", "boa_gc", "boa_parser"):
         _hardcode_member(tmp_path, f"patches/{name}", "0.21.1")
-    _write(
-        tmp_path / ".versions.toml",
-        '[exempt.cargo]\n"patches/boa_*" = "vendored upstream copy"\n',
-    )
+
+    _write(tmp_path / ".versions.toml", '[exempt.cargo]\n"patches/boa_*" = "vendored upstream copy"\n')
     rc = main([str(tmp_path)])
     assert rc == 0, capsys.readouterr().out
-
 
 def test_glob_exemption_covers_npm_and_python(tmp_path, capsys):
     _pyproject(tmp_path, ".", "0.2.0")
     _pyproject(tmp_path, "packages/vendor/py", "9.9.9")
-    _package(tmp_path, ".", "0.2.0", private=False)
-    _package(tmp_path, "packages/vendor/web", "9.9.9", private=False)
-    _write(
-        tmp_path / ".versions.toml",
-        '[exempt.npm]\n"packages/vendor/*" = "vendored fork"\n'
-        '[exempt.python]\n"packages/vendor/*" = "vendored fork"\n',
-    )
+    _package(tmp_path, ".", "0.2.0", private = False)
+    _package(tmp_path, "packages/vendor/web", "9.9.9", private = False)
+    _write(tmp_path / ".versions.toml", '[exempt.npm]\n"packages/vendor/*" = "vendored fork"\n' '[exempt.python]\n"packages/vendor/*" = "vendored fork"\n')
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0, out
-
 
 def test_exact_exemption_still_matches(tmp_path, capsys):
     """Backwards compatibility: a key without wildcards keeps its literal meaning."""
     _cargo_workspace(tmp_path)
     _hardcode_member(tmp_path, "crates/b", "0.3.0")
-    _write(
-        tmp_path / ".versions.toml",
-        '[exempt.cargo]\n"crates/b" = "test-only crate"\n',
-    )
+    _write(tmp_path / ".versions.toml", '[exempt.cargo]\n"crates/b" = "test-only crate"\n')
     rc = main([str(tmp_path)])
     assert rc == 0, capsys.readouterr().out
-
 
 def test_python_numeric_version_fails_closed(tmp_path, capsys):
     """A malformed declaration is present-but-unresolvable: fail, don't skip."""
@@ -549,14 +526,12 @@ def test_python_numeric_version_fails_closed(tmp_path, capsys):
     assert rc == 1, out
     assert "python track is present" in out
 
-
 def test_corrupt_root_pyproject_fails_closed(tmp_path, capsys):
     _write(tmp_path / "pyproject.toml", "[project\n")
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 1, out
     assert "pyproject.toml unparseable" in out
-
 
 def test_python_pin_with_corrupt_root_fails_closed(tmp_path, capsys):
     """R1 M1: with a [track] python pin the baseline never reads the root, so a
@@ -570,7 +545,6 @@ def test_python_pin_with_corrupt_root_fails_closed(tmp_path, capsys):
     assert "pyproject.toml unparseable" in out
     assert "root version unchecked" in out
 
-
 def test_python_empty_version_fails_closed(tmp_path, capsys):
     """R1 F1: an empty/whitespace version is a declaration that cannot resolve."""
     _write(tmp_path / "pyproject.toml", '[project]\nname = "x"\nversion = "  "\n')
@@ -579,36 +553,24 @@ def test_python_empty_version_fails_closed(tmp_path, capsys):
     assert rc == 1, out
     assert "python track is present" in out
 
-
 def test_nested_python_declaration_must_resolve(tmp_path, capsys):
     """R2 C: a distributable pyproject that declares an empty/non-string version
     is a broken declaration, not a silent skip."""
     _pyproject(tmp_path, ".", "0.2.0")
-    _write(
-        tmp_path / "packages/sdk/pyproject.toml",
-        '[project]' + chr(10) + 'name = "sdk"' + chr(10) + 'version = "  "' + chr(10),
-    )
+    _write(tmp_path / "packages/sdk/pyproject.toml", '[project]' + chr(10) + 'name = "sdk"' + chr(10) + 'version = "  "' + chr(10))
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 1, out
     assert "declares an unusable version" in out
 
-
 def test_pinned_root_with_empty_version_fails_closed(tmp_path, capsys):
     """R2 C: pin + root version = "" must not read as a clean tree."""
-    _write(
-        tmp_path / "pyproject.toml",
-        '[project]' + chr(10) + 'name = "x"' + chr(10) + 'version = ""' + chr(10),
-    )
-    _write(
-        tmp_path / ".versions.toml",
-        '[track]' + chr(10) + 'python = "0.2.0"' + chr(10),
-    )
+    _write(tmp_path / "pyproject.toml", '[project]' + chr(10) + 'name = "x"' + chr(10) + 'version = ""' + chr(10))
+    _write(tmp_path / ".versions.toml", '[track]' + chr(10) + 'python = "0.2.0"' + chr(10))
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 1, out
     assert "unusable version" in out
-
 
 def test_virtualenv_directories_are_pruned(tmp_path, capsys):
     """R1 F2: an in-tree venv/.tox must not produce phantom python drifts."""

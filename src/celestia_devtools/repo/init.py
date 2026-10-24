@@ -464,11 +464,7 @@ OPT_IN_GATES: dict[str, tuple[str, str, str]] = {"p0": ("p0-gate.yml", WORKFLOW_
 #: The three callers every repository needs, in generation order. Both the
 #: generator and ``--check`` read this table, so a new required caller cannot be
 #: added in one place and forgotten in the other.
-REQUIRED_WORKFLOWS: tuple[tuple[str, str, str], ...] = (
-    ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
-    ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
-    ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check")
-)
+REQUIRED_WORKFLOWS: tuple[tuple[str, str, str], ...] = (("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"), ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"), ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"))
 
 def _is_callee_definition(text: str) -> bool:
     """True for the reusable workflow itself (``on: workflow_call``).

@@ -28,6 +28,10 @@ import pytest
 from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY
 from celestia_devtools.ci import workflow_audit
 from celestia_devtools.ci.workflow_audit import (CALLER_LEGAL_KEYS, CANONICAL_CALLER_NAME, FORK_GUARD, RULE_CALLEE_MISSING_TIMEOUT, RULE_INVALID_CALLER_KEY, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_YAML_PARSE_ERROR, RULE_NAMES, finding_record, _build_parser, audit_text, has_failure, main)
+import yaml as _yaml
+import os
+from pathlib import Path as _Path
+from celestia_devtools.ci.workflow_audit import main as entry
 
 # ── fixture 辅助 ─────────────────────────────────────────────────────────────
 
@@ -381,7 +385,6 @@ class test_yaml_duplicate_key:
 
     def test_safe_load_keeps_the_last_value_is_why_the_rule_exists(self):
         """The blindness demonstration: load-then-look sees one `if`, the walk sees two."""
-        import yaml as _yaml
 
         doc = _yaml.safe_load(self.TWO_IFS)
         assert list(doc["jobs"]["docker"]) .count("if") == 1  # load 视角：已静默去重
@@ -598,7 +601,7 @@ class test_mutation_turns_the_gate_red:
 
 # ── ⑧ 自托管作业在 PR 上没有 fork guard ─────────────────────────────────────
 
-class TestForkGuard:
+class test_fork_guard:
     """Rule 7 (``warning``): a self-hosted job reachable by ``pull_request``, unguarded.
 
     Unlike the other rules this one does not describe a file GitHub refuses to run — it
@@ -614,20 +617,19 @@ class TestForkGuard:
     """
 
     #: The real ``evernight``/``entelecheia`` shape: self-hosted, PR-triggered, no ``if:``.
-    UNGUARDED = (
-        "name: CI\n"                                        # 1
-        "on:\n"                                             # 2
-        "  push:\n"                                         # 3
-        "    branches: [master]\n"                          # 4
-        "  pull_request:\n"                                 # 5
-        "    branches: [master]\n"                          # 6
-        "jobs:\n"                                           # 7
-        "  build:\n"                                        # 8
-        "    runs-on: [self-hosted, linux, x64, local]\n"   # 9
-        "    timeout-minutes: 60\n"                         # 10
-        "    steps:\n"                                      # 11
-        "      - run: cargo test --workspace\n"             # 12
-    )
+    # 1
+    # 2
+    # 3
+    # 4
+    # 5
+    # 6
+    # 7
+    # 8
+    # 9
+    # 10
+    # 11
+    # 12
+    UNGUARDED = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    timeout-minutes: 60\n" "    steps:\n" "      - run: cargo test --workspace\n"
 
     def _guarded(self, guard):
         """The same workflow with *guard* added as the job's ``if:``."""
@@ -936,8 +938,6 @@ class test_paths_and_cli:
         assert paths == sorted(paths)
 
     def test_unreadable_directory_exits_2_instead_of_skipping(self, tmp_path, monkeypatch, capsys):
-        import os
-
         locked = tmp_path / "locked"
         (locked / ".github" / "workflows").mkdir(parents = True)
         os.chmod(locked, 0o000)
@@ -959,7 +959,6 @@ class test_paths_and_cli:
         旧实现用 `Path.glob` 枚举 —— 它**吞掉 EACCES** 返回空列表 ⇒ 报 "clean (0 files)" / exit 0，
         即"把不可读当成没有 workflow"。现改用 os.scandir，让 OSError 冒泡到 exit 2。
         """
-        import os
 
         repo = tmp_path / "repo"
         locked = repo / ".github" / "workflows"
@@ -1061,10 +1060,7 @@ class test_canonical_caller:
         # shittim-chest (1618 B) 与 noa (1667 B) 的真实形态：triggers / permissions /
         # uses / with 与 canonical 完全一致，只多了注释。门禁判 ERROR 等于教仓库
         # 删注释换绿——把树变差来满足工具。必须是 warning。
-        inflated = WORKFLOW_COMMIT_LINT.replace(
-            "permissions:",
-            "# why this caller grants what it grants\npermissions:"
-        )
+        inflated = WORKFLOW_COMMIT_LINT.replace("permissions:", "# why this caller grants what it grants\npermissions:")
         assert inflated != WORKFLOW_COMMIT_LINT
         _workflow(tmp_path, inflated, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
@@ -1119,9 +1115,7 @@ class test_canonical_caller:
         # A semantic drift (the check would stop re-running) is an error, and the
         # human output must name the file and line. A whitespace-only drift is a
         # warning and covered by test_pure_whitespace_drift_is_a_warning_not_a_failure.
-        drifted = WORKFLOW_COMMIT_LINT.replace(
-            "reopened, ready_for_review, synchronize", "reopened, synchronize"
-        )
+        drifted = WORKFLOW_COMMIT_LINT.replace("reopened, ready_for_review, synchronize", "reopened, synchronize")
         _workflow(tmp_path, drifted, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main([]) == 1
@@ -1142,8 +1136,6 @@ class test_entry_point_registered:
     """The console script must really be declared in ``pyproject.toml`` (and the version bumped)."""
 
     def test_console_script_declared(self):
-        from pathlib import Path as _Path
-
         # 用文本断言而不是 tomllib：本包声明支持 3.9，而 tomllib 是 3.11+ 才有的。
         pyproject = _Path(__file__).resolve().parent.parent / "pyproject.toml"
         text = pyproject.read_text(encoding = "utf-8")
@@ -1152,14 +1144,10 @@ class test_entry_point_registered:
         assert "celestia-ci-audit" in scripts
 
     def test_pyyaml_is_a_runtime_dependency(self):
-        from pathlib import Path as _Path
-
         pyproject = _Path(__file__).resolve().parent.parent / "pyproject.toml"
         text = pyproject.read_text(encoding = "utf-8")
         dependencies = text.split("dependencies = [", 1)[1].split("]", 1)[0]
         assert "PyYAML>=6" in dependencies
 
     def test_entry_point_target_is_importable_and_callable(self):
-        from celestia_devtools.ci.workflow_audit import main as entry
-
         assert callable(entry)

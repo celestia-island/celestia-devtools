@@ -109,12 +109,7 @@ except ImportError:  # Python 3.9/3.10
 
 # Directories never walked: build artefacts, virtualenvs and vendored trees whose
 # manifests are not part of any version track.
-_SKIP_DIRS = frozenset(
-    {
-        "node_modules", "target", "dist", ".git", "build", ".next", ".venv",
-        "venv", ".tox", ".nox", "site-packages", "__pycache__"
-    }
-)
+_SKIP_DIRS = frozenset({"node_modules", "target", "dist", ".git", "build", ".next", ".venv", "venv", ".tox", ".nox", "site-packages", "__pycache__"})
 
 # A Cargo.toml living under an ``examples/`` directory is a demo/example crate,
 # not a published member — its version is not gated (mirrors the common
@@ -125,9 +120,7 @@ _EXAMPLE_SEGMENT = "examples"
 #: distribution: test harnesses, example apps, tooling shims and vendored
 #: trees.  Their versions intentionally follow whatever they import and must
 #: not be dragged into the package's release line (SR-21).
-_PY_HELPER_SEGMENTS = frozenset(
-    {"tests", "test", "examples", "scripts", "tools", "fixtures", "benchmarks", "vendor"}
-)
+_PY_HELPER_SEGMENTS = frozenset({"tests", "test", "examples", "scripts", "tools", "fixtures", "benchmarks", "vendor"})
 
 @dataclass
 class drift:
@@ -379,9 +372,7 @@ def _is_exempt(package_id: str, patterns: set) -> bool:
 
 # ── cargo track ──────────────────────────────────────────────────────────────
 
-def detect_cargo_base(
-    repo: Path, override: Optional[str], errors: Optional[List[str]] = None
-) -> Optional[str]:
+def detect_cargo_base(repo: Path, override: Optional[str], errors: Optional[List[str]] = None) -> Optional[str]:
     if override is not None:
         return _norm_version(override)
 
@@ -473,9 +464,7 @@ def collect_cargo_drifts(repo: Path, base: Optional[str], exempt: set[str], erro
 
 # ── npm track ────────────────────────────────────────────────────────────────
 
-def detect_npm_base(
-    repo: Path, override: Optional[str], errors: Optional[List[str]] = None
-) -> Optional[str]:
+def detect_npm_base(repo: Path, override: Optional[str], errors: Optional[List[str]] = None) -> Optional[str]:
     if override is not None:
         return _norm_version(override)
 
@@ -719,9 +708,7 @@ def _python_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = Non
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
-def _cargo_root_drifts(
-    repo: Path, base: str, errors: Optional[List[str]] = None
-) -> List[drift]:
+def _cargo_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = None) -> List[drift]:
     """Compare the root manifest's own declared version against a pinned base.
 
     Only meaningful when the baseline came from a ``[track]`` override: with

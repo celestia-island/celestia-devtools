@@ -105,6 +105,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 # LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
 # _canonical_caller_findings。
 from celestia_devtools.repo.init import (WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS)
+import yaml as _yaml
 
 try:
     import yaml
@@ -154,10 +155,7 @@ PULL_REQUEST_EVENT = "pull_request"
 
 #: The org's canonical fork guard, verbatim from every workflow that has one. A fork PR
 #: must neither execute code on the org's self-hosted runners nor spend their capacity.
-FORK_GUARD = (
-    "github.event_name != 'pull_request' || "
-    "github.event.pull_request.head.repo.full_name == github.repository"
-)
+FORK_GUARD = "github.event_name != 'pull_request' || " "github.event.pull_request.head.repo.full_name == github.repository"
 
 #: Substrings that identify a guarded job. Whitespace-stripped, because YAML authors fold and
 #: reflow ``if:`` freely (``>``/``>-`` blocks, ``||`` on its own line), and the guard must be
@@ -165,10 +163,7 @@ FORK_GUARD = (
 #:
 #: The second form (``head.repo.fork == false``) is the equivalent test — a fork has a head
 #: repository that is not ``github.repository`` — and repositories already using it are clean.
-FORK_GUARD_MARKERS: Tuple[str, ...] = (
-    "github.event.pull_request.head.repo.full_name==github.repository",
-    "github.event.pull_request.head.repo.fork==false"
-)
+FORK_GUARD_MARKERS: Tuple[str, ...] = ("github.event.pull_request.head.repo.full_name==github.repository", "github.event.pull_request.head.repo.fork==false")
 
 #: Legal-key list as it appears in messages (kept in one place so it cannot drift).
 _CALLER_KEY_LIST = "/".join(CALLER_LEGAL_KEYS)
@@ -452,7 +447,6 @@ def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
     A parse failure is reported as "not the same" with the parse error, never as
     a silent pass — an unparseable caller is a different (worse) problem.
     """
-    import yaml as _yaml
 
     try:
         mine = _yaml.safe_load(text)
@@ -531,24 +525,7 @@ def _canonical_caller_findings(text: str, path: str) -> List[finding_record]:
         # repository to delete its explanatory comments to turn the gate green,
         # i.e. to make the tree worse to satisfy the tool. Comments are where a
         # caller records why it grants what it grants, so they stay a warning.
-        return [
-            finding_record(
-                path = path,
-                line = 1,
-                rule = RULE_CALLER_NOT_CANONICAL,
-                severity = SEVERITY_WARNING,
-                message = (
-                    f"this commit-lint caller declares exactly what the canonical template "
-                    f"does (same triggers, permissions, `uses` and `with`) but differs in its "
-                    f"comments ({len(text.encode())} bytes vs "
-                    f"{len(WORKFLOW_COMMIT_LINT.encode())}). That is not a broken check; "
-                    f"regenerate with `celestia-devtools init --with-workflows --force` if you "
-                    f"want the bytes to match, but do not delete the comments to satisfy the "
-                    f"audit"
-                ),
-                excerpt = ""
-            )
-        ]
+        return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller declares exactly what the canonical template " f"does (same triggers, permissions, `uses` and `with`) but differs in its " f"comments ({len(text.encode())} bytes vs " f"{len(WORKFLOW_COMMIT_LINT.encode())}). That is not a broken check; " f"regenerate with `celestia-devtools init --with-workflows --force` if you " f"want the bytes to match, but do not delete the comments to satisfy the " f"audit", excerpt = "")]
 
     return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must be byte-identical to the canonical " f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is " f"{len(text.encode())} bytes and {why}. Regenerate it with " f"`celestia-devtools init --with-workflows --force` instead of editing it by " f"hand — a variant that drops `ready_for_review` or `synchronize` stops " f"re-running the required check, and the PR then cannot be merged", excerpt = "")]
 

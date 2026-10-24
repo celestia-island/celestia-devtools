@@ -46,7 +46,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-Version = tuple[int, int, int]
+version = tuple[int, int, int]
 
 PLANA_REPO = "https://github.com/celestia-island/plana.git"
 #: Repositories the freeze list allows to pin a `plana` revision.  Everyone else
@@ -68,26 +68,16 @@ REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
 #: share one line: `plana` / `plana-rpc-client` ride 0.2 while
 #: `plana-rpc-server` / `plana-celestia-types` / `plana-tauri` are on 0.1, so a
 #: single 0.2 comparison would fail a correct `plana-celestia-types = "^0.1"`.
-PLANA_PUBLISHED: dict[str, Version] = {
-    "plana": (0, 2, 0),
-    "plana-rpc-client": (0, 2, 0),
-    "plana-rpc-server": (0, 1, 0),
-    "plana-celestia-types": (0, 1, 0),
-    "plana-tauri": (0, 1, 0)
-}
+PLANA_PUBLISHED: dict[str, version] = {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 1, 0), "plana-tauri": (0, 1, 0)}
 
 #: `(crate-family prefix, canonical version, why)` for the Rust layers.  A crate
 #: belongs to the family when its name — with `-` read as `_` — is the prefix
 #: itself or starts with `prefix_`; that is what catches `kirino-session` and
 #: `plana-jsonrpc`, which is where the real consumption lives.
-RUST_LAYERS: tuple[tuple[str, Version, str], ...] = (
-    ("kirino", (0, 7, 0), "auth primitives: JWT/RBAC/sessions (Layer 0)"),
-    ("plana", (0, 2, 0), "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"),
-    # The Rust track of the UI layer is 0.3.x while the npm binding is 0.55.x;
-    # without it a `[patch."…/hikari.git"] hikari-* = { path = "../hikari/…" }`
-    # (a cross-repository path dependency the rules forbid) reads as unknown.
-    ("hikari", (0, 3, 0), "UI components, Rust track (Layer 2)")
-)
+# The Rust track of the UI layer is 0.3.x while the npm binding is 0.55.x;
+# without it a `[patch."…/hikari.git"] hikari-* = { path = "../hikari/…" }`
+# (a cross-repository path dependency the rules forbid) reads as unknown.
+RUST_LAYERS: tuple[tuple[str, version, str], ...] = (("kirino", (0, 7, 0), "auth primitives: JWT/RBAC/sessions (Layer 0)"), ("plana", (0, 2, 0), "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"), ("hikari", (0, 3, 0), "UI components, Rust track (Layer 2)"))
 
 #: `crate family → repository` for the git-source check.
 FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
@@ -95,25 +85,18 @@ FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
 #: `(npm package, canonical version, why)` — informational: the workspace rules
 #: currently mandate `^*` for family packages, so an unbounded range warns
 #: (showing what the audit measured) instead of failing.
-NPM_LAYERS: tuple[tuple[str, Version, str], ...] = (
-    # (package, the line that package is actually published on, why). The npm
-    # binding tracks the crate on its own schedule: until 2026-10-24
-    # `@celestia-island/kirino` was stuck at 0.6.x while the crate was 0.7.x, and
-    # the table said so — which made every correct `^0.7` declaration look like a
-    # deviation (chest carried the one remaining warning for exactly that). The
-    # npm release of 0.7.10 closes the gap, so the two tracks agree again and the
-    # cross-track check below stops warning.
-    ("@celestia-island/hikari", (0, 55, 0), "UI component library (Layer 2)"),
-    ("@celestia-island/kirino", (0, 7, 0), "auth bindings (Layer 0, npm track)"),
-    ("@celestia-island/plana-types", (0, 1, 0), "shared protocol types (Layer 1, npm track)"),
-    ("@celestia-island/plana-rpc-client", (0, 1, 0), "RPC client (Layer 1, npm track)")
-)
+# (package, the line that package is actually published on, why). The npm
+# binding tracks the crate on its own schedule: until 2026-10-24
+# `@celestia-island/kirino` was stuck at 0.6.x while the crate was 0.7.x, and
+# the table said so — which made every correct `^0.7` declaration look like a
+# deviation (chest carried the one remaining warning for exactly that). The
+# npm release of 0.7.10 closes the gap, so the two tracks agree again and the
+# cross-track check below stops warning.
+NPM_LAYERS: tuple[tuple[str, version, str], ...] = (("@celestia-island/hikari", (0, 55, 0), "UI component library (Layer 2)"), ("@celestia-island/kirino", (0, 7, 0), "auth bindings (Layer 0, npm track)"), ("@celestia-island/plana-types", (0, 1, 0), "shared protocol types (Layer 1, npm track)"), ("@celestia-island/plana-rpc-client", (0, 1, 0), "RPC client (Layer 1, npm track)"))
 
 #: `layer → (rust crate family, npm package)` for the cross-track check: the same
 #: layer shipped on two tracks has to agree on which generation it is.
-CROSS_TRACK = (
-    ("kirino", "kirino", "@celestia-island/kirino"),
-)
+CROSS_TRACK = (("kirino", "kirino", "@celestia-island/kirino"),)
 
 UNBOUNDED = {"", "*", "^*", "x", "X", "latest", ">=0.0.0"}
 #: Sibling-directory dependencies — retired family-wide (§3.5). `link:` and
@@ -155,7 +138,7 @@ def _parse_version(text: str) -> tuple[int, int | None, int | None] | None:
 
     return parts[0], parts[1], parts[2]  # type: ignore[return-value]
 
-def _hyphen_bounds(first: str, last: str) -> tuple[Version, Version] | None:
+def _hyphen_bounds(first: str, last: str) -> tuple[version, version] | None:
     """`1.2.3 - 2.3.4` — both ends parse as versions, the upper end inclusive."""
     low = _parse_version(first)
     high = _parse_version(last)
@@ -174,7 +157,7 @@ def _hyphen_bounds(first: str, last: str) -> tuple[Version, Version] | None:
 
     return lower, upper
 
-def _bounds(part: str) -> tuple[Version, Version] | None:
+def _bounds(part: str) -> tuple[version, version] | None:
     """The `[lower, upper)` interval one comma-separated comparator admits."""
     part = part.strip()
 
@@ -194,7 +177,7 @@ def _bounds(part: str) -> tuple[Version, Version] | None:
         return None
 
     major, minor, patch = parsed
-    low: Version = (major, minor or 0, patch or 0)
+    low: version = (major, minor or 0, patch or 0)
 
     if operator == "^":
         if major > 0:
@@ -234,7 +217,7 @@ def _bounds(part: str) -> tuple[Version, Version] | None:
 
     return low, high
 
-def intersects(requirement: str, low: Version, high: Version) -> bool | None:
+def intersects(requirement: str, low: version, high: version) -> bool | None:
     """Whether ``requirement`` can resolve to SOME version in ``[low, high)``.
 
     This is the question that matters: `^0.55.71` is a perfectly good member of
@@ -247,7 +230,7 @@ def intersects(requirement: str, low: Version, high: Version) -> bool | None:
 
     return max(bounds[0], low) < min(bounds[1], high)
 
-def admits(requirement: str, target: Version) -> bool | None:
+def admits(requirement: str, target: version) -> bool | None:
     """Whether ``requirement`` can resolve to ``target``.  None = cannot tell."""
     bounds = _requirement_bounds(requirement)
 
@@ -256,7 +239,7 @@ def admits(requirement: str, target: Version) -> bool | None:
 
     return bounds[0] <= target < bounds[1]
 
-def _requirement_bounds(requirement: str) -> tuple[Version, Version] | None:
+def _requirement_bounds(requirement: str) -> tuple[version, version] | None:
     """The `[lower, upper)` interval a whole requirement admits; None = unknown."""
     text = requirement.strip().strip("'\"")
 
@@ -269,7 +252,7 @@ def _requirement_bounds(requirement: str) -> tuple[Version, Version] | None:
     # `a || b` and `a - b` are unions: the requirement admits anything either
     # alternative admits, so the intervals are merged rather than intersecting.
     if ("||" in text) or (" - " in text):
-        merged: tuple[Version, Version] | None = None
+        merged: tuple[version, version] | None = None
         alternatives = text.split("||") if "||" in text else [text]
 
         for alternative in alternatives:
@@ -286,8 +269,8 @@ def _requirement_bounds(requirement: str) -> tuple[Version, Version] | None:
 
         return merged
 
-    low: Version = (0, 0, 0)
-    high: Version = (10 ** 9, 0, 0)
+    low: version = (0, 0, 0)
+    high: version = (10 ** 9, 0, 0)
 
     for part in re.split(r"[,\s]+", text):
         if "||" in part:
@@ -347,7 +330,7 @@ def _repo_name(root: Path) -> str:
 
     return root.name
 
-def _family_crate(name: str) -> tuple[str, Version, str] | None:
+def _family_crate(name: str) -> tuple[str, version, str] | None:
     normalized = name.replace("-", "_")
 
     for prefix, canonical, why in RUST_LAYERS:
@@ -486,12 +469,7 @@ def _check_cargo(path: Path, root: Path, findings: list[finding_record], repo: s
             elif published:
                 # Migration signal, not a failure: every consumer that has not
                 # moved yet shows up here until it declares the registry line.
-                findings.append(finding_record(
-                    "warning", subject,
-                    f"published on crates.io at {member[0]}.{member[1]}; prefer "
-                    f"version = \"^0.{member[1]}\" (registry-first, AGENTS §3.2.2) so the "
-                    "build stops following master"
-                ))
+                findings.append(finding_record("warning", subject, f"published on crates.io at {member[0]}.{member[1]}; prefer " f"version = \"^0.{member[1]}\" (registry-first, AGENTS §3.2.2) so the " "build stops following master"))
 
             continue
 
@@ -713,9 +691,7 @@ def _lock_findings(root: Path) -> list[finding_record]:
             # let a repository whose root locked cleanly while `fuzz/Cargo.lock`
             # held an older generation print `ok` — and that output gets cited
             # as evidence, so it must not be able to miss one.
-            findings.append(finding_record(
-                "info", where,
-                "this is a separate workspace's lockfile, checked on its own below"))
+            findings.append(finding_record("info", where, "this is a separate workspace's lockfile, checked on its own below"))
 
         try:
             data = tomllib.loads(cargo_lock.read_text(encoding = "utf-8"))

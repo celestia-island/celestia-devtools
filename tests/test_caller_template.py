@@ -400,7 +400,6 @@ def test_opt_in_gate_respects_force(tmp_path):
     _ensure_workflows(tmp_path, gates = ("family",), force = True)
     assert target.read_bytes() == WORKFLOW_FAMILY_VERSIONS.encode()
 
-
 def test_the_p0_gate_caller_cannot_collide_with_the_callee_concurrency_group():
     """A callee's `concurrency` is evaluated in the CALLER's context.
 
@@ -413,21 +412,13 @@ def test_the_p0_gate_caller_cannot_collide_with_the_callee_concurrency_group():
     coming back: the ref is `master`, and the two groups are never the same
     expression.
     """
-    from celestia_devtools.repo.init import common_just_path  # noqa: F401  (import check)
-
     caller = yaml.safe_load(WORKFLOW_P0_GATE)
-    callee_path = (
-        Path(__file__).resolve().parent.parent / ".github/workflows/p0-gate.yml"
-    )
-    callee = yaml.safe_load(callee_path.read_text(encoding="utf-8"))
+    callee_path = Path(__file__).resolve().parent.parent / ".github/workflows/p0-gate.yml"
+    callee = yaml.safe_load(callee_path.read_text(encoding = "utf-8"))
 
     caller_group = caller["concurrency"]["group"]
     callee_group = callee["concurrency"]["group"]
-    assert caller_group != callee_group, (
-        "the generated p0-gate caller must not reuse the callee's concurrency group: "
-        "the callee evaluates it in the caller's context and cancels the very run "
-        "that called it"
-    )
+    assert caller_group != callee_group, ("the generated p0-gate caller must not reuse the callee's concurrency group: " "the callee evaluates it in the caller's context and cancels the very run " "that called it")
     # `synchronize` keeps the required check alive on every push, and the
     # dispatch entry is what lets an operator re-run the gate without a push.
     assert "synchronize" in caller[True]["pull_request"]["types"]

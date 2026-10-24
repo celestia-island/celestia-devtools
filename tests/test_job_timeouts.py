@@ -14,6 +14,7 @@ from celestia_devtools.ci.job_timeouts import (workflow_parse_error, main, scan_
 import json
 from pathlib import Path as _Path
 from celestia_devtools.ci.job_timeouts import main as entry
+from celestia_devtools.ci.job_timeouts import workflow_files
 
 try:  # PyYAML 用于交叉校验“插入后仍是合法 YAML”——见下面的 ImportError 说明。
     import yaml
@@ -861,7 +862,7 @@ class test_on_key_not_misparsed:
         lines = _read(path).split("\n")
         assert lines.index("    timeout-minutes: 120") == (lines.index("    runs-on: [self-hosted, linux]") + 1)
 
-class TestWorkflowsDirectoryIsAcceptedAsARoot:
+class test_workflows_directory_is_accepted_as_a_root:
     """The audit must scan a ``.github/workflows`` path instead of reporting zero jobs.
 
     A caller naturally holds the workflows directory (``ci-audit`` takes exactly
@@ -873,7 +874,6 @@ class TestWorkflowsDirectoryIsAcceptedAsARoot:
     def test_audit_accepts_the_workflows_directory(self, tmp_path):
         _workflow(tmp_path, _simple("    runs-on: [self-hosted, linux]\n"))
         workflows = tmp_path / ".github" / "workflows"
-        from celestia_devtools.ci.job_timeouts import workflow_files
 
         assert workflow_files(workflows) == workflow_files(tmp_path) != []
 
@@ -889,7 +889,5 @@ class TestWorkflowsDirectoryIsAcceptedAsARoot:
         assert "timeout-minutes" in target.read_text(encoding = "utf-8")
 
     def test_a_directory_that_is_not_a_workflows_dir_is_still_rejected(self, tmp_path):
-        from celestia_devtools.ci.job_timeouts import workflow_files
-
         (tmp_path / "random").mkdir()
         assert workflow_files(tmp_path / "random") == []
