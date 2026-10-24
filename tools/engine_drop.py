@@ -18,8 +18,18 @@ Drop 目录布局（repo 与 drop 的物理位置绑定，见 G0）::
     stage <worktree> --repo R --description D
                                      从脏 worktree 构造 drop（status 清单 → MANIFEST + files/；
                                      重命名取新侧、删除不进 drop、拒绝链接/目录/禁区条目）
+    sweep [--ws-root P] [--apply]    巡航引擎暂存 ws-root（巡航→装配线宿主侧）：逐仓
+                                      fetch → 改动/领先检测 → 描述（领先提交标题 /
+                                      .drop-description 首行）→ stage → gates →
+                                      （--apply）开 PR + 复位回收工作区
     apply <drop-dir> [--dry-run]     门禁 → 专用 worktree → 提交 → push → 开 PR
     audit [--limit N]                读审计流水
+
+sweep 语义（2026-10-24 巡航化）：``<ws-root>/<repo>/`` 一级子目录是**管线自有**的
+引擎暂存 worktree。描述绝不编造（无来源即 warn 跳过）；违禁/门禁失败**不回收**
+工作区（留人看）；``--apply`` 且 PR 开成才 ``reset --hard origin/master`` +
+``clean -fd`` 复位。drop id 内容寻址（``sweep-<diff 哈希>``）→ 同内容重复 sweep
+幂等跳过。每仓一行进 audit.jsonl（``event: sweep`` 与 apply 运行记录区分）。
 
 机械门（fail-closed，**全部先于任何 git 写操作**）：
 
@@ -81,6 +91,23 @@ DESC_RE = re.compile(
 )
 
 GOVERNANCE_NAMES = {"agents.md", "plan.md", "claude.md"}  # casefolded 比较
+
+# sweep 的默认巡航根：引擎暂存 worktree（管线自有，非人类工作区）。
+DEFAULT_WS_ROOT = Path("/mnt/work/engine-ws")
+# sweep 的描述回落控制面文件（工作区根首行）；绝不作为内容进 drop。
+DROP_DESCRIPTION_FILE = ".drop-description"
+
+
+class StageError(RuntimeError):
+    """stage 的 fail-closed 拒绝：CLI（cmd_stage）转 die()；sweep 转 warn 跳过。"""
+
+
+class DropExistsError(StageError):
+    """drop 目录已存在——幂等信号（同内容处理过），sweep 视为「本轮已处理」。"""
+
+    def __init__(self, message: str, drop: Path) -> None:
+        super().__init__(message)
+        self.drop = drop
 
 
 def die(message: str) -> None:
@@ -329,51 +356,72 @@ def _unquote(path: str) -> str:
     return path
 
 
-def cmd_stage(args: argparse.Namespace) -> int:
-    """从一个脏 worktree 构造 drop：status 清单 → MANIFEST + files/ 快照。
+def stage_worktree(
+    worktree: Path,
+    repo: str,
+    description: str,
+    drop_root: Path,
+    *,
+    base: str = "origin/master",
+    branch: Optional[str] = None,
+    drop_id: Optional[str] = None,
+    content_addressed: bool = False,
+) -> Optional[Path]:
+    """从一个脏 worktree 构造 drop，返回 drop 路径；无可搬运内容时返回 None。
 
-    管线自动化的一环（2026-10-24）：引擎在干净 worktree 里写完改动后，
-    ``stage`` 消费 ``git status --porcelain --untracked-files=all`` 的内容
-    文件（删除与重命名旧侧不进 drop——drop 只承载磁盘上现存的内容文件，
-    删除类改动留给人工），生成 ``<drop-root>/<repo>/auto-<时间戳>-<短哈希>/``，
-    随后调用方跑 ``gates`` / ``apply`` 完成门禁与 PR。stage 自身不做任何
-    git 写操作。
+    ``cmd_stage``（CLI）与 ``sweep`` 共用的内部实现。fail-closed 条件抛
+    :class:`StageError`（CLI 侧转 die()，sweep 侧转 warn 跳过）；drop 目录已
+    存在抛 :class:`DropExistsError`（sweep 的幂等信号）。stage 自身零 git 写
+    操作。
 
-    边界（fail-closed，全部在 mkdir 之前，任何 die 不留半成品 drop）：
-    重命名取新侧（``旧 -> 新`` 的右侧）；untracked 文件视作新内容文件进
-    drop（G2 校验的是 drop 内现存文件，与 tracked 状态无关）；G3 禁区、
-    符号链接（防借道读取 worktree 之外的文件）、目录（嵌套 git 仓/子模）、
-    status 后消失的路径 → die。拷贝用 ``copy_file_strict``（O_NOFOLLOW +
-    fstat 复核，防 TOCTOU 调包）。
+    管线自动化的一环（2026-10-24）：引擎在干净 worktree 里写完改动后，本函数
+    消费改动清单生成 ``<drop-root>/<repo>/<drop-id>/``，随后调用方跑 ``gates``
+    / ``apply`` 完成门禁与 PR。
+
+    改动集合 = ``git status --porcelain --untracked-files=all`` 的内容条目 ∪
+    ``git diff --name-only <base>``（**领先提交的内容也进 drop**——引擎 SoP 会
+    先以 gitmoji 提交；diff 比较的是工作树 vs base，含已暂存+未暂存），去重
+    排序。磁盘上不存在的路径（删除、重命名旧侧）静默剔除——drop 只承载现存
+    内容文件，删除类改动留给人工。
+
+    边界（fail-closed，全部在 mkdir 之前，任何拒绝不留半成品 drop）：重命名取
+    新侧（``旧 -> 新`` 的右侧）；``.drop-description`` 是 sweep 的控制面文件，
+    绝不作为内容进 drop；G3 禁区、符号链接（防借道读取 worktree 之外的文件）、
+    目录（嵌套 git 仓/子模）、status 后消失的路径 → StageError。拷贝用
+    ``copy_file_strict``（O_NOFOLLOW + fstat 复核，防 TOCTOU 调包）。
+
+    ``content_addressed=True``（sweep）时 drop id 不带时间戳（``sweep-<内容
+    哈希>``）：同内容重复 stage 命中同一 drop 目录 → 幂等；默认（CLI stage）
+    为 ``auto-<UTC 时间戳>-<短哈希>``。内容哈希除 diff 输出外还掺入每个条目
+    的内容摘要——untracked 新文件不进 diff 输出，只看 diff 会让不同内容撞出
+    同一 id。
     """
-    worktree = args.worktree
     if not worktree.is_dir():
-        die(f"worktree 不存在：{worktree}")
+        raise StageError(f"worktree 不存在：{worktree}")
     if not (worktree / ".git").exists():
-        die(f"不是 git worktree：{worktree}")
-    if not REPO_RE.match(args.repo):
-        die(f"repo 名不合法：{args.repo!r}")
-    if args.drop_id and not REPO_RE.match(args.drop_id):
-        die(f"drop id 必须是单段名（拒绝路径穿越）：{args.drop_id!r}")
-    base = args.base
+        raise StageError(f"不是 git worktree：{worktree}")
+    if not REPO_RE.match(repo):
+        raise StageError(f"repo 名不合法：{repo!r}")
+    if drop_id and not REPO_RE.match(drop_id):
+        raise StageError(f"drop id 必须是单段名（拒绝路径穿越）：{drop_id!r}")
     if not base.startswith("origin/"):
-        die(f"base 必须形如 origin/<分支>（与 G5 同口径）：{base!r}")
-    desc_violations = check_description(args.description)
+        raise StageError(f"base 必须形如 origin/<分支>（与 G5 同口径）：{base!r}")
+    desc_violations = check_description(description)
     if desc_violations:
-        die(desc_violations[0])
+        raise StageError(desc_violations[0])
     # Full refname for show-ref --verify (G5 与 check_base 同口径：短名不解析)。
     base_check = _git(
         worktree, "show-ref", "--verify", "--quiet", f"refs/remotes/{base}",
     )
     if base_check.returncode != 0:
-        die(f"base 引用不存在于 worktree：{base}")
+        raise StageError(f"base 引用不存在于 worktree：{base}")
 
     # -uall：默认 porcelain 把 untracked 目录折叠成 `?? dir/`——新目录里的
     # 新文件会不可见，目录条目本身也无从拷贝。
     status = _git(worktree, "status", "--porcelain", "--untracked-files=all")
     if status.returncode != 0:
-        die(f"git status 失败：{status.stderr.strip()}")
-    changed: List[str] = []
+        raise StageError(f"git status 失败：{status.stderr.strip()}")
+    porcelain: List[str] = []
     saw_entries = False
     for line in status.stdout.splitlines():
         code, path_part = line[:2], line[3:].strip()
@@ -383,38 +431,70 @@ def cmd_stage(args: argparse.Namespace) -> int:
         # 只搬运内容文件：删除（D）无文件可拷——含上面重命名的旧侧。
         if code.strip() == "D" or code[0] == "D":
             continue
-        if path and path not in changed:
-            changed.append(path)
+        if path and path not in porcelain:
+            porcelain.append(path)
+    # 领先提交（已提交未推送）的内容：diff --name-only <base>（工作树 vs base）。
+    # renames 显式关掉——rename 检测会吞掉旧侧路径，而旧侧该按删除形态出现，
+    # 由下面的磁盘存在性过滤统一剔除。-z 免引号转义。
+    diff_names = _git(
+        worktree, "-c", "diff.renames=false", "diff", "--name-only", "-z", base,
+    )
+    if diff_names.returncode != 0:
+        raise StageError(
+            f"git diff --name-only {base} 失败：{diff_names.stderr.strip()}")
+    diff_paths = [p for p in diff_names.stdout.split("\0") if p]
+    changed: List[str] = []
+    for rel in porcelain + diff_paths:
+        if rel == DROP_DESCRIPTION_FILE:
+            continue  # sweep 的控制面文件，绝不作为内容进 drop
+        if rel in changed:
+            continue
+        if not (worktree / rel).exists():
+            continue  # 删除/重命名旧侧：磁盘上无文件可拷
+        changed.append(rel)
+    changed.sort()
     if not changed:
-        if saw_entries:
-            print("改动只含删除类条目：drop 只承载内容文件，没有可 stage 的改动")
+        if saw_entries or diff_paths:
+            print("改动只含删除/控制面条目：drop 只承载内容文件，没有可 stage 的改动")
         else:
             print("工作区干净：没有可 stage 的改动")
-        return EXIT_FAILURE
+        return None
 
     # 条目级闸门：G3 禁区 + 形状（普通文件、非符号链接、磁盘上存在）。
     for rel in changed:
         reason = forbidden_path(rel)
         if reason:
-            die(f"{reason}——stage 拒绝把禁区文件写进 drop")
+            raise StageError(f"{reason}——stage 拒绝把禁区文件写进 drop")
         src = worktree / rel
         try:
             st = src.lstat()
         except OSError:
-            die(f"条目在磁盘上不存在（净删除类改动？）：{rel}")
+            raise StageError(
+                f"条目在磁盘上不存在（净删除类改动？）：{rel}") from None
         if stat_mod.S_ISLNK(st.st_mode):
-            die(f"拒绝符号链接条目（drop 不承载链接，防借道读取 worktree 之外）：{rel}")
+            raise StageError(
+                f"拒绝符号链接条目（drop 不承载链接，防借道读取 worktree 之外）：{rel}")
         if not stat_mod.S_ISREG(st.st_mode):
-            die(f"只搬运普通文件（目录/嵌套 git 仓/子模不进 drop）：{rel}")
+            raise StageError(f"只搬运普通文件（目录/嵌套 git 仓/子模不进 drop）：{rel}")
 
-    # drop id：时间戳 + 改动内容短哈希（同一份改动重跑得到可辨识的近亲 id）。
+    # drop id：改动内容哈希（diff + 逐条目内容摘要，见 docstring）；
+    # content_addressed（sweep）不带时间戳 → 同内容幂等。
     diff = _git(worktree, "diff", base, "--", *changed)
-    digest = hashlib.sha256((diff.stdout or "").encode("utf-8")).hexdigest()[:8]
-    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-    drop_id = args.drop_id or f"auto-{stamp}-{digest}"
-    drop = args.drop_root / args.repo / drop_id
+    digest = hashlib.sha256()
+    digest.update((diff.stdout or "").encode("utf-8"))
+    for rel in changed:
+        digest.update(rel.encode("utf-8"))
+        digest.update(hashlib.sha256((worktree / rel).read_bytes()).digest())
+    short = digest.hexdigest()[:8]
+    if drop_id is None:
+        if content_addressed:
+            drop_id = f"sweep-{short}"
+        else:
+            stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            drop_id = f"auto-{stamp}-{short}"
+    drop = drop_root / repo / drop_id
     if drop.exists():
-        die(f"drop 目录已存在（ refusing to overwrite ）：{drop}")
+        raise DropExistsError(f"drop 目录已存在（ refusing to overwrite ）：{drop}", drop)
 
     drop.mkdir(parents=True)
     try:
@@ -422,12 +502,12 @@ def cmd_stage(args: argparse.Namespace) -> int:
             copy_file_strict(worktree / rel, drop / "files" / rel)
     except (RuntimeError, OSError) as exc:
         shutil.rmtree(drop, ignore_errors=True)  # 清掉半成品，不留误导性 drop
-        die(f"快照拷贝失败（半成品 drop 已清理）：{exc}")
+        raise StageError(f"快照拷贝失败（半成品 drop 已清理）：{exc}") from exc
     manifest = {
-        "repo": args.repo,
+        "repo": repo,
         "base": base,
-        "branch": args.branch or f"engine/{drop_id}",
-        "description": args.description,
+        "branch": branch or f"engine/{drop_id}",
+        "description": description,
         "files": changed,
     }
     (drop / "MANIFEST.json").write_text(
@@ -437,7 +517,19 @@ def cmd_stage(args: argparse.Namespace) -> int:
     print(f"   {len(changed)} 文件；下一步：")
     print(f"   python3 tools/engine_drop.py gates {drop}")
     print(f"   python3 tools/engine_drop.py apply {drop}")
-    return EXIT_OK
+    return drop
+
+
+def cmd_stage(args: argparse.Namespace) -> int:
+    """CLI 包装：stage_worktree 的 StageError 统一转 die()（exit 2 + stderr）。"""
+    try:
+        drop = stage_worktree(
+            args.worktree, args.repo, args.description, args.drop_root,
+            base=args.base, branch=args.branch, drop_id=args.drop_id,
+        )
+    except StageError as exc:
+        die(str(exc))
+    return EXIT_OK if drop is not None else EXIT_FAILURE
 
 
 # ── apply ────────────────────────────────────────────────────────────────────
@@ -495,19 +587,29 @@ PR_BODY_TEMPLATE = """### 引擎产出（自迭代回写）
 """
 
 
-def cmd_apply(args: argparse.Namespace) -> int:
-    drop = args.drop_dir
-    if not drop.is_dir():
-        die(f"drop 目录不存在：{drop}")
+def apply_drop(
+    drop: Path,
+    *,
+    repo_root: Path,
+    drop_root: Path,
+    wt_root: Path,
+    audit_file: Path,
+    dry_run: bool = False,
+) -> int:
+    """门禁 → 专用 worktree → 提交 → push → 开 PR（cmd_apply 与 sweep 共用）。
+
+    自身会再跑一遍 run_gates（幂等只读）并落自己的运行审计（dry-run /
+    pr-opened / failed…）；sweep 只取退出码决定是否回收工作区。
+    """
     base_record = {
         "ts": int(time.time()), "drop": drop.name, "digest": drop_digest(drop),
     }
-    repo, manifest, violations = run_gates(drop, args.repo_root, args.drop_root)
+    repo, manifest, violations = run_gates(drop, repo_root, drop_root)
     if violations:
         print(f"❌ 门禁未过（{len(violations)} 条），未做任何 git 操作：", file=sys.stderr)
         for violation in violations:
             print(f"  - {violation}", file=sys.stderr)
-        audit_append(args.audit_file, {
+        audit_append(audit_file, {
             **base_record, "repo": manifest.get("repo") if manifest else None,
             "branch": manifest.get("branch") if manifest else None,
             "outcome": "gates-rejected", "violations": violations,
@@ -517,10 +619,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
     branch = str(manifest["branch"])
     base = str(manifest["base"])
     description = str(manifest["description"])
-    wt = worktree_path(args.wt_root, str(manifest["repo"]), branch)
+    wt = worktree_path(wt_root, str(manifest["repo"]), branch)
     if wt.exists():
         print(f"❌ worktree 路径已占用（先清理）：{wt}", file=sys.stderr)
-        audit_append(args.audit_file, {
+        audit_append(audit_file, {
             **base_record, "repo": manifest["repo"], "branch": branch,
             "outcome": "wt-occupied", "wt": str(wt),
         })
@@ -576,9 +678,9 @@ def cmd_apply(args: argparse.Namespace) -> int:
         )
         print(f"✅ 门禁全过：{n_files} 文件 / {n_lines} 行 / {staged_bytes} 字节 → {branch}（base {base}）")
 
-        if args.dry_run:
+        if dry_run:
             print("（dry-run：到 diff 为止，不提交、不 push、不开 PR）")
-            audit_append(args.audit_file, {
+            audit_append(audit_file, {
                 **base_record, "repo": manifest["repo"], "branch": branch,
                 "outcome": "dry-run", "n_files": n_files, "n_lines": n_lines,
                 "n_bytes": staged_bytes,
@@ -590,7 +692,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
         pushed = True
         url = open_pr(repo, base[len("origin/"):], branch, description, body)
         print(f"✅ 已推送并开 PR：{url or '（gh 无输出，去仓里看）'}")
-        audit_append(args.audit_file, {
+        audit_append(audit_file, {
             **base_record, "repo": manifest["repo"], "branch": branch,
             "outcome": "pr-opened", "n_files": n_files, "n_lines": n_lines,
             "pr": url,
@@ -604,7 +706,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
                 f"`gh pr create`（本工具按设计绝不删分支）。",
                 file=sys.stderr,
             )
-        audit_append(args.audit_file, {
+        audit_append(audit_file, {
             **base_record, "repo": manifest.get("repo"), "branch": manifest.get("branch"),
             "outcome": "pushed-no-pr" if pushed else "failed",
             "error": str(exc)[:4000],
@@ -613,6 +715,18 @@ def cmd_apply(args: argparse.Namespace) -> int:
     finally:
         if created:
             sh(["git", "worktree", "remove", "--force", str(wt)], cwd=repo, check=False)
+
+
+def cmd_apply(args: argparse.Namespace) -> int:
+    drop = args.drop_dir
+    if not drop.is_dir():
+        die(f"drop 目录不存在：{drop}")
+    return apply_drop(
+        drop,
+        repo_root=args.repo_root, drop_root=args.drop_root,
+        wt_root=args.wt_root, audit_file=args.audit_file,
+        dry_run=args.dry_run,
+    )
 
 
 def cmd_gates(args: argparse.Namespace) -> int:
@@ -639,6 +753,169 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# ── sweep（巡航 → 装配线宿主侧）──────────────────────────────────────────────
+
+
+def _sweep_one(worktree: Path, args: argparse.Namespace) -> str:
+    """处理 ws-root 下单个引擎暂存工作区；返回 outcome（每仓一行进审计）。"""
+    repo = worktree.name
+
+    def record(outcome: str, **extra) -> None:
+        audit_append(args.audit_file, {
+            "ts": int(time.time()), "event": "sweep", "repo": repo,
+            "outcome": outcome, **extra,
+        })
+
+    if not (worktree / ".git").exists():
+        print(f"⚠️ {repo}: 不是 git worktree/checkout，跳过", file=sys.stderr)
+        record("not-git")
+        return "not-git"
+    if not REPO_RE.match(repo):
+        print(f"⚠️ {repo}: 目录名不是合法单段仓名，跳过", file=sys.stderr)
+        record("invalid-name")
+        return "invalid-name"
+    # fetch 失败只废本轮该仓（离线/远端变动不中断整轮巡航）。
+    fetch = _git(worktree, "fetch", "--quiet", "origin", "master")
+    if fetch.returncode != 0:
+        print(f"⚠️ {repo}: git fetch origin master 失败，本轮跳过："
+              f"{fetch.stderr.strip()[:200]}", file=sys.stderr)
+        record("fetch-failed", error=fetch.stderr.strip()[:2000])
+        return "fetch-failed"
+
+    status = _git(worktree, "status", "--porcelain", "--untracked-files=all")
+    if status.returncode != 0:
+        print(f"⚠️ {repo}: git status 失败，本轮跳过：{status.stderr.strip()[:200]}",
+              file=sys.stderr)
+        record("status-failed", error=status.stderr.strip()[:2000])
+        return "status-failed"
+    # 引擎 SoP：改动可能未提交（porcelain 脏）也可能已以 gitmoji 提交（领先
+    # origin/master）——两种形态都算「有待收的改动」。
+    ahead = _git(worktree, "log", "--oneline", "origin/master..HEAD")
+    has_ahead = ahead.returncode == 0 and bool(ahead.stdout.strip())
+    if not status.stdout.strip() and not has_ahead:
+        print(f"ℹ️ {repo}: 干净，跳过")
+        record("clean")
+        return "clean"
+
+    # 描述来源（绝不编造）：领先提交标题 → 工作区根 .drop-description 首行 →
+    # 无来源即跳过。标题必须过 G6（与人类提交同一条规则）。
+    description: Optional[str] = None
+    if has_ahead:
+        subject = _git(worktree, "log", "--format=%s", "-1", "origin/master..HEAD")
+        if subject.returncode == 0:
+            lines = subject.stdout.strip().splitlines()
+            if lines:
+                description = lines[0].strip()
+    if description is None:
+        desc_file = worktree / DROP_DESCRIPTION_FILE
+        if desc_file.is_file():
+            first_lines = desc_file.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+            if first_lines and first_lines[0].strip():
+                description = first_lines[0].strip()
+    if not description:
+        print(f"⚠️ {repo}: 有改动但拿不到描述（领先提交标题 / "
+              f"{DROP_DESCRIPTION_FILE} 首行），跳过——绝不编造描述", file=sys.stderr)
+        record("skipped-no-description")
+        return "skipped-no-description"
+    if check_description(description):
+        print(f"⚠️ {repo}: 描述未过 G6（<gitmoji> 英文陈述句.）：{description!r}，跳过",
+              file=sys.stderr)
+        record("skipped-bad-description", description=description[:200])
+        return "skipped-bad-description"
+
+    # stage：与 CLI stage 同一内部实现；content_addressed → 同内容幂等。
+    try:
+        drop = stage_worktree(
+            worktree, repo, description, args.drop_root,
+            content_addressed=True,
+        )
+    except DropExistsError as exc:
+        print(f"ℹ️ {repo}: 同内容 drop 已存在（{exc.drop.name}），本轮已处理，跳过")
+        record("already-staged", drop=exc.drop.name)
+        return "already-staged"
+    except StageError as exc:
+        # 违禁（禁区/链接/目录…）→ warn 跳过，**不回收**工作区——留人看。
+        print(f"⚠️ {repo}: stage 拒绝，工作区保留待人工：{exc}", file=sys.stderr)
+        record("gates-failed", error=str(exc)[:2000])
+        return "gates-failed"
+    if drop is None:
+        if has_ahead:
+            print(f"⚠️ {repo}: 领先提交只含删除/控制面条目（删除类改动留给人工），跳过",
+                  file=sys.stderr)
+            record("skipped-deletions-only")
+            return "skipped-deletions-only"
+        print(f"ℹ️ {repo}: 无可搬运的内容改动，跳过")
+        record("clean")
+        return "clean"
+
+    # 只读门禁：全过才继续；违禁 → warn 跳过且不回收（同上，留人看）。
+    _, manifest, violations = run_gates(drop, args.repo_root, args.drop_root)
+    if violations:
+        print(f"⚠️ {repo}: 门禁未过（{len(violations)} 条），工作区保留待人工",
+              file=sys.stderr)
+        for violation in violations[:5]:
+            print(f"   - {violation}", file=sys.stderr)
+        record("gates-failed", drop=drop.name, violations=violations[:10])
+        return "gates-failed"
+
+    if not args.apply:
+        print(f"✅ {repo}: 已 stage（dry——未开 PR、未回收）：{drop.name}")
+        record("staged", drop=drop.name, branch=str(manifest["branch"]))
+        return "staged"
+
+    # apply 内部会再跑一遍 gates + 落自己的运行审计（pr-opened/failed…）；
+    # sweep 只取退出码决定回收与否。
+    if apply_drop(drop, repo_root=args.repo_root, drop_root=args.drop_root,
+                  wt_root=args.wt_root, audit_file=args.audit_file) != EXIT_OK:
+        print(f"⚠️ {repo}: apply 未成功，工作区保留待人工", file=sys.stderr)
+        record("apply-failed", drop=drop.name)
+        return "apply-failed"
+    # 回收：ws-root 下是**管线自有**的暂存 worktree（引擎写一轮、sweep 收一轮），
+    # PR 开成后复位到 origin/master 基线并清未跟踪文件，供引擎下一轮复用——
+    # 这与人类 worktree 的只读/新建纪律无关：对象本就是自动化暂存区，不是人的
+    # 工作区。失败（PR 未开 / apply 出错）一律不回收，留人看。
+    reset = _git(worktree, "reset", "--hard", "origin/master")
+    clean = _git(worktree, "clean", "-fd")
+    if reset.returncode != 0 or clean.returncode != 0:
+        print(f"⚠️ {repo}: PR 已开但工作区回收失败，需人工复位", file=sys.stderr)
+        record("recycle-failed", drop=drop.name,
+               error=(reset.stderr or clean.stderr).strip()[:2000])
+        return "recycle-failed"
+    print(f"✅ {repo}: PR 已开（drop {drop.name}），工作区已回收至 origin/master")
+    record("pr-opened", drop=drop.name, branch=str(manifest["branch"]))
+    return "pr-opened"
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """巡航一轮 ws-root：逐仓收集改动→drop→（--apply）PR；整轮恒 exit 0。
+
+    单仓的任何意外（含未预期异常）都不中断整轮；逐仓结果以审计流水
+    （event: sweep）为准。只有 ws-root 不存在才是用法错误（die）。
+    """
+    ws_root: Path = args.ws_root
+    if not ws_root.is_dir():
+        die(f"ws-root 不存在：{ws_root}")
+    outcomes: List[str] = []
+    for entry in sorted(p for p in ws_root.iterdir() if p.is_dir()):
+        try:
+            outcomes.append(_sweep_one(entry, args))
+        except Exception as exc:  # 单仓意外不中断整轮（审计留痕）
+            print(f"⚠️ {entry.name}: sweep 未预期的失败：{exc}", file=sys.stderr)
+            audit_append(args.audit_file, {
+                "ts": int(time.time()), "event": "sweep", "repo": entry.name,
+                "outcome": "error", "error": str(exc)[:4000],
+            })
+            outcomes.append("error")
+    if not outcomes:
+        print(f"ℹ️ ws-root 下没有一级子目录：{ws_root}")
+        return EXIT_OK
+    summary = " / ".join(f"{name}×{outcomes.count(name)}"
+                         for name in sorted(set(outcomes)))
+    print(f"ℹ️ sweep 本轮 {len(outcomes)} 仓：{summary}（详见审计流水）")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="engine_drop.py",
@@ -648,11 +925,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wt-root", type=Path, default=Path("/mnt/work/engine-wt"))
     parser.add_argument("--drop-root", type=Path, default=Path("/mnt/work/engine-drop"))
     parser.add_argument("--audit-file", type=Path, default=Path("/mnt/work/engine-drop/audit.jsonl"))
-    sub = parser.add_subparsers(dest="command", metavar="{stage,gates,apply,audit}")
+    sub = parser.add_subparsers(dest="command", metavar="{stage,sweep,gates,apply,audit}")
 
     p_gates = sub.add_parser("gates", help="只跑门禁（只读）")
     p_gates.add_argument("drop_dir", type=Path)
     p_gates.set_defaults(func=cmd_gates)
+
+    p_sweep = sub.add_parser(
+        "sweep", help="巡航引擎暂存 ws-root：改动→drop→门禁→（--apply）PR+回收")
+    p_sweep.add_argument("--ws-root", type=Path, default=DEFAULT_WS_ROOT,
+                         help="引擎暂存工作区根（一级子目录 = 各仓工作区，"
+                              f"默认 {DEFAULT_WS_ROOT}）")
+    p_sweep.add_argument("--apply", action="store_true",
+                         help="门禁全过后开 PR 并回收工作区；缺省只 stage+gates（dry）")
+    p_sweep.set_defaults(func=cmd_sweep)
 
     p_apply = sub.add_parser("apply", help="门禁 + worktree + 提交 + push + PR")
     p_apply.add_argument("drop_dir", type=Path)
