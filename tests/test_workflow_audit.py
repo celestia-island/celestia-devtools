@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for ``celestia_devtools.ci.workflow_audit`` (the ``celestia-ci-audit`` CLI).
 
-Covers the five rules and the false-positive guards that keep the gate usable:
+Covers the seven rules and the false-positive guards that keep the gate usable:
 
 1. the 2026-09-15 accident shape — a reusable-workflow caller job carrying
    ``timeout-minutes`` — is reported, and the offending key is named;
@@ -13,7 +13,9 @@ Covers the five rules and the false-positive guards that keep the gate usable:
    rather than silently skipped;
 6. the ``--json`` document and the exit codes;
 7. mutation style: taking a clean fixture and breaking it (dropping the timeout / adding the
-   illegal key back) turns the gate red again.
+   illegal key back) turns the gate red again;
+8. a self-hosted job reachable by ``pull_request`` without the org's fork guard is a
+   ``warning`` — while caller jobs (guard in the callee) and non-PR triggers stay clean.
 
 Plus the guards a red gate depends on: a step-level ``timeout-minutes`` does not satisfy the
 job-level rule, ``- uses: actions/checkout`` inside ``steps`` does not make a job a caller,
@@ -30,9 +32,11 @@ from celestia_devtools.ci import workflow_audit
 from celestia_devtools.ci.workflow_audit import (
     CALLER_LEGAL_KEYS,
     CANONICAL_CALLER_NAME,
+    FORK_GUARD,
     RULE_CALLEE_MISSING_TIMEOUT,
     RULE_INVALID_CALLER_KEY,
     RULE_SELF_HOSTED_MISSING_TIMEOUT,
+    RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD,
     RULE_CALLER_NOT_CANONICAL,
     RULE_YAML_DUPLICATE_KEY,
     RULE_YAML_PARSE_ERROR,
@@ -648,6 +652,7 @@ class TestJsonContractAndExitCodes:
             RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT,
             RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR,
             RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY,
+            RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD,
         }
         assert summary["rules"][RULE_INVALID_CALLER_KEY] == 1
 
@@ -771,6 +776,232 @@ class TestMutationTurnsTheGateRed:
         code, out, _err = _run(["--json"], capsys)
         assert code == 1
         assert _rules(json.loads(out)["findings"]) == [RULE_YAML_PARSE_ERROR]
+
+
+# ── ⑧ 自托管作业在 PR 上没有 fork guard ─────────────────────────────────────
+
+
+class TestForkGuard:
+    """Rule 7 (``warning``): a self-hosted job reachable by ``pull_request``, unguarded.
+
+    Unlike the other rules this one does not describe a file GitHub refuses to run — it
+    describes an **exposure**: a fork pull request would run its code on the org's
+    self-hosted runner, inside the org network, on capacity other repositories need. It is a
+    ``warning`` on purpose, because the private half of the fleet still has to grow the guard
+    one repository at a time; ``--strict`` is how a repository that has finished says "keep it
+    that way".
+
+    The two shapes that must stay clean are as important as the one that fires: a **caller
+    job** (``uses:``) carries no guard of its own because the guard lives in the callee, and a
+    workflow that cannot be reached by a pull request has no fork head to judge.
+    """
+
+    #: The real ``evernight``/``entelecheia`` shape: self-hosted, PR-triggered, no ``if:``.
+    UNGUARDED = (
+        "name: CI\n"                                        # 1
+        "on:\n"                                             # 2
+        "  push:\n"                                         # 3
+        "    branches: [master]\n"                          # 4
+        "  pull_request:\n"                                 # 5
+        "    branches: [master]\n"                          # 6
+        "jobs:\n"                                           # 7
+        "  build:\n"                                        # 8
+        "    runs-on: [self-hosted, linux, x64, local]\n"   # 9
+        "    timeout-minutes: 60\n"                         # 10
+        "    steps:\n"                                      # 11
+        "      - run: cargo test --workspace\n"             # 12
+    )
+
+    def _guarded(self, guard):
+        """The same workflow with *guard* added as the job's ``if:``."""
+        return (
+            self.UNGUARDED.replace(
+                "    runs-on: [self-hosted, linux, x64, local]\n",
+                f"    if: {guard}\n    runs-on: [self-hosted, linux, x64, local]\n",
+            )
+        )
+
+    def test_unguarded_self_hosted_pr_job_is_a_warning(self, tmp_path, monkeypatch, capsys):
+        """基线：无 guard ⇒ 一条 warning，且**不**让退出码变红（warning 的语义就在这）。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        code, out, err = _run(["--json"], capsys)
+        assert code == 0, "warning 不该让默认运行失败"
+        report = json.loads(out)
+        assert _rules(report["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+        finding = report["findings"][0]
+        assert finding["severity"] == "warning"
+        assert finding["line"] == 9  # runs-on 那一行
+        assert report["summary"]["warnings"] == 1
+        assert report["summary"]["errors"] == 0
+        assert report["summary"]["failed"] is False
+        assert report["summary"]["rules"][RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD] == 1
+        assert "1 finding(s) in 1 workflow file(s)" in err
+
+    def test_message_explains_the_exposure_and_quotes_the_guard(self, tmp_path, monkeypatch, capsys):
+        """消息必须点名作业、说清后果，并给出**可直接粘贴**的 `if:` 字面量。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "'build'" in message
+        assert "self-hosted, linux, x64, local" in message
+        assert "untrusted code inside the org network" in message
+        assert "shared runner capacity" in message
+        assert FORK_GUARD in message
+        # 豁免通道也要写进消息，否则被警告的仓不知道 --allow 就是退路。
+        assert f"--allow {RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD}=" in message
+
+    @pytest.mark.parametrize(
+        "guard",
+        [
+            FORK_GUARD,
+            "github.event_name != 'pull_request' || "
+            "github.event.pull_request.head.repo.fork == false",
+        ],
+    )
+    def test_guarded_job_is_clean(self, tmp_path, monkeypatch, capsys, guard):
+        """两种等价的守卫写法都必须算「有 guard」。"""
+        _workflow(tmp_path, self._guarded(guard))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_folded_guard_is_recognised(self, tmp_path, monkeypatch, capsys):
+        """`if: >-` 折行后空白位置变了，判据必须按去空白比较，否则会误报。"""
+        folded = (
+            "    if: >-\n"
+            "      github.event_name != 'pull_request' ||\n"
+            "      github.event.pull_request.head.repo.full_name == github.repository\n"
+        )
+        text = self.UNGUARDED.replace(
+            "    runs-on: [self-hosted, linux, x64, local]\n",
+            folded + "    runs-on: [self-hosted, linux, x64, local]\n",
+        )
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_caller_job_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        """关键防误报：caller 作业的 guard 在 callee 里，报它就是给 34 个仓刷噪音。"""
+        caller = (
+            "name: Verify Versions\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    branches: [master]\n"
+            "jobs:\n"
+            "  verify-versions:\n"
+            "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n"
+        )
+        _workflow(tmp_path, caller)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_canonical_commit_lint_caller_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        """规范 caller 的真实字节也要干净（它是全 org 最常见的那份文件）。"""
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename=CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    @pytest.mark.parametrize(
+        "trigger",
+        [
+            "on: push\n",
+            "on: workflow_call\n",
+            "on:\n  workflow_dispatch:\n",
+            "on: [push, workflow_dispatch]\n",
+        ],
+    )
+    def test_non_pull_request_trigger_is_clean(self, tmp_path, monkeypatch, capsys, trigger):
+        """push / dispatch / callee 里没有 fork head 可言：不适用，必须放过。"""
+        text = self.UNGUARDED.replace(
+            "on:\n  push:\n    branches: [master]\n  pull_request:\n    branches: [master]\n",
+            trigger,
+        )
+        assert "pull_request" not in text
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_github_hosted_job_is_out_of_scope(self, tmp_path, monkeypatch, capsys):
+        """托管 runner 上跑 fork 代码是 GitHub 的隔离问题，不是本规则的问题。"""
+        text = self.UNGUARDED.replace(
+            "    runs-on: [self-hosted, linux, x64, local]\n", "    runs-on: ubuntu-latest\n"
+        )
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    @pytest.mark.parametrize(
+        "runs_on",
+        [
+            "    runs-on: ${{ fromJSON(vars.CI_RUNNER) }}\n",
+            "    runs-on: ${{ vars.RUNNER_LABELS }}\n",
+        ],
+    )
+    def test_unresolvable_variable_expression_reads_as_self_hosted(
+        self, tmp_path, monkeypatch, capsys, runs_on
+    ):
+        """仓储变量不在树里 ⇒ 静态无法判定 ⇒ 按自托管读（假阳性一条 warning，假阴性是事故）。"""
+        text = self.UNGUARDED.replace(
+            "    runs-on: [self-hosted, linux, x64, local]\n", runs_on
+        )
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert _rules(json.loads(out)["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+
+    def test_if_without_the_head_repo_comparison_is_still_reported(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`if: github.event_name == 'pull_request'` 不是 guard：它恰好把 fork PR 放进来。"""
+        _workflow(tmp_path, self._guarded("github.event_name == 'pull_request'"))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert _rules(json.loads(out)["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+
+    def test_strict_turns_the_warning_into_a_failure(self, tmp_path, monkeypatch, capsys):
+        """`--strict` 是「我已经补完 guard，别再退回去」的开关。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--strict"]) == 1
+
+    def test_allowlist_exempts_the_rule(self, tmp_path, monkeypatch, capsys):
+        """豁免通道必须真的通，且留下痕迹（warning 级规则尤其需要这个逃生口）。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        argv = ["--json", "--allow", f"{RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD}=*.yml"]
+        assert main(argv) == 0
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+        assert "suppressed 1 finding(s) via --allow" in captured.err
+
+    def test_dropping_the_guard_turns_it_back_on(self, tmp_path, monkeypatch, capsys):
+        """变异方向：从绿的树里删掉 `if:`，规则必须重新出声（否则它是死规则）。"""
+        path = _workflow(tmp_path, self._guarded(FORK_GUARD))
+        monkeypatch.chdir(tmp_path)
+        assert _run(["--strict"], capsys)[0] == 0  # 绿色基线（strict 下也绿）
+
+        _replace(path, f"    if: {FORK_GUARD}\n", "")
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0  # warning 默认不红
+        assert _rules(json.loads(out)["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+        assert _run(["--strict"], capsys)[0] == 1  # 但 strict 下它必须红
 
 
 # ── --allow 允许列表 ────────────────────────────────────────────────────────
