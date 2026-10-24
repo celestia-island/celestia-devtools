@@ -14,6 +14,23 @@ committed copy" model (the gradlew-style per-repo duplicate that drifted).
 ``init`` also ensures ``/.just/`` is gitignored and installs the commit-msg
 hook. Run it once on a fresh checkout, or after upgrading celestia-devtools.
 
+``--check`` is the CI gate: it reports a staging drift, a missing
+``.gitignore`` rule, and — since the 2026-10-25 structural audit (SR-01) — a
+missing or drifted **canonical caller** in ``.github/workflows``.  A reusable
+workflow definition (``on: workflow_call``) in the same directory is the callee
+itself, not a caller, and is skipped.  Opt-in gate callers are only compared
+when the file already exists; their drift is reported as a warning because some
+repositories legitimately hand-edit them until the templates expose every
+input (``runner`` / ``cargo_args``).
+
+This local gate is deliberately **stricter** than ``celestia-ci-audit``: the
+audit downgrades the legacy 273 B / no-permissions / comment-only variants to a
+warning so the fleet can migrate incrementally (and so nobody deletes a comment
+just to silence the audit), while ``--check`` names any byte difference in the
+mandatory trio — its remedy is regeneration, which is exactly what a local
+checkout should do.  Use ``ci-audit`` for the fleet backlog and ``init --check``
+for "this checkout must be canonical now".
+
 Usage::
 
     celestia-devtools init             # stage (or refresh if drifted) + gitignore + hooks
@@ -28,6 +45,9 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
+from typing import Optional
+
+import yaml
 
 from celestia_devtools import __version__
 from celestia_devtools.core import logger
@@ -66,7 +86,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--check", action="store_true",
-        help="report drift without writing (exit 1 if update needed)",
+        help="report drift without writing (exit 1 if the staged justfile, the "
+        ".gitignore rules, or a canonical caller workflow need updating)",
     )
     parser.add_argument(
         "--name", default=LINK_NAME,
@@ -117,6 +138,9 @@ def main() -> int:
             problems.append(
                 f".gitignore missing rule(s) {missing_rules} — run: celestia-devtools init"
             )
+        problems.extend(
+            _workflow_drift_problems(Path.cwd() / ".github" / "workflows")
+        )
         if problems:
             for p in problems:
                 logger.error(p)
@@ -481,17 +505,129 @@ OPT_IN_GATES: dict[str, tuple[str, str, str]] = {
 }
 
 
+#: The three callers every repository needs, in generation order. Both the
+#: generator and ``--check`` read this table, so a new required caller cannot be
+#: added in one place and forgotten in the other.
+REQUIRED_WORKFLOWS: tuple[tuple[str, str, str], ...] = (
+    ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
+    ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
+    ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"),
+)
+
+
+def _is_callee_definition(text: str) -> bool:
+    """True for the reusable workflow itself (``on: workflow_call``).
+
+    ``celestia-devtools`` hosts all nine callees in its own
+    ``.github/workflows``; comparing those against the caller templates would
+    flag the control plane as drifted from itself.
+
+    The trigger is read from the parsed document, not from a substring: a
+    caller whose comment merely mentions ``workflow_call:`` must still be
+    compared (a substring test would silently exempt any drifted file that
+    quotes the word — a one-line bypass of this gate).
+    """
+    try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        # Unparseable: not a callee. The caller comparison then reports drift,
+        # which is the honest outcome for a file GitHub cannot run either.
+        return False
+    if not isinstance(root, yaml.nodes.MappingNode):
+        return False
+    for key, value in root.value:
+        if not isinstance(key, yaml.nodes.ScalarNode) or key.value != "on":
+            continue
+        if isinstance(value, yaml.nodes.ScalarNode):
+            return value.value == "workflow_call"
+        if isinstance(value, yaml.nodes.SequenceNode):
+            return any(
+                isinstance(item, yaml.nodes.ScalarNode) and item.value == "workflow_call"
+                for item in value.value
+            )
+        if isinstance(value, yaml.nodes.MappingNode):
+            return any(
+                isinstance(item_key, yaml.nodes.ScalarNode)
+                and item_key.value == "workflow_call"
+                for item_key, _item_value in value.value
+            )
+    return False
+
+
+def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Optional[Path]:
+    """A differently-named file carrying the canonical caller bytes.
+
+    Eight repositories landed the byte-identical CI-cache caller as
+    ``cache-policy.yml`` before the template named it ``ci-cache.yml``.
+    Regenerating the canonical name would install a second caller for the same
+    check, so content identity counts as "in place" and the caller is asked to
+    rename it instead.
+    """
+    for candidate in sorted(workflows_dir.glob("*.y*ml")):
+        if candidate.name == filename:
+            continue
+        try:
+            if candidate.read_bytes().decode("utf-8", errors="replace") == template:
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
+    """Missing/drifted canonical callers under *workflows_dir*.
+
+    Returns the mandatory-caller problems (the ones that fail ``--check``) and
+    warns about drifted opt-in callers. A callee definition is never compared.
+    """
+    problems: list[str] = []
+    for filename, template, _label in REQUIRED_WORKFLOWS:
+        path = workflows_dir / filename
+        rel = f".github/workflows/{filename}"
+        if not path.is_file():
+            alias = _canonical_alias(workflows_dir, template, filename)
+            if alias is not None:
+                logger.warn(
+                    f"{rel} missing, but {alias.name} carries the canonical caller — "
+                    f"rename it to {filename} (regenerating would install a second caller)"
+                )
+                continue
+            problems.append(
+                f"{rel} missing — run: celestia-devtools init --with-workflows"
+            )
+            continue
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        if _is_callee_definition(text):
+            continue
+        if text != template:
+            problems.append(
+                f"{rel} drifted ({len(text.encode('utf-8'))} B ≠ canonical "
+                f"{len(template.encode('utf-8'))} B) — run: celestia-devtools "
+                f"init --with-workflows --force"
+            )
+    for name, (filename, template, label) in OPT_IN_GATES.items():
+        path = workflows_dir / filename
+        if not path.is_file():
+            continue
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        if _is_callee_definition(text):
+            continue
+        if text != template:
+            logger.warn(
+                f".github/workflows/{filename} drifted from the {label} template — "
+                f"regenerate with: celestia-devtools init --with-workflows --gate {name} --force"
+                " (hand-edited inputs are why this is a warning, not a failure)"
+            )
+    return problems
+
+
 def _ensure_workflows(
     repo_root: Path, *, force: bool = False, gates: tuple[str, ...] = ()
 ) -> None:
     workflows_dir = repo_root / ".github" / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
 
-    wanted = [
-        ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
-        ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
-        ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"),
-    ]
+    wanted = list(REQUIRED_WORKFLOWS)
     for gate in gates:
         wanted.append(OPT_IN_GATES[gate])
     for filename, template, label in wanted:
@@ -499,6 +635,15 @@ def _ensure_workflows(
         if target.exists() and not force:
             logger.info(f"{filename} already exists — skipping (use --force to regenerate)")
             continue
+        if not target.exists():
+            alias = _canonical_alias(workflows_dir, template, filename)
+            if alias is not None:
+                logger.warn(
+                    f"{filename} not generated: {alias.name} already carries the "
+                    f"canonical caller — rename it to {filename} instead "
+                    "(generating would install a second caller for the same check)"
+                )
+                continue
         # write_bytes, not write_text: the generated callers are pinned
         # byte-for-byte across the fleet, and write_text's default
         # newline=os.linesep would turn their LF into CRLF on Windows.
