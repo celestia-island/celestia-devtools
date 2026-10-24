@@ -209,9 +209,11 @@ The division of labour is deliberate:
 This repository itself is fully migrated to these conventions: `gate python`
 runs `ruff check → py-style → pytest → lint-commits`, CI runs the same blocking
 `py-style` step, and `ruff format` is deliberately absent (see the style-policy
-block in `pyproject.toml`). The single documented exception is the CLI's lazy
-command dispatcher (`src/celestia_devtools/core/cli.py`), which declares a
-file-level exemption and explains why.
+block in `pyproject.toml`). File-level exemptions stay exceptional and every one
+carries a reason: the CLI's lazy command dispatcher (`core/cli.py`) is the only
+code exemption, and seven test modules exempt `imports-at-top` because
+`sys.path.insert` must precede the package import when tests run against a
+source checkout.
 
 Repos that adopt the conventions opt in with the reusable workflow (sub-minute,
 stdlib-only, safe on hosted runners):

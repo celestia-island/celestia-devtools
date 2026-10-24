@@ -109,8 +109,6 @@ def stage_account(ctx: stage_context) -> stage_result:
 
     # dirs are plain mkdir+chown+chmod: real filesystem side effects the
     # tests can verify, no executor round-trip needed for the common path
-    # py-style-ok: no-block-imports: POSIX-only stdlib; a module-level import would break Windows runs
-    import pwd as _pwd
     needed = [root, root / "data", root / "data" / "themes", root / "data" / "avatars", root / "data" / "uploads"]
 
     if ctx.dry_run:
@@ -132,7 +130,6 @@ def stage_account(ctx: stage_context) -> stage_result:
         os.chown(d, pw.pw_uid, pw.pw_gid)
         os.chmod(d, 0o755)
 
-    _ = _pwd
     return stage_result("account", OK, "user {} ready; dirs under {}".format(user, root), changed)
 
 def stage_secrets(ctx: stage_context) -> stage_result:
