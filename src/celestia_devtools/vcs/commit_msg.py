@@ -51,120 +51,106 @@ from typing import List, Optional
 # (including variation selectors and ZWJ sequences where applicable).  The
 # lookup is `subject.startswith(emoji)`, so multi-codepoint emoji work
 # correctly without decoding.
-GITMOJI_WHITELIST: frozenset[str] = frozenset([
-    "\U0001f3a8",    # ðŸŽ¨ :art:
-    "\u26a1\ufe0f",  # âš¡ï¸ :zap:
-    "⚡",        # ⚡ :zap (without variation selector)
-    "\U0001f525",    # ðŸ”¥ :fire:
-    "\U0001f41b",    # ðŸ› :bug:
-    "\U0001f691",    # ðŸš‘ :ambulance:
-    "\u2728",        # âœ¨ :sparkles:
-    "\U0001f4dd",    # ðŸ“ :memo:
-    "\U0001f680",    # ðŸš€ :rocket:
-    "\U0001f484",    # ðŸ’„ :lipstick:
-    "\U0001f389",    # ðŸŽ‰ :tada:
-    "\u2705",        # âœ… :white_check_mark:
-    "\U0001f512",    # ðŸ”’ :lock:
-    "\U0001f516",    # ðŸ”– :bookmark:
-    "🔗",    # 🔗 :link (org: symlink/copilot)
-    "\U0001f6a8",    # ðŸš¨ :rotating_light:
-    "\U0001f6a7",    # ðŸš§ :construction:
-    "\U0001f49a",    # ðŸ’š :green_heart:
-    "\u2b07\ufe0f",  # â¬‡ï¸ :arrow_down:
-    "\u2b06\ufe0f",  # â¬†ï¸ :arrow_up:
-    "\U0001f4cc",    # ðŸ“Œ :pushpin:
-    "\U0001f477",    # ðŸ‘· :construction_worker:
-    "\U0001f4c8",    # ðŸ“ˆ :chart_with_upwards_trend:
-    "\u267b\ufe0f",  # â™»ï¸ :recycle:
-    "\u2795",        # âž• :heavy_plus_sign:
-    "\u2796",        # âž– :heavy_minus_sign:
-    "\U0001f527",    # ðŸ”§ :wrench:
-    "\U0001f528",    # ðŸ”¨ :hammer:
-    "\U0001f310",    # ðŸŒ :globe_with_meridians:
-    "\u270f\ufe0f",  # âœï¸ :pencil2:
-    "\U0001f4a9",    # ðŸ’© :poop:
-    "\u23ea",        # âª :rewind:
-    "\U0001f500",    # ðŸ”€ :twisted_rightwards_arrows:
-    "🔄",    # 🔄 :counterclockwise_arrows_button (org: sync/refresh)
-    "\U0001f4e6",    # ðŸ“¦ :package:
-    "\U0001f47d",    # ðŸ‘½ :alien:
-    "\U0001f69a",    # ðŸšš :truck:
-    "\U0001f4c4",    # ðŸ“„ :page_facing_up:
-    "\U0001f4a5",    # ðŸ’¥ :boom:
-    "\U0001f371",    # ðŸ± :bento:
-    "\u267f\ufe0f",  # â™¿ï¸ :wheelchair:
-    "\U0001f4a1",    # ðŸ’¡ :bulb:
-    "\U0001f37b",    # ðŸ» :beers:
-    "\U0001f4ac",    # ðŸ’¬ :speech_balloon:
-    "\U0001f5c3\ufe0f",  # ðŸ—ƒï¸ :card_file_box:
-    "\U0001f50a",    # ðŸ”Š :loud_sound:
-    "\U0001f507",    # ðŸ”‡ :mute:
-    "\U0001f465",    # ðŸ‘¥ :busts_in_silhouette:
-    "\U0001f6b8",    # ðŸš¸ :children_crossing:
-    "\U0001f3d7\ufe0f",  # ðŸ—ï¸ :building_construction:
-    "\U0001f4f1",    # ðŸ“± :iphone:
-    "\U0001f921",    # ðŸ¤¡ :clown_face:
-    "\U0001f95a",    # ðŸ¥š :egg:
-    "\U0001f648",    # ðŸ™ˆ :see_no_evil:
-    "\U0001f4f8",    # ðŸ“¸ :camera_flash:
-    "\u2697\ufe0f",  # âš—ï¸ :alembic:
-    "\U0001f50d",    # ðŸ” :mag:
-    "\U0001f3f7\ufe0f",  # ðŸ·ï¸ :label:
-    "\U0001f331",    # ðŸŒ± :seedling:
-    "\U0001f6a9",    # ðŸš© :triangular_flag_on_post:
-    "\U0001f945",    # ðŸ¥… :goal_net:
-    "\U0001f4ab",    # ðŸ’« :dizzy:
-    "\U0001f5d1\ufe0f",  # ðŸ—‘ï¸ :wastebasket:
-    "\U0001f6c2",    # ðŸ›‚ :passport_control:
-    "\U0001fa79",    # ðŸ©¹ :adhesive_bandage:
-    "\U0001f9d0",    # ðŸ§ :monocle_face:
-    "\u26b0\ufe0f",  # âš°ï¸ :coffin:
-    "\U0001f9ea",    # ðŸ§ª :test_tube:
-    "\U0001f454",    # ðŸ‘” :necktie:
-    "\U0001fa7a",    # ðŸ©º :stethoscope:
-    "\U0001f9f1",    # ðŸ§± :bricks:
-    "\U0001f9d1\u200d\U0001f4bb",  # ðŸ§‘â€ðŸ’» :technologist:
-    "\U0001f4b8",    # ðŸ’¸ :money_with_wings:
-    "\U0001f9f5",    # ðŸ§µ :thread:
-    "\U0001f9ba",    # ðŸ¦º :safety_vest:
-    "📜",    # 📜 :scroll (org: license)
-    "\U0001f6e1\ufe0f"  # 🛡️ :shield:
-])
+# ðŸŽ¨ :art:
+# âš¡ï¸ :zap:
+# ⚡ :zap (without variation selector)
+# ðŸ”¥ :fire:
+# ðŸ› :bug:
+# ðŸš‘ :ambulance:
+# âœ¨ :sparkles:
+# ðŸ“ :memo:
+# ðŸš€ :rocket:
+# ðŸ’„ :lipstick:
+# ðŸŽ‰ :tada:
+# âœ… :white_check_mark:
+# ðŸ”’ :lock:
+# ðŸ”– :bookmark:
+# 🔗 :link (org: symlink/copilot)
+# ðŸš¨ :rotating_light:
+# ðŸš§ :construction:
+# ðŸ’š :green_heart:
+# â¬‡ï¸ :arrow_down:
+# â¬†ï¸ :arrow_up:
+# ðŸ“Œ :pushpin:
+# ðŸ‘· :construction_worker:
+# ðŸ“ˆ :chart_with_upwards_trend:
+# â™»ï¸ :recycle:
+# âž• :heavy_plus_sign:
+# âž– :heavy_minus_sign:
+# ðŸ”§ :wrench:
+# ðŸ”¨ :hammer:
+# ðŸŒ :globe_with_meridians:
+# âœï¸ :pencil2:
+# ðŸ’© :poop:
+# âª :rewind:
+# ðŸ”€ :twisted_rightwards_arrows:
+# 🔄 :counterclockwise_arrows_button (org: sync/refresh)
+# ðŸ“¦ :package:
+# ðŸ‘½ :alien:
+# ðŸšš :truck:
+# ðŸ“„ :page_facing_up:
+# ðŸ’¥ :boom:
+# ðŸ± :bento:
+# â™¿ï¸ :wheelchair:
+# ðŸ’¡ :bulb:
+# ðŸ» :beers:
+# ðŸ’¬ :speech_balloon:
+# ðŸ—ƒï¸ :card_file_box:
+# ðŸ”Š :loud_sound:
+# ðŸ”‡ :mute:
+# ðŸ‘¥ :busts_in_silhouette:
+# ðŸš¸ :children_crossing:
+# ðŸ—ï¸ :building_construction:
+# ðŸ“± :iphone:
+# ðŸ¤¡ :clown_face:
+# ðŸ¥š :egg:
+# ðŸ™ˆ :see_no_evil:
+# ðŸ“¸ :camera_flash:
+# âš—ï¸ :alembic:
+# ðŸ” :mag:
+# ðŸ·ï¸ :label:
+# ðŸŒ± :seedling:
+# ðŸš© :triangular_flag_on_post:
+# ðŸ¥… :goal_net:
+# ðŸ’« :dizzy:
+# ðŸ—‘ï¸ :wastebasket:
+# ðŸ›‚ :passport_control:
+# ðŸ©¹ :adhesive_bandage:
+# ðŸ§ :monocle_face:
+# âš°ï¸ :coffin:
+# ðŸ§ª :test_tube:
+# ðŸ‘” :necktie:
+# ðŸ©º :stethoscope:
+# ðŸ§± :bricks:
+# ðŸ§‘â€ðŸ’» :technologist:
+# ðŸ’¸ :money_with_wings:
+# ðŸ§µ :thread:
+# ðŸ¦º :safety_vest:
+# 📜 :scroll (org: license)
+# 🛡️ :shield:
+GITMOJI_WHITELIST: frozenset[str] = frozenset(["\U0001f3a8", "\u26a1\ufe0f", "⚡", "\U0001f525", "\U0001f41b", "\U0001f691", "\u2728", "\U0001f4dd", "\U0001f680", "\U0001f484", "\U0001f389", "\u2705", "\U0001f512", "\U0001f516", "🔗", "\U0001f6a8", "\U0001f6a7", "\U0001f49a", "\u2b07\ufe0f", "\u2b06\ufe0f", "\U0001f4cc", "\U0001f477", "\U0001f4c8", "\u267b\ufe0f", "\u2795", "\u2796", "\U0001f527", "\U0001f528", "\U0001f310", "\u270f\ufe0f", "\U0001f4a9", "\u23ea", "\U0001f500", "🔄", "\U0001f4e6", "\U0001f47d", "\U0001f69a", "\U0001f4c4", "\U0001f4a5", "\U0001f371", "\u267f\ufe0f", "\U0001f4a1", "\U0001f37b", "\U0001f4ac", "\U0001f5c3\ufe0f", "\U0001f50a", "\U0001f507", "\U0001f465", "\U0001f6b8", "\U0001f3d7\ufe0f", "\U0001f4f1", "\U0001f921", "\U0001f95a", "\U0001f648", "\U0001f4f8", "\u2697\ufe0f", "\U0001f50d", "\U0001f3f7\ufe0f", "\U0001f331", "\U0001f6a9", "\U0001f945", "\U0001f4ab", "\U0001f5d1\ufe0f", "\U0001f6c2", "\U0001fa79", "\U0001f9d0", "\u26b0\ufe0f", "\U0001f9ea", "\U0001f454", "\U0001fa7a", "\U0001f9f1", "\U0001f9d1\u200d\U0001f4bb", "\U0001f4b8", "\U0001f9f5", "\U0001f9ba", "📜", "\U0001f6e1\ufe0f"])
 
 # ── Regexes (compiled once) ──────────────────────────────────────────────────
 
 # Conventional Commits prefix: feat, fix, chore, docs, style, refactor, perf,
 # test, build, ci, revert, net, init — with optional scope parens.
-_CONVENTIONAL_PREFIX_RE = re.compile(
-    r"^(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|net|init)"
-    r"(?:\([^)]*\))?\s*[:!]"
-)
+_CONVENTIONAL_PREFIX_RE = re.compile(r"^(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|net|init)" r"(?:\([^)]*\))?\s*[:!]")
 
 # Colon-prefix subject ("Topic phrase: details"). Forbidden even when the
 # leading phrase is capitalized, e.g. "Fix compliance: ..." or
 # "Audit round 23: ...". The character immediately before the colon must be a
 # letter/digit so code tokens like "Support :is()" or timestamps such as
 # "09:34Z" are not false positives.
-_COLON_PREFIX_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s"
-)
+_COLON_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s")
 
 # Leading bare version number or filler phrases (after gitmoji and space).
-_VERSION_OR_FILLER_START_RE = re.compile(
-    r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)",
-    re.IGNORECASE
-)
+_VERSION_OR_FILLER_START_RE = re.compile(r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)", re.IGNORECASE)
 
 # CJK and full-width characters (Chinese, Japanese, Korean, etc.).
-_CJK_RE = re.compile(r"[\u2e80-\u2eff\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff"
-                     r"\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff"
-                     r"\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]")
+_CJK_RE = re.compile(r"[\u2e80-\u2eff\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff" r"\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff" r"\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]")
 
 # Repositories exempt from the English-only rule (org decision; see AGENTS.md).
-EASY_HYDRO_REPOS: frozenset[str] = frozenset({
-    "easy-hydro-erp",
-    "easy-hydro-miniprogram"
-})
+EASY_HYDRO_REPOS: frozenset[str] = frozenset({"easy-hydro-erp", "easy-hydro-miniprogram"})
 
 # First English letter position (used for capital-letter check).
 _FIRST_ALPHA_RE = re.compile(r"[A-Za-z]")

@@ -21,11 +21,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
 from celestia_devtools.lint import py_style, py_style_rules  # noqa: E402
-from celestia_devtools.lint.py_style_config import (  # noqa: E402
-    config_error,
-    style_config,
-    load_config
-)
+# noqa: E402
+from celestia_devtools.lint.py_style_config import (config_error, style_config, load_config)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1262,16 +1259,7 @@ def test_fix_single_line_statement_spacing_preserved(tmp_path, monkeypatch, caps
     monkeypatch.chdir(tmp_path)
     # Regression: joining Black-style multi-line calls must keep the token gaps
     # that the line breaks provided (", False", '"s" if', "> 1 else", ", last").
-    body = (
-        "results.append(\n"
-        "    call(\n"
-        "        value,\n"
-        "        False,\n"
-        '        "failed",\n'
-        '        "install failed ({})".format(count, "s" if count > 1 else ""),\n'
-        "    )\n"
-        ")\n"
-    )
+    body = "results.append(\n" "    call(\n" "        value,\n" "        False,\n" '        "failed",\n' '        "install failed ({})".format(count, "s" if count > 1 else ""),\n' "    )\n" ")\n"
     target = write(tmp_path, body, "code.py")
     assert cli(capsys, "fix", ".", "--no-config")[0] == 0
     fixed = target.read_text(encoding = "utf-8")

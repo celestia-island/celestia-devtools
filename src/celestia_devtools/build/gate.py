@@ -68,12 +68,7 @@ MODES = ("rust", "web", "python", "all")
 # Broad "report" pattern: any credential-looking token in a line. The `pass` /
 # `pwd` alternation is guarded by lookarounds so prose like "bypass" or "the
 # test will pass" is not flagged, while `SSH_PASS` / `--target-pass` are.
-_CRED_PATTERN = re.compile(
-    r"password|passwd|passphrase|secret|token|credential|api[_-]?key|"
-    r"(?<![a-z0-9])(pass|pwd)(?![a-z0-9])|"
-    r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY",
-    re.IGNORECASE
-)
+_CRED_PATTERN = re.compile(r"password|passwd|passphrase|secret|token|credential|api[_-]?key|" r"(?<![a-z0-9])(pass|pwd)(?![a-z0-9])|" r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY", re.IGNORECASE)
 
 # Whitelisted placeholder markers (obvious dummy values + RFC 5737 doc IPs).
 # The "your…" convention is anchored at both ends — it must start with ``your``
@@ -81,38 +76,21 @@ _CRED_PATTERN = re.compile(
 # (``your-jwt-secret``, ``your_app_token``) stay whitelisted while a committed
 # literal such as ``TOKEN="yoursecret-real-value"`` is not swallowed by an
 # unanchored alternative.
-_PLACEHOLDER_PATTERN = re.compile(
-    r"CHANGE[_ ]?ME|<your[-_ ]?password>|<password>|test[-_ ]?password|"
-    r"<your[-_ ]?(?:token|secret|api[-_ ]?key)>|<(?:token|secret|api[-_ ]?key)>|"
-    r"(?:your|optional|dummy|sample|fake|placeholder|test)[-_ ][\w-]*"
-    r"(?:password|secret|token|api[-_ ]?key)\b|"
-    r"sk-xxx|xxxxx|xxxx|xxx|example|placeholder|redacted|"
-    r"\b(?:REPLACE_ME|changethis|change_this|unspecified|bearer|dummy|fake)\b|"
-    r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+",
-    re.IGNORECASE
-)
+_PLACEHOLDER_PATTERN = re.compile(r"CHANGE[_ ]?ME|<your[-_ ]?password>|<password>|test[-_ ]?password|" r"<your[-_ ]?(?:token|secret|api[-_ ]?key)>|<(?:token|secret|api[-_ ]?key)>|" r"(?:your|optional|dummy|sample|fake|placeholder|test)[-_ ][\w-]*" r"(?:password|secret|token|api[-_ ]?key)\b|" r"sk-xxx|xxxxx|xxxx|xxx|example|placeholder|redacted|" r"\b(?:REPLACE_ME|changethis|change_this|unspecified|bearer|dummy|fake)\b|" r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+", re.IGNORECASE)
 
 # RFC 5737 documentation addresses — AGENTS §10.1.2 requires them in examples,
 # so a credential URL pointing at one cannot be a live credential.
 _DOC_ADDRESS_PATTERN = re.compile(r"192\.0\.2\.\d+|198\.51\.100\.\d+|203\.0\.113\.\d+")
 
 # Reading the value from env/config — no literal secret lives in the tree.
-_ENV_REF_PATTERN = re.compile(
-    r"os\.environ|getenv\s*\(|environ\s*\[|\$\{|process\.env",
-    re.IGNORECASE
-)
+_ENV_REF_PATTERN = re.compile(r"os\.environ|getenv\s*\(|environ\s*\[|\$\{|process\.env", re.IGNORECASE)
 
 # A PEM private-key header (always suspicious; never a placeholder by default).
 _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
-_ASSIGN_KEY_PATTERN = re.compile(
-    r"(?:^|[\s(\"'])"
-    r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)"
-    r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*",
-    re.IGNORECASE
-)
+_ASSIGN_KEY_PATTERN = re.compile(r"(?:^|[\s(\"'])" r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)" r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*", re.IGNORECASE)
 
 # A flag carrying a credential value, e.g. ``--target-pass s3cr3t-value`` or
 # ``--api-key=realvalue``.
@@ -120,54 +98,37 @@ _ASSIGN_KEY_PATTERN = re.compile(
 # with an alphanumeric (so a long run of dashes fails at the first character
 # instead of backtracking), and it is optional so a flag whose name IS the
 # credential word (``--token``, ``--api-key``) still matches.
-_FLAG_PATTERN = re.compile(
-    r"--?(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?"
-    r"(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)"
-    r"[a-zA-Z0-9_-]{0,63}(?:\s|=)\s*",
-    re.IGNORECASE
-)
+_FLAG_PATTERN = re.compile(r"--?(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,63})?" r"(?:password|passwd|passphrase|secret|token|api[_-]?key|pass|pwd)" r"[a-zA-Z0-9_-]{0,63}(?:\s|=)\s*", re.IGNORECASE)
 
 # A credential embedded in a URL's userinfo — the ``.git/config`` remote form
 # ``https://oauth2:gho_…@github.com/org/repo.git``. Carries no credential WORD,
 # so the broad pattern above never sees it; the userinfo IS the secret.
-_EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(
-    r"[a-z][a-z0-9+.-]{0,32}://"     # scheme:// (bounded: schemes are short,
-                                     # and an unbounded run backtracks on
-                                     # long alphanumeric lines)
-    r"[^/\s:@]+:"                    # user
-    r"(?P<secret>[^/\s@]+)"          # secret (the URL password / token)
-    r"@(?P<host>[^\s/]+)",           # @host
-    re.IGNORECASE
-)
+# scheme:// (bounded: schemes are short,
+# and an unbounded run backtracks on
+# long alphanumeric lines)
+# user
+# secret (the URL password / token)
+# @host
+_EMBEDDED_CREDENTIAL_URL_PATTERN = re.compile(r"[a-z][a-z0-9+.-]{0,32}://" r"[^/\s:@]+:" r"(?P<secret>[^/\s@]+)" r"@(?P<host>[^\s/]+)", re.IGNORECASE)
 
 # Provider-issued token shapes. These are high signal on their own — no
 # credential WORD and no particular key name required — because a scanner that
 # only looked at key names would miss ``const k = "AKIA…"``.
-_PROVIDER_TOKEN_PATTERN = re.compile(
-    r"\b(?:"
-    r"gh[pousr]_[A-Za-z0-9]{16,}"           # GitHub
-    r"|github_pat_[A-Za-z0-9_]{20,}"
-    r"|glpat-[A-Za-z0-9_-]{16,}"            # GitLab
-    r"|sk-[A-Za-z0-9_-]{16,}"               # OpenAI-style
-    r"|xox[baprs]-[A-Za-z0-9-]{10,}"        # Slack
-    r"|AKIA[0-9A-Z]{16}"                    # AWS access key id
-    r"|AIza[0-9A-Za-z_-]{35}"               # Google API key
-    r"|cli_[a-z0-9]{16,}"                   # Feishu app id
-    r")\b"
-)
+# GitHub
+# GitLab
+# OpenAI-style
+# Slack
+# AWS access key id
+# Google API key
+# Feishu app id
+_PROVIDER_TOKEN_PATTERN = re.compile(r"\b(?:" r"gh[pousr]_[A-Za-z0-9]{16,}" r"|github_pat_[A-Za-z0-9_]{20,}" r"|glpat-[A-Za-z0-9_-]{16,}" r"|sk-[A-Za-z0-9_-]{16,}" r"|xox[baprs]-[A-Za-z0-9-]{10,}" r"|AKIA[0-9A-Z]{16}" r"|AIza[0-9A-Za-z_-]{35}" r"|cli_[a-z0-9]{16,}" r")\b")
 
 #: Key segments that name a credential when they are the LAST segment.
-_CRED_KEY_WORDS = frozenset({
-    "password", "passwd", "passphrase", "pwd", "pass", "secret", "token",
-    "apikey", "credential", "credentials"
-})
+_CRED_KEY_WORDS = frozenset({"password", "passwd", "passphrase", "pwd", "pass", "secret", "token", "apikey", "credential", "credentials"})
 
 #: ``…key`` only counts when a qualifier segment precedes it (``api_key``,
 #: ``secret_key``, …) — a bare ``key = …`` is far too common to be a signal.
-_KEY_QUALIFIERS = frozenset({
-    "api", "access", "secret", "private", "public", "ssh", "auth", "app",
-    "signing", "encryption", "client", "server", "master", "session"
-})
+_KEY_QUALIFIERS = frozenset({"api", "access", "secret", "private", "public", "ssh", "auth", "app", "signing", "encryption", "client", "server", "master", "session"})
 
 #: Split key names on punctuation and camelCase boundaries: ``jsonwebtoken``
 #: stays one segment (not a credential name) while ``JSONWebToken`` /
@@ -191,12 +152,8 @@ _QUOTED_LITERAL_PATTERN = re.compile(r"^\S{4,}$")
 _MIN_LITERAL_LEN = 6
 
 #: Bare words that are control flow / config keywords, never secrets.
-_CONTROL_WORDS = frozenset({
-    "write", "read", "none", "null", "true", "false", "nil", "undefined",
-    "deny", "allow", "required", "optional", "inherit", "default",
-    # web-platform option values (``credentials: "same-origin"``)
-    "same-origin", "same-site", "include", "omit", "cors", "no-cors", "navigate"
-})
+# web-platform option values (``credentials: "same-origin"``)
+_CONTROL_WORDS = frozenset({"write", "read", "none", "null", "true", "false", "nil", "undefined", "deny", "allow", "required", "optional", "inherit", "default", "same-origin", "same-site", "include", "omit", "cors", "no-cors", "navigate"})
 
 # Directories never walked by the workspace credential sweep.
 #: Directory names excluded from the sweep by design (build artefacts, VCS and
@@ -204,11 +161,7 @@ _CONTROL_WORDS = frozenset({
 #: source directory name (this package's own ``celestia_devtools/build``), and a
 #: name-based prune would make the gate blind to it. Excluded names are reported
 #: by the CLI so a green run never reads as "everything was scanned".
-_SWEEP_SKIP_DIRS = frozenset({
-    ".git", "node_modules", "target", "dist", "vendor", "coverage",
-    ".venv", "venv", "__pycache__", ".next", ".nuxt", ".pytest_cache",
-    ".ruff_cache", ".mypy_cache", "site-packages"
-})
+_SWEEP_SKIP_DIRS = frozenset({".git", "node_modules", "target", "dist", "vendor", "coverage", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".pytest_cache", ".ruff_cache", ".mypy_cache", "site-packages"})
 
 # Files above this size are not credential-scanned (lockfiles, bundles, …).
 _MAX_SWEEP_BYTES = 2 * 1024 * 1024
@@ -1323,11 +1276,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--coverage", action = "store_true", help = "(rust/all) enable cargo tarpaulin coverage")
     parser.add_argument("--repo-root", default = None, help = "repo root directory (default: current directory)")
     # credential-scan options.
-    parser.add_argument(
-        "--scan-root", default = None,
-        help = "(credential-scan) directory holding the checkouts to sweep "
-             "(default: the parent of the repo root)"
-    )
+    parser.add_argument("--scan-root", default = None, help = "(credential-scan) directory holding the checkouts to sweep " "(default: the parent of the repo root)")
     parser.add_argument("--repo", action = "append", default = [], metavar = "NAME", help = "(credential-scan) sweep <scan-root>/NAME (repeatable)")
     parser.add_argument("--all-langyo", action = "store_true", help = "(credential-scan) sweep every langyo/* business checkout under --scan-root")
     parser.add_argument("--git-config-only", action = "store_true", help = "(credential-scan) only read .git/config files, skip source trees")

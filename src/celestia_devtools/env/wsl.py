@@ -48,25 +48,9 @@ DEFAULT_ROOTFS_URL = "https://cloud-images.ubuntu.com/wsl/releases/24.04/current
 # needed. ca-certificates ensures HTTPS for rustup / get.docker.com.
 # nodejs + npm back the shared PGlite facility (env/pglite.py) — entelecheia
 # and shittim-chest both use it for temporary embedded-Postgres instances.
-APT_PACKAGES = [
-    "build-essential",
-    "pkg-config",
-    "libssl-dev",
-    "curl",
-    "ca-certificates",
-    "git",
-    "nodejs",
-    "npm",
-    # QEMU for cross-architecture testing (kei x86_64/riscv64/aarch64)
-    "qemu-system-arm",
-    "qemu-system-x86",
-    "qemu-system-misc",
-    "qemu-user-static",
-    "gdb-multiarch",
-    # Cross-compilers for kei/aris musl builds
-    "gcc-aarch64-linux-gnu",
-    "libc6-dev-arm64-cross"
-]
+# QEMU for cross-architecture testing (kei x86_64/riscv64/aarch64)
+# Cross-compilers for kei/aris musl builds
+APT_PACKAGES = ["build-essential", "pkg-config", "libssl-dev", "curl", "ca-certificates", "git", "nodejs", "npm", "qemu-system-arm", "qemu-system-x86", "qemu-system-misc", "qemu-user-static", "gdb-multiarch", "gcc-aarch64-linux-gnu", "libc6-dev-arm64-cross"]
 
 def _log(level: str, msg: str) -> None:
     getattr(_logger, level, _logger.info)(msg)
@@ -326,14 +310,7 @@ def _provision(distro: str, want_docker: bool) -> bool:
 
 # ── Top-level orchestration ───────────────────────────────────────────
 
-def ensure(
-    distro: str = DEFAULT_DISTRO,
-    rootfs_url: str = DEFAULT_ROOTFS_URL,
-    *,
-    force: bool = False,
-    no_docker: bool = False,
-    reset: bool = False
-) -> int:
+def ensure(distro: str = DEFAULT_DISTRO, rootfs_url: str = DEFAULT_ROOTFS_URL, *, force: bool = False, no_docker: bool = False, reset: bool = False) -> int:
     want_docker = not no_docker
 
     if not _is_windows():

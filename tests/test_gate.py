@@ -35,10 +35,8 @@ class test_scheduler_ordering:
         def runner(step):
             return PASS
 
-        steps = [
-            Step("deny", None),  # conditionally skipped
-            Step("lint", ["x"], ("deny",))
-        ]
+        # conditionally skipped
+        steps = [Step("deny", None), Step("lint", ["x"], ("deny",))]
         assert run_dag(steps, runner, jobs = 1) == {"deny": SKIP, "lint": PASS}
 
 class test_scheduler_budget:
@@ -640,85 +638,17 @@ class test_sweep_crash_safety:
 # be flagged, and references/placeholders/examples that must not. Synthetic
 # "real" values deliberately avoid whitelisted placeholder words (``example``,
 # ``xxx``, ``CHANGE_ME``) — those are excused by design.
-VIOLATION_SAMPLES = [
-    'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"',
-    'ERP_JWT_SECRET="Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0"',
-    "FEISHU_APP_SECRET=Q41m5PIlprEiQURkAtUtQfPHLw6H5uOB",
-    'APP_SECRET = "1f9fdv9Rdy4zmhuHECF1Fh0iiIwiDfCT"',
-    'APP_TOKEN = "IZDKbUioFaLHcGsgCuycstlQnoh"',
-    'DB_PASSWORD: "hunter2hunter2"',
-    'credentials = "dGhpcy1pcy1hLXRlc3Qtc2VjcmV0LTEyMzQ1Ng=="',
-    'API_KEY="sk-0000111122223333"',
-    'AWS_ACCESS_KEY_ID = "AKIAZZ7NN7ZZZZZZZZZZ"',
-    "SSH_PASS=s3cr3t-value-123",
-    "password = supersecret4",
-    'url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git',
-    "url = https://git:S3cr3t-Passw0rd@github.com/celestia-island/arona.git",
-    "url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git  # see 192.0.2.9/docs",
-    # quoted literals may carry arbitrary punctuation …
-    'DB_PASSWORD="P@ssw0rd!2026#Production"',
-    'SECRET_KEY = "aB3dE5fG7hI9jK1lM3nO5pQ7&"',
-    # … and a trailing `process.env` comment must not excuse a real literal
-    'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # fallback for process.env',
-    # unquoted literals keep their punctuation (the .env form this gate exists for)
-    "DB_PASSWORD=Str0ng!Passw0rd!2026",
-    "POSTGRES_PASSWORD=Tr0ub4dor&3LongPassword2026",
-    "--target-pass P@ssw0rd!2026#Production",
-    # JSON-style keys are judged strictly (a secret behind one is fatal …)
-    '"client_secret": "x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3"',
-    '"db_password": "Str0ng!Passw0rd!2026"',
-    # an env-ref *substring* inside a value is not an env lookup
-    'DB_PASSWORD = "Prod-env(2026)#x"',
-    'API_KEY = "getenv-9f8e7d6c5b4a3210"',
-    # flags whose name IS the credential word, and long key names
-    "--token abc12345678",
-    "--secret x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3",
-    "kubectl --token abc12345678 apply",
-    ('A' * 200) + '_PASSWORD="Str0ng!Passw0rd!2026"'
-]
+# quoted literals may carry arbitrary punctuation …
+# … and a trailing `process.env` comment must not excuse a real literal
+# unquoted literals keep their punctuation (the .env form this gate exists for)
+# JSON-style keys are judged strictly (a secret behind one is fatal …)
+# an env-ref *substring* inside a value is not an env lookup
+# flags whose name IS the credential word, and long key names
+VIOLATION_SAMPLES = ['MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"', 'ERP_JWT_SECRET="Zx9Yw8Vu7Ts6Rq5Po4Nm3Lk2Ji1Hg0"', "FEISHU_APP_SECRET=Q41m5PIlprEiQURkAtUtQfPHLw6H5uOB", 'APP_SECRET = "1f9fdv9Rdy4zmhuHECF1Fh0iiIwiDfCT"', 'APP_TOKEN = "IZDKbUioFaLHcGsgCuycstlQnoh"', 'DB_PASSWORD: "hunter2hunter2"', 'credentials = "dGhpcy1pcy1hLXRlc3Qtc2VjcmV0LTEyMzQ1Ng=="', 'API_KEY="sk-0000111122223333"', 'AWS_ACCESS_KEY_ID = "AKIAZZ7NN7ZZZZZZZZZZ"', "SSH_PASS=s3cr3t-value-123", "password = supersecret4", 'url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git', "url = https://git:S3cr3t-Passw0rd@github.com/celestia-island/arona.git", "url = https://oauth2:gho_0123456789abcdefghij@github.com/o/r.git  # see 192.0.2.9/docs", 'DB_PASSWORD="P@ssw0rd!2026#Production"', 'SECRET_KEY = "aB3dE5fG7hI9jK1lM3nO5pQ7&"', 'MP_APP_SECRET="a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"  # fallback for process.env', "DB_PASSWORD=Str0ng!Passw0rd!2026", "POSTGRES_PASSWORD=Tr0ub4dor&3LongPassword2026", "--target-pass P@ssw0rd!2026#Production", '"client_secret": "x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3"', '"db_password": "Str0ng!Passw0rd!2026"', 'DB_PASSWORD = "Prod-env(2026)#x"', 'API_KEY = "getenv-9f8e7d6c5b4a3210"', "--token abc12345678", "--secret x7Kp2Qz9Lm4Rt8Wv1Bn6Yc3", "kubectl --token abc12345678 apply", ('A' * 200) + '_PASSWORD="Str0ng!Passw0rd!2026"']
 
-REPORT_SAMPLES = [
-    "token = path.strip()",
-    "token = token[4:].strip()",
-    "const token = api.getToken();",
-    "this.token = token;",
-    "token: string | null;",
-    "token: null,",
-    'print(f"  token: {token[:30]}...")',
-    'jsonwebtoken = "^10"',
-    "id-token: write # npm trusted publishing",
-    "password: require_password,",
-    "/* ------ 字体大小 tokens ------ */",
-    "page_token = None",
-    'token = r.json()["tenant_access_token"]',
-    "self.app_secret = app_secret",
-    "def normalize_split_token(token: str) -> str:",
-    "TOKEN_NORMALIZATION = {",
-    'mp_jwt_secret = os.getenv("MP_JWT_SECRET")',
-    "proxy = http://user:pass@192.0.2.1:3128",
-    "url = https://oauth2:<your-token>@github.com/o/r.git",
-    "url = https://oauth2:${GITHUB_TOKEN}@github.com/o/r.git",
-    "UNIFIED_APP_SECRET=your-unified-app-secret",
-    'gho_EXAMPLE_NOT_A_REAL_TOKEN = "x"',
-    "const tokens = useMemo(() => split(x), [x])",
-    'api_key = "unspecified"',
-    'token = "Bearer"',
-    'SECRET_KEY = "REPLACE_ME"',
-    'API_KEY = "fake-key-for-tests"',
-    'password = "two words here"',
-    # … while an i18n label behind the same shape is not (FOUND-B regression)
-    '"password": "Passwort",',
-    '"secret": "Secret",',
-    '"apiKey": "API-ключ",',
-    '"invalidToken": "身份令牌无效",',
-    '"botToken": "Bot-Token",',
-    "# set your token here",
-    # real repo lines that the first precision pass still flagged (2026-09-13)
-    'fetch("/", { cache: "no-store", credentials: "same-origin" }).then(function (r) {',
-    "console.log('Stored token:', localStorage.getItem('auth_token')?.substring(0, 20) + '...');",
-    "// 用法：先起 server（PORT=18433 ERP_JWT_SECRET=test-secret-for-smoke-only …），",
-    "UNIFIED_APP_TOKEN=optional-bitable-app-token"
-]
+# … while an i18n label behind the same shape is not (FOUND-B regression)
+# real repo lines that the first precision pass still flagged (2026-09-13)
+REPORT_SAMPLES = ["token = path.strip()", "token = token[4:].strip()", "const token = api.getToken();", "this.token = token;", "token: string | null;", "token: null,", 'print(f"  token: {token[:30]}...")', 'jsonwebtoken = "^10"', "id-token: write # npm trusted publishing", "password: require_password,", "/* ------ 字体大小 tokens ------ */", "page_token = None", 'token = r.json()["tenant_access_token"]', "self.app_secret = app_secret", "def normalize_split_token(token: str) -> str:", "TOKEN_NORMALIZATION = {", 'mp_jwt_secret = os.getenv("MP_JWT_SECRET")', "proxy = http://user:pass@192.0.2.1:3128", "url = https://oauth2:<your-token>@github.com/o/r.git", "url = https://oauth2:${GITHUB_TOKEN}@github.com/o/r.git", "UNIFIED_APP_SECRET=your-unified-app-secret", 'gho_EXAMPLE_NOT_A_REAL_TOKEN = "x"', "const tokens = useMemo(() => split(x), [x])", 'api_key = "unspecified"', 'token = "Bearer"', 'SECRET_KEY = "REPLACE_ME"', 'API_KEY = "fake-key-for-tests"', 'password = "two words here"', '"password": "Passwort",', '"secret": "Secret",', '"apiKey": "API-ключ",', '"invalidToken": "身份令牌无效",', '"botToken": "Bot-Token",', "# set your token here", 'fetch("/", { cache: "no-store", credentials: "same-origin" }).then(function (r) {', "console.log('Stored token:', localStorage.getItem('auth_token')?.substring(0, 20) + '...');", "// 用法：先起 server（PORT=18433 ERP_JWT_SECRET=test-secret-for-smoke-only …），", "UNIFIED_APP_TOKEN=optional-bitable-app-token"]
 
 CLEAN_SAMPLES = ["let answer = 42", "url = git@github.com:celestia-island/arona.git", "url = https://github.com/celestia-island/arona.git", '[remote "origin"]', 'MONKEY = "value"', 'const total = items.length']
 

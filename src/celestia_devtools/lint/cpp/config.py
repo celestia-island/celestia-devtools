@@ -50,27 +50,10 @@ DEFAULT_PLATFORM_TYPES: Tuple[str, ...] = ("HANDLE", "SOCKET", "HRESULT")
 
 DEFAULT_COM_INTERFACE_PREFIXES: Tuple[str, ...] = ("IUnknown", "ID3D", "ID2D", "IDWrite", "IWIC")
 
-DEFAULT_ALLOW_SPACE_BEFORE_PAREN: Tuple[str, ...] = (
-    # Keyword-like constructs that take a parenthesised operand but are not
-    # function calls: the C++ rule only requires function names and the control
-    # keywords if/for/while/switch/catch to touch their parenthesis.
-    "return",
-    "sizeof",
-    "alignof",
-    "decltype",
-    "alignas",
-    "static_assert",
-    "noexcept",
-    "constexpr",
-    "operator",
-    "new",
-    "delete",
-    "__declspec",
-    "__attribute__",
-    "co_await",
-    "co_return",
-    "co_yield"
-)
+# Keyword-like constructs that take a parenthesised operand but are not
+# function calls: the C++ rule only requires function names and the control
+# keywords if/for/while/switch/catch to touch their parenthesis.
+DEFAULT_ALLOW_SPACE_BEFORE_PAREN: Tuple[str, ...] = ("return", "sizeof", "alignof", "decltype", "alignas", "static_assert", "noexcept", "constexpr", "operator", "new", "delete", "__declspec", "__attribute__", "co_await", "co_return", "co_yield")
 
 KNOWN_KEYS = frozenset({"select", "ignore", "exempt", "exclude", "platform_headers", "platform_paths", "platform_types", "com_interface_prefixes", "allow_space_before_paren", "macro_style", "allow_doxygen"})
 

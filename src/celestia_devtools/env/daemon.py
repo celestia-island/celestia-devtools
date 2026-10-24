@@ -20,47 +20,14 @@ from typing import Optional, Sequence
 
 # ── Service definitions ──────────────────────────────────────────────────────
 
-SERVICE_DEFS: dict[str, dict] = {
-    "shittim-chest": {
-        "bin": "chest",
-        # core has no "mock-mode" feature (only embedded-frontend) — the
-        # flag below used to make `daemon build` fail outright. The listen
-        # port must be pinned to run_port: chest defaults to :80.
-        "build_cmd": ["cargo", "build", "-p", "core", "--bin", "chest", "--release"],
-        "run_port": 8400,
-        "args": [],
-        "env_defaults": {
-            "SHITTIM_CHEST_HOST": "127.0.0.1",
-            "SHITTIM_CHEST_PORT": "8400",
-            "RUST_LOG": "warn,chest=info"
-        }
-    },
-    "entelecheia": {
-        "bin": "scepter",
-        # scepter has no "embedded-db" feature either; default features
-        # (all-agents) are what a local daemon pod wants. SERVER_BIND_ADDRESS
-        # is the real knob (setup.rs) and must be pinned to run_port or the
-        # pod lands on the :8424 native default.
-        "build_cmd": ["cargo", "build", "-p", "scepter", "--release"],
-        "run_port": 8410,
-        "args": [],
-        "env_defaults": {
-            "SERVER_BIND_ADDRESS": "127.0.0.1:8410",
-            "RUST_LOG": "warn,scepter=info"
-        }
-    },
-    "arona": {
-        "bin": "_cli",
-        "build_cmd": ["cargo", "build", "-p", "_cli", "--release"],
-        "run_port": 8405,
-        "args": ["serve"],
-        "env_defaults": {
-            "MOCK_MODE": "1",
-            "ARONA_PORT": "8405",
-            "RUST_LOG": "warn,arona=info"
-        }
-    }
-}
+# core has no "mock-mode" feature (only embedded-frontend) — the
+# flag below used to make `daemon build` fail outright. The listen
+# port must be pinned to run_port: chest defaults to :80.
+# scepter has no "embedded-db" feature either; default features
+# (all-agents) are what a local daemon pod wants. SERVER_BIND_ADDRESS
+# is the real knob (setup.rs) and must be pinned to run_port or the
+# pod lands on the :8424 native default.
+SERVICE_DEFS: dict[str, dict] = {"shittim-chest": {"bin": "chest", "build_cmd": ["cargo", "build", "-p", "core", "--bin", "chest", "--release"], "run_port": 8400, "args": [], "env_defaults": {"SHITTIM_CHEST_HOST": "127.0.0.1", "SHITTIM_CHEST_PORT": "8400", "RUST_LOG": "warn,chest=info"}}, "entelecheia": {"bin": "scepter", "build_cmd": ["cargo", "build", "-p", "scepter", "--release"], "run_port": 8410, "args": [], "env_defaults": {"SERVER_BIND_ADDRESS": "127.0.0.1:8410", "RUST_LOG": "warn,scepter=info"}}, "arona": {"bin": "_cli", "build_cmd": ["cargo", "build", "-p", "_cli", "--release"], "run_port": 8405, "args": ["serve"], "env_defaults": {"MOCK_MODE": "1", "ARONA_PORT": "8405", "RUST_LOG": "warn,arona=info"}}}
 
 DEFAULT_CONFIG_PATH = "/etc/malkuth/services.toml"
 DAEMON_PID_FILE = "/tmp/malkuth-daemon.pid"

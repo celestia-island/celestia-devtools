@@ -172,9 +172,7 @@ class test_shipped_shape:
         # A grant has to reach GITHUB_OUTPUT, so a writer is any step that touches that file
         # *and* mentions budget — which catches one that builds the string without a literal
         # `budget=` (the decide step writes GITHUB_OUTPUT but never touches the budget).
-        touchers = [s.get("id") or s.get("name") for s in _steps("route")
-                    if "GITHUB_OUTPUT" in (s.get("run") or "")
-                    and "budget" in (s.get("run") or "")]
+        touchers = [s.get("id") or s.get("name") for s in _steps("route") if ("GITHUB_OUTPUT" in (s.get("run") or "")) and ("budget" in (s.get("run") or ""))]
         assert touchers == [GUARD_STEP_ID], f"another step writes a budget output: {touchers}"
 
     def test_budget_default_is_conservative_and_leaves_headroom(self):
@@ -254,20 +252,10 @@ class test_fails_closed:
         _, got, _ = run_guard(tmp_path, ledger, pct = "70")
         assert got["budget"] == "skip"
 
-    @pytest.mark.parametrize("payload", [
-        {"ci_in_sec": -1},                       # a negative counter is not a fresh pool
-        {"ci_in_sec": -1e12},
-        {"ci_in_sec": float("-inf")},
-        {"ci_in_sec": True},                     # float(True) == 1.0
-        {"ci_in_sec": False},
-        {"ci_in_sec": None},
-        {"ci_in_sec": 1, "freeze_ci_in_sec": -1e12},
-        {"ci_in_sec": 1, "freeze_ci_in_sec": {}},   # present but unreadable, not silently 0
-        {"ci_in_sec": 1, "freeze_ci_in_sec": []},
-        {"ci_in_sec": 1, "freeze_ci_in_sec": ""},
-        {"ci_in_sec": 1, "freeze_ci_in_sec": "abc"}
-    ], ids = ["negative", "very-negative", "-inf", "true", "false", "null",
-            "negative-freeze", "freeze-dict", "freeze-list", "freeze-empty", "freeze-text"])
+    # a negative counter is not a fresh pool
+    # float(True) == 1.0
+    # present but unreadable, not silently 0
+    @pytest.mark.parametrize("payload", [{"ci_in_sec": -1}, {"ci_in_sec": -1e12}, {"ci_in_sec": float("-inf")}, {"ci_in_sec": True}, {"ci_in_sec": False}, {"ci_in_sec": None}, {"ci_in_sec": 1, "freeze_ci_in_sec": -1e12}, {"ci_in_sec": 1, "freeze_ci_in_sec": {}}, {"ci_in_sec": 1, "freeze_ci_in_sec": []}, {"ci_in_sec": 1, "freeze_ci_in_sec": ""}, {"ci_in_sec": 1, "freeze_ci_in_sec": "abc"}], ids = ["negative", "very-negative", "-inf", "true", "false", "null", "negative-freeze", "freeze-dict", "freeze-list", "freeze-empty", "freeze-text"])
     def test_parseable_but_nonsensical_counters_fail_closed(self, tmp_path, ledger, payload):
         _ledger.payload = payload
         out, got, rc = run_guard(tmp_path, ledger, pct = "70")

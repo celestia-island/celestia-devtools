@@ -68,33 +68,21 @@ API_ROOT = "https://api.github.com"
 # like the org's hand-written releases (malkuth/evernight style). Lookup keys
 # are normalized (VS16 stripped) forms of the whitelist emoji; any whitelist
 # emoji without a mapping falls through to "Other Changes".
-_SECTIONS: List[Tuple[str, Tuple[str, ...]]] = [
-    ("✨ Features", ("\u2728", "\U0001f389")),                          # ✨ 🎉
-    ("🐛 Fixes", ("\U0001f41b", "\U0001f691", "\U0001fa79",
-                  "\u270f", "\U0001f49a")),                       # 🐛 🚑 🩹 ✏️ 💚(CI fix)
-    ("⚡ Performance", ("\u26a1", "\U0001f4c8")),                       # ⚡ 📈
-    ("♻️ Refactoring", ("\u267b", "\U0001f3a8",
-                        "\U0001f3d7", "\U0001f69a")),                   # ♻️ 🎨 🏗️ 🚚
-    ("💄 UI", ("\U0001f484", "\U0001f4f1", "\u267f",
-               "\U0001f4ab", "\U0001f6b8")),                            # 💄 📱 ♿ 💫 🚸
-    ("🌐 Localization", ("\U0001f310",)),                               # 🌐
-    ("📝 Documentation", ("\U0001f4dd", "\U0001f4a1",
-                          "\U0001f4ac")),                               # 📝 💡 💬
-    ("✅ Tests", ("\u2705", "\U0001f9ea")),                             # ✅ 🧪
-    ("⬆️ Dependencies", ("\u2b06", "\u2b07", "\U0001f4cc",
-                         "\u2795", "\u2796")),                          # ⬆️ ⬇️ 📌 ➕ ➖
-    ("🔒 Security", ("\U0001f512", "\U0001f6e1", "\U0001f6c2")),        # 🔒 🛡️ 🛂
-    ("🔥 Removals", ("\U0001f525", "\U0001f5d1", "\u26b0")),            # 🔥 🗑️ ⚰️
-    ("🔧 Maintenance", ("\U0001f527", "\U0001f528", "\U0001f477",
-                        "\U0001f4e6", "\U0001f680", "\U0001f371",
-                        "\U0001f5c3", "\U0001f9f1", "\U0001f9ba",
-                        "\U0001fa7a", "\U0001f6a8", "\U0001f331",
-                        "\U0001f4f8", "\U0001f516",
-                        "\U0001f9d1\u200d\U0001f4bb")),
-    # 🔧 🔨 👷 📦 🚀 🍱 🗃️ 🧱 🦺 🩺 🚨 🌱 📸 🔖(release chores) 🧑‍💻
-    ("📜 License", ("\U0001f4dc", "\U0001f4c4")),                       # 📜 📄
-    ("🔄 Sync", ("\U0001f517", "\U0001f504"))                          # 🔗 🔄 (org additions)
-]
+# ✨ 🎉
+# 🐛 🚑 🩹 ✏️ 💚(CI fix)
+# ⚡ 📈
+# ♻️ 🎨 🏗️ 🚚
+# 💄 📱 ♿ 💫 🚸
+# 🌐
+# 📝 💡 💬
+# ✅ 🧪
+# ⬆️ ⬇️ 📌 ➕ ➖
+# 🔒 🛡️ 🛂
+# 🔥 🗑️ ⚰️
+# 🔧 🔨 👷 📦 🚀 🍱 🗃️ 🧱 🦺 🩺 🚨 🌱 📸 🔖(release chores) 🧑‍💻
+# 📜 📄
+# 🔗 🔄 (org additions)
+_SECTIONS: List[Tuple[str, Tuple[str, ...]]] = [("✨ Features", ("\u2728", "\U0001f389")), ("🐛 Fixes", ("\U0001f41b", "\U0001f691", "\U0001fa79", "\u270f", "\U0001f49a")), ("⚡ Performance", ("\u26a1", "\U0001f4c8")), ("♻️ Refactoring", ("\u267b", "\U0001f3a8", "\U0001f3d7", "\U0001f69a")), ("💄 UI", ("\U0001f484", "\U0001f4f1", "\u267f", "\U0001f4ab", "\U0001f6b8")), ("🌐 Localization", ("\U0001f310",)), ("📝 Documentation", ("\U0001f4dd", "\U0001f4a1", "\U0001f4ac")), ("✅ Tests", ("\u2705", "\U0001f9ea")), ("⬆️ Dependencies", ("\u2b06", "\u2b07", "\U0001f4cc", "\u2795", "\u2796")), ("🔒 Security", ("\U0001f512", "\U0001f6e1", "\U0001f6c2")), ("🔥 Removals", ("\U0001f525", "\U0001f5d1", "\u26b0")), ("🔧 Maintenance", ("\U0001f527", "\U0001f528", "\U0001f477", "\U0001f4e6", "\U0001f680", "\U0001f371", "\U0001f5c3", "\U0001f9f1", "\U0001f9ba", "\U0001fa7a", "\U0001f6a8", "\U0001f331", "\U0001f4f8", "\U0001f516", "\U0001f9d1\u200d\U0001f4bb")), ("📜 License", ("\U0001f4dc", "\U0001f4c4")), ("🔄 Sync", ("\U0001f517", "\U0001f504"))]
 OTHER_HEADING = "Other Changes"
 _DEPENDABOT_HEADING = "⬆️ Dependencies"  # "Bump x from y to z" titles
 
@@ -327,13 +315,7 @@ def walk_head(repo: str, tag: str, fetch: Fetch, on: str) -> str:
 
 # ── commit walking → categorized entries ─────────────────────────────────────
 
-def collect_entries(
-    repo: str,
-    tag: str,
-    previous_tag: Optional[str],
-    fetch: Fetch,
-    max_pages: int = 500
-) -> Tuple[List[Tuple[str, List[Tuple[int, str]]]], int]:
+def collect_entries(repo: str, tag: str, previous_tag: Optional[str], fetch: Fetch, max_pages: int = 500) -> Tuple[List[Tuple[str, List[Tuple[int, str]]]], int]:
     """Walk commits from *tag* back to *previous_tag* and group PRs by section.
 
     Returns ``(sections, skipped)`` where *sections* preserves the fixed
@@ -420,14 +402,7 @@ def build_body(repo: str, tag: str, previous_tag: Optional[str], sections: List[
 
 # ── release upsert ───────────────────────────────────────────────────────────
 
-def upsert_release(
-    repo: str,
-    tag: str,
-    body: str,
-    token: Optional[str],
-    title: Optional[str] = None,
-    publish: bool = False
-) -> str:
+def upsert_release(repo: str, tag: str, body: str, token: Optional[str], title: Optional[str] = None, publish: bool = False) -> str:
     """Set the body on the tag's release, creating a draft when missing.
 
     An existing release keeps its draft/published state (only the body — and

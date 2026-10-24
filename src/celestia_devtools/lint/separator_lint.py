@@ -37,31 +37,24 @@ from typing import Iterator, List, Tuple
 # Group 1: prefix before the ==== (comment chars + optional space/comment-start)
 # Group 2: the ==== content, optionally with a label in the middle.
 # Minimum 5 sequential = to avoid matching JS === operators.
-_COMMENT_SEP_RE = re.compile(
-    r"^(\s*(?://|#|/\*|<!--)\s*)"                        # comment prefix
-    r"(={5,}(?:\s+.+?\s+={5,})?)\s*"                     # ===...=== or ===... label ...===
-    r"(\s*(?:\*/|-->)?)$"                                # optional closing
-)
+# comment prefix
+# ===...=== or ===... label ...===
+# optional closing
+_COMMENT_SEP_RE = re.compile(r"^(\s*(?://|#|/\*|<!--)\s*)" r"(={5,}(?:\s+.+?\s+={5,})?)\s*" r"(\s*(?:\*/|-->)?)$")
 
 # Regex for pure ==== lines inside string/byte literals.
-_STRING_SEP_RE = re.compile(
-    r'(")(={5,})(")'                                     # "...===..."
-)
+# "...===..."
+_STRING_SEP_RE = re.compile(r'(")(={5,})(")')
 
 # Regex for ===== label ===== inside string literals.
-_STRING_LABEL_SEP_RE = re.compile(
-    r'(")(={5,})\s+(.+?)\s+(={5,})(")'                   # "=== label ==="
-)
+# "=== label ==="
+_STRING_LABEL_SEP_RE = re.compile(r'(")(={5,})\s+(.+?)\s+(={5,})(")')
 
 # Regex for the inner label part when already inside quotes.
-_STRING_LABEL_INNER_RE = re.compile(
-    r"(={5,})\s+(.+?)\s+(={5,})"
-)
+_STRING_LABEL_INNER_RE = re.compile(r"(={5,})\s+(.+?)\s+(={5,})")
 
 # Merge-conflict markers.
-_CONFLICT_MARKER_RE = re.compile(
-    r"^(<{7}\s|={7}$|>{7}\s)"
-)
+_CONFLICT_MARKER_RE = re.compile(r"^(<{7}\s|={7}$|>{7}\s)")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -111,9 +104,7 @@ def _fix_line(line: str) -> str:
     # which already has ===== inside a quoted string matched by _STRING_SEP_RE
     # or _STRING_LABEL_SEP_RE.  For strings that span multiple lines or use
     # raw strings, try the inner-label pattern.
-    line, n4 = _STRING_LABEL_INNER_RE.subn(
-        lambda m: _DASH_WRAP(m.group(2)), line
-    )
+    line, n4 = _STRING_LABEL_INNER_RE.subn(lambda m: _DASH_WRAP(m.group(2)), line)
     return line
 
 def _has_conflict_marker(line: str) -> bool:

@@ -136,14 +136,7 @@ def test_vue_template_push_scanned(tmp_path):
 
 def test_router_ternary_object_locations_pass(tmp_path):
     # AdminLayout pattern: both branches carry literal paths.
-    f = write(
-        tmp_path,
-        "router.push(\n"
-        "  hash\n"
-        '    ? { path: "/backend", hash: `#${hash}`, query }\n'
-        '    : { path: "/backend", query },\n'
-        ");\n"
-    )
+    f = write(tmp_path, "router.push(\n" "  hash\n" '    ? { path: "/backend", hash: `#${hash}`, query }\n' '    : { path: "/backend", query },\n' ");\n")
     assert nav_lint.scan_file(f) == []
 
 def test_router_ternary_with_unsafe_branch_flagged(tmp_path):

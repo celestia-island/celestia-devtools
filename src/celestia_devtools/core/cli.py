@@ -82,71 +82,12 @@ from typing import Sequence
 from celestia_devtools import __version__
 from celestia_devtools.repo.init import common_just_path
 
-COMMANDS: dict[str, str] = {
-    "cache-guard": "celestia_devtools.build.cache_guard",
-    "format-markdown": "celestia_devtools.doc.markdown",
-    "prefetch": "celestia_devtools.build.prefetch",
-    "check-cross-deps": "celestia_devtools.build.cross_deps",
-    "npm-dist": "celestia_devtools.npm.dist",
-    "preflight": "celestia_devtools.env.preflight",
-    "wsl-ensure": "celestia_devtools.env.wsl",
-    "qemu-ensure": "celestia_devtools.env.qemu",
-    "pglite": "celestia_devtools.env.pglite",
-    "serve": "celestia_devtools.env.serve",
-    "locate": "celestia_devtools.repo.locate",
-    "register-patches": "celestia_devtools.repo.register_patches",
-    "link-npm-siblings": "celestia_devtools.npm.link_siblings",
-    "init": "celestia_devtools.repo.init",
-    "commit-msg-lint": "celestia_devtools.vcs.commit_msg",
-    "version-string": "celestia_devtools.vcs.version_string",
-    "hook": "celestia_devtools.vcs.hook",
-    "pr-merge": "celestia_devtools.vcs.pr_merge",
-    "git-sweep": "celestia_devtools.vcs.branch_sweep",
-    "nav-lint": "celestia_devtools.lint.nav_lint",
-    "p0-gate": "celestia_devtools.lint.p0_gate",
-    "rules-lint": "celestia_devtools.lint.rules_lint",
-    "py-style": "celestia_devtools.lint.py_style",
-    "cpp-style": "celestia_devtools.lint.cpp_style",
-    "gh": "celestia_devtools.vcs.gh",
-    "publish-crates": "celestia_devtools.publish.crates",
-    "release-notes": "celestia_devtools.publish.release_notes",
-    "toml-sort": "celestia_devtools.repo.toml_sort",
-    "daemon": "celestia_devtools.env.daemon",
-    "deploy": "celestia_devtools.deploy.cli",
-    "mock-start": "celestia_devtools.core.mock",
-    "mock-stop": "celestia_devtools.core.mock",
-    "mock-status": "celestia_devtools.core.mock",
-    "registry": "celestia_devtools.core.mock",
-    "sign-agent": "celestia_devtools.agent.sign",
-    "gate": "celestia_devtools.build.gate",
-    "verify-versions": "celestia_devtools.repo.verify_versions",
-    "family-versions": "celestia_devtools.repo.family_versions",
-    "protocol-bundle": "celestia_devtools.doc.protocol_bundle",
-    "fetch-just": "celestia_devtools.repo.fetch_just",
-    "build-dispatch": "celestia_devtools.build.dispatch",
-    "upstream-sync": "celestia_devtools.vcs.upstream",
-    "worktree-create": "celestia_devtools.vcs.worktree",
-    "worktree-remove": "celestia_devtools.vcs.worktree",
-    "dev-watch": "celestia_devtools.env.dev_watch",
-    "vite-build": "celestia_devtools.env.vite",
-    "vite-serve": "celestia_devtools.env.vite",
-    "vite-dev": "celestia_devtools.env.vite",
-    "npm-release": "celestia_devtools.npm.release",
-    # Registered entry points that had no dispatcher command until 2026-09-20. The gap went
-    # unnoticed because the only test that notices (`test_all_commands_registered`) was
-    # already failing on master, so its output was not read: four tools installed by this
-    # package could not be reached through the unified CLI, while both `justfile` and the
-    # reusable workflows invoke commands as `celestia-devtools <cmd>`.
-    "cargo-cache-guard": "celestia_devtools.build.cache_guard",
-    "lint-separators": "celestia_devtools.lint.separator_lint",
-    "job-timeouts": "celestia_devtools.ci.job_timeouts",
-    "ci-audit": "celestia_devtools.ci.workflow_audit",
-    "ci-cache": "celestia_devtools.ci.cache_policy",
-    "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
-    "devenv": "celestia_devtools.env.devenv",
-    "ports": "celestia_devtools.env.ports",
-    "brand-stamp": "celestia_devtools.brand.stamp"
-}
+# Registered entry points that had no dispatcher command until 2026-09-20. The gap went
+# unnoticed because the only test that notices (`test_all_commands_registered`) was
+# already failing on master, so its output was not read: four tools installed by this
+# package could not be reached through the unified CLI, while both `justfile` and the
+# reusable workflows invoke commands as `celestia-devtools <cmd>`.
+COMMANDS: dict[str, str] = {"cache-guard": "celestia_devtools.build.cache_guard", "format-markdown": "celestia_devtools.doc.markdown", "prefetch": "celestia_devtools.build.prefetch", "check-cross-deps": "celestia_devtools.build.cross_deps", "npm-dist": "celestia_devtools.npm.dist", "preflight": "celestia_devtools.env.preflight", "wsl-ensure": "celestia_devtools.env.wsl", "qemu-ensure": "celestia_devtools.env.qemu", "pglite": "celestia_devtools.env.pglite", "serve": "celestia_devtools.env.serve", "locate": "celestia_devtools.repo.locate", "register-patches": "celestia_devtools.repo.register_patches", "link-npm-siblings": "celestia_devtools.npm.link_siblings", "init": "celestia_devtools.repo.init", "commit-msg-lint": "celestia_devtools.vcs.commit_msg", "version-string": "celestia_devtools.vcs.version_string", "hook": "celestia_devtools.vcs.hook", "pr-merge": "celestia_devtools.vcs.pr_merge", "git-sweep": "celestia_devtools.vcs.branch_sweep", "nav-lint": "celestia_devtools.lint.nav_lint", "p0-gate": "celestia_devtools.lint.p0_gate", "rules-lint": "celestia_devtools.lint.rules_lint", "py-style": "celestia_devtools.lint.py_style", "cpp-style": "celestia_devtools.lint.cpp_style", "gh": "celestia_devtools.vcs.gh", "publish-crates": "celestia_devtools.publish.crates", "release-notes": "celestia_devtools.publish.release_notes", "toml-sort": "celestia_devtools.repo.toml_sort", "daemon": "celestia_devtools.env.daemon", "deploy": "celestia_devtools.deploy.cli", "mock-start": "celestia_devtools.core.mock", "mock-stop": "celestia_devtools.core.mock", "mock-status": "celestia_devtools.core.mock", "registry": "celestia_devtools.core.mock", "sign-agent": "celestia_devtools.agent.sign", "gate": "celestia_devtools.build.gate", "verify-versions": "celestia_devtools.repo.verify_versions", "family-versions": "celestia_devtools.repo.family_versions", "protocol-bundle": "celestia_devtools.doc.protocol_bundle", "fetch-just": "celestia_devtools.repo.fetch_just", "build-dispatch": "celestia_devtools.build.dispatch", "upstream-sync": "celestia_devtools.vcs.upstream", "worktree-create": "celestia_devtools.vcs.worktree", "worktree-remove": "celestia_devtools.vcs.worktree", "dev-watch": "celestia_devtools.env.dev_watch", "vite-build": "celestia_devtools.env.vite", "vite-serve": "celestia_devtools.env.vite", "vite-dev": "celestia_devtools.env.vite", "npm-release": "celestia_devtools.npm.release", "cargo-cache-guard": "celestia_devtools.build.cache_guard", "lint-separators": "celestia_devtools.lint.separator_lint", "job-timeouts": "celestia_devtools.ci.job_timeouts", "ci-audit": "celestia_devtools.ci.workflow_audit", "ci-cache": "celestia_devtools.ci.cache_policy", "e2e-sandbox": "celestia_devtools.env.e2e_sandbox", "devenv": "celestia_devtools.env.devenv", "ports": "celestia_devtools.env.ports", "brand-stamp": "celestia_devtools.brand.stamp"}
 
 def _print_help(file = None) -> None:
     print(__doc__, file = file or sys.stdout)

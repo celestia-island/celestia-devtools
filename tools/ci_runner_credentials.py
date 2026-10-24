@@ -63,8 +63,7 @@ EXIT_USAGE = 2
 # gh-ci-readonly-<repo>.  kei-wire joined 2026-10-20 when #582 pointed the
 # bridge dependency at it -- the runners had no key, so every cargo job
 # fetching the graph failed (the 09-13 incident class, one repo deeper).
-REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest",
-         "kei-wire")
+REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest", "kei-wire")
 
 MANAGED_BEGIN = "# >>> celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
 MANAGED_END = "# <<< celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
@@ -236,20 +235,10 @@ def build_ssh_command(env: dict) -> list[str]:
 
 def remote_header(no_restart: str, force_restart: str, pnpm_version: str) -> str:
     """Fixed remote head plus locally-switched values, shlex-quoted."""
-    lines = [
-        "set -euo pipefail",
-        "umask 077",
-        "REMOTE_FAIL=0",
-        "REPOS=" + shlex.quote(" ".join(REPOS)),
-        'mkdir -p "$HOME/.ssh" "$HOME/.cargo"',
-        'chmod 700 "$HOME/.ssh"',
-        # Local switches must be re-declared on the remote side: the remote
-        # script runs in its own shell (set -u), so referencing a local-only
-        # variable aborts it (measured 2026-09-15).
-        "CI_RUNNER_NO_RESTART=" + shlex.quote(no_restart),
-        "CI_RUNNER_FORCE_RESTART=" + shlex.quote(force_restart),
-        "CI_RUNNER_PNPM_VERSION=" + shlex.quote(pnpm_version)
-    ]
+    # Local switches must be re-declared on the remote side: the remote
+    # script runs in its own shell (set -u), so referencing a local-only
+    # variable aborts it (measured 2026-09-15).
+    lines = ["set -euo pipefail", "umask 077", "REMOTE_FAIL=0", "REPOS=" + shlex.quote(" ".join(REPOS)), 'mkdir -p "$HOME/.ssh" "$HOME/.cargo"', 'chmod 700 "$HOME/.ssh"', "CI_RUNNER_NO_RESTART=" + shlex.quote(no_restart), "CI_RUNNER_FORCE_RESTART=" + shlex.quote(force_restart), "CI_RUNNER_PNPM_VERSION=" + shlex.quote(pnpm_version)]
     return "\n".join(lines) + "\n"
 
 def key_heredocs(keys_dir: Path) -> str:

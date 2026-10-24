@@ -73,82 +73,26 @@ def _rules(findings):
 
 #: The accident: a caller job plus the key GitHub rejects. This is a faithful
 #: reduction of ``shittim-chest/.github/workflows/ci.yml`` (PR #870 / #872).
-ACCIDENT = (
-    "name: CI\n"
-    "on:\n"
-    "  push:\n"
-    "    branches: [master]\n"
-    "jobs:\n"
-    "  verify-versions:\n"
-    "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n"
-    "    timeout-minutes: 90\n"
-)
+ACCIDENT = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    timeout-minutes: 90\n"
 
 #: A caller job carrying **only** the nine legal keys (every one of them, on purpose).
 #: The callee is deliberately *not* the shared lint workflow: rule 5 requires that caller to
 #: live in ``commit-msg-lint.yml``, so using it here would fold two rules into one fixture
 #: (变红时看不出是键集错还是位置错). Rule 5 has its own class below.
-LEGAL_CALLER = (
-    "name: CI\n"
-    "on: [push, workflow_dispatch]\n"
-    "jobs:\n"
-    "  verify-versions:\n"
-    "    name: Verify versions\n"
-    "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n"
-    "    with:\n"
-    "      fetch-depth: 0\n"
-    "    secrets: inherit\n"
-    "    strategy:\n"
-    "      fail-fast: false\n"
-    "    needs: [build]\n"
-    "    if: github.event_name == 'pull_request'\n"
-    "    concurrency:\n"
-    "      group: lint-${{ github.ref }}\n"
-    "    permissions:\n"
-    "      contents: read\n"
-)
+LEGAL_CALLER = "name: CI\n" "on: [push, workflow_dispatch]\n" "jobs:\n" "  verify-versions:\n" "    name: Verify versions\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    with:\n" "      fetch-depth: 0\n" "    secrets: inherit\n" "    strategy:\n" "      fail-fast: false\n" "    needs: [build]\n" "    if: github.event_name == 'pull_request'\n" "    concurrency:\n" "      group: lint-${{ github.ref }}\n" "    permissions:\n" "      contents: read\n"
 
 #: A reusable-workflow callee whose self-hosted job has no upper bound.
-CALLEE_NO_TIMEOUT = (
-    "name: Verify versions\n"
-    "on:\n"
-    "  workflow_call:\n"
-    "    inputs:\n"
-    "      ref:\n"
-    "        type: string\n"
-    "jobs:\n"
-    "  verify-versions:\n"
-    "    runs-on: [self-hosted, linux, x64, local]\n"
-    "    steps:\n"
-    "      - uses: actions/checkout@v7\n"
-    "      - run: cargo run -p verify-versions\n"
-)
+CALLEE_NO_TIMEOUT = "name: Verify versions\n" "on:\n" "  workflow_call:\n" "    inputs:\n" "      ref:\n" "        type: string\n" "jobs:\n" "  verify-versions:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - uses: actions/checkout@v7\n" "      - run: cargo run -p verify-versions\n"
 
 #: The same callee, fixed: the upper bound can only live here (a caller cannot set one).
-CALLEE_WITH_TIMEOUT = CALLEE_NO_TIMEOUT.replace(
-    "    runs-on: [self-hosted, linux, x64, local]\n",
-    "    runs-on: [self-hosted, linux, x64, local]\n    timeout-minutes: 60\n"
-)
+CALLEE_WITH_TIMEOUT = CALLEE_NO_TIMEOUT.replace("    runs-on: [self-hosted, linux, x64, local]\n", "    runs-on: [self-hosted, linux, x64, local]\n    timeout-minutes: 60\n")
 
 #: A plain (non-``workflow_call``) workflow with a self-hosted job.
-PLAIN_NO_TIMEOUT = (
-    "name: CI\n"
-    "on:\n"
-    "  push:\n"
-    "    branches: [master]\n"
-    "jobs:\n"
-    "  build:\n"
-    "    runs-on: [self-hosted, linux, x64, local]\n"
-    "    steps:\n"
-    "      - run: cargo test --workspace\n"
-)
+PLAIN_NO_TIMEOUT = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - run: cargo test --workspace\n"
 
 #: The real ``sysl/.github/workflows/validate.yml`` shape: the whole file on one line, so
 #: PyYAML stops at the second ``key: value`` and every parse-then-check auditor is blind to it.
-ONE_LINE_INVALID = (
-    "name: Validate on: push: branches: [master, dev] pull_request: branches: [master, dev] "
-    "jobs: validate: runs-on: ubuntu-latest steps: - uses: actions/checkout@v4\n"
-)
+ONE_LINE_INVALID = "name: Validate on: push: branches: [master, dev] pull_request: branches: [master, dev] " "jobs: validate: runs-on: ubuntu-latest steps: - uses: actions/checkout@v4\n"
 
 # ── ① 真实事故形态：caller 作业带非法键 ──────────────────────────────────────
 
@@ -198,13 +142,7 @@ class test_invalid_caller_key:
 
     def test_local_reusable_workflow_caller_is_covered(self, tmp_path, monkeypatch, capsys):
         # aoba 的真实形态：`uses: ./.github/workflows/checks.yml` 同样是 caller 作业。
-        _workflow(
-            tmp_path,
-            "jobs:\n"
-            "  checks:\n"
-            "    uses: ./.github/workflows/checks.yml\n"
-            "    timeout-minutes: 330\n"
-        )
+        _workflow(tmp_path, "jobs:\n" "  checks:\n" "    uses: ./.github/workflows/checks.yml\n" "    timeout-minutes: 330\n")
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 1
         assert _rules(_findings(capsys)["findings"]) == [RULE_INVALID_CALLER_KEY]
@@ -230,23 +168,11 @@ class test_legal_caller_is_clean:
 
     def test_legal_key_set_is_the_documented_nine(self):
         # 判据写死在测试里：改动合法集必须先改这里，防止悄悄放宽。
-        assert set(CALLER_LEGAL_KEYS) == {
-            "name", "uses", "with", "secrets", "strategy",
-            "needs", "if", "concurrency", "permissions"
-        }
+        assert set(CALLER_LEGAL_KEYS) == {"name", "uses", "with", "secrets", "strategy", "needs", "if", "concurrency", "permissions"}
 
     def test_steps_uses_does_not_make_a_job_a_caller(self, tmp_path, monkeypatch, capsys):
         # 关键防假阳：`- uses: actions/checkout` 是 step 不是 job 级 uses。
-        _workflow(
-            tmp_path,
-            "jobs:\n"
-            "  build:\n"
-            "    runs-on: [self-hosted, linux, x64, local]\n"
-            "    timeout-minutes: 300\n"
-            "    steps:\n"
-            "      - uses: actions/checkout@v7\n"
-            "      - uses: pnpm/action-setup@v6\n"
-        )
+        _workflow(tmp_path, "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    timeout-minutes: 300\n" "    steps:\n" "      - uses: actions/checkout@v7\n" "      - uses: pnpm/action-setup@v6\n")
         monkeypatch.chdir(tmp_path)
         assert main([]) == 0
 
@@ -327,30 +253,14 @@ class test_self_hosted_missing_timeout:
 
     def test_step_level_timeout_does_not_count_as_job_level(self, tmp_path, monkeypatch, capsys):
         # 判据是 **job 级** timeout-minutes；step 级的上界管不到 D 态进程。
-        _workflow(
-            tmp_path,
-            "jobs:\n"
-            "  build:\n"
-            "    runs-on: [self-hosted, linux]\n"
-            "    steps:\n"
-            "      - run: cargo test\n"
-            "        timeout-minutes: 30\n"
-        )
+        _workflow(tmp_path, "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux]\n" "    steps:\n" "      - run: cargo test\n" "        timeout-minutes: 30\n")
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 1
         assert _rules(_findings(capsys)["findings"]) == [RULE_SELF_HOSTED_MISSING_TIMEOUT]
 
     def test_matrix_expression_runs_on_is_not_guessed(self, tmp_path, monkeypatch, capsys):
         # `runs-on: ${{ matrix.os }}` 无法离线判定自托管，不猜（与 celestia-job-timeouts 同口径）。
-        _workflow(
-            tmp_path,
-            "jobs:\n"
-            "  clippy:\n"
-            "    runs-on: ${{ matrix.os }}\n"
-            "    strategy:\n"
-            "      matrix:\n"
-            "        os: [windows-latest, macos-latest]\n"
-        )
+        _workflow(tmp_path, "jobs:\n" "  clippy:\n" "    runs-on: ${{ matrix.os }}\n" "    strategy:\n" "      matrix:\n" "        os: [windows-latest, macos-latest]\n")
         monkeypatch.chdir(tmp_path)
         assert main([]) == 0
 
@@ -435,20 +345,19 @@ class test_yaml_duplicate_key:
     walks the composed tree, which keeps every key — duplicates included.
     """
 
-    TWO_IFS = (
-        "name: CI\n"                                    # 1
-        "on:\n"                                         # 2
-        "  push:\n"                                     # 3
-        "    branches: [master]\n"                      # 4
-        "jobs:\n"                                       # 5
-        "  docker:\n"                                   # 6
-        "    runs-on: [self-hosted, linux]\n"           # 7
-        "    timeout-minutes: 30\n"                     # 8
-        "    if: github.event_name == 'push'\n"         # 9
-        "    if: github.event_name == 'pull_request'\n"  # 10
-        "    steps:\n"                                  # 11
-        "      - run: echo hi\n"                        # 12
-    )
+    # 1
+    # 2
+    # 3
+    # 4
+    # 5
+    # 6
+    # 7
+    # 8
+    # 9
+    # 10
+    # 11
+    # 12
+    TWO_IFS = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  docker:\n" "    runs-on: [self-hosted, linux]\n" "    timeout-minutes: 30\n" "    if: github.event_name == 'push'\n" "    if: github.event_name == 'pull_request'\n" "    steps:\n" "      - run: echo hi\n"
 
     def test_duplicate_job_key_is_reported_at_the_second_line(self, tmp_path, monkeypatch, capsys):
         _workflow(tmp_path, self.TWO_IFS)
@@ -936,10 +845,7 @@ class test_allow_list:
         assert ",".join(RULE_NAMES) in flat
 
         # 数词黑名单：条数变化时散文最容易烂掉（four→five 就烂过一次），一律不许写。
-        for word in (
-            "oneofthefour", "oneofthefive", "oneofthesix",
-            "threerule", "fourrule", "fiverule", "sixrule"
-        ):
+        for word in ("oneofthefour", "oneofthefive", "oneofthesix", "threerule", "fourrule", "fiverule", "sixrule"):
             assert word not in flat
 
     @pytest.mark.parametrize("columns", ["40", "80", "100", "120", "200"])
@@ -1170,16 +1076,7 @@ class test_canonical_caller:
 
     def test_callee_host_is_never_reported(self, tmp_path, monkeypatch, capsys):
         # celestia-devtools 自己那个同名文件是 callee（作业带 runs-on/steps），不是 caller。
-        callee = (
-            "name: Commit Message Lint\n"
-            "on:\n"
-            "  workflow_call: {}\n"
-            "jobs:\n"
-            "  lint:\n"
-            "    runs-on: ubuntu-latest\n"
-            "    steps:\n"
-            "      - uses: actions/checkout@v7\n"
-        )
+        callee = "name: Commit Message Lint\n" "on:\n" "  workflow_call: {}\n" "jobs:\n" "  lint:\n" "    runs-on: ubuntu-latest\n" "    steps:\n" "      - uses: actions/checkout@v7\n"
         _workflow(tmp_path, callee, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 0
@@ -1188,9 +1085,7 @@ class test_canonical_caller:
     def test_same_content_under_another_name_is_reported(self, tmp_path, monkeypatch, capsys):
         # 字节比对按文件名定位 ⇒ 换个文件名就等于跳出比对，漂移从此无人看管。
         # 副本照样能跑（check 名只取决于作业 id），所以它能一直错下去：必须报「位置错」。
-        drifted = WORKFLOW_COMMIT_LINT.replace(
-            "reopened, ready_for_review, synchronize", "reopened, synchronize"
-        )
+        drifted = WORKFLOW_COMMIT_LINT.replace("reopened, ready_for_review, synchronize", "reopened, synchronize")
         _workflow(tmp_path, drifted, filename = "checks.yml")
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 1

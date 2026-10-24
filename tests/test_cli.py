@@ -12,51 +12,26 @@ class test_command_registry:
         # whenever a command is added or removed in core/cli.py — keeping it an
         # explicit literal (rather than set(COMMANDS)) guards against accidental
         # removals of a command that downstream justfiles depend on.
-        expected = {
-            "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
-            "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite",
-            "serve", "locate", "register-patches", "init",
-            "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
-            "daemon", "mock-start", "mock-status", "mock-stop",
-            "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
-            "link-npm-siblings", "protocol-bundle", "nav-lint", "p0-gate",
-            "rules-lint",
-            "fetch-just", "build-dispatch", "upstream-sync",
-            "worktree-create", "worktree-remove", "dev-watch",
-            "vite-build", "vite-serve", "vite-dev", "npm-release",
-            "release-notes",
-            # Added 2026-09-20: these four shipped console scripts but had no
-            # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
-            "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit",
-            "ci-cache",
-            # release-notes is already listed above (line 29); the
-            # reverse-direction test below pins the whole set either way.
-            # Added 2026-09-20: production-target lifecycle group (deploy doctor;
-            # the remaining subcommands land with their own slices and fail loudly).
-            "deploy",
-            # Added 2026-10-22: local branch hygiene sweeper.
-            "git-sweep",
-            # Added 2026-10-25: custom layout checkers for the org style rules.
-            # Each ships a RULES catalog (check/list-rules); Python also has a
-            # safe fix mode used by the migration follow-up.
-            "py-style",
-            "cpp-style",
-            "e2e-sandbox",
-            # Added 2026-09-25: family dependency-identity check. The audit found
-            # kirino at two incompatible majors, plana on seven revisions and
-            # hikari declared unbounded — nothing compared how the repositories
-            # consume the shared layers.
-            "family-versions",
-            "version-string",
-            # Added 2026-10-16: dev-mode gateway environment — the DEBUG_* +
-            # per-repo variable set for a run profile, with an injecting
-            # launcher (replaces the abandoned hosts-file hostmap approach).
-            "devenv",
-            # Added 2026-10-17: per-app vite/CDP port allocation — two
-            # tauri debug shells on one machine must never cross-wire.
-            "ports",
-            "brand-stamp"
-        }
+        # Added 2026-09-20: these four shipped console scripts but had no
+        # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
+        # release-notes is already listed above (line 29); the
+        # reverse-direction test below pins the whole set either way.
+        # Added 2026-09-20: production-target lifecycle group (deploy doctor;
+        # the remaining subcommands land with their own slices and fail loudly).
+        # Added 2026-10-22: local branch hygiene sweeper.
+        # Added 2026-10-25: custom layout checkers for the org style rules.
+        # Each ships a RULES catalog (check/list-rules); Python also has a
+        # safe fix mode used by the migration follow-up.
+        # Added 2026-09-25: family dependency-identity check. The audit found
+        # kirino at two incompatible majors, plana on seven revisions and
+        # hikari declared unbounded — nothing compared how the repositories
+        # consume the shared layers.
+        # Added 2026-10-16: dev-mode gateway environment — the DEBUG_* +
+        # per-repo variable set for a run profile, with an injecting
+        # launcher (replaces the abandoned hosts-file hostmap approach).
+        # Added 2026-10-17: per-app vite/CDP port allocation — two
+        # tauri debug shells on one machine must never cross-wire.
+        expected = {"cache-guard", "format-markdown", "prefetch", "check-cross-deps", "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite", "serve", "locate", "register-patches", "init", "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates", "daemon", "mock-start", "mock-status", "mock-stop", "registry", "toml-sort", "sign-agent", "gate", "verify-versions", "link-npm-siblings", "protocol-bundle", "nav-lint", "p0-gate", "rules-lint", "fetch-just", "build-dispatch", "upstream-sync", "worktree-create", "worktree-remove", "dev-watch", "vite-build", "vite-serve", "vite-dev", "npm-release", "release-notes", "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit", "ci-cache", "deploy", "git-sweep", "py-style", "cpp-style", "e2e-sandbox", "family-versions", "version-string", "devenv", "ports", "brand-stamp"}
         assert set(COMMANDS.keys()) == expected
 
     def test_every_console_script_has_a_dispatcher_command(self):

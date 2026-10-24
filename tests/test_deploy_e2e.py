@@ -39,12 +39,7 @@ def _fake_bin(tmp_path: Path, payload: bytes = b"chest-v1") -> Path:
 class test_rootless_chain:
     def test_wizard_to_upgrade_to_backup_full_chain(self, tmp_path, capsys):
         # ── 1. wizard (non-interactive, seeded like the CLI would) ──
-        seed = {
-            "host.face": "chest", "host.level": "selfhosted",
-            "host.listen": "3001", "front.domain": "acme.example",
-            "admin.email": "ops@acme.example",
-            "admin.password_to_file": "n", "artifact.channel": "stable"
-        }
+        seed = {"host.face": "chest", "host.level": "selfhosted", "host.listen": "3001", "front.domain": "acme.example", "admin.email": "ops@acme.example", "admin.password_to_file": "n", "artifact.channel": "stable"}
         answers, prov = wizard.collect(seed, interactive = False, input_fn = _boom)
         assert set(prov.values()) == {"(seeded)"}
         prof = wizard.build_profile(answers)
@@ -53,8 +48,7 @@ class test_rootless_chain:
         prof.write(prof.host.profile_path())
 
         # ── 2. bootstrap stages: real fs for secrets, injected executor ──
-        ctx = bootstrap.stage_context(profile = prof, executor = _ok,
-                                     assume_root = True)
+        ctx = bootstrap.stage_context(profile = prof, executor = _ok, assume_root = True)
         ctx.getpwnam = lambda u: _fake_pw(os.getuid(), os.getgid())
         code, results = bootstrap.run_stages(ctx)
         assert code == 2  # pending slices, loudly
@@ -103,8 +97,7 @@ class test_rootless_chain:
         assert lifecycle.bin_path(prof).read_bytes() == b"chest-v1"
 
         # ── 6. backup → destroy → restore round trip ──
-        (prof.host.deploy_root() / "data" / "uploads").mkdir(
-            parents = True, exist_ok = True)
+        (prof.host.deploy_root() / "data" / "uploads").mkdir(parents = True, exist_ok = True)
         (prof.host.deploy_root() / "data" / "uploads" / "x").write_bytes(b"x")
         bkp = backup_mod.backup(prof, tmp_path / "backups", executor = _ok)
         (prof.host.deploy_root() / "data" / "uploads" / "x").unlink()
@@ -128,8 +121,7 @@ class test_rootless_chain:
         names = [s["name"] for s in data["stages"]]
         statuses = {s["name"]: s["status"] for s in data["stages"]}
         # No stage may be PENDING — the CLI is fully wired
-        assert all(st != "pending-slice" for st in statuses.values()), \
-            f"PENDING stages found: {[n for n, st in statuses.items() if st == 'pending-slice']}"
+        assert all(st != "pending-slice" for st in statuses.values()), f"PENDING stages found: {[n for n, st in statuses.items() if st == 'pending-slice']}"
         assert names[-1] == 'summary'  # summary always runs
 
 class _fake_pw:

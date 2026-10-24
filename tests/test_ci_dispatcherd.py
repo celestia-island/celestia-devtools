@@ -235,12 +235,10 @@ def test_spill_push_uses_force_with_lease(monkeypatch, tmp_path):
     assert len(push_calls) == 1, f"expected exactly one push, got {push_calls}"
     argv = push_calls[0]
     leases = [a for a in argv if a.startswith("--force-with-lease=")]
-    assert leases == [f"--force-with-lease={spill_ref}:{stale}"], \
-        f"explicit lease pinned to the stale value required, got {leases}"
+    assert leases == [f"--force-with-lease={spill_ref}:{stale}"], f"explicit lease pinned to the stale value required, got {leases}"
     assert "--force" not in argv, "bare --force must never appear"
     refspecs = [a for a in argv if (":" in a) and a.startswith("c" * 40)]
-    assert refspecs == [f"{'c' * 40}:{spill_ref}"], \
-        f"refspec destination must stay pinned to the spill ref, got {refspecs}"
+    assert refspecs == [f"{'c' * 40}:{spill_ref}"], f"refspec destination must stay pinned to the spill ref, got {refspecs}"
 
 def test_spill_push_lease_empty_expect_for_new_ref(monkeypatch, tmp_path):
     """When the spill ref does not exist remotely, the lease expects emptiness."""
@@ -359,8 +357,7 @@ def test_dev_quota_repos_route_to_the_lane_host(monkeypatch):
     paths = []
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data = None: (paths.append(path), {"sn": "sn-build"})[1])
     # every watched repo is on the lane now, so the fallback is reached by making the lane fail
-    monkeypatch.setattr(dsp, "publish_lane_ref",
-                        lambda repo, sha: (_ for _ in ()).throw(RuntimeError("host missing")))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: (_ for _ in ()).throw(RuntimeError("host missing")))
     dsp.spill({"repo": "entelecheia", "run_id": 12, "sha": "c" * 40}, state)
     assert state["12"]["mode"] == "build"
     assert paths and paths[0].endswith("/celestia-island/ci-farm/-/build/start")
@@ -874,12 +871,7 @@ def test_real_spill_returns_false_when_it_defers(monkeypatch):
     monkeypatch.setattr(dsp, "publish_lane_ref", lambda repo, sha: pytest.fail("a deferral must not touch the lane host"))
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data = None: pytest.fail("no build-lane dispatch"))
     # the whole pool must be busy: all three hosts hold tracked workspaces
-    state = {"9": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-running", "repo": "hikari",
-                   "sha": "a" * 40, "url": "", "since": 0.0},
-             "10": {"mode": "ws", "host": "ci-infra-hikari-2", "sn": "sn-running2", "repo": "hikari",
-                    "sha": "c" * 40, "url": "", "since": 0.0},
-             "11": {"mode": "ws", "host": "ci-infra-hikari-3", "sn": "sn-running3", "repo": "hikari",
-                    "sha": "d" * 40, "url": "", "since": 0.0}}
+    state = {"9": {"mode": "ws", "host": "ci-infra-hikari", "sn": "sn-running", "repo": "hikari", "sha": "a" * 40, "url": "", "since": 0.0}, "10": {"mode": "ws", "host": "ci-infra-hikari-2", "sn": "sn-running2", "repo": "hikari", "sha": "c" * 40, "url": "", "since": 0.0}, "11": {"mode": "ws", "host": "ci-infra-hikari-3", "sn": "sn-running3", "repo": "hikari", "sha": "d" * 40, "url": "", "since": 0.0}}
     assert dsp.spill({"repo": "hikari", "run_id": 61, "sha": "b" * 40}, state) is False
 
 def test_resolve_falls_back_to_the_target_repo_for_legacy_records(monkeypatch):
@@ -1162,8 +1154,7 @@ def test_spill_records_carry_the_task(monkeypatch):
     dsp.spill({"repo": "celestia-devtools", "run_id": 95, "sha": "b" * 40}, state)
     assert state["95"]["task"] == "python-check"
     # build-lane records carry it too (the fallback inherits the same task)
-    monkeypatch.setattr(dsp, "publish_lane_ref",
-                        lambda r, sha, host = None: (_ for _ in ()).throw(RuntimeError("no lane")))
+    monkeypatch.setattr(dsp, "publish_lane_ref", lambda r, sha, host = None: (_ for _ in ()).throw(RuntimeError("no lane")))
     monkeypatch.setattr(dsp, "cnb_api", lambda path, data = None: {"sn": "sn-b"})
     dsp.spill({"repo": "evernight-appliance", "run_id": 96, "sha": "c" * 40}, state)
     assert state["96"]["task"] == "webui-check"
@@ -1177,11 +1168,8 @@ def test_resolve_posts_the_status_under_the_records_task(monkeypatch):
     monkeypatch.setattr(dsp, "ws_stop", lambda sn: None)
     posted = []
     monkeypatch.setattr(dsp, "post_status", lambda repo, sha, state_, url, task = "cargo-check": posted.append((repo, task, state_)))
-    state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "s1",
-                      "repo": "celestia-devtools", "sha": "a" * 40, "url": "u",
-                      "since": 999_999.0, "task": "python-check"},
-             "4243": {"mode": "ws", "host": "ci-infra-hikari", "sn": "s2", "repo": "hikari",
-                      "sha": "b" * 40, "url": "u", "since": 999_999.0}}  # legacy: no task
+    # legacy: no task
+    state = {"4242": {"mode": "ws", "host": "ci-infra-hikari", "sn": "s1", "repo": "celestia-devtools", "sha": "a" * 40, "url": "u", "since": 999_999.0, "task": "python-check"}, "4243": {"mode": "ws", "host": "ci-infra-hikari", "sn": "s2", "repo": "hikari", "sha": "b" * 40, "url": "u", "since": 999_999.0}}
     dsp.resolve(state)
     assert posted == [("celestia-devtools", "python-check", "failure"), ("hikari", "cargo-check", "failure")]
 

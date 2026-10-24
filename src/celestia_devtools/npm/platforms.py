@@ -53,57 +53,12 @@ class platform:
 #: - **darwin-arm64** — Apple Silicon Macs (M1–M4).
 #: - **darwin-x64** — Intel Macs (Rosetta cannot run arm64 binaries on x64).
 #: - **win32-x64** — Windows on Intel/AMD.
-PLATFORMS: tuple[platform, ...] = (
-    platform(
-        rust_target = "x86_64-unknown-linux-gnu",
-        npm_suffix = "-linux-x64",
-        node_os = "linux",
-        node_cpu = "x64"
-    ),
-    platform(
-        rust_target = "aarch64-unknown-linux-gnu",
-        npm_suffix = "-linux-arm64",
-        node_os = "linux",
-        node_cpu = "arm64"
-    ),
-    platform(
-        rust_target = "x86_64-unknown-linux-musl",
-        npm_suffix = "-linux-x64-musl",
-        node_os = "linux",
-        node_cpu = "x64",
-        # Alpine/musl is still linux-x64 from Node's perspective; the suffix
-        # distinguishes the dynamically-vs-statically linked variants so a user
-        # on musl can opt in explicitly, while glibc users get the default.
-        musl = True
-    ),
-    platform(
-        rust_target = "aarch64-unknown-linux-musl",
-        npm_suffix = "-linux-arm64-musl",
-        node_os = "linux",
-        node_cpu = "arm64",
-        # Static counterpart for ARM64 servers (Graviton, Ampere) whose distro
-        # glibc is older than the ubuntu-latest build host.
-        musl = True
-    ),
-    platform(
-        rust_target = "aarch64-apple-darwin",
-        npm_suffix = "-darwin-arm64",
-        node_os = "darwin",
-        node_cpu = "arm64"
-    ),
-    platform(
-        rust_target = "x86_64-apple-darwin",
-        npm_suffix = "-darwin-x64",
-        node_os = "darwin",
-        node_cpu = "x64"
-    ),
-    platform(
-        rust_target = "x86_64-pc-windows-msvc",
-        npm_suffix = "-win32-x64",
-        node_os = "win32",
-        node_cpu = "x64"
-    )
-)
+# Alpine/musl is still linux-x64 from Node's perspective; the suffix
+# distinguishes the dynamically-vs-statically linked variants so a user
+# on musl can opt in explicitly, while glibc users get the default.
+# Static counterpart for ARM64 servers (Graviton, Ampere) whose distro
+# glibc is older than the ubuntu-latest build host.
+PLATFORMS: tuple[platform, ...] = (platform(rust_target = "x86_64-unknown-linux-gnu", npm_suffix = "-linux-x64", node_os = "linux", node_cpu = "x64"), platform(rust_target = "aarch64-unknown-linux-gnu", npm_suffix = "-linux-arm64", node_os = "linux", node_cpu = "arm64"), platform(rust_target = "x86_64-unknown-linux-musl", npm_suffix = "-linux-x64-musl", node_os = "linux", node_cpu = "x64", musl = True), platform(rust_target = "aarch64-unknown-linux-musl", npm_suffix = "-linux-arm64-musl", node_os = "linux", node_cpu = "arm64", musl = True), platform(rust_target = "aarch64-apple-darwin", npm_suffix = "-darwin-arm64", node_os = "darwin", node_cpu = "arm64"), platform(rust_target = "x86_64-apple-darwin", npm_suffix = "-darwin-x64", node_os = "darwin", node_cpu = "x64"), platform(rust_target = "x86_64-pc-windows-msvc", npm_suffix = "-win32-x64", node_os = "win32", node_cpu = "x64"))
 
 def find_platform(rust_target: str) -> platform | None:
     """Look up a :class:`Platform` by its Rust target triple, or ``None``."""

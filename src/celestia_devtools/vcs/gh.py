@@ -24,12 +24,11 @@ import sys
 _REAL_GH: str = ""
 _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
 
-_GUESSES = [
-    "/usr/bin/gh",          # apt default
-    "/usr/local/bin/gh",     # manual install / brew
-    "/opt/homebrew/bin/gh",  # macOS brew
-    "/home/linuxbrew/.linuxbrew/bin/gh"  # brew on Linux
-]
+# apt default
+# manual install / brew
+# macOS brew
+# brew on Linux
+_GUESSES = ["/usr/bin/gh", "/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"]
 
 def _find_gh() -> str:
     if os.environ.get(_ENV_SKIP):

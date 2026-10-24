@@ -40,8 +40,7 @@ def repo_env(tmp_path: Path) -> Path:
     subprocess.run(["git", "-C", str(repo), "add", "."], check = True, capture_output = True)
     # --no-verify: 种子提交绕开全局 commit-msg 钩子（钩子只对被测路径有意义；
     # apply() 的真实提交**不**绕开——那是对 G6 的集成验证）
-    subprocess.run(["git", "-C", str(repo), "commit", "--no-verify", "-m", "✨ Seed the base."],
-                   check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "--no-verify", "-m", "✨ Seed the base."], check = True, capture_output = True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(bare)], check = True, capture_output = True)
     subprocess.run(["git", "-C", str(repo), "push", "-u", "origin", "master"], check = True, capture_output = True)
     return repo_root
@@ -98,11 +97,7 @@ def test_gates_reject_branch_reuse(repo_env, tmp_path, monkeypatch, capsys):
 
 # ── G2/G3 路径与禁区 ──────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("rel", [
-    "AGENTS.md", "PLAN.md", "CLAUDE.md",
-    ".github/workflows/ci.yml", "_ledger/ports-and-domains.md",
-    "deploy.env", ".git/config", "secrets/gh_credentials.json"
-])
+@pytest.mark.parametrize("rel", ["AGENTS.md", "PLAN.md", "CLAUDE.md", ".github/workflows/ci.yml", "_ledger/ports-and-domains.md", "deploy.env", ".git/config", "secrets/gh_credentials.json"])
 def test_gates_reject_forbidden_paths(repo_env, tmp_path, monkeypatch, capsys, rel):
     drop = make_drop(tmp_path, "d2", {rel: "x\n"}, listed = [rel])
     rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), monkeypatch)
@@ -163,8 +158,8 @@ def test_apply_dry_run_touches_nothing(repo_env, tmp_path, monkeypatch, capsys):
     rc = run_main(argv_for(repo_env, tmp_path, "apply", str(drop), "--dry-run"), monkeypatch)
     assert rc == 0, capsys.readouterr().err
     assert remote_refs(repo_env) == before  # 远端零变化
-    assert not (tmp_path / "wt" / REPO_NAME).exists() or \
-        not any((tmp_path / "wt" / REPO_NAME).iterdir())  # worktree 已清空
+    # worktree 已清空
+    assert not (tmp_path / "wt" / REPO_NAME).exists() or not any((tmp_path / "wt" / REPO_NAME).iterdir())
     records = audit_records(tmp_path)
     assert records and (records[-1]["outcome"] == "dry-run")
     assert len(records[-1]["digest"]) == 64
@@ -421,11 +416,10 @@ def test_parent_symlink_violation_survives_earlier_rejection(repo_env, tmp_path,
     # （旧实现：文件先命中字节闸 continue，父目录违规被静默吞掉。）
     assert ("父目录是符号链接" in out) and ("evil/big.rs" in out)
 
-@pytest.mark.parametrize("desc", [
-    "🛡️ Check the parent symlink gate ordering.",   # U+1F6E1 + VS16
-    "✨ Add the emoji variation selector support.",  # U+2728 无 VS16
-    "🏳️‍🌈 Support the flag emoji in titles."        # ZWJ 序列
-])
+# U+1F6E1 + VS16
+# U+2728 无 VS16
+# ZWJ 序列
+@pytest.mark.parametrize("desc", ["🛡️ Check the parent symlink gate ordering.", "✨ Add the emoji variation selector support.", "🏳️‍🌈 Support the flag emoji in titles."])
 def test_description_accepts_emoji_variation_sequences(repo_env, tmp_path, monkeypatch, desc):
     """G6 VS16/ZWJ 修复：生态常见 emoji 写法不得误拒（首跑 selfanalysis-01 实证）。"""
     drop = make_drop(tmp_path, "vs16", {"README.md": "x\n"}, desc = desc)
@@ -518,8 +512,7 @@ class test_stage:
         assert "src/main.rs" not in manifest["files"], "rename old side must not ride the drop"
         assert "docs/old.md" not in manifest["files"], "deleted file must not ride the drop"
         # 整条流水：gates 只读预检 + apply --dry-run（建 worktree、过 G1/G7）。
-        gates_rc = run_main(
-            argv_for(repo_env, tmp_path, "gates", str(drop)), None)
+        gates_rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), None)
         assert gates_rc == 0, "staged drop must clear all gates"
         apply_rc = run_main(argv_for(repo_env, tmp_path, "apply", str(drop), "--dry-run"), None)
         assert apply_rc == 0, "staged drop must survive apply --dry-run"
@@ -652,10 +645,7 @@ def test_sweep_apply_opens_pr_and_recycles_worktree(repo_env, tmp_path, monkeypa
     assert calls["title"] == "✨ Improve the main entry."
     assert any(ref.startswith("refs/heads/engine/sweep-")for ref in remote_refs(repo_env))
     # 回收：porcelain 干净、内容回到 origin/master 基线
-    status = subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
-        check = True, capture_output = True, text = True
-    )
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"], check = True, capture_output = True, text = True)
     assert status.stdout.strip() == ""
     assert (repo / "src" / "main.rs").read_text(encoding = "utf-8") == "fn main() {}\n"
     ahead = subprocess.run(["git", "-C", str(repo), "log", "--oneline", "origin/master..HEAD"], check = True, capture_output = True, text = True)

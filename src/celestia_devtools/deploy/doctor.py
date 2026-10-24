@@ -24,24 +24,8 @@ def _collect() -> dict:
     ensure_results = deps.ensure(deps.DEFAULT_REQUIRED, install = False)
     probes = probe.all_probes()
     hard_missing = [p.name for p in probes if not p.ok and (p.name not in probe.SOFT)]
-    return {
-        "proxy": {
-            "direct": cfg.direct,
-            "display": cfg.display,  # host:port only, credentials redacted
-            "source": cfg.source,
-            "no_proxy": list(cfg.no_proxy)
-        },
-        "deps": [
-            {"name": r.name, "ok": r.ok, "action": r.action, "detail": r.detail}
-            for r in ensure_results
-        ],
-        "probes": [
-            {"name": p.name, "ok": p.ok, "version": p.version, "hint": p.hint,
-             "soft": p.name in probe.SOFT}
-            for p in probes
-        ],
-        "hard_missing": hard_missing
-    }
+    # host:port only, credentials redacted
+    return {"proxy": {"direct": cfg.direct, "display": cfg.display, "source": cfg.source, "no_proxy": list(cfg.no_proxy)}, "deps": [{"name": r.name, "ok": r.ok, "action": r.action, "detail": r.detail} for r in ensure_results], "probes": [{"name": p.name, "ok": p.ok, "version": p.version, "hint": p.hint, "soft": p.name in probe.SOFT} for p in probes], "hard_missing": hard_missing}
 
 def main() -> int:
     ap = argparse.ArgumentParser(prog = "celestia-devtools deploy doctor", description = "Report proxy, Python deps and production tool readiness (read-only).")

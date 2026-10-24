@@ -54,11 +54,7 @@ def test_kirino_from_git_master_is_not_a_finding(tmp_path):
     # §3.3 prescribes git references on master for cross-repo Rust dependencies
     # (entelecheia consumes kirino that way on purpose); reporting it made
     # `--strict` fail a compliant repository.
-    _cargo(
-        tmp_path,
-        '[dependencies]\nkirino = { git = "https://github.com/celestia-island/kirino.git",'
-        ' branch = "master" }\n'
-    )
+    _cargo(tmp_path, '[dependencies]\nkirino = { git = "https://github.com/celestia-island/kirino.git",' ' branch = "master" }\n')
     assert check(tmp_path) == []
 
 def test_a_range_that_admits_the_family_version_passes(tmp_path):
@@ -80,10 +76,7 @@ def test_workspace_and_dev_and_target_sections_are_all_checked(tmp_path):
 # carrying `publish = false` cannot resolve from crates.io and stay on git
 # master.  Git-master consumption of a published member is now a migration
 # warning rather than the only legal shape.
-_PLANA_OK = (
-    '[dependencies]\nplana-celestia-types = { git = "https://github.com/celestia-island/plana.git",'
-    ' branch = "master" }\n'
-)
+_PLANA_OK = '[dependencies]\nplana-celestia-types = { git = "https://github.com/celestia-island/plana.git",' ' branch = "master" }\n'
 
 def test_plana_git_master_still_works_for_published_members_as_a_warning(tmp_path):
     _cargo(tmp_path, _PLANA_OK)
@@ -125,11 +118,7 @@ def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_pat
 def test_plana_alias_of_a_published_member_is_recognised(tmp_path):
     # Manifests alias with underscores (`plana_celestia_types = { package = ... }`);
     # the publication check must normalise before comparing.
-    _cargo(
-        tmp_path,
-        '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",'
-        ' version = "^0.1" }\n'
-    )
+    _cargo(tmp_path, '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",' ' version = "^0.1" }\n')
     assert check(tmp_path) == []
 
 def test_plana_tauri_counts_as_published(tmp_path):
@@ -273,13 +262,7 @@ def test_cli_says_ok_on_a_clean_tree(tmp_path, capsys):
 def test_an_alias_does_not_hide_a_direct_declaration(tmp_path):
     # Returning the first match hid the `file:` violation behind an alias of the
     # same package in the same table.
-    _write(
-        tmp_path / "package.json",
-        json.dumps({"dependencies": {
-            "hk": "npm:@celestia-island/hikari@^0.55.71",
-            "@celestia-island/hikari": "file:../hikari"
-        }})
-    )
+    _write(tmp_path / "package.json", json.dumps({"dependencies": {"hk": "npm:@celestia-island/hikari@^0.55.71", "@celestia-island/hikari": "file:../hikari"}}))
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
     assert "retired" in findings[0].message
@@ -514,13 +497,7 @@ def test_the_publisher_of_a_lagging_binding_is_told(tmp_path):
 def test_identical_findings_are_deduplicated(tmp_path):
     # An alias next to a direct declaration of the same range used to emit the
     # same warning twice.
-    _write(
-        tmp_path / "package.json",
-        json.dumps({"dependencies": {
-            "hk": "npm:@celestia-island/hikari@^*",
-            "@celestia-island/hikari": "^*"
-        }})
-    )
+    _write(tmp_path / "package.json", json.dumps({"dependencies": {"hk": "npm:@celestia-island/hikari@^*", "@celestia-island/hikari": "^*"}}))
     subjects = [f.subject for f in check(tmp_path)]
     assert len(subjects) == len(set(subjects)), subjects
 

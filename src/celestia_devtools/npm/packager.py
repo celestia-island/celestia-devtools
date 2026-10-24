@@ -72,18 +72,9 @@ def generate_subpackage(*, scope: str, name: str, version: str, platform: platfo
     full_name = f"@{scope}/{name}{platform.npm_suffix}"
     leaf = f"{binary}.exe" if platform.node_os == "win32" else binary
 
-    pkg: dict[str, Any] = {
-        "name": full_name,
-        "version": version,
-        "description": description or f"{name} prebuilt binary — {platform.rust_target}",
-        "license": license,
-        "os": [platform.node_os],
-        "cpu": [platform.node_cpu],
-        # The binary lives at the package root so the selector can find it by
-        # a stable path: <subpackage dir>/<leaf>.
-        "files": [leaf],
-        "engines": {"node": _MIN_NODE}
-    }
+    # The binary lives at the package root so the selector can find it by
+    # a stable path: <subpackage dir>/<leaf>.
+    pkg: dict[str, Any] = {"name": full_name, "version": version, "description": description or f"{name} prebuilt binary — {platform.rust_target}", "license": license, "os": [platform.node_os], "cpu": [platform.node_cpu], "files": [leaf], "engines": {"node": _MIN_NODE}}
 
     if repository:
         pkg["repository"] = repository
@@ -110,11 +101,7 @@ def generate_postinstall_shim(*, scope: str, name: str, binary: str, platforms) 
     scope = scope.lstrip("@")
     # Build a JSON-ish lookup the JS can consume. We embed it as a JS array of
     # objects to avoid requiring JSON.parse at module scope on every require.
-    entries = ",\n".join(
-        "    { suffix: %r, os: %r, cpu: %r }"
-        % (p.npm_suffix, p.node_os, p.node_cpu)
-        for p in platforms
-    )
+    entries = ",\n".join("    { suffix: %r, os: %r, cpu: %r }" % (p.npm_suffix, p.node_os, p.node_cpu) for p in platforms)
     return _SHIM_TEMPLATE.format(scope = scope, name = name, binary = binary, entries = entries, shim = SHIM_FILENAME)
 
 #: Template for the selector/launcher script. Kept dependency-free and ES5-ish.

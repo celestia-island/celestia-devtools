@@ -236,16 +236,12 @@ def test_referee_probe_failure_backs_off(farm, tmp_path, monkeypatch):
 # ⇒ 裁判每分钟判该节点 stale，又被 24h 预算挡住（3/3）⇒ 一直打印 needs human。
 # 而节点本身是健康的：文件里那个 `http://` 是模板加的，环境变量里**也已经有一个**。
 # 自愈机制写出了故障本身 —— 四台里只有被 revert 过的那台中招。
-@pytest.mark.parametrize(
-    "configured",
-    [
-        "http://192.0.2.14:9120",   # 已部署单元的真实取值
-        "192.0.2.14:9120",          # 旧形态（只是地址）
-        "https://192.0.2.14:9120",  # 换 scheme 也不该叠加
-        "http://192.0.2.14:9120/",  # 尾斜杠不该产生 //
-        "  192.0.2.14:9120  "      # 容错两侧空白
-    ]
-)
+# 已部署单元的真实取值
+# 旧形态（只是地址）
+# 换 scheme 也不该叠加
+# 尾斜杠不该产生 //
+# 容错两侧空白
+@pytest.mark.parametrize("configured", ["http://192.0.2.14:9120", "192.0.2.14:9120", "https://192.0.2.14:9120", "http://192.0.2.14:9120/", "  192.0.2.14:9120  "])
 def test_receiver_url_normalises_every_configured_spelling(monkeypatch, configured):
     monkeypatch.setattr(ref, "NODE1_ADDR", configured)
     assert ref.receiver_url() == "http://192.0.2.14:9120"

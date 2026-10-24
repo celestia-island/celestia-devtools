@@ -81,21 +81,9 @@ def test_caching_a_narrow_subdirectory_is_not_flagged():
 
 # ── rule: self-hosted-cargo-home-cache ───────────────────────────────────────
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "~/.cargo",
-        "$HOME/.cargo",
-        "${HOME}/.cargo",
-        "~/.cargo/registry",
-        "~/.cargo/git",
-        # The shape a static reader gets wrong: CARGO_HOME is injected at runtime by the
-        # preceding dtolnay/rust-toolchain step, so this resolves to the real cargo home.
-        "${{ env.CARGO_HOME }}/registry",
-        "${{ env.CARGO_HOME }}/git",
-        "${{ env.CARGO_HOME }}"
-    ]
-)
+# The shape a static reader gets wrong: CARGO_HOME is injected at runtime by the
+# preceding dtolnay/rust-toolchain step, so this resolves to the real cargo home.
+@pytest.mark.parametrize("path", ["~/.cargo", "$HOME/.cargo", "${HOME}/.cargo", "~/.cargo/registry", "~/.cargo/git", "${{ env.CARGO_HOME }}/registry", "${{ env.CARGO_HOME }}/git", "${{ env.CARGO_HOME }}"])
 def test_flags_cargo_home_trees_on_self_hosted(path):
     assert "self-hosted-cargo-home-cache" in errors(cache_step(path))
 

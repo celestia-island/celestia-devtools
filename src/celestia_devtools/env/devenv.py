@@ -69,17 +69,13 @@ SERVICES = ("chest", "scepter", "arona", "evernight")
 
 DEFAULT_PROFILE = "native"
 
-PROFILE_PORTS: dict[str, dict[str, object]] = {
-    # just dev webui --native / just server / cargo run -p _cli -- serve /
-    # cargo run --bin evernight-server -- serve
-    "native": {"chest": 3000, "scepter": 8424, "arona": 8420, "evernight": 8443},
-    # malkuth daemon pod ports (env/daemon.py SERVICE_DEFS)
-    "daemon": {"chest": 8400, "scepter": 8410, "arona": 8405, "evernight": 8443},
-    # mock-stack ports. arona's mock listens on ARONA_MOCK_PORT default
-    # 8429 (arona/scripts/mock/server.py), not the 8420 that
-    # core/mock.py MOCK_PORTS still records.
-    "mock": {"chest": 8428, "scepter": 8424, "arona": 8429, "evernight": 8443}
-}
+# just dev webui --native / just server / cargo run -p _cli -- serve /
+# cargo run --bin evernight-server -- serve
+# malkuth daemon pod ports (env/daemon.py SERVICE_DEFS)
+# mock-stack ports. arona's mock listens on ARONA_MOCK_PORT default
+# 8429 (arona/scripts/mock/server.py), not the 8420 that
+# core/mock.py MOCK_PORTS still records.
+PROFILE_PORTS: dict[str, dict[str, object]] = {"native": {"chest": 3000, "scepter": 8424, "arona": 8420, "evernight": 8443}, "daemon": {"chest": 8400, "scepter": 8410, "arona": 8405, "evernight": 8443}, "mock": {"chest": 8428, "scepter": 8424, "arona": 8429, "evernight": 8443}}
 
 # ── Config discovery ─────────────────────────────────────────────────────────
 
@@ -175,23 +171,12 @@ def build_env(ports: dict[str, tuple[str, int]]) -> dict[str, str]:
         host, port = ports[svc]
         return f"{scheme}://{host}:{port}{path}"
 
-    return {
-        # ── DEBUG_* contract — debug builds only, never read in release ──
-        "DEBUG_CHEST_URL": u("chest", "http"),
-        "DEBUG_SCEPTER_URL": u("scepter", "http"),
-        "DEBUG_SCEPTER_WS_URL": u("scepter", "ws"),
-        "DEBUG_ARONA_URL": u("arona", "http"),
-        "DEBUG_EVERNIGHT_URL": u("evernight", "ws"),
-        # ── existing per-repo variables, same addresses ──
-        # shittim-chest desktop (packages/app/tauri/src/main.rs)
-        "SHITTIM_CHEST_URL": u("chest", "http"),
-        # shittim-chest core outbound (packages/core/src/config.rs)
-        "ENTELECHEIA_SCEPTER_URL": u("scepter", "http"),
-        "ENTELECHEIA_SCEPTER_WS_URL": u("scepter", "ws"),
-        # arona outbound (.env.example: memory gateway = scepter WS)
-        "ARONA_MEMORY_URL": u("scepter", "ws", "/ws"),
-        "ARONA_EVERNIGHT_URL": u("evernight", "ws")
-    }
+    # ── DEBUG_* contract — debug builds only, never read in release ──
+    # ── existing per-repo variables, same addresses ──
+    # shittim-chest desktop (packages/app/tauri/src/main.rs)
+    # shittim-chest core outbound (packages/core/src/config.rs)
+    # arona outbound (.env.example: memory gateway = scepter WS)
+    return {"DEBUG_CHEST_URL": u("chest", "http"), "DEBUG_SCEPTER_URL": u("scepter", "http"), "DEBUG_SCEPTER_WS_URL": u("scepter", "ws"), "DEBUG_ARONA_URL": u("arona", "http"), "DEBUG_EVERNIGHT_URL": u("evernight", "ws"), "SHITTIM_CHEST_URL": u("chest", "http"), "ENTELECHEIA_SCEPTER_URL": u("scepter", "http"), "ENTELECHEIA_SCEPTER_WS_URL": u("scepter", "ws"), "ARONA_MEMORY_URL": u("scepter", "ws", "/ws"), "ARONA_EVERNIGHT_URL": u("evernight", "ws")}
 
 def merge_env(base: dict[str, str], extra: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Caller-set variables always win — injection fills gaps, never clobbers."""
@@ -253,8 +238,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     env = merge_env(build_env(ports), extra)
     # report only what WE contributed (absent from the caller's environment)
-    contributed = sorted(k for k in {**build_env(ports), **extra}
-                         if os.environ.get(k) is None)
+    contributed = sorted(k for k in {**build_env(ports), **extra} if os.environ.get(k) is None)
     print(f"[devenv] profile {profile}" + (f" (config: {cfg})" if cfg else "") + f" — injecting {len(contributed)} var(s): {' '.join(contributed)}")
     argv = list(args.command)
     # bare names like `python` need PATHEXT resolution on Windows —

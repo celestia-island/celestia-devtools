@@ -338,10 +338,7 @@ def has_runner_ancestor(pid):
 # _diag and its own unit).
 # ---------------------------------------------------------------------------
 
-CANCEL_RE = re.compile(
-    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z[^\]]*\] "
-    r"Job cancellation request ([0-9a-f-]+) received"
-)
+CANCEL_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})Z[^\]]*\] " r"Job cancellation request ([0-9a-f-]+) received")
 
 def worker_home(pid, homes):
     """Runner home a Worker belongs to, from its argv or failing that its cwd."""
@@ -601,20 +598,9 @@ def _case(name, table, homes, expect, grace = 900):
     return (got == sorted(expect), f"{name}: victims={got} expected={sorted(expect)}")
 
 def selftest():
-    base = {
-        # live job in slot 1: Runner.Worker -> bash -> cargo(10) -> rustc(11)
-        100: {"comm": "Runner.Listener", "cmdline": f"{H1}/bin/Runner.Listener", "ppid": 1},
-        101: {"comm": "Runner.Worker", "cmdline": f"{H1}/bin/Runner.Worker spawnclient 1 2",
-              "ppid": 100, "start": NOW - 3600},
-        10: {"comm": "cargo", "cmdline": "cargo test", "ppid": 102,
-             "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 3000},
-        102: {"comm": "bash", "cmdline": f"{H1}/_work/_temp/abc.sh", "ppid": 101,
-              "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 3100},
-        11: {"comm": "rustc", "cmdline": "rustc --crate-name x", "ppid": 10,
-             "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 2900},
-        # idle slot 2 with no worker at all
-        200: {"comm": "Runner.Listener", "cmdline": f"{H2}/bin/Runner.Listener", "ppid": 1}
-    }
+    # live job in slot 1: Runner.Worker -> bash -> cargo(10) -> rustc(11)
+    # idle slot 2 with no worker at all
+    base = {100: {"comm": "Runner.Listener", "cmdline": f"{H1}/bin/Runner.Listener", "ppid": 1}, 101: {"comm": "Runner.Worker", "cmdline": f"{H1}/bin/Runner.Worker spawnclient 1 2", "ppid": 100, "start": NOW - 3600}, 10: {"comm": "cargo", "cmdline": "cargo test", "ppid": 102, "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 3000}, 102: {"comm": "bash", "cmdline": f"{H1}/_work/_temp/abc.sh", "ppid": 101, "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 3100}, 11: {"comm": "rustc", "cmdline": "rustc --crate-name x", "ppid": 10, "cwd": f"{H1}/_work/entelecheia/entelecheia", "start": NOW - 2900}, 200: {"comm": "Runner.Listener", "cmdline": f"{H2}/bin/Runner.Listener", "ppid": 1}}
     cases = []
 
     t = copy.deepcopy(base)
@@ -651,8 +637,8 @@ def selftest():
     cases.append(_case("idle slot1: old process is reaped", t, [H1, H2], [25]))
 
     t = copy.deepcopy(base)
-    t[29] = {"comm": "rustc", "cmdline": "rustc", "ppid": 999, "cwd": f"{H1}/_work/plana/plana",
-             "start": NOW - (20 * 3600)}  # 999 is absent from the table -> unreadable chain
+    # 999 is absent from the table -> unreadable chain
+    t[29] = {"comm": "rustc", "cmdline": "rustc", "ppid": 999, "cwd": f"{H1}/_work/plana/plana", "start": NOW - (20 * 3600)}
     cases.append(_case("unreadable ancestry is spared", t, [H1, H2], []))
 
     # grace boundary in an IDLE slot: the fixture clock is real now, so these two
@@ -686,9 +672,7 @@ def selftest():
             fh.write(f"[{ts}Z INFO HostContext] Job cancellation request " f"11111111-2222-3333-4444-555555555555 received\n")
 
         # only slot B has a Worker, and it predates the cancellation
-        table = {500: {"comm": "Runner.Worker",
-                       "cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2",
-                       "ppid": 1, "start": time.time() - 5000}}
+        table = {500: {"comm": "Runner.Worker", "cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2", "ppid": 1, "start": time.time() - 5000}}
         saved = PROC
         globals()["PROC"] = fake_proc(table)
 
@@ -878,8 +862,7 @@ def selftest():
     controls = [(old == [], f"old rules saw {old} (repo exemption + single home hide both)")]
 
     # fixtures must not alias each other (shallow copies once leaked a mutation)
-    cases.append(((base[101]["comm"] == "Runner.Worker") and (base[10]["ppid"] == 102),
-                  "selftest fixtures do not leak into each other"))
+    cases.append(((base[101]["comm"] == "Runner.Worker") and (base[10]["ppid"] == 102), "selftest fixtures do not leak into each other"))
 
     rc = 0
 

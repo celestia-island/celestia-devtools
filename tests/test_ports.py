@@ -82,8 +82,7 @@ class test_env_contract:
         assert exports["CELESTIA_VITE_PORT"].isdigit()
         assert exports["CELESTIA_CDP_PORT"].isdigit()
         assert exports["CELESTIA_VITE_PORT"] != exports["CELESTIA_CDP_PORT"]
-        assert exports["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] == \
-            f"--remote-debugging-port={exports['CELESTIA_CDP_PORT']}"
+        assert exports["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] == f"--remote-debugging-port={exports['CELESTIA_CDP_PORT']}"
 
     def test_env_is_stable_per_app(self, registry):
         assert ports.env_exports("app") == ports.env_exports("app")

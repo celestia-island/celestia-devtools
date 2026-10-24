@@ -103,9 +103,7 @@ def test_status_exit_codes_and_due_file(workspace: Path):
     assert proc.stdout == ""
 
     # overdue -> due exits 1 silently
-    make_report(
-        workspace, "external-review-old.md", int(time.time()) - (30 * 86400)
-    ).stat()
+    make_report(workspace, "external-review-old.md", int(time.time()) - (30 * 86400)).stat()
     Path(workspace / "_reports" / "external-review-x.md").unlink()
     proc = run_cli(["due"], workspace)
     assert proc.returncode == 1
@@ -167,9 +165,7 @@ def fake_ws(workspace: Path, monkeypatch) -> Path:
     repo = workspace / "entelecheia"
     (repo / ".git").mkdir(parents = True)
     # use one of the real SAMPLE_FILES paths so pack() picks it up
-    sample = (
-        repo / "packages" / "scepter" / "src" / "services" / "l2_plugin_agents.rs"
-    )
+    sample = repo / "packages" / "scepter" / "src" / "services" / "l2_plugin_agents.rs"
     sample.parent.mkdir(parents = True)
     sample.write_text("# example\n", encoding = "utf-8")
 
@@ -190,10 +186,7 @@ def fake_ws(workspace: Path, monkeypatch) -> Path:
 
     monkeypatch.setattr(external_review, "git", fake_git)
     # never touch the network from tests
-    monkeypatch.setattr(
-        external_review, "write_live_surface", lambda out: (out / "03-live-surface.md")
-        .write_text("stub\n", encoding = "utf-8")
-    )
+    monkeypatch.setattr(external_review, "write_live_surface", lambda out: (out / "03-live-surface.md").write_text("stub\n", encoding = "utf-8"))
     return workspace
 
 def test_pack_assembles_expected_files(fake_ws: Path, monkeypatch, capsys):
@@ -205,10 +198,7 @@ def test_pack_assembles_expected_files(fake_ws: Path, monkeypatch, capsys):
         assert (out / name).is_file(), name
 
     # the sampled working-tree file lands under code/ (no origin ref in fake repo)
-    sampled = (
-        out / "code" / "entelecheia" / "packages" / "scepter" / "src" / "services"
-        / "l2_plugin_agents.rs"
-    )
+    sampled = out / "code" / "entelecheia" / "packages" / "scepter" / "src" / "services" / "l2_plugin_agents.rs"
     assert sampled.is_file()
     provenance = (out / "00-code-provenance.md").read_text(encoding = "utf-8")
     assert "工作树（无 origin ref）" in provenance  # explicit downgrade, not silent
@@ -239,11 +229,8 @@ def test_pack_isolation_gate_fails_and_wipes_output(fake_ws: Path, monkeypatch, 
     assert not out.exists()  # 证据包已作废
 
 def test_pack_content_leak_gate(fake_ws: Path, monkeypatch, capsys):
-    monkeypatch.setattr(
-        external_review,
-        "write_manifest",
-        lambda out, skipped = None: None  # keep files, inject a rule ref into 01-repos.md
-    )
+    # keep files, inject a rule ref into 01-repos.md
+    monkeypatch.setattr(external_review, "write_manifest", lambda out, skipped = None: None)
     original = external_review.write_repos_table
 
     def inject(repos, out):
@@ -351,10 +338,8 @@ def test_unreadable_workspace_entry_is_explicit_not_silent(fake_ws: Path, monkey
     out = fake_ws / "pack"
     rc = run_main(["pack", "--out", str(out)], fake_ws, monkeypatch)
     assert rc == 0, capsys.readouterr().err
-    blob = "\n".join(
-        p.read_text(encoding = "utf-8")
-        for p in sorted(out.glob("*.md"))  # 含 00-manifest.md：跳过清单就写在那里
-    )
+    # 含 00-manifest.md：跳过清单就写在那里
+    blob = "\n".join(p.read_text(encoding = "utf-8") for p in sorted(out.glob("*.md")))
     assert "lost+found" in blob
     assert ("读不到" in blob) or ("跳过" in blob)
 

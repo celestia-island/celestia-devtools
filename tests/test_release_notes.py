@@ -17,73 +17,17 @@ def test_parse_subject_keeps_inner_parens():
 
 def test_parse_subject_legacy_period_after_reference():
     # aoba-era squash subjects end with the period AFTER the reference.
-    assert rn.parse_subject(
-        "💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup. (#128)."
-    ) == (128, "💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup.")
+    assert rn.parse_subject("💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup. (#128).") == (128, "💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup.")
 
 # ── gitmoji classification ───────────────────────────────────────────────────
 
-@pytest.mark.parametrize("subject,expected", [
-    ("✨ Add invitation pages. (#37)", "✨ Features"),
-    ("🎉 Bootstrap the repo. (#1)", "✨ Features"),
-    ("🐛 Fix the nonce endpoint. (#20)", "🐛 Fixes"),
-    ("🚑 Hotfix the parser crash. (#44)", "🐛 Fixes"),
-    ("🩹 Patch a typo in the error path. (#9)", "🐛 Fixes"),
-    ("✏️ Fix typo in README. (#8)", "🐛 Fixes"),
-    ("⚡ Cache the compiled shaders. (#31)", "⚡ Performance"),
-    ("📈 Add a benchmark for the walker. (#33)", "⚡ Performance"),
-    ("♻️ Extract the shared walker. (#28)", "♻️ Refactoring"),
-    ("🎨 Reorder the module layout. (#29)", "♻️ Refactoring"),
-    ("🏗️ Restructure the crate graph. (#30)", "♻️ Refactoring"),
-    ("🚚 Rename Tui.* RPC methods to Sync.*. (#26)", "♻️ Refactoring"),
-    ("💄 Allow toasts to wrap to 3 lines. (#24)", "💄 UI"),
-    ("📱 Fix the layout on narrow screens. (#25)", "💄 UI"),
-    ("♿ Label the icon buttons. (#27)", "💄 UI"),
-    ("🌐 Add mockMode i18n to all locales. (#63)", "🌐 Localization"),
-    ("📝 Add deployment guide. (#8)", "📝 Documentation"),
-    ("💡 Clarify the retry comment. (#10)", "📝 Documentation"),
-    ("💬 Reword the onboarding copy. (#11)", "📝 Documentation"),
-    ("✅ Add commit message lint CI workflow. (#32)", "✅ Tests"),
-    ("🧪 Test the annotated-tag path. (#13)", "✅ Tests"),
-    ("⬆️ Update kirino to 0.6. (#40)", "⬆️ Dependencies"),
-    ("⬇️ Pin serde to 1.0. (#41)", "⬆️ Dependencies"),
-    ("📌 Lock the toolchain. (#42)", "⬆️ Dependencies"),
-    ("➕ Add plana-rpc-client. (#62)", "⬆️ Dependencies"),
-    ("➖ Drop the unused mock dep. (#43)", "⬆️ Dependencies"),
-    ("🔒 Enforce DATABASE_URL as mandatory. (#112)", "🔒 Security"),
-    ("🛡️ Fail closed on unknown issuers. (#44)", "🔒 Security"),
-    ("🔥 Remove the SSE endpoints. (#67)", "🔥 Removals"),
-    ("🔧 Sort Cargo.toml deps alphabetically. (#52)", "🔧 Maintenance"),
-    ("🔖 Release v0.2.16.", "🔧 Maintenance"),
-    ("👷 Build with pnpm 11. (#45)", "🔧 Maintenance"),
-    ("📦 Package the installer. (#46)", "🔧 Maintenance"),
-    ("🚀 Deploy via the tag workflow. (#47)", "🔧 Maintenance"),
-    ("🍱 Refresh the bundled icons. (#48)", "🔧 Maintenance"),
-    ("🚨 Fix nonminimal_bool lint debt. (#173)", "🔧 Maintenance"),
-    ("📜 Switch to the SySL license. (#5)", "📜 License"),
-    ("📄 Update the license headers. (#6)", "📜 License"),
-    ("🔗 Sync copilot settings. (#7)", "🔄 Sync"),
-    ("🔄 Sync the ledger from master. (#9)", "🔄 Sync"),
-    ("Replace hand-rolled JSON-RPC types with plana types (#117)", "Other Changes"),
-    ("💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup. (#128).",
-     "🐛 Fixes"),
-    ("🙂 Unknown emoji. (#1)", "Other Changes"),
-    ("Bump actions/checkout from 4 to 7 (#55)", "⬆️ Dependencies")
-])
+@pytest.mark.parametrize("subject,expected", [("✨ Add invitation pages. (#37)", "✨ Features"), ("🎉 Bootstrap the repo. (#1)", "✨ Features"), ("🐛 Fix the nonce endpoint. (#20)", "🐛 Fixes"), ("🚑 Hotfix the parser crash. (#44)", "🐛 Fixes"), ("🩹 Patch a typo in the error path. (#9)", "🐛 Fixes"), ("✏️ Fix typo in README. (#8)", "🐛 Fixes"), ("⚡ Cache the compiled shaders. (#31)", "⚡ Performance"), ("📈 Add a benchmark for the walker. (#33)", "⚡ Performance"), ("♻️ Extract the shared walker. (#28)", "♻️ Refactoring"), ("🎨 Reorder the module layout. (#29)", "♻️ Refactoring"), ("🏗️ Restructure the crate graph. (#30)", "♻️ Refactoring"), ("🚚 Rename Tui.* RPC methods to Sync.*. (#26)", "♻️ Refactoring"), ("💄 Allow toasts to wrap to 3 lines. (#24)", "💄 UI"), ("📱 Fix the layout on narrow screens. (#25)", "💄 UI"), ("♿ Label the icon buttons. (#27)", "💄 UI"), ("🌐 Add mockMode i18n to all locales. (#63)", "🌐 Localization"), ("📝 Add deployment guide. (#8)", "📝 Documentation"), ("💡 Clarify the retry comment. (#10)", "📝 Documentation"), ("💬 Reword the onboarding copy. (#11)", "📝 Documentation"), ("✅ Add commit message lint CI workflow. (#32)", "✅ Tests"), ("🧪 Test the annotated-tag path. (#13)", "✅ Tests"), ("⬆️ Update kirino to 0.6. (#40)", "⬆️ Dependencies"), ("⬇️ Pin serde to 1.0. (#41)", "⬆️ Dependencies"), ("📌 Lock the toolchain. (#42)", "⬆️ Dependencies"), ("➕ Add plana-rpc-client. (#62)", "⬆️ Dependencies"), ("➖ Drop the unused mock dep. (#43)", "⬆️ Dependencies"), ("🔒 Enforce DATABASE_URL as mandatory. (#112)", "🔒 Security"), ("🛡️ Fail closed on unknown issuers. (#44)", "🔒 Security"), ("🔥 Remove the SSE endpoints. (#67)", "🔥 Removals"), ("🔧 Sort Cargo.toml deps alphabetically. (#52)", "🔧 Maintenance"), ("🔖 Release v0.2.16.", "🔧 Maintenance"), ("👷 Build with pnpm 11. (#45)", "🔧 Maintenance"), ("📦 Package the installer. (#46)", "🔧 Maintenance"), ("🚀 Deploy via the tag workflow. (#47)", "🔧 Maintenance"), ("🍱 Refresh the bundled icons. (#48)", "🔧 Maintenance"), ("🚨 Fix nonminimal_bool lint debt. (#173)", "🔧 Maintenance"), ("📜 Switch to the SySL license. (#5)", "📜 License"), ("📄 Update the license headers. (#6)", "📜 License"), ("🔗 Sync copilot settings. (#7)", "🔄 Sync"), ("🔄 Sync the ledger from master. (#9)", "🔄 Sync"), ("Replace hand-rolled JSON-RPC types with plana types (#117)", "Other Changes"), ("💚 Fix CLI E2E MQTT/HTTP test stderr handling and cleanup. (#128).", "🐛 Fixes"), ("🙂 Unknown emoji. (#1)", "Other Changes"), ("Bump actions/checkout from 4 to 7 (#55)", "⬆️ Dependencies")])
 def test_classify(subject, expected):
     assert rn.classify(subject) == expected
 
 # ── semver tags ──────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("tag,expected", [
-    ("v0.2.9", (0, 2, 9)),
-    ("v0.3", (0, 3, 0)),
-    ("v1.0.0", (1, 0, 0)),
-    ("flasher-v1.2.3", (1, 2, 3)),
-    ("fonts", None),
-    ("res-latest", None),
-    ("mod-hub", None)
-])
+@pytest.mark.parametrize("tag,expected", [("v0.2.9", (0, 2, 9)), ("v0.3", (0, 3, 0)), ("v1.0.0", (1, 0, 0)), ("flasher-v1.2.3", (1, 2, 3)), ("fonts", None), ("res-latest", None), ("mod-hub", None)])
 def test_parse_semver(tag, expected):
     assert rn.parse_semver(tag) == expected
 
@@ -134,14 +78,10 @@ def test_tag_commit_sha_annotated():
     assert any("/git/tags/tagobj" in c for c in calls)
 
 def test_collect_entries_groups_and_stops_at_base():
-    commits = [
-        _commit("c1", "✨ Add feature A. (#41)"),
-        _commit("c2", "🐛 Fix feature A. (#42)"),
-        _commit("c3", "✨ Add feature A better. (#41)"),  # duplicate PR → dropped
-        _commit("c4", "Direct push without a PR."),       # no reference → skipped
-        _commit("base", "🔖 Release v0.1.0."),            # previous tag → stop
-        _commit("old", "✨ From before the release. (#1)")
-    ]
+    # duplicate PR → dropped
+    # no reference → skipped
+    # previous tag → stop
+    commits = [_commit("c1", "✨ Add feature A. (#41)"), _commit("c2", "🐛 Fix feature A. (#42)"), _commit("c3", "✨ Add feature A better. (#41)"), _commit("c4", "Direct push without a PR."), _commit("base", "🔖 Release v0.1.0."), _commit("old", "✨ From before the release. (#1)")]
 
     def fetch(url):
         if "/git/ref/tags/" in url:

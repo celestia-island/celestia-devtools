@@ -46,27 +46,20 @@ def spec_violations(requirement: str) -> list:
 class test_checker_has_teeth:
     """Self-proof: the checker accepts known-good and rejects known-bad."""
 
-    @pytest.mark.parametrize("good", [
-        "PyYAML>=6",
-        "tomli-w>=1",
-        "questionary>=2",
-        "pytest>=7",
-        "ruff>=0.4",
-        "tomli>=2; python_version < '3.11'",   # marker allowed
-        "some-extra; sys_platform == 'win32'"  # bare name + marker
-    ])
+    # marker allowed
+    # bare name + marker
+    @pytest.mark.parametrize("good", ["PyYAML>=6", "tomli-w>=1", "questionary>=2", "pytest>=7", "ruff>=0.4", "tomli>=2; python_version < '3.11'", "some-extra; sys_platform == 'win32'"])
     def test_accepts_floor_only(self, good):
         assert spec_violations(good) == []
 
-    @pytest.mark.parametrize("bad", [
-        "rich==15.0.0",            # exact pin
-        "rich>=13,<16",            # upper bound
-        "rich~=13.0",              # compatible release
-        "rich==15.*",              # wildcard
-        "rich^13",                 # caret (npm-ism)
-        "rich >13",                # strict greater (excludes the floor itself)
-        "rich!=15.0.0"            # exclusion
-    ])
+    # exact pin
+    # upper bound
+    # compatible release
+    # wildcard
+    # caret (npm-ism)
+    # strict greater (excludes the floor itself)
+    # exclusion
+    @pytest.mark.parametrize("bad", ["rich==15.0.0", "rich>=13,<16", "rich~=13.0", "rich==15.*", "rich^13", "rich >13", "rich!=15.0.0"])
     def test_rejects_non_floor(self, bad):
         assert spec_violations(bad), "checker must reject " + bad
 
