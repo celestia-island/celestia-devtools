@@ -32,7 +32,10 @@
 # P0-C is closed by langyo/easy-hydro-miniprogram#27 (secret rotation still pends
 # the user); P0-D is closed by celestia-island/entelecheia#284; P0-E stays open,
 # scoped to evernight, after its original master-CI numbers turned out to be
-# measured on rewritten commits (AGENTS §8.3.7).
+# measured on rewritten commits (AGENTS §8.3.7). 2026-10-24 re-check: still open,
+# but for a DIFFERENT and dated cause — RUSTSEC-2026-0387 in crypto-bigint
+# (see the entry's evidence). The original deny-wiring failures were fixed by
+# evernight #290/#291.
 #
 # 2026-09-14 correction (detail in P0-A's evidence): the closed-loop suite meant to
 # run alongside those guards was RED on master from #285 until #288 — #285's write
@@ -45,7 +48,7 @@
 # closed_by convention: <owner>/<repo>#<number>.
 
 version = 1
-updated_at = "2026-09-14"
+updated_at = "2026-10-24"
 source = "_reports/project-group-evaluation-2026-09-10.md (backfilled as PLAN.md §1.2 item 18)"
 
 [[p0]]
@@ -96,4 +99,4 @@ scope = ["evernight"]
 status = "open"
 opened_at = "2026-09-10"
 closed_by = ""
-evidence = "2026-09-13 re-check: the original 5/19 + 4/27 numbers were measured on ghost commits (Squash Message Clean rewrote master with GITHUB_TOKEN; AGENTS §8.3.7) — entelecheia master is currently clean, evernight still fails on cargo deny"
+evidence = "2026-10-24 re-check (STILL OPEN, cause has changed): evernight master run 40095760385 has the Security job failing on two REAL advisories, not on the old wiring — crypto-bigint 0.5.5 and 0.7.5 both hit RUSTSEC-2026-0387 (2026-10-23, constant-time timing variability; fix >= 0.7.6), alongside five allowed warnings (smartstring / unsafe-libyaml unmaintained, lru unsound, two yanked). The 2026-09-13 note had recorded the earlier cargo-deny wiring errors, which #290/#291 did fix; this is a new, dated advisory rather than a recurrence. Scope stays evernight because it is the repo whose master is red; entelecheia master is clean. Also note: evernight still carries no p0-gate caller, so this entry blocks nothing until that wiring lands (2026-10-24 audit CP-05)."

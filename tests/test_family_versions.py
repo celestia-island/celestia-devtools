@@ -87,17 +87,25 @@ def test_workspace_and_dev_and_target_sections_are_all_checked(tmp_path):
     assert _levels(check(tmp_path)) == ["violation"] * 3
 
 
-# ── plana: master, not a station ─────────────────────────────────────────────
+# ── plana: published members on the registry, the rest on master ─────────────
+#
+# 2026-10-24 ruling: registry-first (AGENTS §3.2.2) applies to plana too, so the
+# members publish.yml ships are expected as `version = "^0.2"`.  The members
+# carrying `publish = false` cannot resolve from crates.io and stay on git
+# master.  Git-master consumption of a published member is now a migration
+# warning rather than the only legal shape.
 
 _PLANA_OK = (
-    '[dependencies]\nplana = { git = "https://github.com/celestia-island/plana.git",'
+    '[dependencies]\nplana-celestia-types = { git = "https://github.com/celestia-island/plana.git",'
     ' branch = "master" }\n'
 )
 
 
-def test_plana_git_master_passes(tmp_path):
+def test_plana_git_master_still_works_for_published_members_as_a_warning(tmp_path):
     _cargo(tmp_path, _PLANA_OK)
-    assert check(tmp_path) == []
+    findings = check(tmp_path)
+    assert _levels(findings) == ["warning"], findings
+    assert "prefer version" in findings[0].message
 
 
 def test_plana_subcrates_are_checked(tmp_path):
@@ -122,11 +130,41 @@ def test_plana_rev_pin_is_allowed_only_for_frozen_repositories(tmp_path):
     assert check(frozen) == []
 
 
-def test_plana_from_the_registry_is_a_violation(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "0.2"\n')
+def test_plana_published_member_from_the_registry_passes(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.2"\n')
+    assert check(tmp_path) == []
+
+
+def test_plana_published_member_must_still_admit_the_family_line(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.1"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
-    assert "crates.io" in findings[0].message
+    assert "published 0.2 line" in findings[0].message
+
+
+def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_path):
+    # `plana-infra-utils` carries `publish = false`, so `plana-infra-utils = "0.2"`
+    # cannot resolve at all — this is the shape the ruling did NOT legalise.
+    _cargo(tmp_path, '[dependencies]\nplana-infra-utils = "0.2"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "not published" in findings[0].message
+
+
+def test_plana_alias_of_a_published_member_is_recognised(tmp_path):
+    # Manifests alias with underscores (`plana_celestia_types = { package = ... }`);
+    # the publication check must normalise before comparing.
+    _cargo(
+        tmp_path,
+        '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",'
+        ' version = "^0.1" }\n',
+    )
+    assert check(tmp_path) == []
+
+
+def test_plana_tauri_counts_as_published(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nplana-tauri = "^0.1"\n')
+    assert check(tmp_path) == []
 
 
 def test_plana_from_a_foreign_git_source_is_a_violation(tmp_path):

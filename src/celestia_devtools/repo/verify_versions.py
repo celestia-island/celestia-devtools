@@ -266,11 +266,22 @@ def cargo_track_present(repo: Path, errors: Optional[List[str]] = None) -> bool:
 
 
 def npm_track_present(repo: Path) -> bool:
-    """True when any package.json in the repo declares a version at all."""
+    """True when a *publishable* package.json declares a version.
+
+    `private: true` manifests are excluded (2026-10-24): a repository whose only
+    package.json files are private webui shells has no npm identity to keep in
+    line, and demanding a baseline for one turned five compliant repositories
+    into immediate reds when they adopted this gate.  A private root package
+    must likewise not define the baseline — `@celestia/tairitsu` is a private
+    0.1.1 shell while the two packages it wraps publish on 0.3 / 0.5.
+    """
     for manifest in _iter_manifests(repo, "package.json"):
         pkg, _reason = _load_json(manifest)
-        if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
-            return True
+        if not isinstance(pkg, dict) or not isinstance(pkg.get("version"), str):
+            continue
+        if pkg.get("private") is True:
+            continue
+        return True
     return False
 
 
@@ -414,7 +425,11 @@ def detect_npm_base(
         errors.append(
             f"package.json unparseable, npm baseline fell back to majority vote: {reason}"
         )
-    if root_pkg is not None and isinstance(root_pkg.get("version"), str):
+    if (
+        root_pkg is not None
+        and isinstance(root_pkg.get("version"), str)
+        and root_pkg.get("private") is not True
+    ):
         return _norm_version(root_pkg["version"])
     # No (versioned) root package: majority version among publishable packages.
     publishable: List[str] = []
@@ -433,11 +448,33 @@ def detect_npm_base(
     return None
 
 
+def npm_baseline_source(repo: Path, override: Optional[str]) -> str:
+    """Which declaration the npm baseline came from.
+
+    ``"override"`` (a ``[track] npm`` pin), ``"root"`` (a public root
+    package.json version) or ``"majority"`` (the majority version among
+    publishable packages).  Only the last one implies "compare publishable
+    packages only": both other sources name one identity on purpose, so every
+    manifest is judged against it.
+    """
+    if override is not None:
+        return "override"
+    root_pkg, _reason = _load_json(repo / "package.json")
+    if (
+        isinstance(root_pkg, dict)
+        and isinstance(root_pkg.get("version"), str)
+        and root_pkg.get("private") is not True
+    ):
+        return "root"
+    return "majority"
+
+
 def collect_npm_drifts(
     repo: Path,
     base: Optional[str],
     exempt: set[str],
     errors: Optional[List[str]] = None,
+    publishable_only: bool = False,
 ) -> List[Drift]:
     if base is None:
         return []
@@ -451,6 +488,13 @@ def collect_npm_drifts(
                 f"{_norm_path(str(manifest.relative_to(repo)))} unparseable, its version unchecked: {reason}"
             )
         if not pkg or not isinstance(pkg.get("version"), str):
+            continue
+        if publishable_only and pkg.get("private") is True:
+            # The baseline was inferred from publishable packages, so a private
+            # shell (a webui bundle, a Tauri dev package) is not drifting from a
+            # line it never belonged to.  An explicit `[track] npm` pin still
+            # compares everything — that is the escape hatch for repositories
+            # that do want their private packages in line.
             continue
         actual = _norm_version(pkg["version"])
         if actual != base:
@@ -531,7 +575,8 @@ def verify(repo: Path) -> VerifyResult:
 
     cargo_override = track.get("cargo")
     cargo_base = detect_cargo_base(repo, cargo_override, errors)
-    npm_base = detect_npm_base(repo, track.get("npm"), errors)
+    npm_override = track.get("npm")
+    npm_base = detect_npm_base(repo, npm_override, errors)
     if cargo_track_present(repo, errors) and cargo_base is None:
         errors.append(
             "cargo track is present (versioned Cargo.toml manifests exist) but "
@@ -544,10 +589,10 @@ def verify(repo: Path) -> VerifyResult:
         )
     if npm_track_present(repo) and npm_base is None:
         errors.append(
-            "npm track is present (package.json files declare versions) but no "
-            "baseline could be resolved: no root package.json version and no "
-            "majority among publishable packages. Pin [track] npm in "
-            ".versions.toml."
+            "npm track is present (a publishable package.json declares a "
+            "version) but no baseline could be resolved: no public root "
+            "package.json version and no majority among publishable packages. "
+            "Pin [track] npm in .versions.toml."
         )
 
     drifts: List[Drift] = []
@@ -562,7 +607,15 @@ def verify(repo: Path) -> VerifyResult:
     # the cargo root's own declared version against the pin for symmetry.
     if cargo_override is not None and cargo_base is not None:
         drifts.extend(_cargo_root_drifts(repo, cargo_base, errors))
-    drifts.extend(collect_npm_drifts(repo, npm_base, exempt.get("npm", set()), errors))
+    drifts.extend(
+        collect_npm_drifts(
+            repo,
+            npm_base,
+            exempt.get("npm", set()),
+            errors,
+            publishable_only=npm_baseline_source(repo, npm_override) == "majority",
+        )
+    )
     drifts.sort(key=lambda d: (d.track, d.package))
 
     return VerifyResult(
