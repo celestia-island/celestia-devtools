@@ -675,3 +675,190 @@ class TestStage:
         assert exc.value.code == 2
         assert "单段名" in capsys.readouterr().err
         assert not drop_root.exists(), "dead-on-arrival inputs must not materialize drops"
+
+
+# ── sweep（巡航 → 装配线宿主侧）──────────────────────────────────────────────
+
+
+def sweep_argv(ws_root, repo_root, tmp_path, *extra):
+    return [
+        "--repo-root", str(repo_root),
+        "--drop-root", str(tmp_path / "drops"),
+        "--wt-root", str(tmp_path / "wt"),
+        "--audit-file", str(tmp_path / "audit.jsonl"),
+        "sweep", "--ws-root", str(ws_root), *extra,
+    ]
+
+
+def sweep_outcomes(tmp_path) -> list:
+    """(repo, outcome) 对——只取 sweep 的汇总行（event 字段与 apply 记录区分）。"""
+    return [(r.get("repo"), r.get("outcome")) for r in audit_records(tmp_path)
+            if r.get("event") == "sweep"]
+
+
+def _git_ok(repo, *args) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def test_sweep_skips_clean_worktree(repo_env, tmp_path, monkeypatch, capsys):
+    """两者皆空（porcelain 无、无领先提交）→ clean info 跳过，零 drop。"""
+    rc = run_main(sweep_argv(repo_env, repo_env, tmp_path), monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+    assert sweep_outcomes(tmp_path) == [(REPO_NAME, "clean")]
+    assert not (tmp_path / "drops" / REPO_NAME).exists()
+    assert "干净" in capsys.readouterr().out
+
+
+def test_sweep_stages_ahead_commit_and_uncommitted_changes(
+        repo_env, tmp_path, monkeypatch, capsys):
+    """脏 + 领先提交 → staged（dry）：领先提交内容与未提交改动都进 drop，
+    描述取领先提交标题（G6 由引擎 SoP 保证）。"""
+    repo = repo_env / REPO_NAME
+    (repo / "src" / "main.rs").write_text("fn main() { ahead }\n", encoding="utf-8")
+    _git_ok(repo, "add", ".")
+    _git_ok(repo, "commit", "--no-verify", "-m", "✨ Add the ahead commit.")
+    (repo / "README.md").write_text("base\nplus uncommitted\n", encoding="utf-8")
+    rc = run_main(sweep_argv(repo_env, repo_env, tmp_path), monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+    assert sweep_outcomes(tmp_path) == [(REPO_NAME, "staged")]
+    drops = list((tmp_path / "drops" / REPO_NAME).iterdir())
+    assert len(drops) == 1 and drops[0].name.startswith("sweep-"), \
+        "sweep 的 drop id 内容寻址（sweep-<diff 哈希>）"
+    manifest = json.loads((drops[0] / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["description"] == "✨ Add the ahead commit."
+    assert manifest["branch"].startswith("engine/sweep-")
+    assert manifest["files"] == ["README.md", "src/main.rs"], \
+        "files = porcelain ∪ diff --name-only origin/master（去重排序）"
+    staged = (drops[0] / "files" / "src" / "main.rs").read_text(encoding="utf-8")
+    assert "ahead" in staged, "领先提交的内容必须进 drop"
+    # dry：不开 PR、不回收工作区
+    assert "plus uncommitted" in (repo / "README.md").read_text(encoding="utf-8")
+    assert "engine/sweep-" not in "\n".join(remote_refs(repo_env))
+
+
+def test_sweep_apply_opens_pr_and_recycles_worktree(
+        repo_env, tmp_path, monkeypatch, capsys):
+    """"--apply：stage→gates→PR 开成→工作区回收（reset --hard + clean -fd）。"""
+    calls = {}
+
+    def fake_pr(repo, base, branch, title, body):
+        calls.update(base=base, branch=branch, title=title)
+        return "https://github.com/celestia-island/evernight/pull/1000"
+
+    monkeypatch.setattr(engine_drop, "open_pr", fake_pr)
+    repo = repo_env / REPO_NAME
+    (repo / "src" / "main.rs").write_text("fn main() { v2 }\n", encoding="utf-8")
+    _git_ok(repo, "add", ".")
+    _git_ok(repo, "commit", "--no-verify", "-m", "✨ Improve the main entry.")
+    rc = run_main(sweep_argv(repo_env, repo_env, tmp_path, "--apply"), monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+    assert sweep_outcomes(tmp_path) == [(REPO_NAME, "pr-opened")]
+    # PR 面上的参数：engine/sweep-* 分支、描述即领先提交标题
+    assert calls["base"] == "master"
+    assert calls["branch"].startswith("engine/sweep-")
+    assert calls["title"] == "✨ Improve the main entry."
+    assert any(ref.startswith("refs/heads/engine/sweep-")
+               for ref in remote_refs(repo_env))
+    # 回收：porcelain 干净、内容回到 origin/master 基线
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        check=True, capture_output=True, text=True,
+    )
+    assert status.stdout.strip() == ""
+    assert (repo / "src" / "main.rs").read_text(encoding="utf-8") == "fn main() {}\n"
+    ahead = subprocess.run(
+        ["git", "-C", str(repo), "log", "--oneline", "origin/master..HEAD"],
+        check=True, capture_output=True, text=True,
+    )
+    assert ahead.stdout.strip() == "", "领先提交已被回收（PR 承载了它的内容）"
+
+
+def test_sweep_skips_dirty_worktree_without_description(
+        repo_env, tmp_path, monkeypatch, capsys):
+    """无领先提交、无 .drop-description → skipped-no-description（绝不编造）。"""
+    repo = repo_env / REPO_NAME
+    (repo / "newfile.py").write_text("print('x')\n", encoding="utf-8")
+    rc = run_main(sweep_argv(repo_env, repo_env, tmp_path), monkeypatch)
+    assert rc == 0
+    assert sweep_outcomes(tmp_path) == [(REPO_NAME, "skipped-no-description")]
+    assert not (tmp_path / "drops" / REPO_NAME).exists()
+    assert "绝不编" in capsys.readouterr().err
+    assert (repo / "newfile.py").exists(), "跳过时工作区原样保留"
+
+
+def test_sweep_description_falls_back_to_drop_description_file(
+        repo_env, tmp_path, monkeypatch):
+    """无领先提交 → 回落工作区根 .drop-description 首行；控制面文件本身
+    不作为内容进 drop（这是描述回落路径的独立钉子）。"""
+    repo = repo_env / REPO_NAME
+    (repo / "src" / "main.rs").write_text("fn main() { idem }\n", encoding="utf-8")
+    (repo / ".drop-description").write_text(
+        "✨ Make the sweep idempotent.\nsecond line\n", encoding="utf-8")
+    rc = run_main(sweep_argv(repo_env, repo_env, tmp_path), monkeypatch)
+    assert rc == 0
+    assert sweep_outcomes(tmp_path) == [(REPO_NAME, "staged")]
+    drop = next((tmp_path / "drops" / REPO_NAME).iterdir())
+    manifest = json.loads((drop / "MANIFEST.json").read_text(encoding="utf-8"))
+    assert manifest["description"] == "✨ Make the sweep idempotent."
+    assert manifest["files"] == ["src/main.rs"], "控制面文件绝不进 drop"
+
+
+def test_sweep_forbidden_file_is_gates_failed_and_worktree_kept(
+        repo_env, tmp_path, monkeypatch, capsys):
+    """违禁文件（.env）→ gates-failed 且**不回收**工作区（留人看）。"""
+    repo = repo_env / REPO_NAME
+    (repo / ".env").write_text("FAKE=not-a-real-secret\n", encoding="utf-8")
+    (repo / ".drop-description").write_text("✨ Add the env loading.\n", encoding="utf-8")
+    rc = run_main(sweep_argv(repo_env, repo_env, tmp_path), monkeypatch)
+    assert rc == 0
+    assert sweep_outcomes(tmp_path) == [(REPO_NAME, "gates-failed")]
+    assert (repo / ".env").exists(), "违禁 → 不回收，留人看"
+    assert (repo / ".drop-description").exists()
+    assert not (tmp_path / "drops" / REPO_NAME).exists() or \
+        not any((tmp_path / "drops" / REPO_NAME).iterdir()), "不得留下半成品 drop"
+    assert "禁区" in capsys.readouterr().err
+
+
+def test_sweep_is_idempotent_for_identical_content(
+        repo_env, tmp_path, monkeypatch, capsys):
+    """同内容重复 sweep → drop id 内容寻址命中「已存在」→ 本轮已处理 info
+    跳过（不是错误）；同内容只允许一个 drop。"""
+    repo = repo_env / REPO_NAME
+    (repo / "src" / "main.rs").write_text("fn main() { idem }\n", encoding="utf-8")
+    (repo / ".drop-description").write_text("✨ Make the sweep idempotent.\n",
+                                            encoding="utf-8")
+    argv = sweep_argv(repo_env, repo_env, tmp_path)
+    assert run_main(argv, monkeypatch) == 0
+    assert run_main(argv, monkeypatch) == 0, "重复 sweep 是幂等跳过，不是错误"
+    assert sweep_outcomes(tmp_path) == [
+        (REPO_NAME, "staged"), (REPO_NAME, "already-staged")]
+    drops = list((tmp_path / "drops" / REPO_NAME).iterdir())
+    assert len(drops) == 1, "同内容只允许一个 drop"
+    assert "已处理" in capsys.readouterr().out
+
+
+def test_sweep_round_continues_past_bad_directories(
+        repo_env, tmp_path, monkeypatch, capsys):
+    """非 git 目录 / fetch 失败只废单仓，整轮继续（正例仓照常 clean 收尾）。"""
+    ws = tmp_path / "engine-ws"
+    ws.mkdir()
+    (ws / "notgit").mkdir()
+    (ws / "notgit" / "junk.txt").write_text("x\n", encoding="utf-8")
+    no_remote = ws / "noremote"
+    no_remote.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master", str(no_remote)],
+                   check=True, capture_output=True)
+    _git_ok(no_remote, "config", "user.email", "t@example.com")
+    _git_ok(no_remote, "config", "user.name", "t")
+    (no_remote / "a.txt").write_text("a\n", encoding="utf-8")
+    _git_ok(no_remote, "add", ".")
+    _git_ok(no_remote, "commit", "--no-verify", "-m", "✨ Seed the offline repo.")
+    subprocess.run(
+        ["git", "clone", "--quiet", str(tmp_path / "origin" / "evernight.git"),
+         str(ws / REPO_NAME)], check=True, capture_output=True)
+    rc = run_main(sweep_argv(ws, repo_env, tmp_path), monkeypatch)
+    assert rc == 0, capsys.readouterr().out
+    assert sweep_outcomes(tmp_path) == [
+        (REPO_NAME, "clean"), ("noremote", "fetch-failed"), ("notgit", "not-git")]
+    # fetch 失败/非 git 都不产 drop
+    assert not (tmp_path / "drops" / REPO_NAME).exists()
