@@ -15,6 +15,9 @@ import pytest
 from celestia_devtools.deploy import backup as backup_mod, lifecycle
 from celestia_devtools.deploy.artifact import build as artifact_build
 from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
+import json as _json
+import hashlib
+from celestia_devtools.deploy.artifact import write_index, scan_dir
 
 def _profile(tmp_path: Path) -> deploy_profile:
     return deploy_profile(host = host_section(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = front_section(enabled = True, domain = "acme.example"))
@@ -56,9 +59,7 @@ class test_backup:
         result = backup_mod.backup(prof, tmp_path / "backups", executor = _ok_executor)
         # synthesize a db.dump + manifest entry to reach the psql branch
         (result.path / "db.dump").write_text("INSERT broken sql;", encoding = "utf-8")
-        import json as _json
         manifest = _json.loads((result.path / "manifest.json").read_text())
-        import hashlib
         digest = hashlib.sha256((result.path / "db.dump").read_bytes()).hexdigest()
         manifest["entries"]["db.dump"] = digest
         (result.path / "manifest.json").write_text(_json.dumps(manifest))
@@ -110,7 +111,6 @@ class test_upgrade_rollback:
         fake.write_bytes(b"#!/bin/sh\nexit 0\n")
         os.chmod(fake, 0o755)
         artifact_build(fake, version, "t1", out)
-        from celestia_devtools.deploy.artifact import write_index, scan_dir
         write_index(out, {"stable": scan_dir(out)})
         return out
 

@@ -15,6 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 from celestia_devtools.deploy.profile import (admin_section, artifact_section, database_section, deploy_profile, front_section, host_section)
+import re
+
+try:
+    import questionary
+except ImportError:  # pragma: no cover - optional interactive UI dependency
+    questionary = None  # type: ignore[assignment]
 
 class wizard_abort(Exception):
     """User declined / non-interactive with missing answers."""
@@ -41,12 +47,9 @@ def _port_ok(value: str) -> str | None:
     return None
 
 def _slug_ok(value: str) -> str | None:
-    import re
     return None if re.match(r"^[a-z][a-z0-9-]{0,30}$", value) else "lowercase slug required"
 
 def _email_ok(value: str) -> str | None:
-    import re
-
     if not value:
         return None  # optional questions may stay empty
 
@@ -57,15 +60,13 @@ QUESTION_TABLE: tuple[question, ...] = (question("host.face", "实例名（syste
 # ── renderers ─────────────────────────────────────────────────────────
 
 def _questionary_available() -> bool:
-    try:
-        import questionary  # noqa: F401
-        return True
-    except ImportError:
-        return False
+    return questionary is not None
 
 def ask_questionary(q: question, seeded: str | None) -> tuple[str, str]:
     """Ask one question via questionary; returns (answer, provenance)."""
-    import questionary
+
+    if questionary is None:  # pragma: no cover - callers gate on _questionary_available
+        raise wizard_abort("questionary is not installed")
 
     if seeded is not None:
         return seeded, "(seeded)"

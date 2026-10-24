@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable
 from celestia_devtools.deploy.artifact import sha256_file
 from celestia_devtools.deploy.profile import deploy_profile
+from celestia_devtools.pyshim import safe_extract
 
 ENV_KEY_WARNING = "⚠ /etc/celestia/<face>.env 含 SHITTIM_CHEST_ENCRYPTION_KEY——丢了它，" "库里与桶里的全部密文永久解不开。备份介质请同等保护。"
 
@@ -145,7 +146,6 @@ def restore(profile: deploy_profile, backup_dir: Path, executor: Callable[..., s
         data_root.parent.mkdir(parents = True, exist_ok = True)
 
         with tarfile.open(Path(backup_dir) / "data.tar.gz", "r:gz") as tf:
-            from celestia_devtools.pyshim import safe_extract
             safe_extract(tf, str(data_root.parent))
 
         applied.append("data")

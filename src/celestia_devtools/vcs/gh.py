@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import sys
+from celestia_devtools.vcs.commit_msg import lint, repo_allows_cjk, repo_name_from_git_remote, repo_name_from_gh_flag
 
 _REAL_GH: str = ""
 _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
@@ -69,8 +70,6 @@ def main() -> int:
     has_merge = is_pr and (len(argv) > 1) and (argv[1] == "merge")
 
     if is_pr_merge or has_merge:
-        from celestia_devtools.vcs.commit_msg import (lint, repo_allows_cjk, repo_name_from_git_remote, repo_name_from_gh_flag)
-
         # Extract --subject from args
         subject: str | None = None
         args = list(argv)

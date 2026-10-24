@@ -5,6 +5,11 @@ import sys
 from importlib import import_module
 import pytest
 from celestia_devtools.core.cli import COMMANDS, main
+import tomllib
+from pathlib import Path
+from celestia_devtools.repo.register_patches import _clean_stale_local_patches
+import os
+import tempfile
 
 class test_command_registry:
     def test_all_commands_registered(self):
@@ -41,8 +46,6 @@ class test_command_registry:
         *omissions* — which is how four entry points sat unreachable. The convention below
         (strip the `celestia-` prefix the package adds) is what the missing four follow.
         """
-        import tomllib
-        from pathlib import Path
 
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
         data = tomllib.loads(pyproject.read_text(encoding = "utf-8"))
@@ -114,11 +117,6 @@ class test_module_run:
 
 class test_stale_local_patch_cleanup:
     def test_removes_stale_absolute_path(self):
-        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
-
-        import os
-        import tempfile
-        from pathlib import Path
         bad = os.path.abspath(os.path.join(os.sep, "nonexistent", "abcdef", "crate"))
 
         with tempfile.TemporaryDirectory() as td:
@@ -134,8 +132,6 @@ ok = {{ path = "{td}" }}
             assert 'ok' in cleaned
 
     def test_ignores_relative_and_git_patches(self):
-        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
-
         config = """[patch.crates-io]
 lib = { path = "./packages/lib" }
 
@@ -148,12 +144,7 @@ crate = { git = "https://github.com/org/repo" }
         assert 'github.com/org/repo' in cleaned
 
     def test_leaves_intact_when_nothing_stale(self):
-        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
-
-        import tempfile
-
         with tempfile.TemporaryDirectory() as td:
-            from pathlib import Path
             p = Path(td)
             (p / "Cargo.toml").write_text("[package]\nname = \"test\"\n")
             config = f"""[patch.crates-io]
@@ -174,10 +165,6 @@ class test_module_main_guard:
     """
 
     def _run_module(self, *args):
-        import os
-        import subprocess
-        import sys
-        from pathlib import Path
         # Resolve the module from THIS checkout (src/ layout), not whatever
         # celestia_devtools happens to be pip-installed on the host — otherwise
         # the test would exercise a stale copy and drift with it.

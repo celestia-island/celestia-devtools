@@ -5,6 +5,7 @@ import io
 import json
 from celestia_devtools.core import cli as core_cli
 from celestia_devtools.deploy import cli as deploy_cli, probe
+from celestia_devtools.core import deps, netproxy
 
 class non_tty(io.StringIO):
     """stdin stand-in that isatty() is False on (the CI/cron reality)."""
@@ -43,7 +44,6 @@ class test_doctor:
     no WPAD web fetches on whatever machine runs the suite."""
 
     def _fixture(self, monkeypatch, *, useradd_ok = True):
-        from celestia_devtools.core import deps, netproxy
         monkeypatch.setattr(netproxy, "detect", lambda **kw: netproxy.proxy_config("http://user:pass@203.0.113.7:7890", "env:HTTPS_PROXY", ("localhost", "198.18.0.0/15")))
         monkeypatch.setattr(deps, "ensure", lambda *a, **k: [deps.ensure_result("PyYAML", True, "present", "6.0.2")])
         probes = [probe.probe_record("python", True, "3.11.2"), probe.probe_record("systemd", True, "255"), probe.probe_record("useradd", useradd_ok, "", hint = "passwd package"), probe.probe_record("acme.sh", False, "", hint = "curl https://get.acme.sh")]

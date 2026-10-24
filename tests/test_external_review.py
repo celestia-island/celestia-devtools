@@ -1,3 +1,4 @@
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for tools/external_review.py — the port of _tools/external-review.sh."""
 
 from __future__ import annotations
@@ -8,6 +9,9 @@ import sys
 import time
 from pathlib import Path
 import pytest
+import re as _re
+import json as _json
+import hashlib
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS_DIR))
@@ -399,7 +403,6 @@ def test_manifest_injection_note_does_not_trip_the_isolation_gate(fake_ws: Path,
 def test_manifest_does_not_disclaim_source_for_sampled_repos(fake_ws, monkeypatch, capsys):
     """「其它仓库只有提交标题」必须排除已取源码的仓——改取材而忘改这句话时，
     manifest 会与自己的 code/ 清单自相矛盾，把读包人带偏（2026-10-24 改版时钉住）。"""
-    import re as _re
 
     out = _pack_once(fake_ws, monkeypatch, capsys)
     manifest = (out / "00-manifest.md").read_text(encoding = "utf-8")
@@ -549,7 +552,6 @@ def test_status_quiet_when_record_carries_seal_stamp(workspace):
 
 def test_nested_seal_named_file_cannot_escape(fake_ws, monkeypatch, capsys):
     """P1：包内任何位置的 `PACK-SEAL.json` 都不得因同名而逃逸封印。"""
-    import json as _json
     out = _pack_once(fake_ws, monkeypatch, capsys)
     smuggled = out / "code" / "nested" / external_review.SEAL_NAME
     smuggled.parent.mkdir(parents = True)
@@ -565,8 +567,6 @@ def test_verify_rejects_forged_entries_with_stale_seal_hash(fake_ws, monkeypatch
 
     修前 `cmd_verify` 只看 drift 非空，会打印 ✅ 并 exit 0（评审最小复现）。
     """
-    import hashlib
-    import json as _json
     out = _pack_once(fake_ws, monkeypatch, capsys)
     payload = _seal_payload(out)
     target = out / "01-repos.md"

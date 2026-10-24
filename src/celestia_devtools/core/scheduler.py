@@ -36,16 +36,16 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Union
 
 # A command is either an external argv list or an in-process callable that
 # returns a status string ("PASS" / "FAIL" / "SKIP").
-StepCommand = Union[List[str], Callable[[], str]]
+step_command = Union[List[str], Callable[[], str]]
 
 class Step(NamedTuple):
     name: str
-    cmd: Optional[StepCommand]
+    cmd: Optional[step_command]
     deps: Tuple[str, ...] = ()
     cwd: Optional[str] = None
 
 # A runner executes one step and returns its status string.
-Runner = Callable[[Step], str]
+runner = Callable[[Step], str]
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -114,7 +114,7 @@ def _find_cycle(by_name: Dict[str, Step]) -> Optional[List[str]]:
 
     return None
 
-def run_dag(steps: List[Step], runner: Runner, jobs: int = 1) -> Dict[str, str]:
+def run_dag(steps: List[Step], runner: runner, jobs: int = 1) -> Dict[str, str]:
     """Run a DAG of steps with a worker cap and return ``{name: status}``.
 
     * *steps* — the step graph (validated before scheduling; a malformed graph

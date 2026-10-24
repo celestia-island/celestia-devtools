@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.doc import protocol_bundle as pb
 from celestia_devtools.doc.protocol_bundle import (TYPE_FILES, collect_languages, generate, resolve_docs_root)
+import shutil
 
 @pytest.fixture
 def fake_docs(tmp_path):
@@ -59,9 +60,8 @@ class test_resolve_docs_root:
         repo.mkdir()
         monkeypatch.delenv("DOCS_CELESTIA_WORLD_ROOT", raising = False)
         monkeypatch.delenv("DOCS_CELESTIA_WORLD_REPO", raising = False)
-        # make the fallback clone fail fast instead of hitting the network
-        import celestia_devtools.doc.protocol_bundle as pb
 
+        # make the fallback clone fail fast instead of hitting the network
         def _fail_clone(*_a, **_k):
             raise OSError("no network in tests")
 
@@ -163,7 +163,6 @@ class test_owned_clone_self_refresh:
         clone = tmp_path / "repo" / "target" / "docs-celestia-shared"
         self._clone_of(origin, clone)
         # Simulate offline: destroy the origin (URL still names the docs repo).
-        import shutil
         shutil.rmtree(origin)
         repo = tmp_path / "repo"
         monkeypatch.delenv("DOCS_CELESTIA_WORLD_ROOT", raising = False)

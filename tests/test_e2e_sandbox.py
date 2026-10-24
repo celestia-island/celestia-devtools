@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for celestia_devtools.env.e2e_sandbox."""
 
 from __future__ import annotations
@@ -8,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 from unittest import mock
+from celestia_devtools.core.cli import COMMANDS
+import signal as signal_mod
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -126,14 +129,11 @@ def test_never_touch_prefixes_are_excluded():
         assert any(name.startswith(p)for p in sb._NEVER_TOUCH) or not sb._CHROMIUM_DIR_SHAPE.match(name)
 
 def test_cli_dispatch_lists_command():
-    from celestia_devtools.core.cli import COMMANDS
-
     assert COMMANDS["e2e-sandbox"] == "celestia_devtools.env.e2e_sandbox"
 
 def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
     """SIGTERM must go through the finally path (S1's NO-GO finding):
     the sandbox is removed AND the child process tree is killed."""
-    import signal as signal_mod
 
     root = tmp_path / "sandbox-root"
     # A wrapper script that we can signal from outside

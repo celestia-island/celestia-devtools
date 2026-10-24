@@ -1,3 +1,4 @@
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for tools/engine_drop.py — the host-side engine drop consumer.
 
 Real throwaway git repositories with a local bare ``origin`` exercise the
@@ -13,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
+import pytest as _pytest
+import importlib.util
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS_DIR))
@@ -334,7 +337,6 @@ def test_repo_leading_dot_directory_is_rejected(repo_env, tmp_path, monkeypatch,
 
 def test_copy_file_strict_refuses_symlink_swap(tmp_path):
     """N7 钉子：O_NOFOLLOW——把文件换成符号链接后走拷贝端必须炸，而不是跟着链接走。"""
-    import pytest as _pytest
     real = tmp_path / "real.txt"
     real.write_text("SECRET", encoding = "utf-8")
     link = tmp_path / "link.txt"
@@ -375,7 +377,6 @@ def test_drop_outside_drop_root_is_rejected(repo_env, tmp_path, monkeypatch, cap
 
 def test_copy_file_strict_rejects_hardlink(tmp_path):
     """R3 复审 P3-2：拷贝端的 st_nlink 复核要有独立钉子（不只靠门禁侧）。"""
-    import pytest as _pytest
     real = tmp_path / "origin.txt"
     real.write_text("TOPSECRET", encoding = "utf-8")
     link = tmp_path / "hard.txt"
@@ -434,7 +435,6 @@ class test_stage:
         return ["--drop-root", str(drop_root), "stage", str(repo), "--repo", REPO_NAME, "--description", "📝 Document the exit codes.", *extra]
 
     def _run_stage(self, repo, drop_root, description = "📝 Document the exit codes."):
-        import importlib.util
         spec = importlib.util.spec_from_file_location("engine_drop_stage", Path(__file__).parent.parent / "tools" / "engine_drop.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -458,7 +458,6 @@ class test_stage:
         assert "staged line" in staged
 
         # The staged drop must pass the read-only gates as-is.
-        import importlib.util
         spec = importlib.util.spec_from_file_location("engine_drop_gates", Path(__file__).parent.parent / "tools" / "engine_drop.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -471,7 +470,6 @@ class test_stage:
         assert "没有可 stage" in capsys.readouterr().out
 
     def test_stage_refuses_to_overwrite_existing_drop(self, repo_env, tmp_path, capsys):
-        import importlib.util
         spec = importlib.util.spec_from_file_location("engine_drop_stage2", Path(__file__).parent.parent / "tools" / "engine_drop.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

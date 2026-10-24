@@ -1,3 +1,4 @@
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for ci/cache_policy.py — the actions/cache cost gate for self-hosted runners.
 
 Every rule is exercised against the shape that actually exists in the org's repositories,

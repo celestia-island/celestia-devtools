@@ -44,6 +44,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Sequence
+from celestia_devtools.env.host import detect_host_kind
+import ctypes
 
 # kind → (base port, exclusive ceiling of the scan window)
 KINDS: dict[str, int] = {"vite": 5173, "cdp": 9222}
@@ -55,8 +57,6 @@ def registry_path() -> Path:
     for key in REGISTRY_ENV_KEYS:
         if os.environ.get(key):
             return Path(os.environ[key])
-
-    from celestia_devtools.env.host import detect_host_kind
 
     if detect_host_kind() == "windows":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -78,7 +78,6 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return False
 
     if sys.platform == "win32":
-        import ctypes
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
 

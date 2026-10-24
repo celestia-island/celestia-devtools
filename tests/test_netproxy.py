@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import socket as socket_mod
 from celestia_devtools.core import netproxy
+import urllib.request
 
 class test_redact:
     def test_strips_userinfo(self):
@@ -206,7 +207,6 @@ class test_wpad:
         def fake_open(url, timeout = None):
             return fake_resp(bodies[url].encode())
 
-        import urllib.request
         monkeypatch.setattr(urllib.request, "urlopen", fake_open)
         hit = netproxy._from_wpad(("bad.test", "good.test"), timeout = 1.0)
         assert hit is not None

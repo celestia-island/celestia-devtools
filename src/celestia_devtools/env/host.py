@@ -25,13 +25,13 @@ import subprocess
 import sys
 from typing import Literal
 
-HostKind = Literal["windows", "wsl", "linux", "macos"]
+host_kind = Literal["windows", "wsl", "linux", "macos"]
 
-_host_kind: HostKind | None = None
+_host_kind: host_kind | None = None
 
 # ── Host detection ───────────────────────────────────────────────────────────
 
-def detect_host_kind() -> HostKind:
+def detect_host_kind() -> host_kind:
     """Return the host kind, caching the result.
 
     Distinguishes WSL2 from native Linux via the ``microsoft-standard-WSL``

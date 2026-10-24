@@ -39,6 +39,9 @@ import sys
 import urllib.request
 from pathlib import Path
 from celestia_devtools.core import logger as _logger
+# Reuse the battle-tested decoder from the shared host module instead of
+# maintaining a second heuristic here.
+from celestia_devtools.env.host import decode_wsl_output as _decode_wsl_output
 
 DEFAULT_DISTRO = "celestia-dev"
 DEFAULT_ROOTFS_URL = "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/" "ubuntu-noble-wsl-amd64-24.04lts.rootfs.tar.gz"
@@ -82,10 +85,6 @@ def _vhd_dir(distro: str) -> Path:
     return d
 
 # ── WSL invocation helpers ────────────────────────────────────────────
-
-# Reuse the battle-tested decoder from the shared host module instead of
-# maintaining a second heuristic here.
-from celestia_devtools.env.host import decode_wsl_output as _decode_wsl_output  # noqa: E402
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     """Run a command, capturing bytes and decoding defensively (wsl.exe is

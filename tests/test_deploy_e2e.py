@@ -17,6 +17,9 @@ import subprocess
 from pathlib import Path
 from celestia_devtools.deploy import (artifact, backup as backup_mod, bootstrap, lifecycle, wizard)
 from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
+from celestia_devtools.deploy import cli as deploy_cli
+from celestia_devtools.env import docker
+import pytest
 
 _PY_FLOOR = "3.11"  # must track pyproject requires-python (R2 P3)
 
@@ -107,7 +110,6 @@ class test_rootless_chain:
 
     def test_cli_json_reports_the_whole_chain(self, tmp_path, monkeypatch, capsys):
         monkeypatch.delenv("CHEST_DATABASE_URL", raising = False)
-        from celestia_devtools.deploy import cli as deploy_cli
         prof = _chain_profile(tmp_path)
         prof.admin.email = "ops@acme.example"
         path = prof.host.profile_path()
@@ -137,15 +139,11 @@ class test_docker_gated_e2_e:
     CI runs it when the farm provides one; otherwise it skips loudly."""
 
     def test_container_bootstrap_smoke(self, tmp_path):
-        from celestia_devtools.env import docker
-
         try:
             cmd = docker.docker_cmd()
         except Exception:
-            import pytest
             pytest.skip("no live container runtime on this host")
 
-        import pytest
         # The smoke: our artifact tarball builds, indexes, and its sha
         # verifies inside a stock python container (the pyshim contract:
         # stdlib-only extraction works on a bare interpreter).

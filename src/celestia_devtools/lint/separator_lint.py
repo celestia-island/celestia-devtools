@@ -62,7 +62,7 @@ _CONFLICT_MARKER_RE = re.compile(r"^(<{7}\s|={7}$|>{7}\s)")
 
 _DASH_LINE = "------"
 
-def _DASH_WRAP(text: str) -> str:
+def _dash_wrap(text: str) -> str:
     return f"------ {text} ------"
 
 def _replace_comment_sep(m: re.Match) -> str:
@@ -73,7 +73,7 @@ def _replace_comment_sep(m: re.Match) -> str:
     inner = re.match(r"^={5,}\s+(.+?)\s+={5,}$", content)
 
     if inner:
-        return f"{prefix}{_DASH_WRAP(inner.group(1))}{suffix}"
+        return f"{prefix}{_dash_wrap(inner.group(1))}{suffix}"
 
     return f"{prefix}{_DASH_LINE}{suffix}"
 
@@ -81,7 +81,7 @@ def _replace_string_sep(m: re.Match) -> str:
     return f'{m.group(1)}{_DASH_LINE}{m.group(3)}'
 
 def _replace_string_label_sep(m: re.Match) -> str:
-    return f'{m.group(1)}{_DASH_WRAP(m.group(3))}{m.group(5)}'
+    return f'{m.group(1)}{_dash_wrap(m.group(3))}{m.group(5)}'
 
 def _fix_line(line: str) -> str:
     line, n1 = _COMMENT_SEP_RE.subn(_replace_comment_sep, line)
@@ -104,7 +104,7 @@ def _fix_line(line: str) -> str:
     # which already has ===== inside a quoted string matched by _STRING_SEP_RE
     # or _STRING_LABEL_SEP_RE.  For strings that span multiple lines or use
     # raw strings, try the inner-label pattern.
-    line, n4 = _STRING_LABEL_INNER_RE.subn(lambda m: _DASH_WRAP(m.group(2)), line)
+    line, n4 = _STRING_LABEL_INNER_RE.subn(lambda m: _dash_wrap(m.group(2)), line)
     return line
 
 def _has_conflict_marker(line: str) -> bool:

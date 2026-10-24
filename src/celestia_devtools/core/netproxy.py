@@ -47,6 +47,8 @@ import shutil
 import socket
 import subprocess
 import urllib.parse
+import re
+import urllib.request
 
 # Level 1 — environment variables, both cases, plus tool-specific aliases.
 # Ordered: https wins over http wins over all (matches pip/curl conventions).
@@ -238,8 +240,6 @@ def _dns_suffixes() -> tuple[str, ...]:
 
 def _from_wpad(suffixes: tuple[str, ...], timeout: float) -> tuple[str, str] | None:
     """Fetch wpad.dat for each suffix; accept only a literal ``PROXY h:p``."""
-    import re
-    import urllib.request
 
     pat = re.compile(r"PROXY\s+([A-Za-z0-9._-]+:\d+)")
 

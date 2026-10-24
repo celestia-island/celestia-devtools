@@ -8,8 +8,6 @@ from celestia_devtools.vcs.version_string import default_base, version_string
 # ── fixture helpers ──────────────────────────────────────────────────────────
 
 def _git(repo: Path, *args: str) -> None:
-    import subprocess
-
     # core.hooksPath= disables the workspace-global org commit-msg hook —
     # the fixture's "init" subject would otherwise fail the gitmoji lint.
     subprocess.run(["git", "-c", "core.hooksPath=", "-C", str(repo), *args], check = True, capture_output = True)
@@ -59,7 +57,6 @@ def test_version_string_emits_the_single_colon_shape(tmp_path: Path) -> None:
     with ONE colon. Restoring the 2026-10-08 double-colon emit makes this
     red — down-stream parsers accept both, but fresh lines speak the
     single-colon shape."""
-    import subprocess
 
     repo = _git_repo(tmp_path, "0.1.0")
     branch = subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"], check = True, capture_output = True, text = True).stdout.strip()

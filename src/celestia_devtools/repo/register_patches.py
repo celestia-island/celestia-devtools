@@ -40,6 +40,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
+import json
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
 
@@ -228,7 +229,6 @@ def discover_actual_celestia_deps() -> dict[str, str]:
 
     Only deps whose source contains ``celestia-island`` are returned.
     """
-    import json
 
     def _run_metadata(offline: bool) -> dict[str, str] | None:
         cmd = ["cargo", "metadata", "--format-version", "1"]

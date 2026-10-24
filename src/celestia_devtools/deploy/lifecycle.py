@@ -20,7 +20,7 @@ from celestia_devtools.deploy import backup as backup_mod
 from celestia_devtools.deploy.artifact import entry_record, fetch, read_index, resolve
 from celestia_devtools.deploy.profile import deploy_profile
 
-Executor = Callable[..., subprocess.CompletedProcess]
+executor = Callable[..., subprocess.CompletedProcess]
 
 def _default_executor(cmd, **kw):
     return subprocess.run(cmd, capture_output = True, text = True, **kw)
@@ -65,7 +65,7 @@ def _unit_env(profile: deploy_profile) -> dict[str, str]:
 
     return env
 
-def _migrate(profile: deploy_profile, binary: Path, executor: Executor) -> subprocess.CompletedProcess:
+def _migrate(profile: deploy_profile, binary: Path, executor: executor) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.update(_unit_env(profile))
     return executor([str(binary), "db-migrate"], timeout = 600, env = env)
@@ -78,7 +78,7 @@ def _install(binary: Path, dest: Path) -> None:
     os.chmod(tmp, 0o755)
     os.replace(tmp, dest)
 
-def _restart(profile: deploy_profile, executor: Executor) -> subprocess.CompletedProcess:
+def _restart(profile: deploy_profile, executor: executor) -> subprocess.CompletedProcess:
     return executor(["systemctl", "restart", profile.host.unit_name()], timeout = 300)
 
 @dataclass
@@ -88,7 +88,7 @@ class upgrade_outcome:
     detail: str = ""
     rolled_back: bool = False
 
-def upgrade(profile: deploy_profile, source_base: str, channel: str, target: str, executor: Executor = _default_executor, dest_dir: Path | None = None) -> upgrade_outcome:
+def upgrade(profile: deploy_profile, source_base: str, channel: str, target: str, executor: executor = _default_executor, dest_dir: Path | None = None) -> upgrade_outcome:
     """Fetch newest → backup (hard prerequisite) → swap → migrate → on
     migration failure put the previous binary back and restart."""
     index = read_index("{}/index.toml".format(str(source_base).rstrip("/")))
@@ -123,7 +123,7 @@ def upgrade(profile: deploy_profile, source_base: str, channel: str, target: str
     history_append(profile, action = "upgrade", version = entry.version, sha256 = entry.sha256, backup = str(bkp.path), result = "ok")
     return upgrade_outcome(True, entry.version, "upgraded; backup at {}".format(bkp.path.name))
 
-def rollback(profile: deploy_profile, executor: Executor = _default_executor) -> upgrade_outcome:
+def rollback(profile: deploy_profile, executor: executor = _default_executor) -> upgrade_outcome:
     previous = prev_path(profile)
 
     if not previous.exists():

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 from typing import Any
 import tomli_w
+import typing
 
 try:  # Python >= 3.11 (our floor)
     import tomllib
@@ -40,8 +41,6 @@ def _field_type(annotation) -> type | None:
 
     if isinstance(annotation, str):
         return _PLAIN_TYPES.get(annotation)
-
-    import typing
 
     if typing.get_origin(annotation) is not None:
         return None

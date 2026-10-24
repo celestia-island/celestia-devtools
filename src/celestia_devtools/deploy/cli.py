@@ -16,6 +16,10 @@ import argparse
 import sys
 from pathlib import Path
 from celestia_devtools.deploy import bootstrap, profile as profile_mod, wizard
+from celestia_devtools.deploy import stages_more
+import json
+from celestia_devtools.deploy import doctor
+from celestia_devtools.deploy import artifact
 
 PLANNED = ("backup / restore / upgrade / rollback — library landed (deploy.backup,", "   deploy.lifecycle), CLI subcommands land with a later slice", "secrets rotate|show-meta / uninstall            — later slice")
 
@@ -53,7 +57,6 @@ def run_bootstrap(argv: list[str]) -> int:
     # Complete the stage machine for actual deploys, restoring the
     # pending-slice contract afterwards so tests importing this module
     # are unaffected (same snapshot/restore as the wiring test fixture).
-    from celestia_devtools.deploy import stages_more
     _saved = dict(bootstrap.STAGES)
     stages_more.register_stages()
 
@@ -124,7 +127,6 @@ def _run_bootstrap_inner(argv: list[str]) -> int:
         sys.stdout = real_stdout
 
     if args.json:
-        import json
         print(json.dumps({"exit": code, "stages": [{"name": r.name, "status": r.status, "detail": r.detail, "changed": r.changed}for r in results]}, ensure_ascii = False, indent = 2))
 
     return code
@@ -138,12 +140,10 @@ def main() -> int:
         return 0
 
     if argv and (argv[0] == "doctor"):
-        from celestia_devtools.deploy import doctor
         sys.argv = ["deploy-doctor", *argv[1:]]
         return int(doctor.main() or 0)
 
     if argv and (argv[0] == "artifact"):
-        from celestia_devtools.deploy import artifact
         sys.argv = ["deploy-artifact", *argv[1:]]
         return int(artifact.main() or 0)
 

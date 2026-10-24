@@ -6,6 +6,8 @@ import os
 import tarfile
 import pytest
 from celestia_devtools.deploy import artifact
+from celestia_devtools.core import cli as core_cli
+from celestia_devtools.deploy import cli as deploy_cli
 
 def _fake_bin(tmp_path, payload = b"#!/bin/sh\necho chest-ok\n"):
     p = tmp_path / "chest"
@@ -105,10 +107,8 @@ class test_file_url:
 
 class test_cli:
     def test_registry_and_dispatch(self, monkeypatch, capsys):
-        from celestia_devtools.core import cli as core_cli
         assert core_cli.COMMANDS["deploy"] == "celestia_devtools.deploy.cli"
         monkeypatch.setattr("sys.argv", ["deploy", "artifact"])
-        from celestia_devtools.deploy import cli as deploy_cli
 
         with pytest.raises(SystemExit) as ei:  # argparse: required subcommand
             deploy_cli.main()
@@ -118,7 +118,6 @@ class test_cli:
     def test_index_then_fetch_via_cli(self, tmp_path, monkeypatch, capsys):
         out = tmp_path / "out"
         artifact.build(_fake_bin(tmp_path), "0.1.5", "t1", out)
-        from celestia_devtools.deploy import cli as deploy_cli
         monkeypatch.setattr("sys.argv", ["deploy", "artifact", "index", "--dir", str(out), "--channel", "stable"])
         assert deploy_cli.main() == 0
         monkeypatch.setattr("sys.argv", ["deploy", "artifact", "fetch", "--source", str(out), "--channel", "stable", "--target", "t1", "--dest", str(tmp_path / "d")])

@@ -21,6 +21,7 @@ Linux-targeted facilities (the mock stack) can decide whether to relaunch.
 """
 
 from __future__ import annotations
+import argparse
 import os
 import shutil
 import subprocess
@@ -179,8 +180,6 @@ def _report(results: list[probe_record]) -> None:
 # ── CLI entry: `celestia-devtools preflight [reqs...]` ─────────────────
 
 def main() -> int:
-    import argparse  # local import keeps the module importable in odd envs
-
     p = argparse.ArgumentParser(prog = "celestia-devtools preflight", description = "Check that required dev tools are present. " f"Available: {', '.join(CHECKERS)}")
     p.add_argument("reqs", nargs = "*", default = list(CHECKERS), help = f"requirements to check (default: all = {', '.join(CHECKERS)})")
     p.add_argument("--quiet", action = "store_true", help = "suppress the report, just exit code")

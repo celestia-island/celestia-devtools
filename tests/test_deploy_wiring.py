@@ -10,6 +10,7 @@ import pytest
 from celestia_devtools.deploy import bootstrap, ops, stages_more
 from celestia_devtools.deploy.artifact import build as artifact_build
 from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
+from celestia_devtools.deploy.artifact import write_index, scan_dir
 
 _STAGES_SNAPSHOT = dict(bootstrap.STAGES)
 
@@ -67,7 +68,6 @@ def _seed_artifact(tmp_path, prof):
     fake = tmp_path / "fakebin"
     fake.write_bytes(b"#!/bin/sh\nexit 0\n")
     os.chmod(fake, 0o755)
-    from celestia_devtools.deploy.artifact import write_index, scan_dir
     artifact_build(fake, "0.1.0", stages_more._target(), out)
     write_index(out, {"stable": scan_dir(out)})
     prof.artifact.source = str(out)

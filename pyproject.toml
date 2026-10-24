@@ -111,6 +111,9 @@ ignore = [
 # CI run it as a blocking step. The keys below pin the interpretation choices.
 [tool.py_style]
 docstrings = "allow"
+# unittest-style callback names inherited from the framework (lowercase "do_HEAD"
+# is the contract, not a local naming choice).
+framework_callbacks = ["do_HEAD"]
 slice_colons = "pep8"
 final_newline = "one"
 blank_line_scope = "all"

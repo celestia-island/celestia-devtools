@@ -19,14 +19,16 @@ from pathlib import Path
 from typing import Callable
 from celestia_devtools.deploy import lifecycle
 from celestia_devtools.deploy.profile import deploy_profile
+import urllib.request
+import re
+import shutil
 
-Executor = Callable[..., subprocess.CompletedProcess]
+executor = Callable[..., subprocess.CompletedProcess]
 
 def _ok(cmd, **kw):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 def _http_get(url: str, timeout: int = 15) -> tuple[int, str]:
-    import urllib.request
     # loopback: env proxies must not intercept (R2 P3-3)
     _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -39,7 +41,6 @@ def _http_get(url: str, timeout: int = 15) -> tuple[int, str]:
         return 0, str(exc)
 
 def _rpc(base: str, method: str, params: dict | None = None) -> tuple[int, dict]:
-    import urllib.request
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}).encode()
     req = urllib.request.Request(base + "/api/rpc", data = payload, method = "POST")
     req.add_header("Content-Type", "application/json")
@@ -73,7 +74,6 @@ def verify(prof: deploy_profile, http_get = _http_get) -> list[check]:
     epoch = ""
 
     if status == 200:
-        import re
         m = re.search(r"main-[A-Za-z0-9_-]+\.js", body)
         epoch = m.group(0) if m else ""
 
@@ -112,7 +112,7 @@ def status(prof: deploy_profile, rpc = _rpc) -> face_status:
     out.history = lifecycle.history_read(prof)
     return out
 
-def uninstall(prof: deploy_profile, purge_data: bool = False, executor: Executor = _ok) -> list[str]:
+def uninstall(prof: deploy_profile, purge_data: bool = False, executor: executor = _ok) -> list[str]:
     """Stop the unit, remove config/binary; data survives unless --purge-data
     (rotate ≠ destroy). Returns the applied steps."""
     steps: list[str] = []
@@ -128,7 +128,6 @@ def uninstall(prof: deploy_profile, purge_data: bool = False, executor: Executor
     for path in (prof.host.deploy_root() / "bin", Path("/etc/systemd/system") / unit, prof.host.etc_env()):
         if path.exists():
             if path.is_dir():
-                import shutil
                 shutil.rmtree(path)
             else:
                 path.unlink()
@@ -139,7 +138,6 @@ def uninstall(prof: deploy_profile, purge_data: bool = False, executor: Executor
         data = prof.host.deploy_root() / "data"
 
         if data.exists():
-            import shutil
             shutil.rmtree(data)
             steps.append("purged {}".format(data))
 

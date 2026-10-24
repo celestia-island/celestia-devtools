@@ -19,13 +19,13 @@ belongs to D3.
 
 from __future__ import annotations
 import os
-import pwd
 import secrets as pysecrets
 import stat
 import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
 from celestia_devtools.deploy.profile import deploy_profile
+from pathlib import Path as _Path
 
 OK = "ok"
 SKIPPED = "skipped"
@@ -93,6 +93,8 @@ def stage_account(ctx: stage_context) -> stage_result:
     user = ctx.profile.host.admin_user
     root = ctx.profile.host.deploy_root()
     changed = False
+    # py-style-ok: no-block-imports: POSIX-only stdlib; a module-level import would break Windows runs
+    import pwd
     getpwnam = getattr(ctx, "getpwnam", pwd.getpwnam)
 
     try:
@@ -107,8 +109,8 @@ def stage_account(ctx: stage_context) -> stage_result:
 
     # dirs are plain mkdir+chown+chmod: real filesystem side effects the
     # tests can verify, no executor round-trip needed for the common path
+    # py-style-ok: no-block-imports: POSIX-only stdlib; a module-level import would break Windows runs
     import pwd as _pwd
-    from pathlib import Path as _Path
     needed = [root, root / "data", root / "data" / "themes", root / "data" / "avatars", root / "data" / "uploads"]
 
     if ctx.dry_run:

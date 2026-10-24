@@ -48,6 +48,9 @@ from typing import Optional
 import yaml
 from celestia_devtools import __version__
 from celestia_devtools.core import logger
+from importlib.resources import files
+import celestia_devtools
+from celestia_devtools.vcs.hook import install_hook
 
 DEST_DIR = ".just"
 LINK_NAME = "celestia-devtools.just"
@@ -59,11 +62,8 @@ def common_just_path() -> Path:
     """Return the filesystem path to the bundled ``common.just``."""
 
     try:
-        from importlib.resources import files
-
         return Path(str(files("celestia_devtools") / "common.just"))
     except Exception:
-        import celestia_devtools
 
         return Path(celestia_devtools.__file__).resolve().parent / "common.just"
 
@@ -157,8 +157,6 @@ def main() -> int:
 
     # ── Auto-install commit-msg hook ────────────────────────────────
     if not args.no_hooks:
-        from celestia_devtools.vcs.hook import install_hook
-
         hooks_dir = Path.cwd() / ".git" / "hooks"
 
         if not hooks_dir.is_dir():

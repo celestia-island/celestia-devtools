@@ -40,6 +40,7 @@ import time
 from pathlib import Path
 from typing import Callable
 from celestia_devtools.core import logger as _logger
+import argparse
 
 _log = _logger
 
@@ -47,7 +48,7 @@ def _print_tagged(tag: str, text: str, *, file = None) -> None:
     """Print a line with a [tag] prefix."""
     print(f"[{tag}] {text}", file = file or sys.stdout, flush = True)
 
-def _stream_tagged(tag: str, proc: subprocess.Popen, stop: threading.Event, ready_patterns: list[re.Pattern] | None = None, ready_event: threading.Event | None = None, log_fn: "_LogFn | None" = None) -> None:
+def _stream_tagged(tag: str, proc: subprocess.Popen, stop: threading.Event, ready_patterns: list[re.Pattern] | None = None, ready_event: threading.Event | None = None, log_fn: "_log_fn | None" = None) -> None:
     """Read proc.stdout line-by-line, print with [tag], detect readiness.
 
     ``log_fn`` overrides the default ``_print_tagged`` (e.g. for project-specific
@@ -81,7 +82,7 @@ def _stream_tagged(tag: str, proc: subprocess.Popen, stop: threading.Event, read
         pass
 
 # Type alias for the per-line log function override.
-_LogFn = Callable[[str, str], None]
+_log_fn = Callable[[str, str], None]
 
 class process_manager:
     """Manages multiple child processes with tagged output and graceful shutdown.
@@ -93,13 +94,13 @@ class process_manager:
     ``_print_tagged`` for project-specific formatting / filtering.
     """
 
-    def __init__(self, *, log_fn: "_LogFn | None" = None) -> None:
+    def __init__(self, *, log_fn: "_log_fn | None" = None) -> None:
         self._procs: list[tuple[str, subprocess.Popen]] = []
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._log_fn = log_fn
 
-    def start(self, tag: str, cmd: list[str], *, cwd: Path | str | None = None, env: dict[str, str] | None = None, ready_patterns: list[re.Pattern | str] | None = None, ready_event: threading.Event | None = None, log_fn: "_LogFn | None" = None) -> subprocess.Popen:
+    def start(self, tag: str, cmd: list[str], *, cwd: Path | str | None = None, env: dict[str, str] | None = None, ready_patterns: list[re.Pattern | str] | None = None, ready_event: threading.Event | None = None, log_fn: "_log_fn | None" = None) -> subprocess.Popen:
         """Spawn *cmd* as a child, stream stdout with [tag].
 
         ``ready_patterns`` is a list of regex (compiled or raw strings); when
@@ -222,7 +223,6 @@ class process_manager:
 
 def main() -> int:
     """CLI entry — minimal, mainly for help/listing."""
-    import argparse
 
     p = argparse.ArgumentParser(prog = "celestia-devtools serve", description = "Shared process-supervision facility (import ProcessManager in dev scripts).")
     p.add_argument("--help-full", action = "store_true", help = "show detailed usage")

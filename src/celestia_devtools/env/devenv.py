@@ -62,6 +62,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Sequence
+from celestia_devtools.env.host import detect_host_kind
+import tomllib
 
 # ── Profiles ─────────────────────────────────────────────────────────────────
 
@@ -89,7 +91,6 @@ def config_file_path(explicit: Optional[str] = None) -> Optional[Path]:
         return p if p.exists() else None
 
     candidates = [Path.cwd() / _CONFIG_NAME]
-    from celestia_devtools.env.host import detect_host_kind
 
     if detect_host_kind() == "windows":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -116,7 +117,6 @@ def load_profile_ports(config: Optional[str] = None, profile: Optional[str] = No
     cfg_path = config_file_path(config)
 
     if cfg_path is not None:
-        import tomllib
         data = tomllib.loads(cfg_path.read_text(encoding = "utf-8"))
         active = profile or data.get("profile", active)
 

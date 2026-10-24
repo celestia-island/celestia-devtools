@@ -1,3 +1,4 @@
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for celestia_devtools.lint.py_style.
 
 Every rule has at least one bad sample (the rule must fire) and one good sample
@@ -14,6 +15,7 @@ import sys
 import tokenize
 from pathlib import Path
 import pytest
+import inspect
 
 # Allow running the tests against a source checkout without a pip
 # install (PYTHONPATH-style); the CI venv install makes this a no-op.
@@ -21,8 +23,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
 from celestia_devtools.lint import py_style, py_style_rules  # noqa: E402
-# noqa: E402
-from celestia_devtools.lint.py_style_config import (config_error, style_config, load_config)
+from celestia_devtools.lint.py_style_config import (config_error, style_config, load_config)  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -186,6 +187,18 @@ def test_single_line_statement_multiline_decorator_allowed(tmp_path):
     cfg = style_config(root = tmp_path, allow_multiline_decorators = True)
     body = "@decorator(\n    option\n)\ndef f():\n    return 1\n"
     assert rule_hits(tmp_path, body, "single-line-statement", cfg = cfg) == []
+
+def test_single_line_statement_multiline_string_argument_exempt(tmp_path):
+    body = "def write(path, text):\n    return (path, text)\n\n\nvalue = write(\n    first,\n    \"\"\"line one\nline two\"\"\",\n    last,\n)\n"
+    assert rule_hits(tmp_path, body, "single-line-statement") == []
+
+def test_single_line_statement_multiline_fstring_argument_exempt(tmp_path):
+    body = "value = call(\n    first,\n    f\"\"\"value {a + b}\nnext line\"\"\",\n    last,\n)\n"
+    assert rule_hits(tmp_path, body, "single-line-statement") == []
+
+def test_single_line_statement_plain_multiline_call_still_reported(tmp_path):
+    body = "value = call(\n    first,\n    second,\n    last,\n)\n"
+    assert rule_hits(tmp_path, body, "single-line-statement") == ["single-line-statement"]
 
 # ---------------------------------------------------------------------------
 # Rule: imports-at-top
@@ -479,7 +492,7 @@ def test_snake_case_definition_good(tmp_path):
     assert rule_hits(tmp_path, body, "snake-case-definition") == []
 
 def test_snake_case_definition_exemptions_good(tmp_path):
-    body = "from typing import NamedTuple, TYPE_CHECKING, TypeVar\n" "\n" "MAX_SIZE = 10\n" 'Item = TypeVar("Item")\n' "\n" "\n" "class Point(NamedTuple):\n" "    x: int\n" "    y: int\n" "\n" "\n" "class handler:\n" "    def setUp(self):\n" "        self._value = 1\n" "\n" "    def do_GET(self):\n" "        return self._value\n"
+    body = "from typing import NamedTuple, TYPE_CHECKING, TypeVar\n" "\n" "MAX_SIZE = 10\n" 'Item = TypeVar("Item")\n' "\n" "\n" "class Point(NamedTuple):\n" "    x: int\n" "    y: int\n" "\n" "\n" "class handler:\n" "    def setUp(self):\n" "        self._value = 1\n" "\n" "    def do_GET(self):\n" "        return self._value\n" "\n" "    def do_HEAD(self):\n" "        return self._value\n" "\n" "    def do_OPTIONS(self):\n" "        return self._value\n"
     assert rule_hits(tmp_path, body, "snake-case-definition") == []
 
 def test_snake_case_definition_underscore_constants_exempt(tmp_path):
@@ -525,8 +538,6 @@ def test_snake_case_file_dunder_exempt(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_naming_helper_defined_once():
-    import inspect
-
     assert inspect.getsource(py_style_rules).count("def _naming_issues") == 1
 
 def test_compound_word_bad(tmp_path):

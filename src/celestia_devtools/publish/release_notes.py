@@ -144,7 +144,7 @@ def classify(subject: str) -> str:
 
 # ── GitHub API access (stdlib only, fetch injectable for tests) ──────────────
 
-Fetch = Callable[[str], Any]
+fetch = Callable[[str], Any]
 
 class git_hub_error(RuntimeError):
     """A non-404 GitHub API failure."""
@@ -197,7 +197,7 @@ def _request(method: str, url: str, token: Optional[str], payload: Optional[Dict
         detail = exc.read().decode("utf-8", "replace")[:500]
         raise git_hub_error(f"{method} {url} failed: HTTP {exc.code}: {detail}") from exc
 
-def make_fetch(token: Optional[str]) -> Fetch:
+def make_fetch(token: Optional[str]) -> fetch:
     """Build a GET-and-parse-JSON function with all rate-limit handling inline."""
 
     def fetch(url: str) -> Any:
@@ -220,7 +220,7 @@ def parse_semver(tag: str) -> Optional[Tuple[int, int, int]]:
 
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
 
-def resolve_previous_tag(repo: str, tag: str, fetch: Fetch, max_pages: int = 50) -> Optional[str]:
+def resolve_previous_tag(repo: str, tag: str, fetch: fetch, max_pages: int = 50) -> Optional[str]:
     """Highest semver tag below *tag*; ``None`` when *tag* is not semver-shaped."""
     current = parse_semver(tag)
 
@@ -255,7 +255,7 @@ def resolve_previous_tag(repo: str, tag: str, fetch: Fetch, max_pages: int = 50)
 
     return best_name
 
-def tag_commit_sha(repo: str, tag: str, fetch: Fetch) -> str:
+def tag_commit_sha(repo: str, tag: str, fetch: fetch) -> str:
     """Commit SHA behind *tag*, following the annotated-tag indirection."""
     ref = fetch(f"{API_ROOT}/repos/{repo}/git/ref/tags/{urllib.parse.quote(tag)}")
     obj = ref["object"]
@@ -266,7 +266,7 @@ def tag_commit_sha(repo: str, tag: str, fetch: Fetch) -> str:
 
     return obj["sha"]
 
-def find_release(repo: str, tag: str, fetch: Fetch, max_pages: int = 10) -> Optional[Dict[str, Any]]:
+def find_release(repo: str, tag: str, fetch: fetch, max_pages: int = 10) -> Optional[Dict[str, Any]]:
     """The release object for *tag*, drafts included.
 
     ``GET /releases/tags/{tag}`` skips drafts, so fall back to paging the
@@ -292,7 +292,7 @@ def find_release(repo: str, tag: str, fetch: Fetch, max_pages: int = 10) -> Opti
 
     return None
 
-def walk_head(repo: str, tag: str, fetch: Fetch, on: str) -> str:
+def walk_head(repo: str, tag: str, fetch: fetch, on: str) -> str:
     """A ref ``commits?sha=`` accepts for walking history from *tag*.
 
     Normally the tag itself. Repos that lost their git tags (release objects
@@ -315,7 +315,7 @@ def walk_head(repo: str, tag: str, fetch: Fetch, on: str) -> str:
 
 # ── commit walking → categorized entries ─────────────────────────────────────
 
-def collect_entries(repo: str, tag: str, previous_tag: Optional[str], fetch: Fetch, max_pages: int = 500) -> Tuple[List[Tuple[str, List[Tuple[int, str]]]], int]:
+def collect_entries(repo: str, tag: str, previous_tag: Optional[str], fetch: fetch, max_pages: int = 500) -> Tuple[List[Tuple[str, List[Tuple[int, str]]]], int]:
     """Walk commits from *tag* back to *previous_tag* and group PRs by section.
 
     Returns ``(sections, skipped)`` where *sections* preserves the fixed

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 import pytest
 from celestia_devtools import pyshim
+import tarfile
 
 SHIM = Path(pyshim.__file__).read_text(encoding = "utf-8")
 
@@ -140,8 +141,6 @@ class test_safe_extract:
     """R1-F6: validated extraction — no traversal, no links, no devices."""
 
     def _tar_bytes(self, infos):
-        import io
-        import tarfile
         buf = io.BytesIO()
 
         with tarfile.open(fileobj = buf, mode = "w:gz") as tf:
@@ -152,14 +151,11 @@ class test_safe_extract:
         return tarfile.open(fileobj = buf, mode = "r:gz")
 
     def test_rejects_path_traversal(self, tmp_path):
-        import tarfile
-
         with self._tar_bytes([(tarfile.TarInfo("../../evil.sh"), b"x")]) as tf:
             with pytest.raises(IOError):
                 pyshim._safe_extract(tf, str(tmp_path))
 
     def test_rejects_symlink_member(self, tmp_path):
-        import tarfile
         info = tarfile.TarInfo("link")
         info.type = tarfile.SYMTYPE
         info.linkname = "/etc/passwd"
@@ -169,7 +165,6 @@ class test_safe_extract:
                 pyshim._safe_extract(tf, str(tmp_path))
 
     def test_extracts_normal_file(self, tmp_path):
-        import tarfile
         info = tarfile.TarInfo("bin/python3")
         info.size = 2
 

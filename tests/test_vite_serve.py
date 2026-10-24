@@ -28,7 +28,6 @@ def spa_server(tmp_path: Path):
     (tmp_path / "assets").mkdir()
     (tmp_path / "assets" / "app.js").write_text("js", encoding = "utf-8")
     (tmp_path / "data.json").write_text("{}", encoding = "utf-8")
-    import http.server
 
     class _bound(_test_handler):
         def __init__(self, *a, **kw):

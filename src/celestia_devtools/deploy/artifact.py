@@ -27,14 +27,15 @@ import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 import tomli_w
+import io
+import urllib.request
+from celestia_devtools.core import netproxy
+from celestia_devtools.pyshim import safe_extract
 
 try:
     import tomllib
 except ImportError:  # pragma: no cover
     tomllib = None  # type: ignore[assignment]
-
-from celestia_devtools.core import netproxy
-from celestia_devtools.pyshim import safe_extract
 
 BIN_NAME = "chest"
 NAME_RE = re.compile(r"^(?P<name>[a-z0-9-]+)-(?P<version>\d+\.\d+\.\d+)" r"-(?P<target>[a-z0-9_-]+)\.tar\.gz$")
@@ -89,7 +90,6 @@ def build(bin_path: Path, version: str, target: str, out_dir: Path, name: str = 
             marker = "{}-{}-{}\n".format(name, version, target).encode()
             minfo = tarfile.TarInfo("{}.version".format(name))
             minfo.size = len(marker)
-            import io
             tf.addfile(minfo, io.BytesIO(marker))
 
     digest = sha256_file(dest)
@@ -162,7 +162,6 @@ def _load_bytes(source: str | Path) -> bytes:
         text = text[len("file://"):]
 
     if text.startswith("https://"):
-        import urllib.request
         cfg = netproxy.detect()
         handlers = []
 

@@ -29,6 +29,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence
+import urllib.request
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -455,8 +456,6 @@ def write_code_sample(ws: Path, out: Path) -> None:
     (out / "00-code-provenance.md").write_text("\n".join(provenance) + "\n", encoding = "utf-8")
 
 def write_live_surface(out: Path) -> None:
-    import urllib.request
-
     lines = [f"# 证据包：线上可观测面（生成于 {now_iso()}）\n"]
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 

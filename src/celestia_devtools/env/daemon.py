@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional, Sequence
+from celestia_devtools.repo.register_patches import is_celestia_repo
 
 # ── Service definitions ──────────────────────────────────────────────────────
 
@@ -33,7 +34,6 @@ DEFAULT_CONFIG_PATH = "/etc/malkuth/services.toml"
 DAEMON_PID_FILE = "/tmp/malkuth-daemon.pid"
 
 def detect_repo() -> Optional[str]:
-    from celestia_devtools.repo.register_patches import is_celestia_repo
     d = Path.cwd()
 
     while d != d.parent:

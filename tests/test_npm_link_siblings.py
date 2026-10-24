@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.npm import link_siblings as ls
 from celestia_devtools.npm.link_siblings import (NpmPackage, LinkPlan, apply_link, collect_declared_family_deps, load_state, plan_links, remove_links)
+import subprocess
 
 SIBLING_VER = "0.29.0"
 
@@ -229,7 +230,6 @@ class test_is_celestia_repo:
         """Runners rewrite github.com/celestia-island/* onto local mirrors via
         url.insteadOf; `git remote get-url` would print the mirror path and
         break discovery. The raw config read must still match."""
-        import subprocess
 
         repo = tmp_path / "hikari"
         repo.mkdir()
@@ -242,8 +242,6 @@ class test_is_celestia_repo:
 
 class test_link_siblings_main:
     def _git_repo(self, path: Path, origin: str) -> None:
-        import subprocess
-
         path.mkdir(parents = True, exist_ok = True)
         subprocess.run(["git", "init", "-q", str(path)], check = True)
         subprocess.run(["git", "-C", str(path), "remote", "add", "origin", origin], check = True)

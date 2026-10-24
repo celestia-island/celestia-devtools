@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.deploy import cli as deploy_cli
 from celestia_devtools.deploy.profile import deploy_profile
+from celestia_devtools.deploy.profile import profile_error
 
 def _profile_file(tmp_path: Path) -> Path:
     prof = deploy_profile()
@@ -86,8 +87,6 @@ class test_unknown_top_level:
         prof = deploy_profile()
         prof.host.face = "chest"
         text = prof.to_toml() + "\n[frant]\nenabled = true\n"
-        from celestia_devtools.deploy.profile import profile_error
-        import pytest
 
         with pytest.raises(profile_error, match = "frant"):
             deploy_profile.from_toml(text)

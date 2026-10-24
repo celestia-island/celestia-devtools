@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.build.gate import (usage_error, build_python_graph, build_rust_graph, build_web_graph, classify_credential_line, credential_sweep, detect_modes, discover_langyo_repos, git_config_paths, is_credential_key, is_langyo_repo, iter_sweep_files, looks_like_literal, main as gate_main, precheck_mounts, resolve_modes, scan_file_credentials, scan_large_downloads, _checkout_staleness)
 from celestia_devtools.core.scheduler import (FAIL, PASS, SKIP, SKIP_DEP, Step, run_dag)
+import celestia_devtools.build.gate as gate_mod
 
 # ── Scheduler: dependency ordering ────────────────────────────────────────────
 
@@ -257,8 +258,6 @@ class test_precheck_mounts:
 
 class test_findmnt_mounts:
     def test_parses_output(self, monkeypatch):
-        import celestia_devtools.build.gate as gate_mod
-
         class fake_proc:
             returncode = 0
             stdout = "/mnt/codespace nfs4\n/tmp/foo ext4\n"
@@ -271,8 +270,6 @@ class test_findmnt_mounts:
         assert gate_mod.findmnt_mounts() == [("/mnt/codespace", "nfs4"), ("/tmp/foo", "ext4")]
 
     def test_missing_findmnt_returns_empty(self, monkeypatch):
-        import celestia_devtools.build.gate as gate_mod
-
         def fake_run(cmd, **kwargs):
             raise OSError("findmnt not found")
 

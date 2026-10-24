@@ -365,13 +365,13 @@ def parse_directives(context: file_context, shown: str) -> tuple[dict[int, list[
     return directives, diagnostics
 
 @dataclass(frozen = True)
-class FileDirective:
+class file_directive_record:
     """Parsed '# py-style-ok-file:' exemption of one file."""
 
     active: bool
     rules: frozenset[str] | None
 
-def parse_file_directive(context: file_context, shown: str) -> tuple[FileDirective, list[str]]:
+def parse_file_directive(context: file_context, shown: str) -> tuple[file_directive_record, list[str]]:
     """Parse file-level exemption directives from the header comment block.
 
     Only comment-only lines before the first code statement are considered. A
@@ -414,9 +414,9 @@ def parse_file_directive(context: file_context, shown: str) -> tuple[FileDirecti
         selected.update(names & CHECK_RULE_IDS)
 
     if not active:
-        return FileDirective(False, None), diagnostics
+        return file_directive_record(False, None), diagnostics
 
-    return FileDirective(True, None if all_rules else frozenset(selected)), diagnostics
+    return file_directive_record(True, None if all_rules else frozenset(selected)), diagnostics
 
 def _issue_is_inline_exempted(issue: issue_record, directives: dict[int, list[directive]]) -> bool:
     for row in (issue.line, issue.line - 1):
@@ -562,7 +562,7 @@ def run_checks(discovery: discovery, active: Sequence[str], config: style_config
     reports: dict[Path, file_report] = {}
     warnings: list[str] = []
     contexts: dict[Path, tuple[file_context, dict[int, list[directive]]]] = {}
-    file_directives: dict[Path, FileDirective] = {}
+    file_directives: dict[Path, file_directive_record] = {}
     modules: list[module_info] = []
 
     for path in discovery.files:

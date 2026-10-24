@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 import pytest
 from celestia_devtools.vcs.branch_sweep import sweep_repo
+import subprocess as sp
+from celestia_devtools.vcs.branch_sweep import main as sweep_main
 
 def _git(repo: Path, *args: str) -> str:
     # Same UTF-8 pin the tool itself uses: git speaks UTF-8 and the CJK
@@ -112,7 +114,6 @@ def test_apply_deletes_and_backs_up(repo: Path, tmp_path: Path):
     assert "feat/squash" not in branches
 
 def test_main_dry_run_via_cli(repo: Path):
-    import subprocess
     r = subprocess.run([sys.executable, "-m", "celestia_devtools.core.cli", "git-sweep", "--repo", str(repo)], capture_output = True, text = True)
     assert r.returncode == 0
     assert "dry run" in r.stdout
@@ -158,9 +159,6 @@ def test_root_skips_repo_without_base(tmp_path: Path, capsys):
     scratch repo) that carry neither master nor main; those are not
     sweepable, and reporting them as failures made the whole run exit 1.
     """
-    import subprocess as sp
-
-    from celestia_devtools.vcs.branch_sweep import main as sweep_main
 
     def git_init(path: Path, branch: str) -> None:
         path.mkdir()

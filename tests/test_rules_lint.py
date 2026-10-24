@@ -1,3 +1,4 @@
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for celestia_devtools.lint.rules_lint."""
 
 from __future__ import annotations
@@ -5,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 import pytest
+import shutil
 
 # Allow running the tests against a source checkout without a pip
 # install (PYTHONPATH-style); the CI venv install makes this a no-op.
@@ -103,7 +105,6 @@ def test_missing_pyyaml_is_tolerated_when_the_tree_has_no_skills(tmp_path, monke
     # No `.agents/skills` at all, and a core with no pointer to one.
     core = "# Rules\n\n## 1. Core\n\n%s\n" % LONG_LINE
     make_tree(tmp_path, core = core)
-    import shutil
 
     shutil.rmtree(tmp_path / ".agents")
     monkeypatch.setattr(rules_lint, "yaml", None)

@@ -11,6 +11,9 @@ self-hosted-only-by-default scope, ``--policy-override`` and the exit codes.
 import os
 import pytest
 from celestia_devtools.ci.job_timeouts import (workflow_parse_error, main, scan_workflow_text, suggest)
+import json
+from pathlib import Path as _Path
+from celestia_devtools.ci.job_timeouts import main as entry
 
 try:  # PyYAML 用于交叉校验“插入后仍是合法 YAML”——见下面的 ImportError 说明。
     import yaml
@@ -363,8 +366,6 @@ class test_scope_self_hosted_by_default:
         assert "1/1 jobs missing timeout-minutes (self-hosted: 1/1, hosted: 1/1)" in out
 
     def test_audit_json_has_self_hosted_flag(self, tmp_path, capsys):
-        import json
-
         _workflow(tmp_path, self.WORKFLOW)
         assert main(["audit", str(tmp_path), "--json"]) == 1
         records = json.loads(capsys.readouterr().out)
@@ -421,8 +422,6 @@ class test_policy_override:
         assert "    timeout-minutes: 120\n" in text
 
     def test_override_reported_by_audit(self, tmp_path, capsys):
-        import json
-
         _workflow(tmp_path, _simple("    runs-on: [self-hosted, linux]\n"))
         main(["audit", str(tmp_path), "--json", "--policy-override", "test=42"])
         records = json.loads(capsys.readouterr().out)
@@ -506,7 +505,6 @@ class test_audit_listing:
     def test_all_jobs_are_listed_even_out_of_scope(self, tmp_path, capsys):
         _workflow(tmp_path, self.WORKFLOW)
         assert main(["audit", str(tmp_path), "--json"]) == 1
-        import json
 
         records = json.loads(capsys.readouterr().out)
         assert {record["job"] for record in records} == {"check", "e2e", "windows", "caller"}
@@ -573,7 +571,6 @@ class test_inline_comments:
 
     def test_trailing_comment_is_stripped_from_reported_values(self, tmp_path, capsys):
         """M24 coverage hole: the comment must really be stripped from the ``--json`` values."""
-        import json
 
         _workflow(tmp_path, "jobs:\n" "  test:\n" "    runs-on: [self-hosted, linux]  # farm labels\n" "    timeout-minutes: 30  # tuned\n")
         main(["audit", str(tmp_path), "--json"])
@@ -583,7 +580,6 @@ class test_inline_comments:
 
     def test_hash_without_whitespace_is_not_a_comment(self, tmp_path, capsys):
         """M25 coverage hole: the ``#`` in ``uses: x#y`` belongs to the value itself."""
-        import json
 
         target = "celestia-island/celestia-devtools/" ".github/workflows/verify-versions.yml#v1"
         _workflow(tmp_path, f"jobs:\n  v:\n    uses: {target}\n")
@@ -800,8 +796,6 @@ class test_quoted_job_name_identity:
     """M22 coverage hole: quotes must be stripped from the job name (affects ``--policy-override`` and ``--json``)."""
 
     def test_quoted_name_is_stripped_in_json(self, tmp_path, capsys):
-        import json
-
         _workflow(tmp_path, 'jobs:\n  "test":\n    runs-on: [self-hosted, linux]\n')
         main(["audit", str(tmp_path), "--json"])
         records = json.loads(capsys.readouterr().out)
@@ -817,8 +811,6 @@ class test_entry_point_registered:
     """M23 coverage hole: the entry point must really be registered in ``pyproject.toml``."""
 
     def test_console_script_declared(self):
-        from pathlib import Path as _Path
-
         # 用文本断言而不是 tomllib：本包声明支持 3.9，而 tomllib 是 3.11+ 才有的。
         pyproject = _Path(__file__).resolve().parent.parent / "pyproject.toml"
         text = pyproject.read_text(encoding = "utf-8")
@@ -828,8 +820,6 @@ class test_entry_point_registered:
         assert "celestia-job-timeouts" in scripts
 
     def test_entry_point_target_is_importable_and_callable(self):
-        from celestia_devtools.ci.job_timeouts import main as entry
-
         assert callable(entry)
 
 class test_non_workflow_files_untouched:

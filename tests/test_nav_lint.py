@@ -1,3 +1,4 @@
+# py-style-ok-file: imports-at-top: tests run against a src checkout (sys.path.insert must precede the package import)
 """Tests for celestia_devtools.lint.nav_lint."""
 
 from __future__ import annotations

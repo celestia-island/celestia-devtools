@@ -934,7 +934,20 @@ def check_single_line_statement(context: file_context, config: "style_config") -
             if config.allow_multiline_decorators:
                 continue
 
-        only_multiline_literal = True
+        # A logical line that contains a multi-line string literal is exempt: the
+        # line breaks inside the literal are runtime data (P09/P43) and rewriting
+        # them to one physical line would change the string. Python 3.11
+        # tokenizes an f-string as one STRING token; 3.12+ splits it into
+        # FSTRING_START/MIDDLE/END tokens (FSTRING_MIDDLE may span rows).
+        contains_multiline_literal = any((tok.end[0] > tok.start[0]) and ((tok.type == tokenize.STRING) or (tok.type in _FSTRING_TYPES)) for tok in tokens)
+
+        if contains_multiline_literal:
+            continue
+
+        # PEP 701 also allows an f-string expression itself to span lines without
+        # any multi-row literal token; such a line is still a multi-line string
+        # statement and stays exempt.
+        only_fstring_span = True
 
         for tok in tokens:
             if tok.start[0] == start_row:
@@ -943,10 +956,10 @@ def check_single_line_statement(context: file_context, config: "style_config") -
             if context.in_fstring_span(tok.start[0], tok.start[1]):
                 continue
 
-            only_multiline_literal = False
+            only_fstring_span = False
             break
 
-        if only_multiline_literal:
+        if only_fstring_span:
             continue
 
         line_span = end_row - start_row + 1
@@ -1800,7 +1813,7 @@ def check_decorator_adjacency(context: file_context, config: "style_config") -> 
 
 _SNAKE_CASE_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 _ALL_CAPS_RE = re.compile(r"^_*[A-Z][A-Z0-9_]*$")
-_FRAMEWORK_CALLBACKS = frozenset({"setUp", "tearDown", "setUpClass", "tearDownClass", "do_GET", "do_POST", "do_PUT", "do_DELETE", "do_PATCH"})
+_FRAMEWORK_CALLBACKS = frozenset({"setUp", "tearDown", "setUpClass", "tearDownClass", "do_GET", "do_HEAD", "do_OPTIONS", "do_POST", "do_PUT", "do_DELETE", "do_PATCH"})
 _TYPING_CONSTRUCTORS = frozenset({"TypeVar", "NewType", "ParamSpec", "TypeVarTuple", "NamedTuple", "TypedDict", "namedtuple"})
 _NAMED_TUPLE_BASES = frozenset({"NamedTuple", "TypedDict"})
 

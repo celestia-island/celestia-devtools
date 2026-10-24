@@ -20,6 +20,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from celestia_devtools.repo.register_patches import is_celestia_repo
+import socket
 
 # ── Repo discovery (shared with register_patches) ──────────────────────────
 
@@ -40,7 +42,6 @@ def discover_sibling_repos() -> dict[str, Path]:
 
     Returns ``{repo_name: absolute_path}``.
     """
-    from celestia_devtools.repo.register_patches import is_celestia_repo
 
     own_name = is_celestia_repo(find_repo_root())
     parent = find_repo_root().parent
@@ -180,7 +181,6 @@ def status() -> None:
 
 def _port_listening(port: int) -> bool:
     """Check if a TCP port is in LISTEN state."""
-    import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(0.5)
 

@@ -26,10 +26,16 @@ from celestia_devtools.deploy import bootstrap
 from celestia_devtools.deploy.artifact import fetch as artifact_fetch
 from celestia_devtools.deploy.artifact import read_index, resolve
 from celestia_devtools.deploy.profile import deploy_profile
+import urllib.parse
+import platform
+from celestia_devtools.deploy.lifecycle import _install
+import urllib.request
+import shutil
+from celestia_devtools.deploy import ops
 
 OK, SKIPPED, PENDING, FAILED = (bootstrap.OK, bootstrap.SKIPPED, bootstrap.PENDING, bootstrap.FAILED)
 stage_result = bootstrap.stage_result
-Executor = Callable[..., subprocess.CompletedProcess]
+executor = Callable[..., subprocess.CompletedProcess]
 
 def _ok(cmd, **kw):
     return subprocess.CompletedProcess(cmd, 0, "", "")
@@ -61,7 +67,6 @@ def stage_database(ctx: "bootstrap.stage_context") -> stage_result:
     url_file.parent.mkdir(parents = True, exist_ok = True)
     url_file.write_text(url + "\n", encoding = "utf-8")
     os.chmod(url_file, 0o600)
-    import urllib.parse
     parsed = urllib.parse.urlparse(url)
     pg_env = dict(os.environ)
 
@@ -106,7 +111,6 @@ def stage_artifact(ctx: "bootstrap.stage_context") -> stage_result:
     return stage_result("artifact", OK, "{} @ {}".format(entry.version, entry.file), changed = True)
 
 def _target() -> str:
-    import platform
     machine = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(platform.machine(), platform.machine())
     return "{}-unknown-linux-gnu".format(machine)
 
@@ -124,7 +128,6 @@ def stage_install(ctx: "bootstrap.stage_context") -> stage_result:
         ctx.actions.append("would install {} -> {}".format(incoming, dest))
         return stage_result("install", OK, "dry-run: install planned")
 
-    from celestia_devtools.deploy.lifecycle import _install
     _install(Path(incoming), dest)
     return stage_result("install", OK, "binary at {}".format(dest), changed = True)
 
@@ -166,7 +169,6 @@ class http_result:
 
 def _http_post(url: str, payload: dict, headers: dict | None = None, timeout: int = 30) -> http_result:
     # loopback calls: env proxies must not intercept (R2 P3-3)
-    import urllib.request
     _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data = data, method = "POST")
@@ -257,7 +259,6 @@ def stage_front(ctx: "bootstrap.stage_context") -> stage_result:
     return stage_result("front", OK, "nginx conf at {}".format(conf_path), changed = True)
 
 def _which(name: str, ctx) -> bool:
-    import shutil
     return shutil.which(name) is not None
 
 def _render_nginx(prof: deploy_profile) -> str:
@@ -274,7 +275,6 @@ def _render_nginx(prof: deploy_profile) -> str:
 
 def stage_verify(ctx: "bootstrap.stage_context") -> stage_result:
     """The final gate: health + epoch + ledger via ops.verify."""
-    from celestia_devtools.deploy import ops
 
     if ctx.dry_run:
         ctx.actions.append("would verify health/epoch/ledger")

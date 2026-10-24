@@ -2,6 +2,11 @@
 """Tests for the commit-message linter (``celestia_devtools.vcs.commit_msg``)."""
 
 from celestia_devtools.vcs.commit_msg import lint, GITMOJI_WHITELIST
+from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
+from celestia_devtools.vcs.commit_msg import repo_allows_cjk
+from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
+import os
+from celestia_devtools.vcs.commit_msg import repo_name_from_git_remote
 
 class test_gitmoji_whitelist:
     """Verify the gitmoji whitelist covers common cases."""
@@ -39,8 +44,6 @@ class test_easy_hydro_cjk_exemption:
         assert lint("✨ 修复解析器", allow_cjk = True) == []
 
     def test_easy_hydro_repos_are_in_the_whitelist(self):
-        from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
-
         assert "easy-hydro-erp" in EASY_HYDRO_REPOS
         assert "easy-hydro-miniprogram" in EASY_HYDRO_REPOS
 
@@ -230,43 +233,27 @@ class test_regression_easy_hydro_history:
 
 class test_repo_detection_helpers:
     def test_allows_cjk_for_easy_hydro_repos(self):
-        from celestia_devtools.vcs.commit_msg import repo_allows_cjk
-
         assert repo_allows_cjk("easy-hydro-erp") is True
         assert repo_allows_cjk("easy-hydro-miniprogram") is True
 
     def test_strict_for_unknown_or_missing_repo(self):
-        from celestia_devtools.vcs.commit_msg import repo_allows_cjk
-
         assert repo_allows_cjk("celestia-devtools") is False
         assert repo_allows_cjk(None) is False
         assert repo_allows_cjk("") is False
 
     def test_gh_flag_long_form(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert (repo_name_from_gh_flag(["pr", "merge", "44", "--repo", "langyo/easy-hydro-miniprogram"]) == "easy-hydro-miniprogram")
 
     def test_gh_flag_short_form_with_git_suffix(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert repo_name_from_gh_flag(["-R", "owner/repo.git"]) == "repo"
 
     def test_gh_flag_equals_form(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert repo_name_from_gh_flag(["--repo=owner/repo"]) == "repo"
 
     def test_gh_flag_absent(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert repo_name_from_gh_flag(["pr", "merge", "44", "--squash"]) is None
 
     def test_git_remote_of_this_checkout(self):
         # This test suite runs inside the celestia-devtools checkout itself.
-        import os
-
-        from celestia_devtools.vcs.commit_msg import repo_name_from_git_remote
-
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         assert repo_name_from_git_remote(root) == "celestia-devtools"

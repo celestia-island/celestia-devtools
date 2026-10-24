@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 from dataclasses import dataclass
 from ..core.logger import get_logger
+import argparse
 
 log = get_logger(__name__)
 
@@ -259,7 +260,6 @@ def ensure(archs: list[str] | None = None) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for `celestia-devtools qemu-ensure`."""
-    import argparse
     parser = argparse.ArgumentParser(description = "Install or verify QEMU emulators")
     parser.add_argument("--arch", nargs = "+", default = ["x86_64", "aarch64"], choices = ["x86_64", "aarch64", "arm", "riscv64"], help = "QEMU architectures to ensure")
     parser.add_argument("--check", action = "store_true", help = "Only check, don't install")

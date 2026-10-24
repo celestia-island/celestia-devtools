@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from celestia_devtools.deploy import bootstrap
 from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
+from types import SimpleNamespace
+import pytest
 
 def _profile(tmp_path: Path) -> deploy_profile:
     return deploy_profile(host = host_section(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = front_section(enabled = True, domain = "acme.example", email = "ops@acme.example"))
@@ -119,7 +121,6 @@ class test_account_failure:
     def test_useradd_failure_is_a_clean_stage_failure(self, tmp_path):
         """R2-F1: a failed useradd must come back as a FAILED stage result,
         never escape as a KeyError from the later getpwnam."""
-        from types import SimpleNamespace
         rec = _recorder()
 
         def failing(cmd, **kw):
@@ -158,7 +159,6 @@ class test_dry_run:
 class test_precheck:
     def test_non_root_without_dry_run_fails_loudly(self, tmp_path):
         if hasattr(os, "geteuid") and (os.geteuid() == 0):  # pragma: no cover
-            import pytest
             pytest.skip("running as root; gate would pass")
 
         ctx = _ctx(_profile(tmp_path), _recorder(), assume_root = False)

@@ -46,6 +46,10 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import socket
+import hashlib
+import re
+import os as _os
 
 PY_FLOOR = (3, 11)
 VENV_DIR = "/opt/celestia-devtools/venv"
@@ -80,8 +84,6 @@ def _proxy_url():
                 val = "http://" + val
 
             return val
-
-    import socket
 
     for port in COMMON_PORTS:
         try:
@@ -121,7 +123,6 @@ def _download(url, dest, digest = None):
     hasher = None
 
     if digest and digest.startswith("sha256:"):
-        import hashlib
         hasher = hashlib.sha256()
         want = digest.split(":", 1)[1]
 
@@ -186,7 +187,6 @@ def pick_pbs_asset(names, machine, system):
 
     Returns (version_tuple, name) or None. Pure function - unit tested.
     """
-    import re
     triple = _triple(machine, system)
 
     if not triple:
@@ -267,7 +267,6 @@ def safe_extract(tf, dest):
     absolute paths, no ``..`` traversal, and no link/device members — a
     hostile archive cannot write outside dest or plant a symlink.
     """
-    import os as _os
     members = tf.getmembers()
 
     for m in members:

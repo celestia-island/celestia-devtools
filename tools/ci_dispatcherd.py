@@ -32,6 +32,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import subprocess
+import tempfile
 
 WATCHED = ["shittim-chest", "entelecheia", "arona", "malkuth", "plana", "hikari", "kirino", "evernight", "celestia-devtools", "evernight-appliance"]
 TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-check"}
@@ -432,13 +434,11 @@ def save_state(st):
 SPILL_COMMIT_IDENTITY = ("-c", "user.name=ci-dispatcher", "-c", "user.email=ci-dispatcher@users.noreply.github.com")
 
 def spill_merge_commit(d, tree_sha, parent_a, parent_b):
-    import subprocess
     merge = subprocess.run(["git", "-C", d, *SPILL_COMMIT_IDENTITY, "commit-tree", tree_sha, "-p", parent_a, "-p", parent_b], input = "spill merge" + chr(10), text = True, capture_output = True, check = True, timeout = 60)
     return merge.stdout.strip()
 
 def spill_merge_tree(d, ours, theirs):
     """merge-tree the spilled sha onto master; raise (with conflict files) on conflict."""
-    import subprocess
     tree = subprocess.run(["git", "-C", d, "merge-tree", "--write-tree", ours, theirs], capture_output = True, text = True, timeout = 120)
     tree_sha = tree.stdout.split(chr(10), 1)[0].strip()
 
@@ -456,7 +456,6 @@ def spill_merge_tree(d, ours, theirs):
     return tree_sha
 
 def ensure_sha_on_mirror(repo, sha):
-    import subprocess
     d = f"{GITCACHE}/{repo}.git"
     os.makedirs(GITCACHE, exist_ok = True)
 
@@ -492,7 +491,6 @@ def publish_lane_ref(repo, sha, host = None):
     under the same ref name). Fails closed: any git error propagates so `spill()` falls back to
     the build lane instead of starting a workspace that can never reach the gated stage.
     """
-    import subprocess
     host = host or LANE_HOST.format(repo = repo)
     d = f"{GITCACHE}/{host}.git"
     os.makedirs(GITCACHE, exist_ok = True)
@@ -865,8 +863,6 @@ def _self_test() -> None:
     _old_state = STATE_PATH
 
     try:
-        import tempfile
-
         with tempfile.TemporaryDirectory() as td:
             STATE_PATH = os.path.join(td, "state.json")
             fresh = load_state()

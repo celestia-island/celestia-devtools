@@ -51,6 +51,8 @@ import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
+import subprocess as _subprocess
+import shutil
 
 class NpmPackage(NamedTuple):
     """An npm package discovered inside a sibling repo."""
@@ -72,8 +74,6 @@ def _git_remote_origin(repo_path: Path) -> str | None:
     """
 
     try:
-        import subprocess as _subprocess
-
         r = _subprocess.run(["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"], capture_output = True, text = True, timeout = 10)
 
         if r.returncode == 0:
@@ -392,8 +392,6 @@ def _remove_path(path: Path) -> None:
     if path.is_symlink():
         path.unlink()
     elif path.is_dir():
-        import shutil
-
         shutil.rmtree(path)
     elif path.exists():
         path.unlink()
