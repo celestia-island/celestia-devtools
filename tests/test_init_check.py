@@ -6,7 +6,7 @@ commit-lint/ci-cache/pr-title caller forever and `--check` stayed green. The
 fleet-wide audit found 5/51 repositories missing the mandatory trio and 23/51
 missing pr-title, all invisible to the gate that was supposed to catch drift.
 
-The drift messages are asserted on `_workflow_drift_problems` (the pure gate)
+The drift messages are asserted on `workflow_drift_problems` (the pure gate)
 rather than on captured stdout: the shared logger emits through a worker thread,
 so `capfd.readouterr()` is racy by design.
 """
@@ -14,7 +14,7 @@ so `capfd.readouterr()` is racy by design.
 from __future__ import annotations
 import sys
 from celestia_devtools.repo import init as init_mod
-from celestia_devtools.repo.init import (REQUIRED_WORKFLOWS, WORKFLOW_CI_CACHE, WORKFLOW_COMMIT_LINT, WORKFLOW_PR_TITLE_CHECK, _ensure_workflows, _workflow_drift_problems)
+from celestia_devtools.repo.init import (REQUIRED_WORKFLOWS, WORKFLOW_CI_CACHE, WORKFLOW_COMMIT_LINT, WORKFLOW_PR_TITLE_CHECK, _ensure_workflows, workflow_drift_problems)
 
 CALLEE = """\
 name: Commit Message Lint
@@ -49,20 +49,20 @@ def test_clean_tree_passes(monkeypatch, tmp_path):
     for filename, template, _label in REQUIRED_WORKFLOWS:
         assert (workflows / filename).read_text() == template
 
-    assert _workflow_drift_problems(workflows) == []
+    assert workflow_drift_problems(workflows) == []
     assert _run_init(monkeypatch, tmp_path, "--check") == 0
 
 def test_missing_mandatory_caller_fails(monkeypatch, tmp_path):
     workflows = _stage_clean_tree(monkeypatch, tmp_path)
     (workflows / "pr-title-check.yml").unlink()
-    problems = _workflow_drift_problems(workflows)
+    problems = workflow_drift_problems(workflows)
     assert any("pr-title-check.yml missing" in p for p in problems), problems
     assert _run_init(monkeypatch, tmp_path, "--check") == 1
 
 def test_drifted_mandatory_caller_fails(monkeypatch, tmp_path):
     workflows = _stage_clean_tree(monkeypatch, tmp_path)
     (workflows / "commit-msg-lint.yml").write_text(WORKFLOW_COMMIT_LINT + "\n# hand edit\n")
-    problems = _workflow_drift_problems(workflows)
+    problems = workflow_drift_problems(workflows)
     assert any("commit-msg-lint.yml drifted" in p for p in problems), problems
     assert _run_init(monkeypatch, tmp_path, "--check") == 1
 
@@ -75,7 +75,7 @@ def test_callee_definition_is_not_compared(monkeypatch, tmp_path):
     # Generate the missing caller and the staging files; existing files are kept.
     assert _run_init(monkeypatch, tmp_path, "--with-workflows") == 0
     assert (workflows / "commit-msg-lint.yml").read_text() == CALLEE
-    assert _workflow_drift_problems(workflows) == []
+    assert workflow_drift_problems(workflows) == []
     assert _run_init(monkeypatch, tmp_path, "--check") == 0
 
 def test_opt_in_drift_only_warns(monkeypatch, tmp_path):
@@ -85,7 +85,7 @@ def test_opt_in_drift_only_warns(monkeypatch, tmp_path):
     p0 = workflows / "p0-gate.yml"
     p0.write_text(p0.read_text() + "\n# local runner pin\n")
     # A drifted opt-in caller is a warning: the mandatory set still passes.
-    assert _workflow_drift_problems(workflows) == []
+    assert workflow_drift_problems(workflows) == []
     assert _run_init(monkeypatch, tmp_path, "--check") == 0
 
 def test_required_workflows_table_is_the_generator_source(tmp_path):
@@ -107,7 +107,7 @@ def test_callee_substring_in_a_comment_is_not_a_bypass(monkeypatch, tmp_path):
     workflows = _stage_clean_tree(monkeypatch, tmp_path)
     target = workflows / "commit-msg-lint.yml"
     target.write_text("# the callee is invoked via workflow_call: and owns its own concurrency\n" + WORKFLOW_COMMIT_LINT + "\n# local tweak\n")
-    problems = _workflow_drift_problems(workflows)
+    problems = workflow_drift_problems(workflows)
     assert any("commit-msg-lint.yml drifted" in p for p in problems), problems
 
 def test_scalar_workflow_call_callee_is_skipped(monkeypatch, tmp_path):
@@ -116,7 +116,7 @@ def test_scalar_workflow_call_callee_is_skipped(monkeypatch, tmp_path):
     workflows.mkdir(parents = True)
     (workflows / "commit-msg-lint.yml").write_text("name: Lint\non: workflow_call\njobs:\n  lint:\n    runs-on: ubuntu-latest\n" "    steps:\n      - run: echo lint\n")
     assert _run_init(monkeypatch, tmp_path, "--with-workflows") == 0
-    problems = _workflow_drift_problems(workflows)
+    problems = workflow_drift_problems(workflows)
     assert problems == [], problems
 
 def test_canonical_alias_counts_as_in_place(monkeypatch, tmp_path):
@@ -125,14 +125,14 @@ def test_canonical_alias_counts_as_in_place(monkeypatch, tmp_path):
     # The fleet shape: no ci-cache.yml, the same bytes under the old name.
     (workflows / "ci-cache.yml").unlink()
     (workflows / "cache-policy.yml").write_text(WORKFLOW_CI_CACHE)
-    assert _workflow_drift_problems(workflows) == []
+    assert workflow_drift_problems(workflows) == []
     assert _run_init(monkeypatch, tmp_path, "--check") == 0
 
 def test_alias_with_different_bytes_does_not_count(monkeypatch, tmp_path):
     workflows = _stage_clean_tree(monkeypatch, tmp_path)
     (workflows / "ci-cache.yml").unlink()
     (workflows / "cache-policy.yml").write_text(WORKFLOW_CI_CACHE + "# drift\n")
-    problems = _workflow_drift_problems(workflows)
+    problems = workflow_drift_problems(workflows)
     assert any("ci-cache.yml missing" in p for p in problems), problems
     assert _run_init(monkeypatch, tmp_path, "--check") == 1
 
@@ -146,12 +146,12 @@ def test_generator_does_not_duplicate_the_alias(monkeypatch, tmp_path):
     assert not (workflows / "ci-cache.yml").exists()
     # The canonical pr-title caller was still generated; the alias is not drift.
     assert (workflows / "pr-title-check.yml").is_file()
-    assert _workflow_drift_problems(workflows) == []
+    assert workflow_drift_problems(workflows) == []
 
 def test_crlf_caller_is_drift(monkeypatch, tmp_path):
     """The gate claims byte identity: CRLF-normalised files must be drift (R3 N1)."""
     workflows = _stage_clean_tree(monkeypatch, tmp_path)
     target = workflows / "commit-msg-lint.yml"
     target.write_bytes(WORKFLOW_COMMIT_LINT.replace("\n", "\r\n").encode("utf-8"))
-    problems = _workflow_drift_problems(workflows)
+    problems = workflow_drift_problems(workflows)
     assert any("commit-msg-lint.yml drifted" in p for p in problems), problems
