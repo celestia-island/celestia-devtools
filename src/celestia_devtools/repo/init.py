@@ -78,7 +78,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--with-workflows", action="store_true",
-        help="also generate GitHub Actions commit-lint workflow",
+        help="also generate the three required org workflows "
+        "(commit-msg lint, CI cache policy, PR title check)",
+    )
+    parser.add_argument(
+        "--gate", action="append", choices=sorted(OPT_IN_GATES), metavar="NAME",
+        help="also (re)generate one opt-in gate caller: "
+        + ", ".join(sorted(OPT_IN_GATES))
+        + " (repeatable; requires --with-workflows)",
     )
     args = parser.parse_args()
 
@@ -171,7 +178,10 @@ def main() -> int:
 
     # ── Opt-in: GitHub Actions commit-lint workflow ───────────────
     if args.with_workflows:
-        _ensure_workflows(Path.cwd(), force=args.force)
+        _ensure_workflows(Path.cwd(), force=args.force, gates=tuple(args.gate or ()))
+    elif args.gate:
+        logger.error("--gate requires --with-workflows (it extends the generated set)")
+        return 2
 
     return 0
 
@@ -318,15 +328,155 @@ jobs:
 """
 
 
-def _ensure_workflows(repo_root: Path, *, force: bool = False) -> None:
+# Canonical callers for the six gates that had none until 2026-10-24. Until then the
+# fleet's other gates existed only as hand-written copies in each repository, which is why
+# the same drift kept reappearing: `pr-title-check` lost `synchronize` in five repositories,
+# `cnb-overflow` had no lane passthrough anywhere, and `p0-gate` was missing from the one
+# repository an open P0 actually covered (evernight). A caller that is generated from one
+# template can be audited; a caller that is copied cannot.
+#
+# `p0-gate` and `family-versions` are opt-in by nature (only a repository named in the P0
+# ledger's scope, or one consuming a cross-repository family edge, needs them), so they are
+# written by `init --with-workflows` only when asked for explicitly with `--gate`.
+
+WORKFLOW_P0_GATE = """\
+name: P0 Ledger Gate
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+concurrency:
+  group: p0-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p0-gate:
+    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
+"""
+
+WORKFLOW_FAMILY_VERSIONS = """\
+name: Family dependency identity
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  family-versions:
+    uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@master
+"""
+
+WORKFLOW_VERIFY_VERSIONS = """\
+name: Verify Versions
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  verify-versions:
+    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master
+"""
+
+WORKFLOW_RULES_LINT = """\
+name: Rules Lint
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+jobs:
+  rules-lint:
+    uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@master
+"""
+
+WORKFLOW_RELEASE_NOTES = """\
+name: Release Notes
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release-notes:
+    permissions:
+      contents: write
+    uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@master
+"""
+
+WORKFLOW_CNB_OVERFLOW = """\
+name: CNB Overflow Lane
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Commit SHA (empty = PR head / branch head)"
+        type: string
+        default: ""
+
+permissions:
+  statuses: write
+  actions: read
+
+concurrency:
+  group: cnb-overflow-lane-pr-${{ github.event.pull_request.number || 'manual' }}
+  cancel-in-progress: true
+
+jobs:
+  lane:
+    uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@master
+    with:
+      target_repo: ${{ github.event.repository.name }}
+      target_sha: ${{ inputs.target_sha || github.event.pull_request.head.sha || github.sha }}
+      task: cargo-check
+      lane: pr-${{ github.event.pull_request.number || 'manual' }}
+      queue_threshold: 3
+      poll_minutes: 10
+    secrets: inherit
+"""
+
+
+#: Opt-in gate callers: a repository needs only the ones whose scope covers it
+#: (P0 ledger scope, a cross-repository family edge, a version line, a repository
+#: AGENTS.md, a release tag, or the CNB spill lane), so they are generated only
+#: on request. Emitting them all would red repositories that legitimately have
+#: no manifests (`family-versions` treats an empty scan as an error) or no tags.
+OPT_IN_GATES: dict[str, tuple[str, str, str]] = {
+    "p0": ("p0-gate.yml", WORKFLOW_P0_GATE, "P0 ledger gate"),
+    "family": ("family-versions.yml", WORKFLOW_FAMILY_VERSIONS, "family dependency identity"),
+    "verify": ("verify-versions.yml", WORKFLOW_VERIFY_VERSIONS, "version consistency"),
+    "rules": ("rules-lint.yml", WORKFLOW_RULES_LINT, "rules tree lint"),
+    "release-notes": ("release-notes.yml", WORKFLOW_RELEASE_NOTES, "release notes"),
+    "cnb": ("cnb-overflow-lane.yml", WORKFLOW_CNB_OVERFLOW, "CNB overflow lane"),
+}
+
+
+def _ensure_workflows(
+    repo_root: Path, *, force: bool = False, gates: tuple[str, ...] = ()
+) -> None:
     workflows_dir = repo_root / ".github" / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
 
-    for filename, template, label in (
+    wanted = [
         ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
         ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
         ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"),
-    ):
+    ]
+    for gate in gates:
+        wanted.append(OPT_IN_GATES[gate])
+    for filename, template, label in wanted:
         target = workflows_dir / filename
         if target.exists() and not force:
             logger.info(f"{filename} already exists — skipping (use --force to regenerate)")

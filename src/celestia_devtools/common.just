@@ -54,6 +54,23 @@ _devtools := if which("celestia-devtools") != "" { "celestia-devtools" } else { 
 ensure:
     {{python_cmd}} -c "import importlib.util as u, os, subprocess as s, sys; s.call([sys.executable, '-m', 'pip', 'install', os.environ.get('CELESTIA_DEVTOOLS_INSTALL') or 'git+https://github.com/celestia-island/celestia-devtools.git']) if u.find_spec('celestia_devtools') is None else None"
 
+# Stage or refresh the shared recipes into the gitignored .just/ directory.
+#
+# This lives here (single source) since 2026-10-24. It used to be copied into
+# every repository's own justfile — 32 hand-written copies, and 27 of them had
+# rotted: their last-resort URL still pointed at the retired `dev` branch, so
+# `just fetch` on a machine without the CLI 404'd. A capability the control
+# plane owns belongs in the control plane's own file.
+#
+# Three branches, in order of preference: an explicit URL, the installed CLI,
+# and finally the pinned raw URL on master. Linewise and shell-neutral per the
+# SHELL DOCTRINE above.
+devtools_just_url := "https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/src/celestia_devtools/common.just"
+
+fetch URL='':
+    mkdir -p .just
+    {{ if URL != "" { "curl -fsSL " + URL + " -o .just/celestia-devtools.just" } else if which("celestia-devtools") != "" { "celestia-devtools fetch-just" } else { "curl -fsSL " + devtools_just_url + " -o .just/celestia-devtools.just" } }}
+
 # ── Build helper ──────────────────────────────────────────────────────────────
 
 # Shared build dispatcher: runs a prerequisite, then picks dev vs release cmd.

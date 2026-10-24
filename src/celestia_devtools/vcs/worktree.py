@@ -8,9 +8,18 @@ switching a worktree is ``cd``, not a rebuild storm.
 
 Commands (dispatched on ``sys.argv[0]``, mirroring the mock-* pattern)::
 
-    celestia-devtools worktree-create <name> [base=dev]   # + cargo patch re-register
-    celestia-devtools worktree-remove <name>              # delete worktree + prune
+    celestia-devtools worktree-create <name> [base=master]  # + cargo patch re-register
+    celestia-devtools worktree-remove <name>               # delete worktree + prune
     git worktree list                                     # (linewise recipe)
+
+The default base is ``master`` because ``dev`` is retired (workspace AGENTS
+"branch model"); before 2026-10-24 this command defaulted to the forbidden
+branch and produced worktrees no workflow could merge. It also predates the
+workspace's ``_tools/wt_new.py``, which is the *only* supported entry point for
+this workspace (it verifies the main checkout is clean, fast-forwards master,
+and builds the mandatory cache symlinks). This command remains for consumer
+repositories outside the workspace, and prints a pointer at that entry point
+when it detects the workspace layout.
 """
 
 from __future__ import annotations
@@ -35,11 +44,35 @@ def _repo_name() -> str | None:
     return Path(top.stdout.strip()).name
 
 
+def _workspace_wt_new() -> str | None:
+    """The workspace's sanctioned entry point, when this checkout looks like one.
+
+    The celestia workspace forbids hand-made worktrees: ``_tools/wt_new.py``
+    fetches, fast-forwards, refuses reuse, and builds the cache symlinks a build
+    needs.  A consumer repository has no such tool, so this command keeps
+    working there — but inside the workspace it should not be used.
+    """
+    top = _git("rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return None
+    candidate = Path(top.stdout.strip()).parent / "_tools" / "wt_new.py"
+    return str(candidate) if candidate.is_file() else None
+
+
 def _create(name: str, base: str) -> int:
     repo = _repo_name()
     if repo is None:
         print("error: not inside a git repository", file=sys.stderr)
         return 1
+    sanctioned = _workspace_wt_new()
+    if sanctioned is not None:
+        print(
+            "error: this is a celestia workspace checkout — create worktrees with\n"
+            f"  python3 {sanctioned} {repo} {name}\n"
+            "which fast-forwards master, refuses reuse and builds the cache symlinks.",
+            file=sys.stderr,
+        )
+        return 2
     target = f"../{repo}-{name}"
     if Path(target).is_dir():
         print(f"worktree already exists: {target}")
@@ -89,9 +122,12 @@ def main() -> int:
     args = sys.argv[1:]
     if cmd == "worktree-create":
         if not args:
-            print("usage: celestia-devtools worktree-create <name> [base=dev]", file=sys.stderr)
+            print(
+                "usage: celestia-devtools worktree-create <name> [base=master]",
+                file=sys.stderr,
+            )
             return 2
-        return _create(args[0], args[1] if len(args) > 1 else "dev")
+        return _create(args[0], args[1] if len(args) > 1 else "master")
     if cmd == "worktree-remove":
         if not args:
             print("usage: celestia-devtools worktree-remove <name>", file=sys.stderr)
