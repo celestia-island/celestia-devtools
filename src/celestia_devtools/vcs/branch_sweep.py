@@ -45,13 +45,7 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     # back to `git diff -- <path>` matches nothing, so unique content
     # read as "identical on base" and the branch was swept (false
     # DELETE).
-    return subprocess.run(
-        ["git", "-c", "core.quotepath=false", "-C", str(repo), *args],
-        capture_output = True,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace"
-    )
+    return subprocess.run(["git", "-c", "core.quotepath=false", "-C", str(repo), *args], capture_output = True, text = True, encoding = "utf-8", errors = "replace")
 
 def _base_ref(repo: Path, requested: str | None) -> str | None:
     if requested:

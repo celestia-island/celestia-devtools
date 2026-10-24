@@ -100,25 +100,7 @@ from celestia_devtools.lint.cpp.tokenizer import COMMENT, token_record
 SOURCE_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".inl"})
 
 #: Directories that are never scanned (the org rule exempts third-party code).
-DEFAULT_SKIP_DIRS = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        "node_modules",
-        "target",
-        "build",
-        "dist",
-        "third_party",
-        "vendor",
-        "external",
-        "generated",
-        "__pycache__",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".mypy_cache"
-    }
-)
+DEFAULT_SKIP_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "target", "build", "dist", "third_party", "vendor", "external", "generated", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"})
 
 _INLINE_DIRECTIVE = re.compile(r"//\s*cpp-style-ok\s*:\s*(?P<payload>.*)$")
 _RULE_TOKEN_SPLIT = re.compile(r"[\s,]+")

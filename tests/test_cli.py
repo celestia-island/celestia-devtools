@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from importlib import import_module
 import pytest
 from celestia_devtools.core.cli import COMMANDS, main
 
@@ -88,13 +89,11 @@ class test_command_registry:
         on Windows raises ModuleNotFoundError/AttributeError before main() is
         ever reached, so the importability contract only applies on POSIX.
         """
-        import sys
-
-        from importlib import import_module
 
         if (sys.platform == "win32") and (cmd in ("deploy", "e2e-sandbox")):
             pytest.skip(f"{cmd} is POSIX-only (imports pwd / signal.SIGKILL)")
 
+        # py-style-ok: no-dynamic-imports: exercises the documented lazy-dispatcher exception (see core/cli.py)
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
 

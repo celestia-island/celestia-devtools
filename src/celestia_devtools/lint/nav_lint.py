@@ -59,25 +59,17 @@ SKIP_DIRS = {"node_modules", "dist", ".generated", ".git", "coverage", "target"}
 TEST_PAT = re.compile(r"\.(test|spec)\.[cm]?[jt]sx?$|(^|/)__tests__/")
 
 # router/$router.push(...) / .replace(...)
-_ROUTER_CALL_RE = re.compile(
-    r"(?<![\w$])(\$?\brouter)\.(push|replace)\s*\("
-)
+_ROUTER_CALL_RE = re.compile(r"(?<![\w$])(\$?\brouter)\.(push|replace)\s*\(")
 
 # location.assign(...) / location.replace(...) — the WRITE side of the
 # Location API (full-page navigations that bypass the History net).
-_LOCATION_CALL_RE = re.compile(
-    r"(?<![\w$])(?:window\.)?location\.(assign|replace)\s*\("
-)
+_LOCATION_CALL_RE = re.compile(r"(?<![\w$])(?:window\.)?location\.(assign|replace)\s*\(")
 
 # location.href = <expr> (and window.location.href)
-_LOCATION_HREF_RE = re.compile(
-    r"(?<![\w$])(?:window\.)?location\.href\s*=\s*([^;]+)"
-)
+_LOCATION_HREF_RE = re.compile(r"(?<![\w$])(?:window\.)?location\.href\s*=\s*([^;]+)")
 
 # history.pushState/replaceState(state, title, url)
-_HISTORY_CALL_RE = re.compile(
-    r"(?<![\w$])(?:window\.)?history\.(pushState|replaceState)\s*\("
-)
+_HISTORY_CALL_RE = re.compile(r"(?<![\w$])(?:window\.)?history\.(pushState|replaceState)\s*\(")
 
 #: nav-ok escape hatch: same line or the line above. JS ``// nav-ok`` /
 #: ``/* nav-ok */`` and Vue ``<!-- nav-ok -->``.

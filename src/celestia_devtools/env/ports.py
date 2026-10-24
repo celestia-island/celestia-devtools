@@ -87,8 +87,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
 
         try:
             exit_code = ctypes.c_ulong()
-            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                        and exit_code.value == 259)  # STILL_ACTIVE
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) and (exit_code.value == 259)) # STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
 

@@ -104,11 +104,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
 # LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
 # _canonical_caller_findings。
-from celestia_devtools.repo.init import (
-    WORKFLOW_COMMIT_LINT,
-    WORKFLOW_COMMIT_LINT_LEGACY,
-    WORKFLOW_COMMIT_LINT_NO_PERMS
-)
+from celestia_devtools.repo.init import (WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS)
 
 try:
     import yaml
@@ -145,17 +141,7 @@ SEVERITY_WARNING = "warning"
 
 #: The **complete** set of keys GitHub accepts on a ``jobs.<id>.uses`` caller job.
 #: Anything else makes the whole workflow invalid and creates zero jobs.
-CALLER_LEGAL_KEYS: Tuple[str, ...] = (
-    "name",
-    "uses",
-    "with",
-    "secrets",
-    "strategy",
-    "needs",
-    "if",
-    "concurrency",
-    "permissions"
-)
+CALLER_LEGAL_KEYS: Tuple[str,...] = ("name", "uses", "with", "secrets", "strategy", "needs", "if", "concurrency", "permissions")
 
 #: Label substring that marks a job as running on the org's self-hosted farm.
 SELF_HOSTED_LABEL = "self-hosted"
@@ -834,12 +820,7 @@ def apply_allow(findings: Sequence[finding_record], rules: Sequence[Tuple[str, s
 # 输出
 # ---------------------------------------------------------------------------
 
-def build_report(
-    findings: Sequence[finding_record],
-    files: int,
-    suppressed: int,
-    strict: bool
-) -> Dict[str, object]:
+def build_report(findings: Sequence[finding_record], files: int, suppressed: int, strict: bool) -> Dict[str, object]:
     """The frozen ``--json`` document: ``findings`` (five keys each) plus a summary."""
     rules = {name: 0 for name in RULE_NAMES}
     errors = 0

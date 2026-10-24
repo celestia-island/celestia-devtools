@@ -190,11 +190,7 @@ def test_root_crate_plus_members_uses_root_line_as_baseline(tmp_path, capsys):
     # kirino's real shape: root [package].version + real members; with the
     # fallback the track gains coverage — a member left behind (kirino-macro
     # at 0.7.0 while the root moved to 0.7.5) is now DRIFT, not silence.
-    _write(
-        tmp_path / "Cargo.toml",
-        '[package]\nname = "root-crate"\nversion = "0.7.5"\n\n'
-        '[workspace]\nmembers = ["packages/macro"]\n'
-    )
+    _write(tmp_path / "Cargo.toml", '[package]\nname = "root-crate"\nversion = "0.7.5"\n\n' '[workspace]\nmembers = ["packages/macro"]\n')
     _write(tmp_path / "packages/macro/Cargo.toml", '[package]\nname = "macro"\nversion = "0.7.0"\n')
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
@@ -308,11 +304,7 @@ def test_pin_matching_root_stays_green(tmp_path, capsys):
 def test_root_not_compared_without_pin(tmp_path, capsys):
     # Without an override the root IS the baseline (fallback), so a
     # root-only move must flag the members it left behind, not the root.
-    _write(
-        tmp_path / "Cargo.toml",
-        '[package]\nname = "root-crate"\nversion = "0.7.6"\n\n'
-        '[workspace]\nmembers = ["packages/macro"]\n'
-    )
+    _write(tmp_path / "Cargo.toml", '[package]\nname = "root-crate"\nversion = "0.7.6"\n\n' '[workspace]\nmembers = ["packages/macro"]\n')
     _write(tmp_path / "packages/macro/Cargo.toml", '[package]\nname = "macro"\nversion = "0.7.5"\n')
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out

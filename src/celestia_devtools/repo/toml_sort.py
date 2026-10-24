@@ -17,9 +17,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 # ── Known celestia-island packages published to crates.io ──────────────────
-CELESTIA_CRATES: frozenset[str] = frozenset(
-    {"kirino", "kirino-session", "kirino-macro", "yuuka"}
-)
+CELESTIA_CRATES: frozenset[str] = frozenset({"kirino", "kirino-session", "kirino-macro", "yuuka"})
 
 # Section headers we recognise (order matters for rule matching).
 SECTION_PATTERN: re.Pattern = re.compile(r"^\[(workspace\.)?(dependencies|dev-dependencies|build-dependencies)\]")

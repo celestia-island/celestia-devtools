@@ -50,11 +50,7 @@ import urllib.parse
 
 # Level 1 — environment variables, both cases, plus tool-specific aliases.
 # Ordered: https wins over http wins over all (matches pip/curl conventions).
-_ENV_ORDER = (
-    "HTTPS_PROXY", "https_proxy",
-    "HTTP_PROXY", "http_proxy",
-    "ALL_PROXY", "all_proxy"
-)
+_ENV_ORDER = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
 _TOOL_ENV = ("PIP_PROXY", "UV_HTTP_PROXY", "npm_config_proxy")
 
 # Levels 2–4 — ports tried against candidate hosts.
@@ -65,11 +61,7 @@ _DEFAULT_SUFFIXES = ("local", "lan", "internal", "node.local")
 
 # Names appended to NO_PROXY unconditionally (loopback + link-local + RFC1918
 # + ULA). Kept as strings so callers can extend without ipaddress churn.
-_DIRECT_NETS = (
-    "127.0.0.0/8", "::1/128",
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-    "169.254.0.0/16", "fd00::/8", "fe80::/10"
-)
+_DIRECT_NETS = ("127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fd00::/8", "fe80::/10")
 
 _DISABLE_ENV = "CELESTIA_NO_PROXY_DETECT"
 

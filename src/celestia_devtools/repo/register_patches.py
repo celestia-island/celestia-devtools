@@ -167,10 +167,7 @@ def parse_workspace_crates(repo_path: Path, repo_name: str) -> list[CrateInfo]:
         return crates
 
     # Case 2: workspace manifest — parse members list.
-    ws_match = re.search(
-        r'^\[workspace\]\s*(.*?)(?=\n\[|\Z)',
-        text, re.S | re.M
-    )
+    ws_match = re.search(r'^\[workspace\]\s*(.*?)(?=\n\[|\Z)', text, re.S | re.M)
 
     if not ws_match:
         return crates

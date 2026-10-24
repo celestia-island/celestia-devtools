@@ -10,9 +10,7 @@ def _git(repo: Path, *args: str) -> str:
     # Same UTF-8 pin the tool itself uses: git speaks UTF-8 and the CJK
     # branch-name test would otherwise trip the test helper's own
     # locale-codec decode on a cp936 console.
-    r = subprocess.run(["git", "-C", str(repo), *args], check = True,
-                       capture_output = True, text = True,
-                       encoding = "utf-8", errors = "replace")
+    r = subprocess.run(["git", "-C", str(repo), *args], check = True, capture_output = True, text = True, encoding = "utf-8", errors = "replace")
     return r.stdout.strip()
 
 def _commit(repo: Path, msg: str) -> None:

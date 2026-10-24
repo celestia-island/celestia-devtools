@@ -12,11 +12,7 @@ def _git(repo: Path, *args: str) -> None:
 
     # core.hooksPath= disables the workspace-global org commit-msg hook —
     # the fixture's "init" subject would otherwise fail the gitmoji lint.
-    subprocess.run(
-        ["git", "-c", "core.hooksPath=", "-C", str(repo), *args],
-        check = True,
-        capture_output = True
-    )
+    subprocess.run(["git", "-c", "core.hooksPath=", "-C", str(repo), *args], check = True, capture_output = True)
 
 def _git_repo(tmp_path: Path, workspace_version: str) -> Path:
     """A minimal git repo whose workspace Cargo.toml carries one version line."""

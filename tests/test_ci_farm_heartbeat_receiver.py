@@ -63,15 +63,13 @@ def test_receiver_roundtrip(tmp_path: Path):
     _wait_up(port)
 
     # 打点 → 204 + 文件落盘
-    with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/beat/node-ci-x", timeout = 5) as resp:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/beat/node-ci-x", timeout = 5) as resp:
         assert resp.status == 204
 
     assert (beat_dir / "node-ci-x").exists()
 
     # /status 汇总
-    with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/status", timeout = 5) as resp:
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout = 5) as resp:
         payload = json.load(resp)
 
     assert "node-ci-x" in payload["beats"]

@@ -175,8 +175,7 @@ def test_zombie_refuses_when_the_slot_is_unattributable(tmp_path, monkeypatch):
     # cancel_grace=0 so the check reaches the refusal instead of stopping at the grace
     # comparison (with a 300s-old line and grace 600 this test passed even with the
     # refusal removed)
-    assert jan.zombie_worker_check(str(d), cancel_grace = 0, dry_run = False,
-                                   unit = "u") is False
+    assert jan.zombie_worker_check(str(d), cancel_grace = 0, dry_run = False, unit = "u") is False
     assert calls == []
 
 def test_slot_units_tolerates_the_runner_bom(tmp_path, monkeypatch):
@@ -224,8 +223,7 @@ def test_worker_pids_attributes_a_relative_argv_by_cwd(tmp_path, monkeypatch):
 
         def cmdline(self, pid):
             # 700: relative argv, cwd identifies the slot; 701: absolute argv for slot B
-            return ("Runner.Worker spawnclient 1 2" if pid == 700
-                    else f"{home_b}/bin/Runner.Worker spawnclient 3 4")
+            return "Runner.Worker spawnclient 1 2" if pid == 700 else f"{home_b}/bin/Runner.Worker spawnclient 3 4"
 
         def comm(self, pid):
             return "Runner.Worker"
@@ -255,34 +253,7 @@ def test_selftest_panel_passes():
     # Count alone cannot see a panel that swapped a real case for a trivial one, so the
     # whole roster is pinned by name: this panel is the only guard for the orphan
     # selection logic, and a change to it should have to update this list.
-    expected = [
-        "live job's own tree is untouched",
-        'orphan older than the live worker is reaped',
-        'orphan in the second slot is reaped',
-        'detached helper of the live job is spared',
-        'young process is spared',
-        'build tool outside any work dir is ignored',
-        'unknown start time with a live job is spared',
-        'idle slot1',
-        'unreadable ancestry is spared',
-        'idle slot',
-        'idle slot',
-        'detached process started with the live job is spared',
-        'the oldest Worker of the slot decides',
-        'a Worker in the other slot does not spare this slot',
-        'process exactly at --grace is reaped',
-        'candidate starting with the Worker is spared',
-        "slot 2 uses its own Worker, not slot 1's",
-        'candidate starting exactly with the Worker is spared',
-        'a renamed Worker still protects its slot',
-        'a Worker without an absolute argv is attributed by cwd',
-        'a stale sccache wrapper is reaped',
-        'the sccache daemon outside a work dir is never a candidate',
-        'same-repo orphans are reaped while the repo runs in both slots',
-        'RunnerService ancestry still protects',
-        'a live job in slot1 cannot hide a stale slot1 orphan',
-        'control'
-    ]
+    expected = ["live job's own tree is untouched", 'orphan older than the live worker is reaped', 'orphan in the second slot is reaped', 'detached helper of the live job is spared', 'young process is spared', 'build tool outside any work dir is ignored', 'unknown start time with a live job is spared', 'idle slot1', 'unreadable ancestry is spared', 'idle slot', 'idle slot', 'detached process started with the live job is spared', 'the oldest Worker of the slot decides', 'a Worker in the other slot does not spare this slot', 'process exactly at --grace is reaped', 'candidate starting with the Worker is spared', "slot 2 uses its own Worker, not slot 1's", 'candidate starting exactly with the Worker is spared', 'a renamed Worker still protects its slot', 'a Worker without an absolute argv is attributed by cwd', 'a stale sccache wrapper is reaped', 'the sccache daemon outside a work dir is never a candidate', 'same-repo orphans are reaped while the repo runs in both slots', 'RunnerService ancestry still protects', 'a live job in slot1 cannot hide a stale slot1 orphan', 'control']
     got = re.findall(r"^selftest (?:ok  |FAIL) (.+?): ", r.stdout, re.M)
     assert got == expected, r.stdout
 

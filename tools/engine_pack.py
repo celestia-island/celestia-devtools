@@ -53,9 +53,7 @@ DEFAULT_MINIFORGE_ROOT = Path("/mnt/work/miniforge3")
 DEFAULT_ENV_ROOT = Path("/mnt/work/engine-envs")
 DEFAULT_UNIT_DIR = Path("/etc/systemd/system")
 # Domestic mirror, reachable directly from the island nodes (no proxy needed).
-DEFAULT_MIRROR_BASE = (
-    "https://mirrors.tuna.tsinghua.edu.cn/github-release/conda-forge/miniforge/LatestRelease"
-)
+DEFAULT_MIRROR_BASE = "https://mirrors.tuna.tsinghua.edu.cn/github-release/conda-forge/miniforge/LatestRelease"
 RECORD_FILENAME = ".engine-pack-installed.json"
 DEFAULT_HEALTH_TIMEOUT = 120.0
 POLL_INTERVAL = 1.0

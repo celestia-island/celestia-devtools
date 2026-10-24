@@ -83,9 +83,7 @@ _EMOJI_CLASS = "\U0001F300-\U0001FAFF\u2600-\u27BF\u2190-\u21FF\u2B00-\u2BFF"
 # 基 emoji 后可跟最多 6 个续字符（VS16 / ZWJ / 序列里的后续 emoji）——
 # 🛡️(U+1F6E1+FE0F) 与 🏳️‍🌈(1F3F3 FE0F 200D 1F308) 都是生态常见标题写法；
 # 首个真实 drop（selfanalysis-01）就因 VS16 被误拒过。
-DESC_RE = re.compile(
-    rf"^[{_EMOJI_CLASS}][{_EMOJI_CLASS}\uFE0F\u200D]{{0,6}} [A-Z].+\.$"
-)
+DESC_RE = re.compile(rf"^[{_EMOJI_CLASS}][{_EMOJI_CLASS}\uFE0F\u200D]{{0,6}} [A-Z].+\.$")
 
 GOVERNANCE_NAMES = {"agents.md", "plan.md", "claude.md"}  # casefolded 比较
 
@@ -434,9 +432,7 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
         raise stage_error(desc_violations[0])
 
     # Full refname for show-ref --verify (G5 与 check_base 同口径：短名不解析)。
-    base_check = _git(
-        worktree, "show-ref", "--verify", "--quiet", f"refs/remotes/{base}"
-    )
+    base_check = _git(worktree, "show-ref", "--verify", "--quiet", f"refs/remotes/{base}")
 
     if base_check.returncode != 0:
         raise stage_error(f"base 引用不存在于 worktree：{base}")
@@ -467,9 +463,7 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
     # 领先提交（已提交未推送）的内容：diff --name-only <base>（工作树 vs base）。
     # renames 显式关掉——rename 检测会吞掉旧侧路径，而旧侧该按删除形态出现，
     # 由下面的磁盘存在性过滤统一剔除。-z 免引号转义。
-    diff_names = _git(
-        worktree, "-c", "diff.renames=false", "diff", "--name-only", "-z", base
-    )
+    diff_names = _git(worktree, "-c", "diff.renames=false", "diff", "--name-only", "-z", base)
 
     if diff_names.returncode != 0:
         raise stage_error(f"git diff --name-only {base} 失败：{diff_names.stderr.strip()}")
@@ -877,8 +871,7 @@ def _sweep_one(worktree: Path, args: argparse.Namespace) -> str:
 
     # apply 内部会再跑一遍 gates + 落自己的运行审计（pr-opened/failed…）；
     # sweep 只取退出码决定回收与否。
-    if apply_drop(drop, repo_root = args.repo_root, drop_root = args.drop_root,
-                  wt_root = args.wt_root, audit_file = args.audit_file) != EXIT_OK:
+    if apply_drop(drop, repo_root = args.repo_root, drop_root = args.drop_root, wt_root = args.wt_root, audit_file = args.audit_file) != EXIT_OK:
         print(f"⚠️ {repo}: apply 未成功，工作区保留待人工", file = sys.stderr)
         record("apply-failed", drop = drop.name)
         return "apply-failed"

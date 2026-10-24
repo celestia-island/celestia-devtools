@@ -461,14 +461,7 @@ jobs:
 #: AGENTS.md, a release tag, or the CNB spill lane), so they are generated only
 #: on request. Emitting them all would red repositories that legitimately have
 #: no manifests (`family-versions` treats an empty scan as an error) or no tags.
-OPT_IN_GATES: dict[str, tuple[str, str, str]] = {
-    "p0": ("p0-gate.yml", WORKFLOW_P0_GATE, "P0 ledger gate"),
-    "family": ("family-versions.yml", WORKFLOW_FAMILY_VERSIONS, "family dependency identity"),
-    "verify": ("verify-versions.yml", WORKFLOW_VERIFY_VERSIONS, "version consistency"),
-    "rules": ("rules-lint.yml", WORKFLOW_RULES_LINT, "rules tree lint"),
-    "release-notes": ("release-notes.yml", WORKFLOW_RELEASE_NOTES, "release notes"),
-    "cnb": ("cnb-overflow-lane.yml", WORKFLOW_CNB_OVERFLOW, "CNB overflow lane")
-}
+OPT_IN_GATES: dict[str, tuple[str, str, str]] = {"p0": ("p0-gate.yml", WORKFLOW_P0_GATE, "P0 ledger gate"), "family": ("family-versions.yml", WORKFLOW_FAMILY_VERSIONS, "family dependency identity"), "verify": ("verify-versions.yml", WORKFLOW_VERIFY_VERSIONS, "version consistency"), "rules": ("rules-lint.yml", WORKFLOW_RULES_LINT, "rules tree lint"), "release-notes": ("release-notes.yml", WORKFLOW_RELEASE_NOTES, "release notes"), "cnb": ("cnb-overflow-lane.yml", WORKFLOW_CNB_OVERFLOW, "CNB overflow lane")}
 
 #: The three callers every repository needs, in generation order. Both the
 #: generator and ``--check`` read this table, so a new required caller cannot be

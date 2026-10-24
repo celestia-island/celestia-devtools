@@ -18,11 +18,7 @@ from celestia_devtools.env import daemon
 # Each service's actual listen knob (verified against each repo's source):
 # chest → SHITTIM_CHEST_PORT (config.rs), scepter → SERVER_BIND_ADDRESS
 # (setup.rs), arona → ARONA_PORT (config.rs).
-EXPECTED_PORT_ENV: dict[str, tuple[str, str]] = {
-    "shittim-chest": ("SHITTIM_CHEST_PORT", "8400"),
-    "entelecheia": ("SERVER_BIND_ADDRESS", "127.0.0.1:8410"),
-    "arona": ("ARONA_PORT", "8405")
-}
+EXPECTED_PORT_ENV: dict[str, tuple[str, str]] = {"shittim-chest": ("SHITTIM_CHEST_PORT", "8400"), "entelecheia": ("SERVER_BIND_ADDRESS", "127.0.0.1:8410"), "arona": ("ARONA_PORT", "8405")}
 
 class test_service_defs:
     def test_no_ghost_cargo_features(self):

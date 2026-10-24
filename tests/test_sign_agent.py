@@ -72,9 +72,7 @@ def test_keygen_base64_key_verifies_manifest(workdir: Path, capsys) -> None:
     sample_package(agent)
     main(["sign", str(agent), "--key", str(workdir / "key.pem")])
     # The raw base64 key (the format registered on the platform) must verify.
-    assert main(
-        ["verify", str(agent), "--pubkey-b64", pub_b64]
-    ) == 0
+    assert main(["verify", str(agent), "--pubkey-b64", pub_b64]) == 0
 
 def test_manifest_is_deterministic(workdir: Path) -> None:
     agent = workdir / "agent"

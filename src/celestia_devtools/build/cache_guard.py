@@ -161,16 +161,7 @@ def _measure_target_size(target: Path, *, recheck_interval_s: float, du_timeout_
 
 # ── public API ────────────────────────────────────────────
 
-def guard(
-    repo_root: Path,
-    *,
-    min_free_gib: float = DEF_MIN_FREE_GIB,
-    soft_threshold_gib: float = DEF_SOFT_THRESHOLD_GIB,
-    recheck_interval_s: float = DEF_RECHECK_INTERVAL_S,
-    du_timeout_s: float = DEF_DU_TIMEOUT_S,
-    sweep_days: int = DEF_SWEEP_DAYS,
-    dry_run: bool = False
-) -> dict[str, Any]:
+def guard(repo_root: Path, *, min_free_gib: float = DEF_MIN_FREE_GIB, soft_threshold_gib: float = DEF_SOFT_THRESHOLD_GIB, recheck_interval_s: float = DEF_RECHECK_INTERVAL_S, du_timeout_s: float = DEF_DU_TIMEOUT_S, sweep_days: int = DEF_SWEEP_DAYS, dry_run: bool = False) -> dict[str, Any]:
     """Enforce the cache budgets for `repo_root/target/`.
 
     Returns a summary dict. Safe when no target/ exists (no-op). Never raises

@@ -97,8 +97,7 @@ def upgrade(profile: deploy_profile, source_base: str, channel: str, target: str
     current = bin_path(profile)
 
     # The binding rule: migration is not reversible, so back up first.
-    bkp = backup_mod.backup(profile, profile.host.deploy_root() / "backups",
-                            executor = executor)
+    bkp = backup_mod.backup(profile, profile.host.deploy_root() / "backups", executor = executor)
 
     if current.exists():
         _install(current, prev_path(profile))

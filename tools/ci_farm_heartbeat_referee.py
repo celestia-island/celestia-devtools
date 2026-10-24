@@ -88,22 +88,7 @@ ESXI_KEY_FILE = _require("CI_HB_ESXI_KEY_FILE")
 # 为什么不用密码：ESXi 7 开着 FIPS（ed25519 被拒）+ SecurityAccountLockout
 # （密码方式的失败尝试会锁 root，锁定期内正确密码也被拒）。
 # 部署：node-1 的 id_rsa_esxi.pub 已装入 /etc/ssh/keys-root/authorized_keys。
-SSH_BASE = [
-    "ssh",
-    "-i",
-    ESXI_KEY_FILE,
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    f"ConnectTimeout={CONNECT_TIMEOUT}",
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "LogLevel=ERROR",
-    f"{ESXI_USER}@{ESXI_HOST}"
-]
+SSH_BASE = ["ssh", "-i", ESXI_KEY_FILE, "-o", "BatchMode=yes", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f"{ESXI_USER}@{ESXI_HOST}"]
 
 def now_ts() -> float:
     return time.time()
@@ -196,12 +181,7 @@ def recover_vm(vmid: int, snap_id: Optional[int]) -> Tuple[bool, str]:
     snap_arg = str(snap_id if snap_id is not None else 1)
     remote = f"vim-cmd vmsvc/power.off {vmid} 2>/dev/null; " f"vim-cmd vmsvc/snapshot.revert {vmid} {snap_arg} 1; " f"sleep 5; vim-cmd vmsvc/power.on {vmid}; " f"vim-cmd vmsvc/power.getstate {vmid} | tail -1"
     # 回滚序列含 sleep + 两轮 hostd 操作，50s 默认超时不够 → 单独放宽。
-    ok, out = run_esxi(
-        CMD_RECOVER,
-        vmid,
-        remote,
-        timeout = CONNECT_TIMEOUT + 90
-    )
+    ok, out = run_esxi(CMD_RECOVER, vmid, remote, timeout = CONNECT_TIMEOUT + 90)
     return ok, out if ok else out + "recover-timeout-or-ssh-failure"
 
 # ── guest 侧 beat 单元自愈部署 ──────────────────────────────────────────────────
@@ -304,18 +284,7 @@ def rearm_guest(name: str, opts: Dict[str, Any]) -> None:
     log(f"{name}: ALERT — could not re-arm beat unit after revert; node silently unmonitored")
 
 # ── 纯决策函数（selftest 的主靶）──────────────────────────────────────────────
-def decide(
-    hb: Optional[str],
-    stale_polls: int,
-    reverts_24h: int,
-    last_action_ts: Optional[float],
-    snap_ok: bool,
-    snap_reason: str,
-    now_ts_: float,
-    stale_threshold: int = STALE_ROUNDS,
-    budget: int = REVERT_BUDGET_24H,
-    cooldown: int = COOLDOWN_SEC
-) -> Tuple[str, int, str]:
+def decide(hb: Optional[str], stale_polls: int, reverts_24h: int, last_action_ts: Optional[float], snap_ok: bool, snap_reason: str, now_ts_: float, stale_threshold: int = STALE_ROUNDS, budget: int = REVERT_BUDGET_24H, cooldown: int = COOLDOWN_SEC) -> Tuple[str, int, str]:
     """返回 (decision, new_stale_polls, reason)。
 
     decision ∈ {"ok", "stale", "trigger", "refused-budget", "refused-cooldown",
@@ -349,14 +318,7 @@ def reverts_in_last_24h(revert_ts_list: List[float], now_ts_: float) -> int:
     return sum(1 for ts in revert_ts_list if ts >= horizon)
 
 # ── 主流程 ──────────────────────────────────────────────────────────────────────
-def process_vm(
-    name: str,
-    vmid: int,
-    state: Dict[str, Any],
-    actions: List[Dict[str, Any]],
-    opts: Dict[str, Any],
-    guest_ip: Optional[str] = None
-) -> None:
+def process_vm(name: str, vmid: int, state: Dict[str, Any], actions: List[Dict[str, Any]], opts: Dict[str, Any], guest_ip: Optional[str] = None) -> None:
     # 首跳注册制：从未打过心跳的节点 = 未部署 beat 单元 = 不受监管。
     # 绝不对它做任何判定/动作（防误伤未纳管节点）。
     if not os.path.isfile(os.path.join(BEAT_DIR, name)):

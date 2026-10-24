@@ -107,9 +107,7 @@ def test_sweep_tmp_removes_shaped_stale_dirs(tmp_path):
     assert not stale.exists()
     assert fresh.exists(), "recently-touched dirs must never be removed"
     # system-shaped name survives: it does not match the 20+ random-char shape
-    assert notshaped.name.startswith(
-        "systemd-"
-    )  # and it was skipped (has '-' but also letters < 20 random)
+    assert notshaped.name.startswith("systemd-") # and it was skipped (has '-' but also letters < 20 random)
 
 def test_sweep_tmp_skips_files_and_foreign_owners(tmp_path):
     f = tmp_path / ("c" * 24)
@@ -139,14 +137,7 @@ def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
 
     root = tmp_path / "sandbox-root"
     # A wrapper script that we can signal from outside
-    wrapper_code = (
-        "import sys, os, signal, time, subprocess\n"
-        "sys.path.insert(0, os.environ['SB_SRC'])\n"
-        "from celestia_devtools.env import e2e_sandbox as sb\n"
-        "os.environ['E2E_SANDBOX_ROOT'] = " + repr(str(root)) + "\n"
-        "rc = sb.main(['run', '--', sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-        "print(f'rc={rc}')\n"
-    )
+    wrapper_code = "import sys, os, signal, time, subprocess\n" "sys.path.insert(0, os.environ['SB_SRC'])\n" "from celestia_devtools.env import e2e_sandbox as sb\n" "os.environ['E2E_SANDBOX_ROOT'] = " + repr(str(root)) + "\n" "rc = sb.main(['run', '--', sys.executable, '-c', 'import time; time.sleep(60)'])\n" "print(f'rc={rc}')\n"
     env = dict(os.environ, SB_SRC = str(Path(__file__).parents[1] / "src"))
     proc = subprocess.Popen([sys.executable, "-c", wrapper_code], stdout = subprocess.PIPE, stderr = subprocess.PIPE, text = True, env = env)
     time.sleep(2)  # let the sandbox and child spawn
@@ -160,6 +151,4 @@ def test_run_sigterm_cleans_sandbox_and_kills_child(tmp_path):
         raise AssertionError("wrapper did not exit after SIGTERM") from None
 
     # sandbox must be gone
-    assert not root.exists() or not any(root.iterdir()), (
-        f"SIGTERM leaked sandbox: {list(root.iterdir()) if root.exists() else 'gone'}"
-    )
+    assert not root.exists() or not any(root.iterdir()), (f"SIGTERM leaked sandbox: {list(root.iterdir()) if root.exists() else 'gone'}")

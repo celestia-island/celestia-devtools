@@ -47,9 +47,7 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # the lane pipeline on its master. `publish_lane_ref()` checks that at dispatch time and anything
 # missing falls back to the build lane; the target repo itself no longer needs a `.cnb.yml` — the
 # lane stopped reading the target's tree when it moved to the host.
-DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari",
-             "plana", "entelecheia", "malkuth", "kirino",
-             "celestia-devtools", "evernight-appliance"}
+DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari", "plana", "entelecheia", "malkuth", "kirino", "celestia-devtools", "evernight-appliance"}
 # Each dev-quota repo is validated by a CNB-side lane host (`ci-infra-<repo>`, a repo that
 # exists only on cnb.cool) rather than by a pipeline file in the GitHub repo: the dispatcher
 # pushes `spill/<sha10>` into the host, CNB runs the host's own `.cnb.yml`, and that pipeline
@@ -66,8 +64,7 @@ LANE_HOST = os.environ.get("DISPATCH_LANE_HOST", "ci-infra-{repo}")
 # instance and `ci-infra-<repo>-<n>` for every later one, counting from 2 (user directive
 # 2026-09-25: every watched repo gets at least three instances). Comma-separated extra
 # templates; first free host wins; defer only when the whole pool is busy.
-LANE_HOST_EXTRA = [t.strip() for t in os.environ.get(
-    "DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2,ci-infra-{repo}-3").split(",") if t.strip()]
+LANE_HOST_EXTRA = [t.strip() for t in os.environ.get("DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2,ci-infra-{repo}-3").split(",") if t.strip()]
 
 def lane_hosts(repo):
     """The lane-host pool for a repo: primary first, then extras, deduplicated."""
@@ -246,8 +243,7 @@ def cnb_api(path, data = None):
 CHARGE_URL = f"https://api.cnb.cool/{ORG}/-/charge/volume"
 #  `t`        — when the last *successful* read happened (staleness is measured from it)
 #  `attempt`  — when the last read was *attempted*, success or not (negative cache)
-_pool_reading = {"t": 0.0, "attempt": 0.0, "dev": None, "dev_pct": None, "build": None,
-                 "build_pct": None, "fresh": False}
+_pool_reading = {"t": 0.0, "attempt": 0.0, "dev": None, "dev_pct": None, "build": None, "build_pct": None, "fresh": False}
 _NO_READING = {"dev_hours": None, "dev_pct": None, "build_hours": None, "build_pct": None, "fresh": False}
 
 def charge_volume():
@@ -433,10 +429,7 @@ def save_state(st):
 # identity unknown") and the service env / gitcache bare repos carry none, which
 # made every ws-spill fall back to the build lane. Pass a fixed synthetic
 # identity explicitly so the spill merge commit never depends on ambient config.
-SPILL_COMMIT_IDENTITY = (
-    "-c", "user.name=ci-dispatcher",
-    "-c", "user.email=ci-dispatcher@users.noreply.github.com"
-)
+SPILL_COMMIT_IDENTITY = ("-c", "user.name=ci-dispatcher", "-c", "user.email=ci-dispatcher@users.noreply.github.com")
 
 def spill_merge_commit(d, tree_sha, parent_a, parent_b):
     import subprocess
@@ -485,8 +478,7 @@ def ensure_sha_on_mirror(repo, sha):
     # "stale info" exactly like a plain push. Pin the lease explicitly instead:
     # ls-remote the current value and require the push to land on exactly that
     # value (empty expect = ref must not exist yet). Never bare --force.
-    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, spill_ref],
-                         capture_output = True, text = True, check = True, env = env_cnb, timeout = 60)
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, spill_ref], capture_output = True, text = True, check = True, env = env_cnb, timeout = 60)
     remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
     subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={spill_ref}:{remote_val}", cnb_url, f"{msha}:{spill_ref}"], check = True, env = env_cnb, timeout = 300)
     return msha
@@ -509,8 +501,7 @@ def publish_lane_ref(repo, sha, host = None):
         subprocess.run(["git", "init", "-q", "--bare", d], check = True)
 
     # cnb.cool must be reached directly (the proxy throttles it to ~13 KB/s)
-    env_cnb = {k: v for k, v in os.environ.items()
-               if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+    env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
     cnb_url = f"https://cnb:{CNB}@cnb.cool/{ORG}/{host}.git"
     subprocess.run(["git", "-C", d, "fetch", "-q", "--force", cnb_url, "+refs/heads/master:refs/heads/master"], check = True, env = env_cnb, timeout = 300)
     has_pipeline = subprocess.run(["git", "-C", d, "cat-file", "-e", "master:.cnb.yml"], capture_output = True).returncode == 0
@@ -524,8 +515,7 @@ def publish_lane_ref(repo, sha, host = None):
     # Same one-shot-ref caution as the mirror push: a stale ref from a previous spill of the
     # same sha makes a plain push non-fast-forward, and a bare --force-with-lease is a no-op
     # without tracking refs, so pin the expected value explicitly.
-    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, ref],
-                         capture_output = True, text = True, check = True, env = env_cnb, timeout = 60)
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, ref], capture_output = True, text = True, check = True, env = env_cnb, timeout = 60)
     remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
     subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={ref}:{remote_val}", cnb_url, f"master:{ref}"], check = True, env = env_cnb, timeout = 300)
     log(f"lane ref {host} spill/{sha[:10]} pipeline={'yes' if has_pipeline else 'NO'}")
@@ -625,9 +615,7 @@ def spill(entry, state):
             # lane moved to the host that is NOT the target repo any more: polling the target
             # returned "Failed to retrieve pipeline", so `cs` stayed None and the run was
             # released at the grace window without ever posting a status or cancelling it.
-            state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha,
-                                           "url": redact(r.get("buildLogUrl", "")), "since": time.time(),
-                                           "task": task}
+            state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha, "url": redact(r.get("buildLogUrl", "")), "since": time.time(), "task": task}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
         except Exception as e:
@@ -755,8 +743,7 @@ def resolve(state):
                     # repos into build-lane fallbacks. Fail closed: release the slot,
                     # post no status, leave the farm run. A stage that merely exists and
                     # is still running is healthy and must never be cut short here.
-                    log(f"ws {sn} ({repo}) has no {WS_CHECK_STAGE} stage after "
-                        f"{WS_STAGE_GRACE_SEC}s — stopping workspace, farm run untouched")
+                    log(f"ws {sn} ({repo}) has no {WS_CHECK_STAGE} stage after " f"{WS_STAGE_GRACE_SEC}s — stopping workspace, farm run untouched")
 
                     try:
                         ws_stop(sn)
@@ -871,8 +858,7 @@ def _self_test() -> None:
 
     assert [d["context"]for d in posted] == ["cnb/webui-check", "cnb/python-check", "cnb/cargo-check"], posted
     # a record written before the deploy resolves under the same legacy default
-    assert {"repo": "arona", "sha": "a", "sn": "s", "url": "", "since": 0.0}.get(
-        "task", "cargo-check") == "cargo-check"
+    assert {"repo": "arona", "sha": "a", "sn": "s", "url": "", "since": 0.0}.get("task", "cargo-check") == "cargo-check"
     print("status contexts: per-task + legacy default ok")
     # state.json migration: `_failed` is initialised beside `_recent` on load
     global STATE_PATH
@@ -946,8 +932,7 @@ def main():
                         # One cheap line per poll instead of a full doomed spill:
                         # this skip sits before spill() — hence before any
                         # mirror fetch/merge — so a blacklisted run costs nothing.
-                        log(f"skipping recently-failed spill {entry['repo']}/"
-                            f"{entry['sha'][:10]}, retry in {int(cooldown)}s")
+                        log(f"skipping recently-failed spill {entry['repo']}/" f"{entry['sha'][:10]}, retry in {int(cooldown)}s")
                         continue
 
                     if spill(entry, state) is False:

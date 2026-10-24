@@ -93,9 +93,7 @@ class test_plan_offline(pack_fixture_case):
         proc = self.run_cli("plan", str(pack))
         self.assertEqual(proc.returncode, 0, msg = proc.stderr)
         # plan must not create or modify anything inside the pack dir
-        self.assertEqual(
-            sorted(p.name for p in pack.iterdir()), ["asr_server.py", "engine.meta"]
-        )
+        self.assertEqual(sorted(p.name for p in pack.iterdir()), ["asr_server.py", "engine.meta"])
 
     def test_plan_native_binary_pack(self):
         native = '[pack]\nname = "llama-chat"\nengine = "llama.cpp"\nversion = "1.0.0"\n\n' '[service]\nunit = "llama-chat"\n' 'command = ["/opt/llama.cpp/bin/llama-server", "--port", "8080"]\n' 'port = 8080\nhealth_path = "/health"\n'

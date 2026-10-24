@@ -58,11 +58,7 @@ from celestia_devtools.env.preflight import require as _require_tools
 # Node packages — (name, version range) so scoped names (@electric-sql/…)
 # don't get mangled by naive split("@"). pglite-pgvector gives the `vector`
 # extension. Versions verified against npm (2026-07).
-PACKAGES = [
-    ("@electric-sql/pglite", "^0.5"),
-    ("@electric-sql/pglite-socket", "^0.2"),
-    ("@electric-sql/pglite-pgvector", "^0.0.5")
-]
+PACKAGES = [("@electric-sql/pglite", "^0.5"), ("@electric-sql/pglite-socket", "^0.2"), ("@electric-sql/pglite-pgvector", "^0.0.5")]
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 0  # 0 = let the OS pick a free port (reported back via stdout)
@@ -293,12 +289,7 @@ def start(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, persist: str | Non
     log_f = log_path.open("w")
     # On Windows, shell=True is needed to find node/npm from PATH.
     # On Unix, start_new_session detaches from the parent.
-    popen_kwargs = {
-        "cwd": str(_node_dir()),
-        "env": env,
-        "stdout": subprocess.PIPE,
-        "stderr": log_f
-    }
+    popen_kwargs = {"cwd": str(_node_dir()), "env": env, "stdout": subprocess.PIPE, "stderr": log_f}
 
     if os.name == "nt":
         popen_kwargs["shell"] = True

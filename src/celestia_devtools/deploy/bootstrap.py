@@ -33,11 +33,7 @@ PENDING = "pending-slice"
 FAILED = "failed"
 
 # slice registry: stage name -> landing slice (stages not yet in STAGES below)
-STAGE_SLICES: dict[str, str] = {
-    "precheck": "D2", "account": "D2", "secrets": "D2", "database": "D3",
-    "artifact": "D3", "install": "D3", "migrate": "D3", "first-admin": "D3",
-    "front": "D4", "verify": "D4", "summary": "D2"
-}
+STAGE_SLICES: dict[str, str] = {"precheck": "D2", "account": "D2", "secrets": "D2", "database": "D3", "artifact": "D3", "install": "D3", "migrate": "D3", "first-admin": "D3", "front": "D4", "verify": "D4", "summary": "D2"}
 STAGE_ORDER: tuple[str, ...] = tuple(STAGE_SLICES)
 
 ENV_KEYS = ("JWT_SECRET", "SHITTIM_CHEST_ENCRYPTION_KEY")
@@ -188,19 +184,7 @@ def stage_summary(ctx: stage_context, results: list[stage_result]) -> stage_resu
     return stage_result("summary", OK, "{} done, {} pending".format(len(done), len(pending)))
 
 # stages implemented by later slices; None = not yet landed
-STAGES: dict[str, Callable | None] = {
-    "precheck": stage_precheck,
-    "account": stage_account,
-    "secrets": stage_secrets,
-    "database": None,
-    "artifact": None,
-    "install": None,
-    "migrate": None,
-    "first-admin": None,
-    "front": None,
-    "verify": None,
-    "summary": stage_summary
-}
+STAGES: dict[str, Callable | None] = {"precheck": stage_precheck, "account": stage_account, "secrets": stage_secrets, "database": None, "artifact": None, "install": None, "migrate": None, "first-admin": None, "front": None, "verify": None, "summary": stage_summary}
 
 def run_stages(ctx: stage_context) -> tuple[int, list[stage_result]]:
     """Execute in order; stop at the first not-yet-landed stage (marking the

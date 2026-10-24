@@ -187,31 +187,22 @@ class test_regression_real_history:
 
     def test_noa_commits_pass(self):
         # noa master: 🐛 Eliminate aws-lc-sys C dependency...
-        assert lint(
-            "\U0001f41b Eliminate aws-lc-sys C dependency and enable Windows builds."
-        ) == []
+        assert lint("\U0001f41b Eliminate aws-lc-sys C dependency and enable Windows builds.") == []
 
     def test_kirino_commits_pass(self):
         # kirino master: 🔒 Add zero-trust authentication with trust scoring.
-        assert lint(
-            "\U0001f512 Add zero-trust authentication with trust scoring."
-        ) == []
+        assert lint("\U0001f512 Add zero-trust authentication with trust scoring.") == []
 
     def test_aoba_commits_pass(self):
         # aoba master: 🐛 Use license-file only so crates.io accepts...
-        assert lint(
-            "\U0001f41b Use license-file only so crates.io accepts the non-SPDX SySL license."
-        ) == []
+        assert lint("\U0001f41b Use license-file only so crates.io accepts the non-SPDX SySL license.") == []
 
 class test_cjk_led_uppercase_rule:
     """Rule 3 must not fire on English tokens inside CJK-led summaries."""
 
     def test_cjk_led_with_english_token_passes(self):
         # easy-hydro-miniprogram #42: lowercase token "base_qty" mid-sentence.
-        assert lint(
-            "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。",
-            allow_cjk = True
-        ) == []
+        assert lint("✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。", allow_cjk = True) == []
 
     def test_cjk_led_no_period_passes(self):
         assert lint("✨ 修复解析器", allow_cjk = True) == []

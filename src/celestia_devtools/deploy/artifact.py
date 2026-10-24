@@ -68,8 +68,7 @@ class entry_record:
 
 # ── build ──────────────────────────────────────────────────────────────
 
-def build(bin_path: Path, version: str, target: str, out_dir: Path,
-          name: str = BIN_NAME) -> entry_record:
+def build(bin_path: Path, version: str, target: str, out_dir: Path, name: str = BIN_NAME) -> entry_record:
     bin_path = Path(bin_path)
 
     if not bin_path.is_file():

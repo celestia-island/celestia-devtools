@@ -12,10 +12,7 @@ from celestia_devtools.npm.dist import main as dist_main
 # shutil.which, not a probe run: a missing binary raises FileNotFoundError
 # AT COLLECTION (round-18: this took the whole devtools CI pytest job down
 # on node-less runners) — which() never executes anything.
-_HAS_NODE = pytest.mark.skipif(
-    shutil.which("node") is None,
-    reason = "node not available to validate generated JS syntax"
-)
+_HAS_NODE = pytest.mark.skipif(shutil.which("node") is None, reason = "node not available to validate generated JS syntax")
 
 # ── platforms ────────────────────────────────────────────────────────────────
 
@@ -156,9 +153,7 @@ class test_staging:
             assert dist_main() == 0
 
         # now reassemble with NO binary (final CI job pattern)
-        monkeypatch.setattr(sys, "argv", [
-            "npm-dist", "--name", "demo", "--out-dir", str(out)
-        ])
+        monkeypatch.setattr(sys, "argv", ["npm-dist", "--name", "demo", "--out-dir", str(out)])
         # version is inherited from the existing root package.json
         assert dist_main() == 0
         root_pkg = json.loads((out / "package.json").read_text(encoding = "utf-8"))

@@ -98,9 +98,7 @@ class test_no_proxy_composition:
 
         # The RFC1918/ULA CIDR literals below are the feature's own constants
         # (NO_PROXY must cover the real private ranges), not host addresses.
-        for expected in ("localhost", "127.0.0.1",
-                         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
-                         ".node.test", "internal.corp.example"):
+        for expected in ("localhost", "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", ".node.test", "internal.corp.example"):
             assert expected in cfg.no_proxy, joined
 
 class test_malformed_input:

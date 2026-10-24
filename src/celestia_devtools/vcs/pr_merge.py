@@ -35,9 +35,7 @@ def main() -> int:
 
     # Repo-aware CJK exemption (easy-hydro repos use Chinese subjects):
     # explicit --repo wins, else the origin remote of the cwd.
-    repo = (
-        args.repo.split("/")[-1].removesuffix(".git") if args.repo else None
-    ) or repo_name_from_git_remote()
+    repo = (args.repo.split("/")[-1].removesuffix(".git") if args.repo else None) or repo_name_from_git_remote()
     violations = lint(subject, allow_cjk = repo_allows_cjk(repo))
 
     if violations:

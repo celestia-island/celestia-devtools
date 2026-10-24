@@ -70,11 +70,7 @@ def stage_database(ctx: "bootstrap.stage_context") -> stage_result:
 
     # argv must not carry credentials (R2 P2: /proc is world-readable;
     # same fix pattern as deps._pip_argv)
-    proc = ctx.run(["pg_isready", "-h", parsed.hostname or "127.0.0.1",
-                    "-p", str(parsed.port or 5432),
-                    "-U", parsed.username or "postgres",
-                    "-d", parsed.path.lstrip("/") or "postgres"],
-                   timeout = 30, env = pg_env)
+    proc = ctx.run(["pg_isready", "-h", parsed.hostname or "127.0.0.1", "-p", str(parsed.port or 5432), "-U", parsed.username or "postgres", "-d", parsed.path.lstrip("/") or "postgres"], timeout = 30, env = pg_env)
 
     if getattr(proc, "returncode", 0) != 0:
         return stage_result("database", FAILED, "pg_isready failed for the provided URL " "(continuable if the DB comes up later)")

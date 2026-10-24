@@ -75,13 +75,7 @@ def test_git_log_caret_bang_means_exactly_one_commit() -> None:
         # --no-verify: this machine's GLOBAL core.hooksPath points at the
         # devtools commit-msg hook, which would reject the deliberately
         # pre-rule "ancient" subject before the fixture could exist.
-        env = {
-            **os.environ,
-            "GIT_AUTHOR_NAME": "t",
-            "GIT_AUTHOR_EMAIL": "t@t",
-            "GIT_COMMITTER_NAME": "t",
-            "GIT_COMMITTER_EMAIL": "t@t"
-        }
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
         subprocess.run(["git", "-C", tmp, "commit", "--allow-empty", "--no-verify", "-q", "-m", "old style without a gitmoji"], env = env, check = True, capture_output = True)
         subprocess.run(["git", "-C", tmp, "commit", "--allow-empty", "--no-verify", "-q", "-m", "✨ Compliant head."], env = env, check = True, capture_output = True)
         head = git("rev-parse", "HEAD")

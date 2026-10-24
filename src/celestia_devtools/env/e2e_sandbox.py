@@ -49,16 +49,7 @@ DEFAULT_ROOT = "/mnt/work/e2e-sandbox"
 # chromium 的 mkdtemp 形态：≥20 位 [0-9A-Za-z_-]，无点前缀、无常见系统名
 _CHROMIUM_DIR_SHAPE = re.compile(r"^[0-9A-Za-z_-]{20,}$")
 # 永不匹配的名字（双保险；形态正则本身已排除带前缀/点号的名字）
-_NEVER_TOUCH = {
-    "systemd-private-",
-    ".X11-unix",
-    ".ICE-unix",
-    ".font-unix",
-    ".Test-unix",
-    ".XIM-unix",
-    "snap-private-tmp",
-    ".X0-lock"
-}
+_NEVER_TOUCH = {"systemd-private-", ".X11-unix", ".ICE-unix", ".font-unix", ".Test-unix", ".XIM-unix", "snap-private-tmp", ".X0-lock"}
 
 def _kill_tree(child: subprocess.Popen | None, sig: int = signal.SIGKILL) -> None:
     """Signal the child's whole process group (start_new_session put it alone)."""

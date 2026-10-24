@@ -30,13 +30,7 @@ from celestia_devtools.env import host, wsl_select
 # Default env vars propagated Windows → WSL (in addition to the
 # project-supplied set). Path-like values (*_ROOT, CARGO_TARGET_DIR,
 # ARCH_BUSYBOX) are translated via wslpath.
-_BASE_PASSTHROUGH = {
-    "RUSTUP_HOME", "CARGO_HOME", "CARGO_TARGET_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "all_proxy",
-    "NO_COLOR", "TERM", "CELESTIA_DEVTOOLS_INSTALL",
-    "QEMU_DISPLAY"
-}
+_BASE_PASSTHROUGH = {"RUSTUP_HOME", "CARGO_HOME", "CARGO_TARGET_DIR", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_COLOR", "TERM", "CELESTIA_DEVTOOLS_INSTALL", "QEMU_DISPLAY"}
 
 _PATH_LIKE_SUFFIXES = ("_ROOT",)
 _PATH_LIKE_EXACT = {"CARGO_TARGET_DIR", "ARCH_BUSYBOX"}

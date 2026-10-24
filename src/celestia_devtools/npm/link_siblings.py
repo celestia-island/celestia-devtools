@@ -329,14 +329,7 @@ def save_state(repo_root: Path, state: dict) -> None:
 
 # ── link application ──────────────────────────────────────────────────────
 
-def apply_link(
-    plan: LinkPlan,
-    repo_root: Path,
-    state: dict,
-    *,
-    force: bool = False,
-    dry_run: bool = False
-) -> LinkResult:
+def apply_link(plan: LinkPlan, repo_root: Path, state: dict, *, force: bool = False, dry_run: bool = False) -> LinkResult:
     """Materialize one sibling symlink, recording prior state for --remove."""
     link_path = plan.link_path
     target = plan.sibling.path

@@ -28,11 +28,7 @@ import sys
 from dataclasses import dataclass
 
 # dist-name → import name (importlib.metadata works on distribution names).
-DIST_IMPORT = {
-    "PyYAML": "yaml",
-    "tomli-w": "tomli_w",
-    "questionary": "questionary"
-}
+DIST_IMPORT = {"PyYAML": "yaml", "tomli-w": "tomli_w", "questionary": "questionary"}
 
 DEFAULT_REQUIRED = ("PyYAML",)
 

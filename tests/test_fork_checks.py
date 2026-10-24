@@ -58,10 +58,7 @@ FORK_CLAUSE = "head.repo.fork==true"
 #: Reusable workflows served to the fleet as required checks and reachable by
 #: fork PRs after the fix: both jobs are sub-minute, stdlib-only, hold no
 #: secrets, and never execute the pull request's code.
-FORK_SERVED = {
-    "commit-msg-lint.yml": "lint",
-    "pr-title-check.yml": "title"
-}
+FORK_SERVED = {"commit-msg-lint.yml": "lint", "pr-title-check.yml": "title"}
 
 #: Farm-pinned workflows that must stay guarded until they grow a lane
 #: override — opening them would spend shared runner time on untrusted content.

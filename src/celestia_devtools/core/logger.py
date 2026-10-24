@@ -60,11 +60,7 @@ def _strip_ansi(text: str) -> str:
 # Match Rust tracing output: "HH:MM:SS  LEVEL  target: message"
 # (tracing's default Full format with ShortTimer, after ANSI stripping).
 # Used by tag() to re-align subprocess output with the Python columnar layout.
-_RUST_TRACE_RE = re.compile(
-    r'^(\d{2}:\d{2}:\d{2})\s+'
-    r'(DEBUG|INFO|WARN|ERROR|TRACE)\s+'
-    r'(.+?):\s(.*)$'
-)
+_RUST_TRACE_RE = re.compile(r'^(\d{2}:\d{2}:\d{2})\s+' r'(DEBUG|INFO|WARN|ERROR|TRACE)\s+' r'(.+?):\s(.*)$')
 
 # Matches a tracing span-context head: 'name{fields}'. Used by the span-peel
 # loop to distinguish span layers from bare message clauses or JSON payloads.

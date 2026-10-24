@@ -182,11 +182,7 @@ def test_remote_script_honours_env_switches(keys_dir: Path):
     assert "CI_RUNNER_FORCE_RESTART=0" in script
     assert "CI_RUNNER_PNPM_VERSION=11.18.0" in script
     # determinism: same inputs, same script
-    assert script == crc.emit_remote_script(
-        {"CI_RUNNER_NO_RESTART": "1", "CI_RUNNER_FORCE_RESTART": "0",
-         "CI_RUNNER_PNPM_VERSION": "11.18.0"},
-        keys_dir
-    )
+    assert script == crc.emit_remote_script({"CI_RUNNER_NO_RESTART": "1", "CI_RUNNER_FORCE_RESTART": "0", "CI_RUNNER_PNPM_VERSION": "11.18.0"}, keys_dir)
 
 def test_no_real_credentials_in_module_source():
     source = (_TOOLS / "ci_runner_credentials.py").read_text(encoding = "utf-8")

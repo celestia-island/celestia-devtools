@@ -74,9 +74,7 @@ def _create(name: str, base: str) -> int:
         return 0
 
     # Ensure the base branch exists locally (fetch if only on remote).
-    if _git("rev-parse", "--verify", f"refs/heads/{base}").returncode != 0 and _git(
-        "rev-parse", "--verify", f"refs/remotes/origin/{base}"
-    ).returncode != 0:
+    if (_git("rev-parse", "--verify", f"refs/heads/{base}").returncode != 0) and (_git("rev-parse", "--verify", f"refs/remotes/origin/{base}").returncode != 0):
         print(f"branch '{base}' not found locally or on origin", file = sys.stderr)
         return 1
 
@@ -92,10 +90,7 @@ def _create(name: str, base: str) -> int:
 
     print(f"worktree ready: {target}")
     # Register cargo patches for the new directory, best-effort.
-    subprocess.run(
-        [sys.executable, "-m", "celestia_devtools", "register-patches"],
-        cwd = Path(target)
-    )
+    subprocess.run([sys.executable, "-m", "celestia_devtools", "register-patches"], cwd = Path(target))
     return 0
 
 def _remove(name: str) -> int:

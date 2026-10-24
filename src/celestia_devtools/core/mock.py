@@ -76,11 +76,7 @@ def discover_sibling_repos() -> dict[str, Path]:
 # (arona/scripts/mock/server.py) — NOT 8420, the stale value this table
 # carried until 2026-10-16; mock-start's peer URLs, status and stop all
 # derive from here.
-MOCK_PORTS: dict[str, dict] = {
-    "arona": {"port": 8429, "protocol": "http"},
-    "entelecheia": {"port": 8424, "protocol": "ws"},
-    "shittim-chest": {"port": 8428, "protocol": "ws"}
-}
+MOCK_PORTS: dict[str, dict] = {"arona": {"port": 8429, "protocol": "http"}, "entelecheia": {"port": 8424, "protocol": "ws"}, "shittim-chest": {"port": 8428, "protocol": "ws"}}
 
 def discover_mocks() -> dict:
     """Build the complete mock registry from sibling repo discovery.

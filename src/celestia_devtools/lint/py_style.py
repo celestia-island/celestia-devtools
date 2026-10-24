@@ -90,18 +90,7 @@ MAX_FIX_FILES = 50
 # Directories that are never scanned. build/dist/target are skipped only when
 # they are build artefacts: a directory with that name that belongs to a Python
 # package (its own __init__.py, or inside a package) is real source (O1).
-SKIP_DIRECTORY_NAMES = frozenset(
-    {
-        ".git",
-        ".venv",
-        "venv",
-        "node_modules",
-        "__pycache__",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".mypy_cache"
-    }
-)
+SKIP_DIRECTORY_NAMES = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"})
 
 BUILD_ARTIFACT_DIRECTORY_NAMES = frozenset({"build", "dist", "target"})
 
@@ -625,14 +614,7 @@ def run_checks(discovery: discovery, active: Sequence[str], config: style_config
                 # Package __init__ modules are excluded: their re-export imports are
                 # a documented exception (mapping Q5) and would create false
                 # parent/child cycles.
-                modules.append(
-                    module_info(
-                        module_name,
-                        path,
-                        is_package,
-                        tuple(module_import_edges(path, context.tree, module_name, is_package))
-                    )
-                )
+                modules.append(module_info(module_name, path, is_package, tuple(module_import_edges(path, context.tree, module_name, is_package))))
 
     if ("acyclic-imports" in active_set) and discovery.directory_scan:
         for graph_issue in check_import_cycles(modules):
@@ -731,9 +713,7 @@ def emit_check_report(result: check_result, *, json_output: bool, quiet: bool, m
 # Fix engine
 # ---------------------------------------------------------------------------
 
-def _fix_one_file(
-    path: Path, text: str, fixers: Sequence[str], config: style_config
-) -> tuple[str | None, list[str], str | None]:
+def _fix_one_file(path: Path, text: str, fixers: Sequence[str], config: style_config) -> tuple[str | None, list[str], str | None]:
     """Run fixer rounds; return (new text or None, applied rules, fatal reason)."""
 
     applied: list[str] = []
@@ -796,9 +776,7 @@ def _write_source(path: Path, text: str, used_crlf: bool) -> None:
 # CLI commands
 # ---------------------------------------------------------------------------
 
-def _load_style_config(
-    paths: Sequence[str], config_path: str | None, no_config: bool
-) -> style_config:
+def _load_style_config(paths: Sequence[str], config_path: str | None, no_config: bool) -> style_config:
     try:
         return load_config(paths = paths, explicit = config_path, disabled = no_config)
     except config_error as exc:

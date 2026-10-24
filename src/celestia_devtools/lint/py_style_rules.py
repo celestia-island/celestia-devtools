@@ -2523,32 +2523,7 @@ def fix_comment_blank_line(context: file_context, config: "style_config") -> str
     return _delete_rows(context, delete)
 
 # -- token level layout helpers --------------------------------------------
-_SPACE_AROUND_OPERATORS = frozenset(
-    {
-        "+",
-        "-",
-        "*",
-        "/",
-        "//",
-        "%",
-        "@",
-        "**",
-        "==",
-        "!=",
-        "<",
-        "<=",
-        ">",
-        ">=",
-        "&",
-        "|",
-        "^",
-        "<<",
-        ">>",
-        ":=",
-        "=",
-        "->"
-    }
-)
+_SPACE_AROUND_OPERATORS = frozenset({"+", "-", "*", "/", "//", "%", "@", "**", "==", "!=", "<", "<=", ">", ">=", "&", "|", "^", "<<", ">>", ":=", "=", "->"})
 _SPACE_AROUND_KEYWORDS = frozenset({"and", "or", "in", "is", "not"})
 _UNARY_ONLY_OPERATORS = frozenset({"~"})
 _ATTACHING_PREVIOUS_KEYWORDS = frozenset({"def", "class", "C", "return", "yield", "assert", "if", "elif", "while", "lambda"})
@@ -3010,33 +2985,7 @@ def fix_redundant_parens(context: file_context, config: "style_config") -> str:
 # Registries
 # ---------------------------------------------------------------------------
 
-CHECK_FUNCS: dict[str, Callable[[file_context, "style_config"], list[issue_record]]] = {
-    "trailing-whitespace": check_trailing_whitespace,
-    "final-blank-lines": check_final_blank_lines,
-    "final-newline": check_final_newline,
-    "indent-four-spaces": check_indent_four_spaces,
-    "no-tabs": check_no_tabs,
-    "no-consecutive-blank-lines": check_no_consecutive_blank_lines,
-    "one-statement-per-line": check_one_statement_per_line,
-    "single-line-statement": check_single_line_statement,
-    "imports-at-top": check_imports_at_top,
-    "imports-contiguous": check_imports_contiguous,
-    "no-block-imports": check_no_block_imports,
-    "no-dynamic-imports": check_no_dynamic_imports,
-    "binary-operator-spacing": check_binary_operator_spacing,
-    "equal-spacing": check_equal_spacing,
-    "colon-spacing": check_colon_spacing,
-    "no-trailing-comma": check_no_trailing_comma,
-    "redundant-parens": check_redundant_parens,
-    "explicit-precedence": check_explicit_precedence,
-    "blank-lines-around-blocks": check_blank_lines_around_blocks,
-    "branch-adjacency": check_branch_adjacency,
-    "decorator-adjacency": check_decorator_adjacency,
-    "snake-case-definition": check_snake_case_definition,
-    "compound-word": check_compound_word,
-    "docstring-comment": check_docstring_comment,
-    "comment-blank-line": check_comment_blank_line
-}
+CHECK_FUNCS: dict[str, Callable[[file_context, "style_config"], list[issue_record]]] = {"trailing-whitespace": check_trailing_whitespace, "final-blank-lines": check_final_blank_lines, "final-newline": check_final_newline, "indent-four-spaces": check_indent_four_spaces, "no-tabs": check_no_tabs, "no-consecutive-blank-lines": check_no_consecutive_blank_lines, "one-statement-per-line": check_one_statement_per_line, "single-line-statement": check_single_line_statement, "imports-at-top": check_imports_at_top, "imports-contiguous": check_imports_contiguous, "no-block-imports": check_no_block_imports, "no-dynamic-imports": check_no_dynamic_imports, "binary-operator-spacing": check_binary_operator_spacing, "equal-spacing": check_equal_spacing, "colon-spacing": check_colon_spacing, "no-trailing-comma": check_no_trailing_comma, "redundant-parens": check_redundant_parens, "explicit-precedence": check_explicit_precedence, "blank-lines-around-blocks": check_blank_lines_around_blocks, "branch-adjacency": check_branch_adjacency, "decorator-adjacency": check_decorator_adjacency, "snake-case-definition": check_snake_case_definition, "compound-word": check_compound_word, "docstring-comment": check_docstring_comment, "comment-blank-line": check_comment_blank_line}
 
 ENGINE_RULE_IDS: frozenset[str] = frozenset({"acyclic-imports", "snake-case-file"})
 

@@ -39,16 +39,7 @@ from typing import Dict, List, Set
 CRATES_IO_VERSION_URL = "https://crates.io/api/v1/crates/{crate_name}/versions"
 
 # Patterns that indicate a hard-fail rather than "version already exists".
-FAIL_FAST_PATTERNS: List[str] = [
-    "license-file",
-    "does not appear to exist",
-    "No such file or directory",
-    "network error",
-    "timed out",
-    "401 Unauthorized",
-    "403 Forbidden",
-    "is already uploaded"
-]
+FAIL_FAST_PATTERNS: List[str] = ["license-file", "does not appear to exist", "No such file or directory", "network error", "timed out", "401 Unauthorized", "403 Forbidden", "is already uploaded"]
 
 def _cargo_metadata() -> dict:
     result = subprocess.run(["cargo", "metadata", "--no-deps", "--format-version", "1"], capture_output = True, text = True)

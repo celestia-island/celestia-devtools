@@ -79,13 +79,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 # 第 1–5 条：按 job **名称** 匹配（大小写不敏感），顺序即优先级，先命中者胜。
 # 依据（自托管实测，run id 可复核）：cargo 类最长 3h50m（entelecheia / Code Checks,
 # run 34770115181），前端与其他类最高 35–67m，lint 类最高 35m（hikari Lint）。
-_NAME_RULES: Tuple[Tuple[Tuple[str, ...], int], ...] = (
-    (("bench",), 360),
-    (("fuzz",), 180),
-    (("coverage",), 180),
-    (("install", "e2e", "integration", "smoke", "drill", "docker"), 180),
-    (("release", "publish", "deploy"), 120)
-)
+_NAME_RULES: Tuple[Tuple[Tuple[str,...], int],...] = ((("bench",), 360), (("fuzz",), 180), (("coverage",), 180), (("install", "e2e", "integration", "smoke", "drill", "docker"), 180), (("release", "publish", "deploy"), 120))
 
 # 第 6 条：job 体（含 steps）里出现 cargo —— 编译/测试类，自托管实测最长 3h50m，
 # 取 300 留余量。
@@ -98,10 +92,7 @@ _BODY_JS_TIMEOUT = 120
 
 # 第 8 条：轻量作业（只看名称；前置的 cargo / 前端规则优先）。lint 类实测最高 35m，
 # 取 60 留余量——早期草案给的 20 分钟会误杀 hikari 的 Lint（实测 24–35m）。
-_LIGHT_NAME_KEYWORDS: Tuple[str, ...] = (
-    "fmt", "format", "lint", "title", "secrets", "docs", "audit",
-    "deny", "markdown", "i18n", "sign", "verify", "sync"
-)
+_LIGHT_NAME_KEYWORDS: Tuple[str,...] = ("fmt", "format", "lint", "title", "secrets", "docs", "audit", "deny", "markdown", "i18n", "sign", "verify", "sync")
 _LIGHT_TIMEOUT = 60
 
 # 第 9 条：兜底。
@@ -159,9 +150,7 @@ class workflow_parse_error(Exception):
 
 # 键行：``key:`` 或 ``key: value``。key 允许被单/双引号包裹；取值到**第一个**冒号为止
 # （这样 ``run: curl https://...`` 的 key 仍是 ``run``）。
-_KEY_RE = re.compile(
-    r'^(?P<key>"[^"]*"|\'[^\']*\'|[^:\s][^:]*?)\s*:(?P<rest>.*)$'
-)
+_KEY_RE = re.compile(r'^(?P<key>"[^"]*"|\'[^\']*\'|[^:\s][^:]*?)\s*:(?P<rest>.*)$')
 
 # 顶层的 ``jobs:``（GitHub 要求顶层键从第 0 列开始；容忍文件开头的 UTF-8 BOM）。
 _JOBS_LINE_RE = re.compile(r"^\ufeff?jobs\s*:\s*(?:#.*)?$")

@@ -57,8 +57,7 @@ def _run_version(args: Sequence[str]) -> tuple[bool, str]:
 
     try:
         # shell=True only when we couldn't resolve (lets cmd.exe find .cmd/.bat).
-        r = subprocess.run(run_args, capture_output = True, text = True, timeout = 10,
-                           shell = not resolved and (os.name == "nt"))
+        r = subprocess.run(run_args, capture_output = True, text = True, timeout = 10, shell = not resolved and (os.name == "nt"))
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
         return False, ""
 
@@ -132,17 +131,7 @@ def check_linux() -> probe_record:
     return probe_record("linux", has_distro, hint = "wsl --install -d Ubuntu  (then just wsl-ensure)" if not has_distro else "")
 
 # Registry — req id → checker. Adding a new tool = one function + one entry.
-CHECKERS = {
-    "node": check_node,
-    "npm": check_npm,
-    "rust": check_rust,
-    "cargo": check_cargo,
-    "just": check_just,
-    "git": check_git,
-    "docker": check_docker,
-    "wsl": check_wsl,
-    "linux": check_linux
-}
+CHECKERS = {"node": check_node, "npm": check_npm, "rust": check_rust, "cargo": check_cargo, "just": check_just, "git": check_git, "docker": check_docker, "wsl": check_wsl, "linux": check_linux}
 
 def check(*reqs: str, quiet: bool = False) -> list[probe_record]:
     """Run the named checks, print a compact report, return the failed ones.

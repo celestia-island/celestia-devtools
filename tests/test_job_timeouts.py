@@ -687,9 +687,7 @@ class test_block_scalar_value:
         text = _read(path)
         assert "    timeout-minutes: 120\n" in text
         # 插入行不得落在指示符与正文之间
-        assert text.index("runs-on: " + indicator) < text.index("self-hosted") < text.index(
-            "timeout-minutes"
-        )
+        assert text.index("runs-on: " + indicator) < text.index("self-hosted") < text.index("timeout-minutes")
 
 class test_symlink_escape:
     """D3 regression: a symlink escaping ``.github/workflows`` must be refused, not written through."""

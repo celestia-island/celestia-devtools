@@ -1,3 +1,11 @@
+# py-style-ok-file: no-dynamic-imports: the dispatcher is a deliberate lazy plugin loader
+#
+# This is the single documented exception to the static-import rule. Importing
+# all ~60 command modules eagerly would make every CLI invocation pay their
+# import cost, and several are POSIX-only (they fail at import time on Windows),
+# so the module-level import_module(...) call below stays. Every other import in
+# this module is static; the two local imports this file used to carry are
+# hoisted at module scope.
 """Unified CLI dispatch for celestia-devtools.
 
 Usage::
@@ -71,6 +79,8 @@ from __future__ import annotations
 import sys
 from importlib import import_module
 from typing import Sequence
+from celestia_devtools import __version__
+from celestia_devtools.repo.init import common_just_path
 
 COMMANDS: dict[str, str] = {
     "cache-guard": "celestia_devtools.build.cache_guard",
@@ -151,14 +161,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     cmd, rest = args[0], args[1:]
 
     if cmd in ("-V", "--version"):
-        from celestia_devtools import __version__
-
         print(f"celestia-devtools {__version__}")
         return 0
 
     if cmd == "include-path":
-        from celestia_devtools.repo.init import common_just_path
-
         print(common_just_path())
         return 0
 

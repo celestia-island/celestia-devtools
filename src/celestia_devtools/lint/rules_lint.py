@@ -59,28 +59,13 @@ POINTER_MOVED = re.compile(r"已移出\*\*|已移至技能|已移至目录层")
 # Credential-shaped content. Deliberately generic: a workspace-specific password
 # literal must never be committed to this (public) repository, so the scanner
 # matches shapes, not known values.
-SECRET_PATTERNS: Sequence[Tuple[str, re.Pattern]] = (
-    ("private-ipv4", re.compile(r"(?<![\d.])10\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])")),
-    ("private-ipv4", re.compile(r"(?<![\d.])192\.168\.\d{1,3}\.\d{1,3}(?![\d.])")),
-    ("private-ipv4", re.compile(r"(?<![\d.])172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(?![\d.])")),
-    ("long-hex-secret", re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{32,}(?![0-9a-fA-F])")),
-    ("inline-password", re.compile(r"(?i)\b(?:password|passwd|secret|token|api[_-]?key)\b\s*[=:]\s*[\"']([^\"'\s]{8,})[\"']"))
-)
+SECRET_PATTERNS: Sequence[Tuple[str, re.Pattern]] = (("private-ipv4", re.compile(r"(?<![\d.])10\.\d{1,3}\.\d{1,3}\.\d{1,3}(?![\d.])")), ("private-ipv4", re.compile(r"(?<![\d.])192\.168\.\d{1,3}\.\d{1,3}(?![\d.])")), ("private-ipv4", re.compile(r"(?<![\d.])172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}(?![\d.])")), ("long-hex-secret", re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{32,}(?![0-9a-fA-F])")), ("inline-password", re.compile(r"(?i)\b(?:password|passwd|secret|token|api[_-]?key)\b\s*[=:]\s*[\"']([^\"'\s]{8,})[\"']")))
 
 # Placeholders and bare example words are not credentials. Without this filter the
 # inline pattern fires on documentation (`password: "Passcode"`,
 # `SSH_PASS="<your-password>"`), and a gate that cries wolf on every example stops
 # being read.
-PLACEHOLDER = re.compile(
-    r"(?i)^(?:"
-    r"<[^>]*>"
-    r"|change[_-]?me|placeholder|example|dummy|redacted|none|null|todo|password|passwd"
-    r"|secret|token|api[_-]?key"
-    r"|x{3,}|\*{3,}|\.{3,}|-{3,}"
-    r"|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"
-    r"|%[sd]"
-    r")$"
-)
+PLACEHOLDER = re.compile(r"(?i)^(?:" r"<[^>]*>" r"|change[_-]?me|placeholder|example|dummy|redacted|none|null|todo|password|passwd" r"|secret|token|api[_-]?key" r"|x{3,}|\*{3,}|\.{3,}|-{3,}" r"|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?" r"|%[sd]" r")$")
 # A single alphabetic word of at most 12 characters reads as an example; real
 # credentials carry entropy (digits, symbols or mixed classes). Longer alphabetic
 # runs — passphrases — still report.

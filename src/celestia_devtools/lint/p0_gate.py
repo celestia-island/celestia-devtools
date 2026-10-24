@@ -79,16 +79,7 @@ SEVERITIES = ("p0", "p1")
 _META_KEYS = frozenset({"version", "updated_at", "source"})
 #: Keys every ``[[p0]]`` entry must carry — and may carry (unknown keys are a
 #: typo, so they fail loudly instead of being ignored).
-_ENTRY_KEYS = (
-    "id",
-    "title",
-    "severity",
-    "scope",
-    "status",
-    "opened_at",
-    "closed_by",
-    "evidence"
-)
+_ENTRY_KEYS = ("id", "title", "severity", "scope", "status", "opened_at", "closed_by", "evidence")
 _ENTRY_KEY_SET = frozenset(_ENTRY_KEYS)
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -485,11 +476,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # Which ledger is in force is part of the record: an override must never be
     # invisible on a green run.
-    print(
-        "p0-gate: ledger %s (%d entries, %d open)"
-        % (ledger_path, len(entries), sum(1 for entry in entries if entry.is_open)),
-        file = sys.stderr
-    )
+    print("p0-gate: ledger %s (%d entries, %d open)" % (ledger_path, len(entries), sum(1 for entry in entries if entry.is_open)), file = sys.stderr)
 
     repos = [normalize_repo_name(name) for name in args.repo if name.strip()]
 

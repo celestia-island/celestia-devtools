@@ -75,22 +75,12 @@ CODE_REF_RE = re.compile(r"AGENTS\.md|PLAN\.md|§[0-9]")
 #   plana            AgentKey 契约本体（L2 平台 W2 切片 1）
 # 每仓至多 1 件、总数 ≤6；换链路时同步换这里，并先用 git cat-file -e
 # origin/<默认分支>:<路径> 核对存在。
-SAMPLE_FILES = (
-    "electrode_recon/service/pipeline.py",
-    "entelecheia/packages/scepter/src/services/l2_plugin_agents.rs",
-    "evernight/src/plugin_push.rs",
-    "shittim-chest/packages/core/src/suite.rs",
-    "plana/packages/state_types/src/agent_key.rs"
-)
+SAMPLE_FILES = ("electrode_recon/service/pipeline.py", "entelecheia/packages/scepter/src/services/l2_plugin_agents.rs", "evernight/src/plugin_push.rs", "shittim-chest/packages/core/src/suite.rs", "plana/packages/state_types/src/agent_key.rs")
 LOG_REPOS = ("entelecheia", "evernight", "plana", "shittim-chest", "arona", "hikari")
 # 健康探针目标：默认 = 当前真实公网面（生产 dev / 实验 demo / evernight gateway）。
 # 公网域名可以入树；内网 IP / 内网域名一律禁止写进仓库树（示例值用 RFC 5737 文档地址）。
 # 整组可用环境变量 EXTERNAL_REVIEW_HEALTH_URLS（空格分隔）覆盖。
-DEFAULT_HEALTH_URLS = (
-    "https://dev.celestia.world/api/health",
-    "https://demo.dev.celestia.world/api/health",
-    "https://gateway.celestia.world/api/health"
-)
+DEFAULT_HEALTH_URLS = ("https://dev.celestia.world/api/health", "https://demo.dev.celestia.world/api/health", "https://gateway.celestia.world/api/health")
 HEALTH_URLS = tuple(os.environ.get("EXTERNAL_REVIEW_HEALTH_URLS", "").split()) or DEFAULT_HEALTH_URLS
 
 REVIEWER_PROMPT = """# 给验证者的提示词（请在工作区之外、用另一个模型或另一个人执行）

@@ -86,21 +86,7 @@ def check_git() -> probe_record:
     return probe_record("git", ok, ver, hint = "git — artifact fallback channel")
 
 # Registry: req id → checker (same convention as env.preflight).
-CHECKERS: dict[str, Callable[[], probe_record]] = {
-    "python": check_python_floor,
-    "systemd": check_systemd,
-    "psql": check_psql,
-    "pg_isready": check_pg_isready,
-    "nginx": check_nginx,
-    "openssl": check_openssl,
-    "curl": check_curl,
-    "tar": check_tar,
-    "sudo": check_sudo,
-    "useradd": check_useradd,
-    "install": check_install_cmd,
-    "acme.sh": check_acme_sh,
-    "git": check_git
-}
+CHECKERS: dict[str, Callable[[], probe_record]] = {"python": check_python_floor, "systemd": check_systemd, "psql": check_psql, "pg_isready": check_pg_isready, "nginx": check_nginx, "openssl": check_openssl, "curl": check_curl, "tar": check_tar, "sudo": check_sudo, "useradd": check_useradd, "install": check_install_cmd, "acme.sh": check_acme_sh, "git": check_git}
 
 # Probes whose absence must not fail `doctor` (stages degrade, documented).
 SOFT = {"acme.sh", "nginx", "psql", "pg_isready", "sudo"}
