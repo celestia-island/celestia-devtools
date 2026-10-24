@@ -423,6 +423,56 @@ def _calls_shared_commit_lint(jobs: MappingNode) -> bool:
     return False
 
 
+def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
+    """Do two caller files *declare* the same thing, comments aside?
+
+    Returns ``(equal, reason_when_different)``.  YAML drops comments, so parsing
+    both and comparing the documents compares exactly what GitHub acts on:
+    triggers (and their `types`), `permissions`, and every job's `uses`/`with`.
+    A parse failure is reported as "not the same" with the parse error, never as
+    a silent pass — an unparseable caller is a different (worse) problem.
+    """
+    import yaml as _yaml
+
+    try:
+        mine = _yaml.safe_load(text)
+        theirs = _yaml.safe_load(canonical)
+    except Exception as exc:  # noqa: BLE001 - any parse error means "cannot compare"
+        return False, f"cannot be parsed for comparison ({exc.__class__.__name__})"
+
+    def shape(doc: object) -> dict:
+        """The parts GitHub acts on, normalised for comparison."""
+        if not isinstance(doc, dict):
+            return {}
+        triggers = doc.get(True, doc.get("on"))
+        jobs = doc.get("jobs") or {}
+        declared = {}
+        for job_id, body in (jobs or {}).items():
+            if not isinstance(body, dict):
+                return {}
+            declared[job_id] = {
+                "uses": body.get("uses"),
+                "with": body.get("with") or {},
+            }
+        return {
+            "triggers": triggers,
+            "permissions": doc.get("permissions"),
+            "jobs": declared,
+        }
+
+    # Compare the parsed documents whole: YAML keeps everything GitHub acts on
+    # (triggers, permissions, jobs, `with`, `concurrency`, ...) and drops only
+    # comments and formatting.  Comparing whole documents is the honest test —
+    # an extra `concurrency:` block really does change how runs behave.
+    if mine == theirs:
+        return True, ""
+    mine_shape, theirs_shape = shape(mine), shape(theirs)
+    for key in ("triggers", "permissions", "jobs"):
+        if mine_shape.get(key) != theirs_shape.get(key):
+            return False, f"differs in `{key}`"
+    return False, "differs outside triggers/permissions/jobs"
+
+
 def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
     """Byte-compare the caller against the template the generator ships.
 
@@ -481,6 +531,33 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
                 excerpt="",
             )
         ]
+    semantically_same, why = _same_caller_semantics(text, WORKFLOW_COMMIT_LINT)
+    if semantically_same:
+        # 2026-10-24: a caller that differs from the canonical bytes only in its
+        # comments is NOT a broken check. shittim-chest and noa carried exactly
+        # this shape (1618 / 1667 bytes, identical triggers, permissions, `uses`
+        # and `with`), and the check reported an ERROR — which teaches a
+        # repository to delete its explanatory comments to turn the gate green,
+        # i.e. to make the tree worse to satisfy the tool. Comments are where a
+        # caller records why it grants what it grants, so they stay a warning.
+        return [
+            Finding(
+                path=path,
+                line=1,
+                rule=RULE_CALLER_NOT_CANONICAL,
+                severity=SEVERITY_WARNING,
+                message=(
+                    f"this commit-lint caller declares exactly what the canonical template "
+                    f"does (same triggers, permissions, `uses` and `with`) but differs in its "
+                    f"comments ({len(text.encode())} bytes vs "
+                    f"{len(WORKFLOW_COMMIT_LINT.encode())}). That is not a broken check; "
+                    f"regenerate with `celestia-devtools init --with-workflows --force` if you "
+                    f"want the bytes to match, but do not delete the comments to satisfy the "
+                    f"audit"
+                ),
+                excerpt="",
+            )
+        ]
     return [
         Finding(
             path=path,
@@ -490,7 +567,7 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
             message=(
                 f"the shared commit-lint caller must be byte-identical to the canonical "
                 f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is "
-                f"{len(text.encode())} bytes. Regenerate it with "
+                f"{len(text.encode())} bytes and {why}. Regenerate it with "
                 f"`celestia-devtools init --with-workflows --force` instead of editing it by "
                 f"hand — a variant that drops `ready_for_review` or `synchronize` stops "
                 f"re-running the required check, and the PR then cannot be merged"
