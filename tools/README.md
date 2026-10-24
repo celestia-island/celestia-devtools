@@ -152,9 +152,13 @@ python3 tools/engine_drop.py gates  <drop-root>/<仓名>/<drop-id>   # 只读预
 python3 tools/engine_drop.py apply  <drop-root>/<仓名>/<drop-id>   # 门禁→worktree→push→PR
 ```
 
-`stage` 从 `git status --porcelain` 取改动清单（删除的文件不进 drop——G2 只搬
-存在的文件），drop id 默认 `auto-<UTC 时间戳>-<diff 短哈希>`，绝不覆盖已存在
-的 drop 目录。stage 自身零 git 写操作；合并仍由人做。
+`stage` 从 `git status --porcelain --untracked-files=all` 取改动清单（删除的文件与
+重命名的旧侧不进 drop——drop 只承载现存内容文件，删除类改动留给人工；untracked
+文件视作新内容文件正常入 drop）。条目级 fail-closed：G3 禁区、符号链接（防借道读
+worktree 之外的文件）、目录（嵌套 git 仓/子模）一律拒；`--base` 只收 `origin/*`、
+`--description` 同 G6 格式（与 gates 同口径，不产死 drop）；`--drop-id` 只收单段名。
+drop id 默认 `auto-<UTC 时间戳>-<diff 短哈希>`，绝不覆盖已存在的 drop 目录。stage
+自身零 git 写操作；合并仍由人做。
 
 ## engine_drop exit codes（`tools/engine_drop.py`）
 
