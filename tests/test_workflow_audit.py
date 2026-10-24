@@ -1055,12 +1055,32 @@ class TestCanonicalCaller:
         assert main(["--json"]) == 1
         assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
 
-    def test_pure_whitespace_drift_is_reported(self, tmp_path, monkeypatch, capsys):
-        # 逐字节规则：多一个结尾换行也算漂移（它改变的是 git blob，不是语义）。
+    def test_pure_whitespace_drift_is_a_warning_not_a_failure(self, tmp_path, monkeypatch, capsys):
+        # 2026-10-24: 一个结尾换行改变的是 git blob，不是 check 的行为。它仍要被
+        # 报出来（想逐字节一致就跑 init --force），但不能让仓库为了消红去动文件。
         _workflow(tmp_path, WORKFLOW_COMMIT_LINT + "\n", filename=self.NAME)
         monkeypatch.chdir(tmp_path)
-        assert main(["--json"]) == 1
-        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        assert main(["--json"]) == 0
+        finding = _findings(capsys)["findings"][0]
+        assert finding["severity"] == "warning"
+        assert "comments" in finding["message"] or "whitespace" in finding["message"]
+
+    def test_comment_only_drift_is_a_warning(self, tmp_path, monkeypatch, capsys):
+        # shittim-chest (1618 B) 与 noa (1667 B) 的真实形态：triggers / permissions /
+        # uses / with 与 canonical 完全一致，只多了注释。门禁判 ERROR 等于教仓库
+        # 删注释换绿——把树变差来满足工具。必须是 warning。
+        inflated = WORKFLOW_COMMIT_LINT.replace(
+            "permissions:",
+            "# why this caller grants what it grants\npermissions:",
+        )
+        assert inflated != WORKFLOW_COMMIT_LINT
+        _workflow(tmp_path, inflated, filename=self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        finding = _findings(capsys)["findings"][0]
+        assert finding["severity"] == "warning"
+        assert "comments" in finding["message"]
+        assert "do not delete the comments" in finding["message"]
 
     def test_callee_host_is_never_reported(self, tmp_path, monkeypatch, capsys):
         # celestia-devtools 自己那个同名文件是 callee（作业带 runs-on/steps），不是 caller。
@@ -1117,7 +1137,13 @@ class TestCanonicalCaller:
         assert report["summary"]["suppressed"] == 1
 
     def test_human_output_names_the_file_and_line(self, tmp_path, monkeypatch, capsys):
-        _workflow(tmp_path, WORKFLOW_COMMIT_LINT.rstrip("\n"), filename=self.NAME)
+        # A semantic drift (the check would stop re-running) is an error, and the
+        # human output must name the file and line. A whitespace-only drift is a
+        # warning and covered by test_pure_whitespace_drift_is_a_warning_not_a_failure.
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "reopened, ready_for_review, synchronize", "reopened, synchronize"
+        )
+        _workflow(tmp_path, drifted, filename=self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main([]) == 1
         out = capsys.readouterr().out
@@ -1125,7 +1151,10 @@ class TestCanonicalCaller:
         assert RULE_CALLER_NOT_CANONICAL in out
 
     def test_allowlist_can_exempt_a_repository(self, tmp_path, monkeypatch, capsys):
-        _workflow(tmp_path, WORKFLOW_COMMIT_LINT.rstrip("\n"), filename=self.NAME)
+        drifted = WORKFLOW_COMMIT_LINT.replace(
+            "reopened, ready_for_review, synchronize", "reopened, synchronize"
+        )
+        _workflow(tmp_path, drifted, filename=self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/{self.NAME}"]) == 0
         report = _findings(capsys)
