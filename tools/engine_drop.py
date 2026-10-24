@@ -15,6 +15,8 @@ Drop 目录布局（repo 与 drop 的物理位置绑定，见 G0）::
 子命令::
 
     gates <drop-dir>                 只跑门禁（只读；不建 worktree）
+    stage <worktree> --repo R --description D
+                                     从脏 worktree 构造 drop（diff → MANIFEST + files/）
     apply <drop-dir> [--dry-run]     门禁 → 专用 worktree → 提交 → push → 开 PR
     audit [--limit N]                读审计流水
 
@@ -309,6 +311,88 @@ def run_gates(drop: Path, repo_root: Path, drop_root: Path) -> Tuple[Optional[Pa
     return repo, manifest, violations
 
 
+# ── stage ────────────────────────────────────────────────────────────────────
+
+
+def _git(worktree: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(worktree), *args],
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+def cmd_stage(args: argparse.Namespace) -> int:
+    """从一个脏 worktree 构造 drop：diff 清单 → MANIFEST + files/ 快照。
+
+    管线自动化的一环（2026-10-24）：引擎在干净 worktree 里写完改动后，
+    ``stage`` 消费 ``git status --porcelain`` 的已跟踪/新增文件（删除的
+    文件不进 drop——G2 只搬运存在的文件），生成
+    ``<drop-root>/<repo>/auto-<时间戳>-<短哈希>/``，随后调用方跑
+    ``gates`` / ``apply`` 完成门禁与 PR。stage 自身不做任何 git 写操作。
+    """
+    worktree = args.worktree
+    if not worktree.is_dir():
+        die(f"worktree 不存在：{worktree}")
+    if not (worktree / ".git").exists():
+        die(f"不是 git worktree：{worktree}")
+    if not REPO_RE.match(args.repo):
+        die(f"repo 名不合法：{args.repo!r}")
+    base = args.base
+    # Full refname for show-ref --verify (G5 与 check_base 同口径：短名不解析)。
+    base_check = _git(
+        worktree, "show-ref", "--verify", "--quiet",
+        f"refs/remotes/{base}" if base.startswith("origin/") else base,
+    )
+    if base_check.returncode != 0:
+        die(f"base 引用不存在于 worktree：{base}")
+
+    status = _git(worktree, "status", "--porcelain")
+    if status.returncode != 0:
+        die(f"git status 失败：{status.stderr.strip()}")
+    changed: List[str] = []
+    for line in status.stdout.splitlines():
+        code, path = line[:2], line[3:].strip('"')
+        # 只搬运内容文件：删除（D）无文件可拷，重命名记为两侧。
+        if code.strip() == "D" or code[0] == "D":
+            continue
+        if path not in changed:
+            changed.append(path)
+    if not changed:
+        print("工作区干净：没有可 stage 的改动")
+        return EXIT_FAILURE
+
+    # drop id：时间戳 + 改动内容短哈希（同一份改动重跑得到可辨识的近亲 id）。
+    diff = _git(worktree, "diff", base, "--", *changed)
+    digest = hashlib.sha256((diff.stdout or "").encode("utf-8")).hexdigest()[:8]
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    drop_id = args.drop_id or f"auto-{stamp}-{digest}"
+    drop = args.drop_root / args.repo / drop_id
+    if drop.exists():
+        die(f"drop 目录已存在（ refusing to overwrite ）：{drop}")
+
+    drop.mkdir(parents=True)
+    for rel in changed:
+        src = worktree / rel
+        dst = drop / "files" / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+    manifest = {
+        "repo": args.repo,
+        "base": base,
+        "branch": args.branch or f"engine/{drop_id}",
+        "description": args.description,
+        "files": changed,
+    }
+    (drop / "MANIFEST.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"✅ 已构造 drop：{drop}")
+    print(f"   {len(changed)} 文件；下一步：")
+    print(f"   python3 tools/engine_drop.py gates {drop}")
+    print(f"   python3 tools/engine_drop.py apply {drop}")
+    return EXIT_OK
+
+
 # ── apply ────────────────────────────────────────────────────────────────────
 
 
@@ -517,7 +601,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wt-root", type=Path, default=Path("/mnt/work/engine-wt"))
     parser.add_argument("--drop-root", type=Path, default=Path("/mnt/work/engine-drop"))
     parser.add_argument("--audit-file", type=Path, default=Path("/mnt/work/engine-drop/audit.jsonl"))
-    sub = parser.add_subparsers(dest="command", metavar="{gates,apply,audit}")
+    sub = parser.add_subparsers(dest="command", metavar="{stage,gates,apply,audit}")
 
     p_gates = sub.add_parser("gates", help="只跑门禁（只读）")
     p_gates.add_argument("drop_dir", type=Path)
@@ -528,6 +612,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_apply.add_argument("--dry-run", action="store_true",
                          help="到 diff 为止：不提交、不 push、不开 PR")
     p_apply.set_defaults(func=cmd_apply)
+
+    p_stage = sub.add_parser(
+        "stage", help="从脏 worktree 构造 drop（diff → MANIFEST + files/）")
+    p_stage.add_argument("worktree", type=Path)
+    p_stage.add_argument("--repo", required=True,
+                         help="仓库名（单段，须在 repo-root 下）")
+    p_stage.add_argument("--description", required=True,
+                         help="<gitmoji> 英文陈述句.（与 G6 同格式）")
+    p_stage.add_argument("--base", default="origin/master")
+    p_stage.add_argument("--branch", default=None,
+                         help="默认 engine/<drop-id>")
+    p_stage.add_argument("--drop-id", default=None,
+                         help="默认 auto-<UTC 时间戳>-<diff 短哈希>")
+    p_stage.set_defaults(func=cmd_stage)
 
     p_audit = sub.add_parser("audit", help="读审计流水")
     p_audit.add_argument("--limit", type=int, default=20)

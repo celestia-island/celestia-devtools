@@ -504,3 +504,77 @@ def test_description_accepts_emoji_variation_sequences(repo_env, tmp_path, monke
     drop = make_drop(tmp_path, "vs16", {"README.md": "x\n"}, desc=desc)
     rc = run_main(argv_for(repo_env, tmp_path, "gates", str(drop)), monkeypatch)
     assert rc == 0, desc
+
+
+# ── stage ────────────────────────────────────────────────────────────────────
+
+
+class TestStage:
+    def _run_stage(self, repo, drop_root, description="📝 Document the exit codes."):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "engine_drop_stage", Path(__file__).parent.parent / "tools" / "engine_drop.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.main([
+            "--drop-root", str(drop_root),
+            "stage", str(repo),
+            "--repo", REPO_NAME,
+            "--description", description,
+        ])
+
+    def test_stage_builds_a_gates_passing_drop(self, repo_env, tmp_path, capsys):
+        repo = repo_env / REPO_NAME
+        (repo / "README.md").write_text("base\nstaged line\n", encoding="utf-8")
+        drop_root = tmp_path / "drops"
+        rc = self._run_stage(repo, drop_root)
+        assert rc == 0, capsys.readouterr().out
+        drops = list((drop_root / REPO_NAME).iterdir())
+        assert len(drops) == 1
+        drop = drops[0]
+        manifest = json.loads((drop / "MANIFEST.json").read_text(encoding="utf-8"))
+        assert manifest["repo"] == REPO_NAME
+        assert manifest["base"] == "origin/master"
+        assert manifest["branch"].startswith("engine/auto-")
+        assert manifest["files"] == ["README.md"]
+        staged = (drop / "files" / "README.md").read_text(encoding="utf-8")
+        assert "staged line" in staged
+
+        # The staged drop must pass the read-only gates as-is.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "engine_drop_gates", Path(__file__).parent.parent / "tools" / "engine_drop.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        gates_rc = mod.main([
+            "--repo-root", str(repo_env), "--drop-root", str(drop_root),
+            "gates", str(drop),
+        ])
+        assert gates_rc == 0, "staged drop must clear all gates"
+
+    def test_stage_refuses_clean_worktree(self, repo_env, tmp_path, capsys):
+        rc = self._run_stage(repo_env / REPO_NAME, tmp_path / "drops")
+        assert rc == 1
+        assert "没有可 stage" in capsys.readouterr().out
+
+    def test_stage_refuses_to_overwrite_existing_drop(
+            self, repo_env, tmp_path, capsys):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "engine_drop_stage2", Path(__file__).parent.parent / "tools" / "engine_drop.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        repo = repo_env / REPO_NAME
+        (repo / "README.md").write_text("base\nv2\n", encoding="utf-8")
+        drop_root = tmp_path / "drops"
+        argv = [
+            "--drop-root", str(drop_root), "stage", str(repo),
+            "--repo", REPO_NAME, "--drop-id", "fixed-id",
+            "--description", "📝 Document the exit codes.",
+        ]
+        assert mod.main(argv) == 0
+        # Re-staging the same drop id must die() → SystemExit(EXIT_USAGE).
+        with pytest.raises(SystemExit) as exc:
+            mod.main(argv)
+        assert exc.value.code == 2, "refusing to overwrite must exit USAGE via die()"
+        assert "已存在" in capsys.readouterr().err
