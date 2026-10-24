@@ -140,3 +140,11 @@ celestia-devtools e2e-sandbox sweep-tmp
 不碰文件、不碰 systemd/X11 套接字、权限不足自动跳过。
 
 **建议**：e2e 作业的 cron / 农场看门狗定期跑 `sweep-tmp` 作为最后防线。
+
+## engine_drop exit codes（`tools/engine_drop.py`）
+
+进程退出码只有三枚，由 `EXIT_OK` / `EXIT_FAILURE` / `EXIT_USAGE` 三个常量定义，`__main__` 以 `sys.exit(main())` 收口：
+
+- `0`（`EXIT_OK`）成功：`gates` 门禁全过；`apply --dry-run` 走到 diff 为止（不提交、不 push、不开 PR）；`apply` 已推送并开成 PR；`audit` 正常输出（含「暂无审计流水」的空流水情形）。
+- `1`（`EXIT_FAILURE`）失败：门禁违禁（`gates` 与 `apply` 同判，`apply` 此时不做任何 git 操作）；worktree 路径已被占用；`apply` 阶段 git/gh 抛错——若分支已 push 但 PR 未开成，需人工对该分支执行 `gh pr create`（本工具按设计绝不删分支）。
+- `2`（`EXIT_USAGE`）用法错误：`die()` 统一抛出（drop 目录不存在）；未给子命令时打印帮助后返回。
