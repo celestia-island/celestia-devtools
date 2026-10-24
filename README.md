@@ -173,7 +173,50 @@ For enforcement, enable branch protection on your default branch via GitHub Sett
 | `celestia-devtools gate` | Run the local CI gate (see below) |
 | `celestia-devtools gate credential-scan` | Sweep `.git/config` + source trees for literal secrets |
 | `celestia-devtools p0-gate` | Fail a repo covered by an unresolved P0 (see below) |
+| `celestia-devtools py-style check .` | Check Python sources against the custom style rules (see below) |
+| `celestia-devtools py-style fix .` | Apply the safe auto-fixes in place (`--dry-run` previews) |
+| `celestia-devtools cpp-style check .` | Check C++ sources against the custom style rules (see below) |
 | `celestia-devtools release-notes` | Generate categorized GitHub release notes for a tag (see below) |
+
+## Style Checkers
+
+`py-style` and `cpp-style` enforce the org's custom Python/C++ layout rules
+(keyword-argument spacing, single-line statements, block blank lines, import
+layout, naming, ...). Each module ships its rule catalog as data —
+`py-style list-rules` / `cpp-style list-rules` is the authoritative spec
+(id, source clause, severity, auto-fixability, judgment and exceptions).
+
+```bash
+celestia-devtools py-style check src tests     # report violations (exit 1)
+celestia-devtools py-style fix src tests       # safe auto-fixes, AST-verified
+celestia-devtools py-style list-rules          # the rule catalog
+celestia-devtools cpp-style check src          # C++ subset (8 lexical checks)
+```
+
+The division of labour is deliberate:
+
+- **The handwritten stdlib checker is the authority for layout.** ruff's
+  formatter and its preview-only whitespace rules (`E251`, `E3xx`, `W391`, ...)
+  encode the opposite conventions, so `ruff format` is not part of a repo's
+  style gate once it adopts these rules.
+- **ruff keeps the stable semantic checks** (`F`, `E7`, `W1`, `E4`, ...) with an
+  explicit, commented `ignore` list for anything that contradicts the style.
+  Preview rules are never enabled: they drift between releases, and the one that
+  covers keyword `=` spacing (`E251`) argues for the opposite of this style.
+- **Auto-fix is conservative**: only `autofix` rules run, every rewrite is
+  checked for AST equality and unchanged string tokens, and `check` never writes.
+
+Repos that adopt the conventions opt in with the reusable workflow (sub-minute,
+stdlib-only, safe on hosted runners):
+
+```yaml
+jobs:
+  py-style:
+    uses: celestia-island/celestia-devtools/.github/workflows/style-lint.yml@master
+    with:
+      tool: py-style          # or cpp-style
+      paths: .
+```
 
 ## Local Gate
 

@@ -1,0 +1,112 @@
+# Reusable layout-style lint for repositories that adopt the org's custom
+# Python/C++ conventions.
+#
+# Why this exists: the conventions (keyword-argument `=` spacing, one-line
+# statements, one blank line around complete blocks, import layout, naming) are
+# deliberately incompatible with ruff format / Black, so they cannot be expressed
+# through an existing formatter. `py-style` / `cpp-style` are the handwritten
+# stdlib checkers that own those rules; this workflow makes them run without
+# every repository re-implementing the bootstrap.
+#
+# Usage (caller):
+#
+#   jobs:
+#     py-style:
+#       uses: celestia-island/celestia-devtools/.github/workflows/style-lint.yml@master
+#       with:
+#         tool: py-style      # py-style | cpp-style
+#         paths: src tests
+#
+# Runner choice is the caller's (same policy as rules-lint.yml): public repos may
+# pass '["ubuntu-latest"]' (free, and no self-hosted queue); private repos must
+# leave the self-hosted default (AGENTS §8.2).
+
+name: Style Lint
+
+on:
+  workflow_call:
+    inputs:
+      tool:
+        description: "Checker to run: py-style or cpp-style."
+        required: false
+        type: string
+        default: "py-style"
+      paths:
+        description: "Space-separated paths passed to the checker."
+        required: false
+        type: string
+        default: "."
+      config:
+        description: "Optional --config path relative to the repository root."
+        required: false
+        type: string
+        default: ""
+      warn-only:
+        description: "Report violations without failing the job (migration mode)."
+        required: false
+        type: boolean
+        default: false
+      runs-on:
+        description: >-
+          JSON array of runner labels. Public repositories may pass
+          '["ubuntu-latest"]'; private repositories must leave the default.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","local"]'
+      devtools-ref:
+        description: "celestia-devtools git ref installed when the CLI is absent."
+        required: false
+        type: string
+        default: "master"
+
+jobs:
+  style-lint:
+    name: Lint style (${{ inputs.tool }})
+    # Fork PRs need maintainer approval anyway, and an untrusted tree must not
+    # consume shared runner time or execute inside the org's network.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+        # Defensive: the self-hosted runner env rewrites
+        # github.com/celestia-island/* to local bare mirrors that may lack fresh
+        # refs. A no-op on hosted runners, which rewrite nothing.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Ensure celestia-devtools
+        # Self-hosted nodes preinstall the CLI; hosted runners start empty. Same
+        # bootstrap shape as rules-lint.yml, minus the pip-less fallback: the
+        # checker needs no third-party packages but the package must be importable.
+        run: |
+          if command -v celestia-devtools >/dev/null 2>&1; then
+            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+            echo "STYLE_LINT=$(command -v celestia-devtools)" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          python3 -m venv "$RUNNER_TEMP/dt-venv"
+          GIT_CONFIG_COUNT=0 "$RUNNER_TEMP/dt-venv/bin/pip" install --quiet \
+            "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF}"
+          echo "STYLE_LINT=$RUNNER_TEMP/dt-venv/bin/celestia-devtools" >> "$GITHUB_ENV"
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+
+      - name: Run style check
+        run: |
+          set -eu
+          ARGS=""
+          if [ -n "${CONFIG:-}" ]; then ARGS="$ARGS --config $CONFIG"; fi
+          if [ "${WARN_ONLY:-false}" = "true" ]; then ARGS="$ARGS --warn-only"; fi
+          echo "+ $STYLE_LINT $TOOL check $PATHS $ARGS"
+          $STYLE_LINT "$TOOL" check $PATHS $ARGS
+        env:
+          TOOL: ${{ inputs.tool }}
+          PATHS: ${{ inputs.paths }}
+          CONFIG: ${{ inputs.config }}
+          WARN_ONLY: ${{ inputs.warn-only }}

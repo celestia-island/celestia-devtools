@@ -118,6 +118,15 @@ fmt-markdown *ARGS='':
 lint-separators *FLAGS='':
     {{ _devtools }} lint-separators . {{FLAGS}}
 
+# Check Python sources against the org's custom layout rules (`py-style list-rules`).
+# Run with `fix --dry-run` first, then `fix` to apply the safe auto-fixes.
+lint-py-style *ARGS='':
+    {{ _devtools }} py-style check . {{ARGS}}
+
+# Check C++ sources against the org's custom layout rules (`cpp-style list-rules`).
+lint-cpp-style *ARGS='':
+    {{ _devtools }} cpp-style check . {{ARGS}}
+
 # Vendor the five org protocol docs (license/cla/code-of-conduct/security/
 # contributing) from docs.celestia.world into packages/webui/.generated/
 # protocols as per-(type, lang) vendor markdown plus a meta.ts manifest.

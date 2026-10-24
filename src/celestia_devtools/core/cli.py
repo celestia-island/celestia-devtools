@@ -58,6 +58,10 @@ Commands::
                       cross-wire (acquire | env | list | release)
     brand-stamp       Wire the family icon into a Rust project's Windows
                       build (build.rs + winresource + icon asset; idempotent)
+    py-style          Check Python sources against the org's custom layout rules
+                      (check | fix | list-rules)
+    cpp-style         Check C++ sources against the org's custom layout rules
+                      (check | list-rules)
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
 usable as standalone scripts.
@@ -92,6 +96,8 @@ COMMANDS: dict[str, str] = {
     "nav-lint": "celestia_devtools.lint.nav_lint",
     "p0-gate": "celestia_devtools.lint.p0_gate",
     "rules-lint": "celestia_devtools.lint.rules_lint",
+    "py-style": "celestia_devtools.lint.py_style",
+    "cpp-style": "celestia_devtools.lint.cpp_style",
     "gh": "celestia_devtools.vcs.gh",
     "publish-crates": "celestia_devtools.publish.crates",
     "release-notes": "celestia_devtools.publish.release_notes",

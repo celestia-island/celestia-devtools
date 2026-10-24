@@ -38,6 +38,11 @@ class TestCommandRegistry:
             "deploy",
             # Added 2026-10-22: local branch hygiene sweeper.
             "git-sweep",
+            # Added 2026-10-25: custom layout checkers for the org style rules.
+            # Each ships a RULES catalog (check/list-rules); Python also has a
+            # safe fix mode used by the migration follow-up.
+            "py-style",
+            "cpp-style",
             "e2e-sandbox",
             # Added 2026-09-25: family dependency-identity check. The audit found
             # kirino at two incompatible majors, plana on seven revisions and
