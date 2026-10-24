@@ -13,6 +13,13 @@ how the repositories consume them.  The workspace audit then found the result:
 * **`plana` consumed as `branch = "master"`** and resolved to seven different
   commits across repositories, so the version string `0.2.1` names seven
   different trees.
+
+Since the 2026-10-24 ruling that registry-first (AGENTS §3.2.2) applies to plana
+as well, that last bullet is now split in two: plana's **published** members are
+expected from crates.io as `version = "^0.2"`, while the members whose manifests
+carry `publish = false` still have to come from git master.  The check therefore
+judges the plana family by publication status instead of demanding git for all
+of it.
 * **`@celestia-island/hikari` declared `^*`** in four consumers — a range
   node-semver reads as `*`, i.e. any future major, in a 0.x line where every
   minor is breaking by the project's own experience.
@@ -45,9 +52,31 @@ Version = tuple[int, int, int]
 
 PLANA_REPO = "https://github.com/celestia-island/plana.git"
 #: Repositories the freeze list allows to pin a `plana` revision.  Everyone else
-#: tracks master so the family at least shares one moving target instead of
-#: seven stationary ones.
+#: tracks master (for the unpublished members) or the registry (for the
+#: published ones) so the family at least shares one identity instead of seven
+#: stationary ones.
 REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
+
+#: plana workspace members that `plana/.github/workflows/publish.yml` actually
+#: publishes to crates.io.  Registry-first (AGENTS §3.2.2, 2026-10-20; extended
+#: to plana by the 2026-10-24 ruling) lets these be consumed as
+#: `version = "^0.2"` — the lockfile still pins the exact build.  Every other
+#: member carries `publish = false` in its manifest, so a registry requirement
+#: for one of those cannot resolve and has to stay a git reference on master.
+#:
+#: Names are compared with `-` for `_` because Cargo lets a manifest alias the
+#: crate (`plana_celestia_types = { package = "plana-celestia-types", … }`).
+#: `member → canonical version of ITS OWN published line`.  The members do not
+#: share one line: `plana` / `plana-rpc-client` ride 0.2 while
+#: `plana-rpc-server` / `plana-celestia-types` / `plana-tauri` are on 0.1, so a
+#: single 0.2 comparison would fail a correct `plana-celestia-types = "^0.1"`.
+PLANA_PUBLISHED: dict[str, Version] = {
+    "plana": (0, 2, 0),
+    "plana-rpc-client": (0, 2, 0),
+    "plana-rpc-server": (0, 1, 0),
+    "plana-celestia-types": (0, 1, 0),
+    "plana-tauri": (0, 1, 0),
+}
 
 #: `(crate-family prefix, canonical version, why)` for the Rust layers.  A crate
 #: belongs to the family when its name — with `-` read as `_` — is the prefix
@@ -373,11 +402,41 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str,
             ))
             continue
         if prefix == "plana":
+            # Plana is judged by publication status (2026-10-24 ruling): the
+            # members publish.yml ships may come from crates.io, the
+            # `publish = false` members may not.
+            member = PLANA_PUBLISHED.get(name.replace("_", "-"))
+            published = member is not None
             if "git" not in spec:
-                findings.append(Finding(
-                    "violation", subject,
-                    f"consumed from crates.io; the family consumes plana from {PLANA_REPO}",
-                ))
+                if not published:
+                    findings.append(Finding(
+                        "violation", subject,
+                        "consumed from crates.io, but this plana member is not published; "
+                        "members whose manifest carries `publish = false` must come from "
+                        f'{PLANA_REPO} on branch = "master"',
+                    ))
+                    continue
+                requirement = spec.get("version")
+                if not isinstance(requirement, str) or not requirement.strip():
+                    findings.append(Finding("violation", subject, "no version requirement"))
+                    continue
+                if rust_lines is not None and _parse_version(requirement.lstrip("^~>=< ")):
+                    parsed = _parse_version(requirement.lstrip("^~>=< "))
+                    if parsed and parsed[1] is not None:
+                        rust_lines.setdefault(prefix, set()).add((parsed[0], parsed[1]))
+                line = (member[0], member[1] + 1, 0)
+                verdict = intersects(requirement, member, line)
+                if verdict is False:
+                    findings.append(Finding(
+                        "violation", subject,
+                        f"declares {requirement}, which cannot resolve to this member's "
+                        f"published {member[0]}.{member[1]} line; 0.x carets do not overlap, "
+                        "so this is a different primitive, not an older build",
+                    ))
+                elif verdict is None:
+                    findings.append(Finding(
+                        "warning", subject, f"cannot judge the requirement {requirement!r}",
+                    ))
                 continue
             url = str(spec.get("git", ""))
             if "celestia-island/plana" not in url:
@@ -398,6 +457,15 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str,
                     "violation", subject,
                     f"tracks {spec.get('branch') or spec.get('tag') or 'an unnamed ref'}; "
                     'the family tracks branch = "master"',
+                ))
+            elif published:
+                # Migration signal, not a failure: every consumer that has not
+                # moved yet shows up here until it declares the registry line.
+                findings.append(Finding(
+                    "warning", subject,
+                    f"published on crates.io at {member[0]}.{member[1]}; prefer "
+                    f"version = \"^0.{member[1]}\" (registry-first, AGENTS §3.2.2) so the "
+                    "build stops following master",
                 ))
             continue
         # kirino and friends: one major, or it is a different primitive.

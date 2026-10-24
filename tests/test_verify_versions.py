@@ -304,15 +304,42 @@ def test_versionless_workspace_manifest_passes(tmp_path):
     assert rc == 0
 
 
-def test_unresolvable_npm_baseline_fails_closed(tmp_path, capsys):
-    # All packages private → no publishable majority → baseline unresolvable,
-    # yet versions exist, so the track is present and must be pinned.
+def test_all_private_packages_are_not_an_npm_track(tmp_path, capsys):
+    # 2026-10-24 ruling (reverses the 2026-09-27 fail-closed shape): a repository
+    # whose package.json files are ALL private has no npm identity to keep in
+    # line.  Demanding a baseline turned five compliant repositories red the day
+    # they adopted this gate (arcaea.celestia.world, easy-hydro-erp,
+    # evernight-appliance, noa, shun), which is why "no publishable package"
+    # now means "no npm track" instead of an error.
     _package(tmp_path, "apps/web", "1.2.3", private=True)
     _package(tmp_path, "apps/cli", "1.2.3", private=True)
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
-    assert rc == 1
-    assert "[track] npm" in out
+    assert rc == 0, out
+    assert "[track] npm" not in out
+
+
+def test_a_private_root_package_does_not_define_the_baseline(tmp_path, capsys):
+    # The tairitsu shape: a private 0.1.1 shell wrapping packages that publish on
+    # their own lines.  Before the fix the root version became the baseline and
+    # both real packages were reported as drift.
+    _package(tmp_path, ".", "0.1.1", private=True)
+    _package(tmp_path, "packages/transport", "0.3.0")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "0.1.1" not in out
+
+
+def test_a_private_root_still_pins_when_explicitly_tracked(tmp_path, capsys):
+    # The escape hatch stays: an explicit pin compares private packages too.
+    _package(tmp_path, ".", "0.1.1", private=True)
+    _package(tmp_path, "packages/transport", "0.3.0")
+    _write(tmp_path / ".versions.toml", '[track]\nnpm = "0.1.1"\n')
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "0.3.0" in out
 
 
 def test_json_output_includes_baseline_errors(tmp_path, capsys):
