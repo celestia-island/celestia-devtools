@@ -17,11 +17,9 @@ shim) is derived from this table.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 
-
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Platform:
     """One publishable target triple and its npm packaging metadata."""
 
@@ -44,7 +42,6 @@ class Platform:
         """The suffix including its leading dash (already present in ``npm_suffix``)."""
         return self.npm_suffix
 
-
 #: The canonical publishable matrix. Order matters only for stable test output.
 #:
 #: The matrix covers the platforms a typical npm user runs on in 2026:
@@ -58,60 +55,61 @@ class Platform:
 #: - **win32-x64** — Windows on Intel/AMD.
 PLATFORMS: tuple[Platform, ...] = (
     Platform(
-        rust_target="x86_64-unknown-linux-gnu",
-        npm_suffix="-linux-x64",
-        node_os="linux",
-        node_cpu="x64",
+        rust_target = "x86_64-unknown-linux-gnu",
+        npm_suffix = "-linux-x64",
+        node_os = "linux",
+        node_cpu = "x64"
     ),
     Platform(
-        rust_target="aarch64-unknown-linux-gnu",
-        npm_suffix="-linux-arm64",
-        node_os="linux",
-        node_cpu="arm64",
+        rust_target = "aarch64-unknown-linux-gnu",
+        npm_suffix = "-linux-arm64",
+        node_os = "linux",
+        node_cpu = "arm64"
     ),
     Platform(
-        rust_target="x86_64-unknown-linux-musl",
-        npm_suffix="-linux-x64-musl",
-        node_os="linux",
-        node_cpu="x64",
+        rust_target = "x86_64-unknown-linux-musl",
+        npm_suffix = "-linux-x64-musl",
+        node_os = "linux",
+        node_cpu = "x64",
         # Alpine/musl is still linux-x64 from Node's perspective; the suffix
         # distinguishes the dynamically-vs-statically linked variants so a user
         # on musl can opt in explicitly, while glibc users get the default.
-        musl=True,
+        musl = True
     ),
     Platform(
-        rust_target="aarch64-unknown-linux-musl",
-        npm_suffix="-linux-arm64-musl",
-        node_os="linux",
-        node_cpu="arm64",
+        rust_target = "aarch64-unknown-linux-musl",
+        npm_suffix = "-linux-arm64-musl",
+        node_os = "linux",
+        node_cpu = "arm64",
         # Static counterpart for ARM64 servers (Graviton, Ampere) whose distro
         # glibc is older than the ubuntu-latest build host.
-        musl=True,
+        musl = True
     ),
     Platform(
-        rust_target="aarch64-apple-darwin",
-        npm_suffix="-darwin-arm64",
-        node_os="darwin",
-        node_cpu="arm64",
+        rust_target = "aarch64-apple-darwin",
+        npm_suffix = "-darwin-arm64",
+        node_os = "darwin",
+        node_cpu = "arm64"
     ),
     Platform(
-        rust_target="x86_64-apple-darwin",
-        npm_suffix="-darwin-x64",
-        node_os="darwin",
-        node_cpu="x64",
+        rust_target = "x86_64-apple-darwin",
+        npm_suffix = "-darwin-x64",
+        node_os = "darwin",
+        node_cpu = "x64"
     ),
     Platform(
-        rust_target="x86_64-pc-windows-msvc",
-        npm_suffix="-win32-x64",
-        node_os="win32",
-        node_cpu="x64",
-    ),
+        rust_target = "x86_64-pc-windows-msvc",
+        npm_suffix = "-win32-x64",
+        node_os = "win32",
+        node_cpu = "x64"
+    )
 )
-
 
 def find_platform(rust_target: str) -> Platform | None:
     """Look up a :class:`Platform` by its Rust target triple, or ``None``."""
+
     for p in PLATFORMS:
         if p.rust_target == rust_target:
             return p
+
     return None

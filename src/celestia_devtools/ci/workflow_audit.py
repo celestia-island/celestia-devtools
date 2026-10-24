@@ -91,7 +91,6 @@ Usage::
 """
 
 from __future__ import annotations
-
 import argparse
 import fnmatch
 import json
@@ -101,7 +100,6 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
-
 # canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
 # LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
@@ -109,20 +107,14 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 from celestia_devtools.repo.init import (
     WORKFLOW_COMMIT_LINT,
     WORKFLOW_COMMIT_LINT_LEGACY,
-    WORKFLOW_COMMIT_LINT_NO_PERMS,
+    WORKFLOW_COMMIT_LINT_NO_PERMS
 )
 
 try:
     import yaml
     from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 except ImportError as exc:  # pragma: no cover - PyYAML is a declared runtime dependency
-    raise ImportError(
-        "PyYAML is required by celestia-ci-audit: the `yaml-parse-error` rule must report a "
-        "file that cannot be parsed instead of silently skipping it, and node line numbers "
-        "come from the composer. Install the package itself (PyYAML>=6) rather than adding "
-        "this module to an environment by hand."
-    ) from exc
-
+    raise ImportError("PyYAML is required by celestia-ci-audit: the `yaml-parse-error` rule must report a " "file that cannot be parsed instead of silently skipping it, and node line numbers " "come from the composer. Install the package itself (PyYAML>=6) rather than adding " "this module to an environment by hand.")from exc
 
 # ---------------------------------------------------------------------------
 # 规则表
@@ -136,15 +128,7 @@ RULE_CALLER_NOT_CANONICAL = "caller-not-canonical"
 RULE_YAML_DUPLICATE_KEY = "yaml-duplicate-key"
 RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD = "self-hosted-pr-without-fork-guard"
 
-RULE_NAMES: Tuple[str, ...] = (
-    RULE_INVALID_CALLER_KEY,
-    RULE_CALLEE_MISSING_TIMEOUT,
-    RULE_SELF_HOSTED_MISSING_TIMEOUT,
-    RULE_YAML_PARSE_ERROR,
-    RULE_CALLER_NOT_CANONICAL,
-    RULE_YAML_DUPLICATE_KEY,
-    RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD,
-)
+RULE_NAMES: Tuple[str, ...] = (RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD)
 
 #: The file every repository ships for the shared commit-lint caller.
 CANONICAL_CALLER_NAME = "commit-msg-lint.yml"
@@ -170,7 +154,7 @@ CALLER_LEGAL_KEYS: Tuple[str, ...] = (
     "needs",
     "if",
     "concurrency",
-    "permissions",
+    "permissions"
 )
 
 #: Label substring that marks a job as running on the org's self-hosted farm.
@@ -197,7 +181,7 @@ FORK_GUARD = (
 #: repository that is not ``github.repository`` — and repositories already using it are clean.
 FORK_GUARD_MARKERS: Tuple[str, ...] = (
     "github.event.pull_request.head.repo.full_name==github.repository",
-    "github.event.pull_request.head.repo.fork==false",
+    "github.event.pull_request.head.repo.fork==false"
 )
 
 #: Legal-key list as it appears in messages (kept in one place so it cannot drift).
@@ -210,11 +194,9 @@ WORKFLOW_SUFFIXES: Tuple[str, ...] = (".yml", ".yaml")
 SUMMARY_LIMIT = 120
 EXCERPT_LIMIT = 100
 
-
 # ---------------------------------------------------------------------------
 # 发现
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class Finding:
@@ -234,20 +216,15 @@ class Finding:
     def render(self) -> str:
         """Render as ``path:line: [rule] message`` plus an indented excerpt."""
         head = f"{self.path}:{self.line}: [{self.rule}] {self.message}"
+
         if self.excerpt:
             return f"{head}\n    {self.excerpt}"
+
         return head
 
     def to_json(self) -> Dict[str, object]:
         """The frozen JSON shape CI consumers read (no ``excerpt``, no extras)."""
-        return {
-            "path": self.path,
-            "line": self.line,
-            "rule": self.rule,
-            "severity": self.severity,
-            "message": self.message,
-        }
-
+        return {"path": self.path, "line": self.line, "rule": self.rule, "severity": self.severity, "message": self.message}
 
 def has_failure(findings: Sequence[Finding], strict: bool = False) -> bool:
     """Whether the run must exit non-zero: any error, or (with *strict*) any warning.
@@ -256,18 +233,19 @@ def has_failure(findings: Sequence[Finding], strict: bool = False) -> bool:
     repository at a time without a red wave, which makes ``--strict`` the switch a repository
     flips once its own tree is guarded to keep it that way.
     """
+
     for finding in findings:
         if finding.severity == SEVERITY_ERROR:
             return True
-        if strict and finding.severity == SEVERITY_WARNING:
-            return True
-    return False
 
+        if strict and (finding.severity == SEVERITY_WARNING):
+            return True
+
+    return False
 
 # ---------------------------------------------------------------------------
 # YAML 结构（compose 出来的节点树，带真实行号）
 # ---------------------------------------------------------------------------
-
 
 def _scalar_text(node: Optional[Node]) -> Optional[str]:
     """The text of a scalar node, or ``None`` for anything else.
@@ -276,29 +254,34 @@ def _scalar_text(node: Optional[Node]) -> Optional[str]:
     boolean ``True`` the way :func:`yaml.safe_load` would resolve it), which is why the
     top-level ``on:`` lookup below can compare strings.
     """
+
     if isinstance(node, ScalarNode):
         return node.value
-    return None
 
+    return None
 
 def _mapping_value(node: Optional[Node], name: str) -> Optional[Node]:
     """First value under mapping key *name*, or ``None``."""
+
     if not isinstance(node, MappingNode):
         return None
+
     for key_node, value_node in node.value:
         if _scalar_text(key_node) == name:
             return value_node
-    return None
 
+    return None
 
 def _scalar_labels(node: Optional[Node]) -> List[str]:
     """Read a ``runs-on`` value as a label list (scalar, flow list and block list alike)."""
+
     if isinstance(node, ScalarNode):
         return [node.value]
+
     if isinstance(node, SequenceNode):
         return [child.value for child in node.value if isinstance(child, ScalarNode)]
-    return []
 
+    return []
 
 def _triggers(on_node: Optional[Node], event: str) -> bool:
     """Whether the top-level ``on`` includes *event*.
@@ -310,21 +293,21 @@ def _triggers(on_node: Optional[Node], event: str) -> bool:
         on:
           pull_request:
     """
+
     if isinstance(on_node, ScalarNode):
         return on_node.value == event
+
     if isinstance(on_node, SequenceNode):
         return any(_scalar_text(child) == event for child in on_node.value)
-    if isinstance(on_node, MappingNode):
-        return any(
-            _scalar_text(key_node) == event for key_node, _ in on_node.value
-        )
-    return False
 
+    if isinstance(on_node, MappingNode):
+        return any(_scalar_text(key_node) == event for key_node, _ in on_node.value)
+
+    return False
 
 def _declares_workflow_call(on_node: Optional[Node]) -> bool:
     """Whether the top-level ``on`` includes ``workflow_call`` (a reusable-workflow callee)."""
     return _triggers(on_node, WORKFLOW_CALL_KEY)
-
 
 def _is_self_hosted(runs_on: Optional[Node]) -> bool:
     """Whether a ``runs-on`` value puts the job on the org farm (rule 7's reading).
@@ -343,24 +326,28 @@ def _is_self_hosted(runs_on: Optional[Node]) -> bool:
     their existing ``error`` into "the expression might name the farm" would redden builds
     across the fleet, which is a different decision from adding this warning.
     """
+
     for label in _scalar_labels(runs_on):
         lowered = label.lower()
+
         if SELF_HOSTED_LABEL in lowered:
             return True
-        if "${{" in label and "vars." in lowered:
-            return True
-    return False
 
+        if ("${{" in label) and ("vars." in lowered):
+            return True
+
+    return False
 
 def _has_fork_guard(entries: Dict[str, Tuple[Node, Node]]) -> bool:
     """Whether the job's own ``if:`` carries the fork guard, in any accepted spelling."""
     entry = entries.get("if")
+
     if entry is None:
         return False
+
     text = _scalar_text(entry[1]) or ""
     compact = "".join(text.split())  # `if: >-` folds, `||` may sit on its own line
     return any(marker in compact for marker in FORK_GUARD_MARKERS)
-
 
 def _job_entries(body: MappingNode) -> Dict[str, Tuple[Node, Node]]:
     """Direct keys of one ``jobs.<id>`` mapping as ``{key: (key_node, value_node)}``.
@@ -371,167 +358,104 @@ def _job_entries(body: MappingNode) -> Dict[str, Tuple[Node, Node]]:
     carries the line to report and the value node carries the data to judge.
     """
     entries: Dict[str, Tuple[Node, Node]] = {}
+
     for key_node, value_node in body.value:
         name = _scalar_text(key_node)
-        if name is not None and name not in entries:
-            entries[name] = (key_node, value_node)
-    return entries
 
+        if (name is not None) and (name not in entries):
+            entries[name] = (key_node, value_node)
+
+    return entries
 
 def _one_line(text: str, limit: int) -> str:
     """Collapse *text* to a single line, truncated to *limit* characters."""
     flattened = " ".join(text.split())
+
     if len(flattened) > limit:
         flattened = flattened[:limit] + "..."
-    return flattened
 
+    return flattened
 
 def _first_line_summary(text: str, limit: int = SUMMARY_LIMIT) -> str:
     """A short, single-line summary of the file's first line (rule 4 must quote the file)."""
     return _one_line(text.split("\n", 1)[0], limit)
 
-
 def _line_excerpt(lines: Sequence[str], line: int, limit: int = EXCERPT_LIMIT) -> str:
     """The stripped source line (1-based), truncated; empty when out of range."""
+
     if 1 <= line <= len(lines):
         return _one_line(lines[line - 1].strip(), limit)
-    return ""
 
+    return ""
 
 def _line_of(node: Node) -> int:
     """1-based line of a node (PyYAML marks are 0-based)."""
     return node.start_mark.line + 1
 
-
 def _parse_error_finding(exc: yaml.YAMLError, text: str, path: str) -> Finding:
     """Rule 4: report the file itself, with the composer's own words and its first line."""
     problem = getattr(exc, "problem", None) or "unparsable YAML"
     mark = getattr(exc, "problem_mark", None)
+
     if mark is None:
         line = 1
         where = ""
     else:
         line = mark.line + 1
         where = f" at line {mark.line + 1}, column {mark.column + 1}"
+
     summary = _first_line_summary(text)
-    message = (
-        f"file is not valid YAML ({problem}{where}); first line: {summary!r}; "
-        "a file that cannot be parsed is reported here rather than skipped - "
-        "GitHub refuses such a workflow outright, so it creates no job that could fail"
-    )
-    return Finding(
-        path=path,
-        line=line,
-        rule=RULE_YAML_PARSE_ERROR,
-        severity=SEVERITY_ERROR,
-        message=message,
-        excerpt=_line_excerpt(text.split("\n"), line),
-    )
+    message = f"file is not valid YAML ({problem}{where}); first line: {summary!r}; " "a file that cannot be parsed is reported here rather than skipped - " "GitHub refuses such a workflow outright, so it creates no job that could fail"
+    return Finding(path = path, line = line, rule = RULE_YAML_PARSE_ERROR, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(text.split("\n"), line))
 
-
-def _caller_findings(
-    job_id: str, entries: Dict[str, Tuple[Node, Node]], path: str, lines: Sequence[str],
-) -> List[Finding]:
+def _caller_findings(job_id: str, entries: Dict[str, Tuple[Node, Node]], path: str, lines: Sequence[str]) -> List[Finding]:
     """Rule 1: a caller job may only carry the nine legal keys; name every offender."""
     findings: List[Finding] = []
+
     for key, (key_node, _value_node) in entries.items():
         if key in CALLER_LEGAL_KEYS:
             continue
+
         line = _line_of(key_node)
-        message = (
-            f"job {job_id!r} calls a reusable workflow (uses:) and also sets {key!r}, "
-            f"which is not one of the nine caller keys ({_CALLER_KEY_LIST}); GitHub then "
-            "rejects the whole workflow - no job is created and the run degenerates to "
-            "0 jobs without failing"
-        )
-        findings.append(
-            Finding(
-                path=path,
-                line=line,
-                rule=RULE_INVALID_CALLER_KEY,
-                severity=SEVERITY_ERROR,
-                message=message,
-                excerpt=_line_excerpt(lines, line),
-            )
-        )
+        message = f"job {job_id!r} calls a reusable workflow (uses:) and also sets {key!r}, " f"which is not one of the nine caller keys ({_CALLER_KEY_LIST}); GitHub then " "rejects the whole workflow - no job is created and the run degenerates to " "0 jobs without failing"
+        findings.append(Finding(path = path, line = line, rule = RULE_INVALID_CALLER_KEY, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(lines, line)))
+
     return findings
 
-
-def _missing_timeout_finding(
-    job_id: str,
-    runs_on_key: Node,
-    runs_on_value: Node,
-    is_callee: bool,
-    path: str,
-    lines: Sequence[str],
-) -> Finding:
+def _missing_timeout_finding(job_id: str, runs_on_key: Node, runs_on_value: Node, is_callee: bool, path: str, lines: Sequence[str]) -> Finding:
     """Rules 2 and 3: a self-hosted job without ``timeout-minutes``."""
     labels = ", ".join(_scalar_labels(runs_on_value))
+
     if is_callee:
         rule = RULE_CALLEE_MISSING_TIMEOUT
-        message = (
-            f"job {job_id!r} is self-hosted (runs-on: {labels}) in a workflow_call callee "
-            "and has no timeout-minutes; a caller job cannot set one (it is not in the "
-            "caller key set), so the upper bound can only live here"
-        )
+        message = f"job {job_id!r} is self-hosted (runs-on: {labels}) in a workflow_call callee " "and has no timeout-minutes; a caller job cannot set one (it is not in the " "caller key set), so the upper bound can only live here"
     else:
         rule = RULE_SELF_HOSTED_MISSING_TIMEOUT
-        message = (
-            f"job {job_id!r} is self-hosted (runs-on: {labels}) and has no timeout-minutes; "
-            "GitHub's 360-minute default cannot stop a process stuck in the kernel D state, "
-            "so a wedged job holds one of the four runners until a human intervenes"
-        )
+        message = f"job {job_id!r} is self-hosted (runs-on: {labels}) and has no timeout-minutes; " "GitHub's 360-minute default cannot stop a process stuck in the kernel D state, " "so a wedged job holds one of the four runners until a human intervenes"
+
     line = _line_of(runs_on_key)
-    return Finding(
-        path=path,
-        line=line,
-        rule=rule,
-        severity=SEVERITY_ERROR,
-        message=message,
-        excerpt=_line_excerpt(lines, line),
-    )
+    return Finding(path = path, line = line, rule = rule, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(lines, line))
 
-
-def _fork_guard_finding(
-    job_id: str,
-    runs_on_key: Node,
-    runs_on_value: Node,
-    path: str,
-    lines: Sequence[str],
-) -> Finding:
+def _fork_guard_finding(job_id: str, runs_on_key: Node, runs_on_value: Node, path: str, lines: Sequence[str]) -> Finding:
     """Rule 7: a self-hosted job reachable by ``pull_request`` without the fork guard."""
     labels = ", ".join(_scalar_labels(runs_on_value)) or "an expression"
-    message = (
-        f"job {job_id!r} has no fork guard: it runs directly on a self-hosted runner "
-        f"(runs-on: {labels}) in a workflow triggered by pull_request, so a pull request "
-        f"whose head branch lives in a fork would execute untrusted code inside the org "
-        f"network and spend the shared runner capacity same-repo PRs need. Add the org's "
-        f"canonical guard to the job — same-repo PRs, pushes and workflow_dispatch keep "
-        f"running: if: {FORK_GUARD} (github.event.pull_request.head.repo.fork == false is "
-        f"accepted as the equivalent form). A repository that must stay unguarded records "
-        f"it with --allow self-hosted-pr-without-fork-guard=<glob>"
-    )
+    message = f"job {job_id!r} has no fork guard: it runs directly on a self-hosted runner " f"(runs-on: {labels}) in a workflow triggered by pull_request, so a pull request " f"whose head branch lives in a fork would execute untrusted code inside the org " f"network and spend the shared runner capacity same-repo PRs need. Add the org's " f"canonical guard to the job — same-repo PRs, pushes and workflow_dispatch keep " f"running: if: {FORK_GUARD} (github.event.pull_request.head.repo.fork == false is " f"accepted as the equivalent form). A repository that must stay unguarded records " f"it with --allow self-hosted-pr-without-fork-guard=<glob>"
     line = _line_of(runs_on_key)
-    return Finding(
-        path=path,
-        line=line,
-        rule=RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD,
-        severity=SEVERITY_WARNING,
-        message=message,
-        excerpt=_line_excerpt(lines, line),
-    )
-
+    return Finding(path = path, line = line, rule = RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, severity = SEVERITY_WARNING, message = message, excerpt = _line_excerpt(lines, line))
 
 def _calls_shared_commit_lint(jobs: MappingNode) -> bool:
     """True when any job is a caller of the shared commit-lint reusable workflow."""
+
     for _key_node, body in jobs.value:
         if not isinstance(body, MappingNode):
             continue
-        uses = _mapping_value(body, "uses")
-        if isinstance(uses, ScalarNode) and SHARED_COMMIT_LINT_REF in (uses.value or ""):
-            return True
-    return False
 
+        uses = _mapping_value(body, "uses")
+
+        if isinstance(uses, ScalarNode) and (SHARED_COMMIT_LINT_REF in (uses.value or "")):
+            return True
+
+    return False
 
 def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
     """Do two caller files *declare* the same thing, comments aside?
@@ -552,23 +476,21 @@ def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
 
     def shape(doc: object) -> dict:
         """The parts GitHub acts on, normalised for comparison."""
+
         if not isinstance(doc, dict):
             return {}
+
         triggers = doc.get(True, doc.get("on"))
         jobs = doc.get("jobs") or {}
         declared = {}
+
         for job_id, body in (jobs or {}).items():
             if not isinstance(body, dict):
                 return {}
-            declared[job_id] = {
-                "uses": body.get("uses"),
-                "with": body.get("with") or {},
-            }
-        return {
-            "triggers": triggers,
-            "permissions": doc.get("permissions"),
-            "jobs": declared,
-        }
+
+            declared[job_id] = {"uses": body.get("uses"), "with": body.get("with") or {}}
+
+        return {"triggers": triggers, "permissions": doc.get("permissions"), "jobs": declared}
 
     # Compare the parsed documents whole: YAML keeps everything GitHub acts on
     # (triggers, permissions, jobs, `with`, `concurrency`, ...) and drops only
@@ -576,12 +498,14 @@ def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
     # an extra `concurrency:` block really does change how runs behave.
     if mine == theirs:
         return True, ""
+
     mine_shape, theirs_shape = shape(mine), shape(theirs)
+
     for key in ("triggers", "permissions", "jobs"):
         if mine_shape.get(key) != theirs_shape.get(key):
             return False, f"differs in `{key}`"
-    return False, "differs outside triggers/permissions/jobs"
 
+    return False, "differs outside triggers/permissions/jobs"
 
 def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
     """Byte-compare the caller against the template the generator ships.
@@ -601,47 +525,18 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
       variant that drops ``ready_for_review``/``synchronize`` stops re-running
       the required check (the merge then cannot proceed).
     """
+
     if text == WORKFLOW_COMMIT_LINT:
         return []
+
     if text == WORKFLOW_COMMIT_LINT_NO_PERMS:
-        return [
-            Finding(
-                path=path,
-                line=1,
-                rule=RULE_CALLER_NOT_CANONICAL,
-                severity=SEVERITY_WARNING,
-                message=(
-                    f"this commit-lint caller carries the lane passthrough but not the "
-                    f"`permissions` grant the reusable lint declares "
-                    f"({len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode())} bytes). The org default "
-                    f"token permissions were tightened on 2026-10-02; without an explicit "
-                    f"`pull-requests: read` the callee fails as `startup_failure` with zero "
-                    f"jobs, so the required check never reports and a protected repository "
-                    f"cannot be merged at all. Regenerate it with "
-                    f"`celestia-devtools init --with-workflows --force`"
-                ),
-                excerpt="",
-            )
-        ]
+        return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller carries the lane passthrough but not the " f"`permissions` grant the reusable lint declares " f"({len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode())} bytes). The org default " f"token permissions were tightened on 2026-10-02; without an explicit " f"`pull-requests: read` the callee fails as `startup_failure` with zero " f"jobs, so the required check never reports and a protected repository " f"cannot be merged at all. Regenerate it with " f"`celestia-devtools init --with-workflows --force`", excerpt = "")]
+
     if text == WORKFLOW_COMMIT_LINT_LEGACY:
-        return [
-            Finding(
-                path=path,
-                line=1,
-                rule=RULE_CALLER_NOT_CANONICAL,
-                severity=SEVERITY_WARNING,
-                message=(
-                    f"this commit-lint caller is the legacy pre-lane template "
-                    f"({len(WORKFLOW_COMMIT_LINT_LEGACY.encode())} bytes); regenerate it with "
-                    f"`celestia-devtools init --with-workflows --force` to gain the "
-                    f"`vars.LINT_RUNNER`/`vars.LINT_LANE` passthrough, so the required check "
-                    f"can be served from the self-hosted farm by setting repository "
-                    f"variables instead of editing this tree"
-                ),
-                excerpt="",
-            )
-        ]
+        return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller is the legacy pre-lane template " f"({len(WORKFLOW_COMMIT_LINT_LEGACY.encode())} bytes); regenerate it with " f"`celestia-devtools init --with-workflows --force` to gain the " f"`vars.LINT_RUNNER`/`vars.LINT_LANE` passthrough, so the required check " f"can be served from the self-hosted farm by setting repository " f"variables instead of editing this tree", excerpt = "")]
+
     semantically_same, why = _same_caller_semantics(text, WORKFLOW_COMMIT_LINT)
+
     if semantically_same:
         # 2026-10-24: a caller that differs from the canonical bytes only in its
         # comments is NOT a broken check. shittim-chest and noa carried exactly
@@ -652,11 +547,11 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
         # caller records why it grants what it grants, so they stay a warning.
         return [
             Finding(
-                path=path,
-                line=1,
-                rule=RULE_CALLER_NOT_CANONICAL,
-                severity=SEVERITY_WARNING,
-                message=(
+                path = path,
+                line = 1,
+                rule = RULE_CALLER_NOT_CANONICAL,
+                severity = SEVERITY_WARNING,
+                message = (
                     f"this commit-lint caller declares exactly what the canonical template "
                     f"does (same triggers, permissions, `uses` and `with`) but differs in its "
                     f"comments ({len(text.encode())} bytes vs "
@@ -665,27 +560,11 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
                     f"want the bytes to match, but do not delete the comments to satisfy the "
                     f"audit"
                 ),
-                excerpt="",
+                excerpt = ""
             )
         ]
-    return [
-        Finding(
-            path=path,
-            line=1,
-            rule=RULE_CALLER_NOT_CANONICAL,
-            severity=SEVERITY_ERROR,
-            message=(
-                f"the shared commit-lint caller must be byte-identical to the canonical "
-                f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is "
-                f"{len(text.encode())} bytes and {why}. Regenerate it with "
-                f"`celestia-devtools init --with-workflows --force` instead of editing it by "
-                f"hand — a variant that drops `ready_for_review` or `synchronize` stops "
-                f"re-running the required check, and the PR then cannot be merged"
-            ),
-            excerpt="",
-        )
-    ]
 
+    return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must be byte-identical to the canonical " f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is " f"{len(text.encode())} bytes and {why}. Regenerate it with " f"`celestia-devtools init --with-workflows --force` instead of editing it by " f"hand — a variant that drops `ready_for_review` or `synchronize` stops " f"re-running the required check, and the PR then cannot be merged", excerpt = "")]
 
 def _mislocated_caller_findings(path: str) -> List[Finding]:
     """Flag a shared caller that lives in a file other than :data:`CANONICAL_CALLER_NAME`.
@@ -695,24 +574,7 @@ def _mislocated_caller_findings(path: str) -> List[Finding]:
     is exactly how the fleet ended up with two shapes — the check name depends only on the
     job id, so the copy works well enough to survive, and the drift is invisible.
     """
-    return [
-        Finding(
-            path=path,
-            line=1,
-            rule=RULE_CALLER_NOT_CANONICAL,
-            severity=SEVERITY_ERROR,
-            message=(
-                f"the shared commit-lint caller must live in `.github/workflows/"
-                f"{CANONICAL_CALLER_NAME}`; this copy is under another name, which puts it "
-                f"outside the byte comparison against the canonical template — it will drift "
-                f"silently and stop re-running the required check. Move it to "
-                f"`.github/workflows/{CANONICAL_CALLER_NAME}` (or regenerate that file with "
-                f"`celestia-devtools init --with-workflows --force`) and delete this one"
-            ),
-            excerpt="",
-        )
-    ]
-
+    return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must live in `.github/workflows/" f"{CANONICAL_CALLER_NAME}`; this copy is under another name, which puts it " f"outside the byte comparison against the canonical template — it will drift " f"silently and stop re-running the required check. Move it to " f"`.github/workflows/{CANONICAL_CALLER_NAME}` (or regenerate that file with " f"`celestia-devtools init --with-workflows --force`) and delete this one", excerpt = "")]
 
 def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List[Finding]:
     """Flag a mapping that defines the same key twice, anywhere in the document.
@@ -728,32 +590,22 @@ def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List
     def walk(node: Node, seen: Set[int]) -> None:
         if id(node) in seen:  # recursive aliases must not recurse forever
             return
+
         seen.add(id(node))
+
         if isinstance(node, MappingNode):
             first_line: Dict[str, int] = {}
+
             for key_node, value_node in node.value:
                 key = _scalar_text(key_node)
                 line = _line_of(key_node)
+
                 if key is not None:
                     if key in first_line:
-                        findings.append(
-                            Finding(
-                                path=path,
-                                line=line,
-                                rule=RULE_YAML_DUPLICATE_KEY,
-                                severity=SEVERITY_ERROR,
-                                message=(
-                                    f"the same mapping key {key!r} is defined twice "
-                                    f"(this occurrence at line {line}, the first at line "
-                                    f"{first_line[key]}); PyYAML silently keeps the last "
-                                    f"value but GitHub's parser rejects the whole file and "
-                                    f"runs zero jobs — deduplicate, keeping one value"
-                                ),
-                                excerpt=_line_excerpt(lines, line),
-                            )
-                        )
+                        findings.append(Finding(path = path, line = line, rule = RULE_YAML_DUPLICATE_KEY, severity = SEVERITY_ERROR, message = f"the same mapping key {key!r} is defined twice " f"(this occurrence at line {line}, the first at line " f"{first_line[key]}); PyYAML silently keeps the last " f"value but GitHub's parser rejects the whole file and " f"runs zero jobs — deduplicate, keeping one value", excerpt = _line_excerpt(lines, line)))
                     else:
                         first_line[key] = line
+
                 walk(key_node, seen)
                 walk(value_node, seen)
         elif isinstance(node, SequenceNode):
@@ -762,13 +614,14 @@ def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List
 
     if root is not None:
         walk(root, set())
-    return findings
 
+    return findings
 
 def audit_text(text: str, path: str) -> List[Finding]:
     """Audit one workflow's text; *path* is the already-resolved display path."""
+
     try:
-        root = yaml.compose(text, Loader=yaml.SafeLoader)
+        root = yaml.compose(text, Loader = yaml.SafeLoader)
     except yaml.YAMLError as exc:
         # 规则 4 的意义就在这一条 except：解析失败必须变成 finding，绝不能 continue 跳过。
         return [_parse_error_finding(exc, text, path)]
@@ -783,6 +636,7 @@ def audit_text(text: str, path: str) -> List[Finding]:
         return findings
 
     jobs = _mapping_value(root, "jobs")
+
     if not isinstance(jobs, MappingNode):
         return findings
 
@@ -800,8 +654,10 @@ def audit_text(text: str, path: str) -> List[Finding]:
 
     for key_node, body in jobs.value:
         job_id = _scalar_text(key_node) or "<unnamed>"
+
         if not isinstance(body, MappingNode):
             continue
+
         entries = _job_entries(body)
 
         if "uses" in entries:
@@ -813,53 +669,41 @@ def audit_text(text: str, path: str) -> List[Finding]:
             continue
 
         runs_on = entries.get("runs-on")
+
         if runs_on is None:
             continue
+
         runs_on_key, runs_on_value = runs_on
 
         if pr_triggered and _is_self_hosted(runs_on_value) and not _has_fork_guard(entries):
-            findings.append(
-                _fork_guard_finding(job_id, runs_on_key, runs_on_value, path, lines)
-            )
+            findings.append(_fork_guard_finding(job_id, runs_on_key, runs_on_value, path, lines))
 
         if "timeout-minutes" in entries:
             continue
+
         labels = _scalar_labels(runs_on_value)
+
         if not any(SELF_HOSTED_LABEL in label.lower() for label in labels):
             continue
-        findings.append(
-            _missing_timeout_finding(job_id, runs_on_key, runs_on_value, is_callee, path, lines)
-        )
+
+        findings.append(_missing_timeout_finding(job_id, runs_on_key, runs_on_value, is_callee, path, lines))
 
     return findings
 
-
 def audit_file(path: Path, display: str) -> List[Finding]:
     """Audit one file; a read failure is either a finding (bad encoding) or an ``OSError``."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError as exc:
-        message = (
-            f"file is not valid UTF-8 ({exc}); it is reported here rather than skipped, "
-            "because a workflow GitHub cannot read creates no job that could fail"
-        )
-        return [
-            Finding(
-                path=display,
-                line=1,
-                rule=RULE_YAML_PARSE_ERROR,
-                severity=SEVERITY_ERROR,
-                message=message,
-                excerpt="",
-            )
-        ]
-    return audit_text(text, display)
 
+    try:
+        text = path.read_text(encoding = "utf-8")
+    except UnicodeDecodeError as exc:
+        message = f"file is not valid UTF-8 ({exc}); it is reported here rather than skipped, " "because a workflow GitHub cannot read creates no job that could fail"
+        return [Finding(path = display, line = 1, rule = RULE_YAML_PARSE_ERROR, severity = SEVERITY_ERROR, message = message, excerpt = "")]
+
+    return audit_text(text, display)
 
 # ---------------------------------------------------------------------------
 # 文件遍历
 # ---------------------------------------------------------------------------
-
 
 def _yml_files(directory: Path) -> List[Path]:
     """Sorted ``*.yml`` / ``*.yaml`` files directly inside *directory* (never recursive).
@@ -871,60 +715,68 @@ def _yml_files(directory: Path) -> List[Path]:
     reported ``clean (0 workflow file(s) scanned)`` / exit 0). Here the ``OSError``
     propagates and the caller turns it into exit 2.
     """
+
     if not directory.is_dir():          # EACCES on the path itself propagates too
         return []
+
     found: List[Path] = []
+
     with os.scandir(directory) as entries:
         for entry in entries:
             if not entry.name.endswith((".yml", ".yaml")):
                 continue
+
             try:
                 if entry.is_file():
                     found.append(Path(entry.path))
             except OSError:             # 单个条目竞态消失：跳过它即可，不掩盖整个目录
                 continue
-    return sorted(found)
 
+    return sorted(found)
 
 def _files_for_directory(directory: Path) -> List[Path]:
     """A directory holding ``.github/workflows`` is a repository root; anything else is one."""
     nested = directory / ".github" / "workflows"
+
     if nested.is_dir():
         return _yml_files(nested)
-    return _yml_files(directory)
 
+    return _yml_files(directory)
 
 def _display_path(path: Path, cwd: Path) -> str:
     """Path relative to *cwd* when it lives underneath it, otherwise the resolved absolute path."""
+
     try:
         resolved = path.resolve()
     except OSError:  # pragma: no cover - resolve() rarely fails on a readable path
         return str(path)
+
     try:
         return resolved.relative_to(cwd).as_posix()
     except ValueError:
         return str(resolved)
 
-
-def collect_workflow_files(
-    raw_paths: Sequence[str], cwd: Optional[Path] = None,
-) -> Tuple[List[Tuple[Path, str]], Optional[int]]:
+def collect_workflow_files(raw_paths: Sequence[str], cwd: Optional[Path] = None) -> Tuple[List[Tuple[Path, str]], Optional[int]]:
     """Resolve PATHS into ``[(path, display_path)]``; a missing PATH is a usage error (exit 2).
 
     Duplicates (the same real file reached through two arguments) are collapsed, so a
     repository-root argument and an explicit file argument cannot double-report.
     """
     root = (cwd or Path.cwd()).resolve()
+
     if not raw_paths:
         raw_paths = list(DEFAULT_PATHS)
 
     collected: List[Tuple[Path, str]] = []
     seen: set = set()
+
     for raw in raw_paths:
         candidate = Path(raw)
+
         if not candidate.exists():
-            print(f"error: {raw}: no such file or directory", file=sys.stderr)
+            print(f"error: {raw}: no such file or directory", file = sys.stderr)
             return [], 2
+
         try:
             if candidate.is_dir():
                 files = _files_for_directory(candidate)
@@ -933,110 +785,94 @@ def collect_workflow_files(
         except OSError as exc:
             # 目录不可读时必须停：静默跳过等于把该目录下的 workflow 全部漏检，
             # 而本工具存在的理由就是"未创建 job 的失败没有 check 会变红"。
-            print(f"error: {raw}: {exc}", file=sys.stderr)
+            print(f"error: {raw}: {exc}", file = sys.stderr)
             return [], 2
+
         for path in files:
             try:
                 key = path.resolve()
             except OSError:  # pragma: no cover - resolve() rarely fails on an existing path
                 key = path
+
             if key in seen:
                 continue
+
             seen.add(key)
             collected.append((path, _display_path(path, root)))
-    collected.sort(key=lambda item: item[1])
-    return collected, None
 
+    collected.sort(key = lambda item: item[1])
+    return collected, None
 
 # ---------------------------------------------------------------------------
 # --allow 允许列表
 # ---------------------------------------------------------------------------
-
 
 def parse_allow(raw: str) -> Tuple[str, str]:
     """Parse ``--allow RULE=GLOB``; an unknown RULE is rejected rather than silently ignored."""
     rule, separator, pattern = raw.partition("=")
     rule = rule.strip()
     pattern = pattern.strip()
+
     if not separator or not rule or not pattern:
         raise argparse.ArgumentTypeError(f"expected RULE=GLOB, got {raw!r}")
-    if rule != "*" and rule not in RULE_NAMES:
-        raise argparse.ArgumentTypeError(
-            f"unknown rule {rule!r} (expected one of {', '.join(RULE_NAMES)}, or *)"
-        )
-    return rule, pattern
 
+    if (rule != "*") and (rule not in RULE_NAMES):
+        raise argparse.ArgumentTypeError(f"unknown rule {rule!r} (expected one of {', '.join(RULE_NAMES)}, or *)")
+
+    return rule, pattern
 
 def _is_allowed(finding: Finding, rules: Sequence[Tuple[str, str]]) -> bool:
     """Whether any ``--allow`` entry covers this finding (``*`` matches every rule)."""
-    return any(
-        (rule == "*" or rule == finding.rule) and fnmatch.fnmatchcase(finding.path, pattern)
-        for rule, pattern in rules
-    )
+    return any(((rule == "*") or (rule == finding.rule)) and fnmatch.fnmatchcase(finding.path, pattern)for rule, pattern in rules)
 
-
-def apply_allow(
-    findings: Sequence[Finding], rules: Sequence[Tuple[str, str]],
-) -> Tuple[List[Finding], int]:
+def apply_allow(findings: Sequence[Finding], rules: Sequence[Tuple[str, str]]) -> Tuple[List[Finding], int]:
     """Split findings into ``(reported, suppressed_count)``."""
     reported = [finding for finding in findings if not _is_allowed(finding, rules)]
     return reported, len(findings) - len(reported)
-
 
 # ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
 
-
 def build_report(
     findings: Sequence[Finding],
     files: int,
     suppressed: int,
-    strict: bool,
+    strict: bool
 ) -> Dict[str, object]:
     """The frozen ``--json`` document: ``findings`` (five keys each) plus a summary."""
     rules = {name: 0 for name in RULE_NAMES}
     errors = 0
     warnings = 0
+
     for finding in findings:
         rules[finding.rule] = rules.get(finding.rule, 0) + 1
+
         if finding.severity == SEVERITY_ERROR:
             errors += 1
         elif finding.severity == SEVERITY_WARNING:
             warnings += 1
-    return {
-        "findings": [finding.to_json() for finding in findings],
-        "summary": {
-            "files": files,
-            "findings": len(findings),
-            "errors": errors,
-            "warnings": warnings,
-            "suppressed": suppressed,
-            "failed": has_failure(findings, strict),
-            "rules": rules,
-        },
-    }
 
+    return {"findings": [finding.to_json()for finding in findings], "summary": {"files": files, "findings": len(findings), "errors": errors, "warnings": warnings, "suppressed": suppressed, "failed": has_failure(findings, strict), "rules": rules}}
 
 def _summary_line(files: int, findings: Sequence[Finding], suppressed: int) -> str:
     """Human summary line (stderr under ``--json``)."""
+
     if not findings:
         text = f"clean ({files} workflow file(s) scanned"
+
         if suppressed:
             text += f", {suppressed} finding(s) suppressed by --allow"
+
         return f"celestia-ci-audit: {text})"
+
     errors = sum(1 for f in findings if f.severity == SEVERITY_ERROR)
     warnings = sum(1 for f in findings if f.severity == SEVERITY_WARNING)
-    return (
-        f"celestia-ci-audit: {len(findings)} finding(s) in {files} workflow file(s) "
-        f"(errors: {errors}, warnings: {warnings}, suppressed: {suppressed})"
-    )
-
+    return f"celestia-ci-audit: {len(findings)} finding(s) in {files} workflow file(s) " f"(errors: {errors}, warnings: {warnings}, suppressed: {suppressed})"
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
 
 class _WholeWordHelpFormatter(argparse.HelpFormatter):
     """Wrap option help without breaking words on hyphens.
@@ -1054,57 +890,16 @@ class _WholeWordHelpFormatter(argparse.HelpFormatter):
     """
 
     def _split_lines(self, text: str, width: int) -> List[str]:
-        return textwrap.wrap(
-            text, width, break_on_hyphens=False, break_long_words=False
-        )
-
+        return textwrap.wrap(text, width, break_on_hyphens = False, break_long_words = False)
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser."""
-    parser = argparse.ArgumentParser(
-        prog="celestia-ci-audit",
-        formatter_class=_WholeWordHelpFormatter,
-        description=(
-            "Fail GitHub Actions workflows that GitHub would silently refuse to run: "
-            "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted "
-            "jobs without timeout-minutes, and files that are not valid YAML. The caller "
-            "side cannot express a timeout upper bound; it belongs on the callee. "
-            "Self-hosted jobs reachable by pull_request also have to keep fork PRs out "
-            "(warning)."
-        ),
-    )
-    parser.add_argument(
-        "paths",
-        nargs="*",
-        help="workflow files or directories (default: .github/workflows)",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="as_json",
-        help="emit the fixed machine-readable report on stdout",
-    )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        help=(
-            "treat warning-severity findings as failures too "
-            "(self-hosted-pr-without-fork-guard is the warning-severity rule)"
-        ),
-    )
-    parser.add_argument(
-        "--allow",
-        action="append",
-        default=[],
-        type=parse_allow,
-        metavar="RULE=GLOB",
-        help=(
-            "suppress findings of RULE whose reported path matches GLOB "
-            f"(RULE is one of {', '.join(RULE_NAMES)}, or *; repeatable)"
-        ),
-    )
+    parser = argparse.ArgumentParser(prog = "celestia-ci-audit", formatter_class = _WholeWordHelpFormatter, description = "Fail GitHub Actions workflows that GitHub would silently refuse to run: " "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted " "jobs without timeout-minutes, and files that are not valid YAML. The caller " "side cannot express a timeout upper bound; it belongs on the callee. " "Self-hosted jobs reachable by pull_request also have to keep fork PRs out " "(warning).")
+    parser.add_argument("paths", nargs = "*", help = "workflow files or directories (default: .github/workflows)")
+    parser.add_argument("--json", action = "store_true", dest = "as_json", help = "emit the fixed machine-readable report on stdout")
+    parser.add_argument("--strict", action = "store_true", help = "treat warning-severity findings as failures too " "(self-hosted-pr-without-fork-guard is the warning-severity rule)")
+    parser.add_argument("--allow", action = "append", default = [], type = parse_allow, metavar = "RULE=GLOB", help = "suppress findings of RULE whose reported path matches GLOB " f"(RULE is one of {', '.join(RULE_NAMES)}, or *; repeatable)")
     return parser
-
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point; returns 0 clean / 1 findings / 2 usage or I/O error."""
@@ -1112,46 +907,39 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     files, failure = collect_workflow_files(args.paths)
+
     if failure is not None:
         return failure
 
     findings: List[Finding] = []
+
     for path, display in files:
         try:
             findings.extend(audit_file(path, display))
         except OSError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+            print(f"error: {exc}", file = sys.stderr)
             return 2
 
-    findings.sort(key=lambda item: (item.path, item.line, item.rule))
+    findings.sort(key = lambda item: (item.path, item.line, item.rule))
     reported, suppressed = apply_allow(findings, args.allow)
 
     if args.as_json:
         report = build_report(reported, len(files), suppressed, args.strict)
-        print(json.dumps(report, indent=2, ensure_ascii=False))
+        print(json.dumps(report, indent = 2, ensure_ascii = False))
     else:
         for finding in reported:
             print(finding.render())
+
         if not files:
-            print(
-                f"note: no workflow file found under {', '.join(args.paths or DEFAULT_PATHS)}",
-                file=sys.stderr,
-            )
+            print(f"note: no workflow file found under {', '.join(args.paths or DEFAULT_PATHS)}", file = sys.stderr)
 
     if suppressed:
         # 豁免必须留痕：允许列表不能变成静默通过。
         rules_text = ", ".join(f"{rule}={pattern}" for rule, pattern in args.allow)
-        print(
-            f"note: suppressed {suppressed} finding(s) via --allow ({rules_text})",
-            file=sys.stderr,
-        )
+        print(f"note: suppressed {suppressed} finding(s) via --allow ({rules_text})", file = sys.stderr)
 
-    print(
-        _summary_line(len(files), reported, suppressed),
-        file=sys.stderr if args.as_json else sys.stdout,
-    )
+    print(_summary_line(len(files), reported, suppressed), file = sys.stderr if args.as_json else sys.stdout)
     return 1 if has_failure(reported, args.strict) else 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

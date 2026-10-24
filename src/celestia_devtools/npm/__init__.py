@@ -18,14 +18,6 @@ unit-testable; actual ``npm publish`` happens in CI.
 """
 
 from celestia_devtools.npm.platforms import Platform, PLATFORMS
-from celestia_devtools.npm.packager import (
-    generate_root_package,
-    generate_subpackage,
-)
+from celestia_devtools.npm.packager import (generate_root_package, generate_subpackage)
 
-__all__ = [
-    "Platform",
-    "PLATFORMS",
-    "generate_root_package",
-    "generate_subpackage",
-]
+__all__ = ["Platform", "PLATFORMS", "generate_root_package", "generate_subpackage"]

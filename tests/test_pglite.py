@@ -18,15 +18,11 @@ manual use and the e2e suites.
 """
 
 from __future__ import annotations
-
 import io
 import json
 from pathlib import Path
-
 import pytest
-
 from celestia_devtools.env import pglite
-
 
 class _FakeProc:
     """Stands in for the detached Node server process."""
@@ -43,7 +39,6 @@ class _FakeProc:
     def kill(self):
         self.returncode = -9
 
-
 def _patch_env(monkeypatch, tmp_path: Path, procs: list[_FakeProc]):
     """Point the module at a temp data dir and stub process spawning."""
     monkeypatch.setattr(pglite, "_data_dir", lambda: tmp_path)
@@ -54,8 +49,7 @@ def _patch_env(monkeypatch, tmp_path: Path, procs: list[_FakeProc]):
     real_popen = pglite.subprocess.Popen
 
     def fake_popen(*args, **kwargs):
-        proc = procs.pop(0) if procs else _FakeProc(
-            4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
+        proc = procs.pop(0)if procs else _FakeProc(4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
         # keep the log-file handle the caller opened so it isn't leaked
         proc._stderr = kwargs.get("stderr")
         return proc
@@ -63,36 +57,28 @@ def _patch_env(monkeypatch, tmp_path: Path, procs: list[_FakeProc]):
     monkeypatch.setattr(pglite.subprocess, "Popen", fake_popen)
     return real_popen
 
-
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(pglite, "_data_dir", lambda: tmp_path)
     return tmp_path
 
-
 # ── name & sidecar layout ────────────────────────────────────────────
 
-
 def test_sidecar_layout_default_keeps_historical_path(data_dir):
-    assert pglite._sidecar_path() == data_dir / "pglite-instance.json"
-    assert pglite._sidecar_path("default") == data_dir / "pglite-instance.json"
-
+    assert pglite._sidecar_path() == (data_dir / "pglite-instance.json")
+    assert pglite._sidecar_path("default") == (data_dir / "pglite-instance.json")
 
 def test_sidecar_layout_named_gets_own_file(data_dir):
-    assert (pglite._sidecar_path("arona")
-            == data_dir / "pglite-instance-arona.json")
-
+    assert (pglite._sidecar_path("arona") == (data_dir / "pglite-instance-arona.json"))
 
 @pytest.mark.parametrize("bad", ["", "Arona", "a b", "a/b", "-x", "x" * 33, "a_b"])
 def test_name_validation_rejects_unsafe(bad):
     with pytest.raises(SystemExit):
         pglite._validate_name(bad)
 
-
 @pytest.mark.parametrize("good", ["a", "arona", "neo-scepter", "n0", "a" * 32])
 def test_name_validation_accepts_safe(good):
     assert pglite._validate_name(good) == good
-
 
 def test_iter_sidecar_names_round_trip(data_dir):
     pglite._write_sidecar({"pid": 1}, "arona")
@@ -100,28 +86,23 @@ def test_iter_sidecar_names_round_trip(data_dir):
     pglite._write_sidecar({"pid": 3})  # default
     assert pglite._iter_sidecar_names() == ["arona", "default", "scepter"]
 
-
 # ── start semantics ──────────────────────────────────────────────────
 
-
 def test_start_reuses_live_instance_of_same_name(tmp_path, monkeypatch, capsys):
-    _patch_env(monkeypatch, tmp_path, procs=[])
-    pglite._write_sidecar(
-        {"pid": 999, "url": "postgresql://x@127.0.0.1:1/postgres"}, "arona")
+    _patch_env(monkeypatch, tmp_path, procs = [])
+    pglite._write_sidecar({"pid": 999, "url": "postgresql://x@127.0.0.1:1/postgres"}, "arona")
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: True)
     # Reuse must not even require node (require is stubbed, but Popen would
     # pop from an empty list → any spawn attempt fails the test).
-    assert pglite.start(name="arona") == 0
+    assert pglite.start(name = "arona") == 0
     assert "postgresql://x@127.0.0.1:1/postgres" in capsys.readouterr().out
-
 
 def test_start_different_name_spawns_its_own(tmp_path, monkeypatch, capsys):
     fake = _FakeProc(4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
-    _patch_env(monkeypatch, tmp_path, procs=[fake])
-    pglite._write_sidecar({"pid": 999, "url": "postgresql://x@127.0.0.1:1/postgres"},
-                          "arona")
+    _patch_env(monkeypatch, tmp_path, procs = [fake])
+    pglite._write_sidecar({"pid": 999, "url": "postgresql://x@127.0.0.1:1/postgres"}, "arona")
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: True)
-    assert pglite.start(name="scepter") == 0
+    assert pglite.start(name = "scepter") == 0
     out = capsys.readouterr().out
     assert "127.0.0.1:15432" in out
     # both sidecars now exist independently
@@ -129,60 +110,52 @@ def test_start_different_name_spawns_its_own(tmp_path, monkeypatch, capsys):
     assert pglite._read_sidecar("scepter")["pid"] == 4242
     assert pglite._read_sidecar("scepter")["name"] == "scepter"
 
-
 def test_start_records_url_and_pid(tmp_path, monkeypatch, capsys):
     fake = _FakeProc(777, "postgresql://postgres:postgres@127.0.0.1:15440/postgres")
-    _patch_env(monkeypatch, tmp_path, procs=[fake])
+    _patch_env(monkeypatch, tmp_path, procs = [fake])
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: False)
-    assert pglite.start(name="neo") == 0
+    assert pglite.start(name = "neo") == 0
     sc = pglite._read_sidecar("neo")
     assert sc["pid"] == 777
     assert sc["url"].endswith(":15440/postgres")
     assert sc["data_dir"] == "memory://"
 
-
 # ── stop & status ────────────────────────────────────────────────────
-
 
 def test_stop_clears_only_its_own_sidecar(data_dir, monkeypatch):
     killed = []
     monkeypatch.setattr(pglite.os, "kill", lambda pid, sig: killed.append(pid))
-    monkeypatch.setattr(pglite, "_proc_alive",
-                        lambda pid: pid not in killed)
+    monkeypatch.setattr(pglite, "_proc_alive", lambda pid: pid not in killed)
     pglite._write_sidecar({"pid": 11}, "arona")
     pglite._write_sidecar({"pid": 22}, "scepter")
-    assert pglite.stop(name="arona") == 0
+    assert pglite.stop(name = "arona") == 0
     assert killed == [11]
     assert pglite._read_sidecar("arona") == {}
     assert pglite._read_sidecar("scepter") == {"pid": 22}
 
-
 def test_stop_all_sweeps_every_instance(data_dir, monkeypatch, capsys):
     killed = []
     monkeypatch.setattr(pglite.os, "kill", lambda pid, sig: killed.append(pid))
-    monkeypatch.setattr(pglite, "_proc_alive",
-                        lambda pid: pid not in killed)
+    monkeypatch.setattr(pglite, "_proc_alive", lambda pid: pid not in killed)
     pglite._write_sidecar({"pid": 11}, "arona")
     pglite._write_sidecar({"pid": 22}, "scepter")
     pglite._write_sidecar({"pid": 33})  # default
-    assert pglite.stop(all_=True) == 0
+    assert pglite.stop(all_ = True) == 0
     assert sorted(killed) == [11, 22, 33]
     assert pglite._iter_sidecar_names() == []
-
 
 def test_status_all_reports_live_instances(data_dir, monkeypatch, capsys):
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: pid == 22)
     pglite._write_sidecar({"pid": 11, "url": "u1"}, "arona")
     pglite._write_sidecar({"pid": 22, "url": "u2"}, "scepter")
-    assert pglite.status(all_=True) == 0
+    assert pglite.status(all_ = True) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["running"] is True
     assert [i["name"] for i in payload["instances"]] == ["scepter"]
     assert payload["instances"][0]["url"] == "u2"
 
-
 def test_status_single_instance_exit_code(data_dir, monkeypatch, capsys):
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: False)
     pglite._write_sidecar({"pid": 11, "url": "u1"}, "arona")
-    assert pglite.status(name="arona") == 1
+    assert pglite.status(name = "arona") == 1
     assert json.loads(capsys.readouterr().out) == {"running": False}

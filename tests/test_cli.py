@@ -2,11 +2,8 @@
 
 import subprocess
 import sys
-
 import pytest
-
 from celestia_devtools.core.cli import COMMANDS, main
-
 
 class TestCommandRegistry:
     def test_all_commands_registered(self):
@@ -57,7 +54,7 @@ class TestCommandRegistry:
             # Added 2026-10-17: per-app vite/CDP port allocation — two
             # tauri debug shells on one machine must never cross-wire.
             "ports",
-            "brand-stamp",
+            "brand-stamp"
         }
         assert set(COMMANDS.keys()) == expected
 
@@ -72,16 +69,15 @@ class TestCommandRegistry:
         from pathlib import Path
 
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        data = tomllib.loads(pyproject.read_text(encoding = "utf-8"))
         scripts = data["project"]["scripts"]
+
         for name, target in scripts.items():
             if name in ("celestia-devtools",):
                 continue
+
             short = name[len("celestia-"):] if name.startswith("celestia-") else name
-            assert short in COMMANDS or name in COMMANDS, (
-                f"console script '{name}' ({target}) has no `celestia-devtools` command; "
-                "add it to COMMANDS in core/cli.py or the unified CLI cannot run it"
-            )
+            assert (short in COMMANDS) or (name in COMMANDS), (f"console script '{name}' ({target}) has no `celestia-devtools` command; " "add it to COMMANDS in core/cli.py or the unified CLI cannot run it")
 
     @pytest.mark.parametrize("cmd,module_path", list(COMMANDS.items()))
     def test_command_modules_importable(self, cmd, module_path):
@@ -96,11 +92,11 @@ class TestCommandRegistry:
 
         from importlib import import_module
 
-        if sys.platform == "win32" and cmd in ("deploy", "e2e-sandbox"):
+        if (sys.platform == "win32") and (cmd in ("deploy", "e2e-sandbox")):
             pytest.skip(f"{cmd} is POSIX-only (imports pwd / signal.SIGKILL)")
+
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
-
 
 class TestVersionHelp:
     def test_version(self, capsys):
@@ -121,14 +117,12 @@ class TestVersionHelp:
         assert rc == 0
         assert "format-markdown" in captured.out
 
-
 class TestUnknownCommand:
     def test_unknown_returns_error(self, capsys):
         rc = main(["nonexistent-command"])
         assert rc == 2
         captured = capsys.readouterr()
         assert "unknown command" in captured.err
-
 
 class TestIncludePath:
     def test_include_path_prints_common_just(self, capsys):
@@ -137,17 +131,12 @@ class TestIncludePath:
         assert rc == 0
         assert "common.just" in captured.out
 
-
 class TestModuleRun:
     def test_python_m_invocation(self):
         """`python -m celestia_devtools --version` should work."""
-        result = subprocess.run(
-            [sys.executable, "-m", "celestia_devtools", "--version"],
-            capture_output=True, text=True,
-        )
+        result = subprocess.run([sys.executable, "-m", "celestia_devtools", "--version"], capture_output = True, text = True)
         assert result.returncode == 0
         assert "celestia-devtools" in result.stdout
-
 
 class TestStaleLocalPatchCleanup:
     def test_removes_stale_absolute_path(self):
@@ -157,6 +146,7 @@ class TestStaleLocalPatchCleanup:
         import tempfile
         from pathlib import Path
         bad = os.path.abspath(os.path.join(os.sep, "nonexistent", "abcdef", "crate"))
+
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "Cargo.toml").write_text("[package]\nname = \"ok\"\n")
             config = f"""[patch.crates-io]
@@ -187,6 +177,7 @@ crate = { git = "https://github.com/org/repo" }
         from celestia_devtools.repo.register_patches import _clean_stale_local_patches
 
         import tempfile
+
         with tempfile.TemporaryDirectory() as td:
             from pathlib import Path
             p = Path(td)
@@ -197,7 +188,6 @@ test = {{ path = \"{td}\" }}
             cleaned, warnings = _clean_stale_local_patches(config)
             assert len(warnings) == 0
             assert 'test' in cleaned
-
 
 class TestModuleMainGuard:
     """`python3 -m celestia_devtools.core.cli …` must actually dispatch.
@@ -219,23 +209,13 @@ class TestModuleMainGuard:
         # the test would exercise a stale copy and drift with it.
         src = Path(__file__).resolve().parents[1] / "src"
         env = dict(os.environ)
-        env["PYTHONPATH"] = (
-            f"{src}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(src)
-        )
-        return subprocess.run(
-            [sys.executable, "-m", "celestia_devtools.core.cli", *args],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-        )
+        env["PYTHONPATH"] = f"{src}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(src)
+        return subprocess.run([sys.executable, "-m", "celestia_devtools.core.cli", *args], capture_output = True, text = True, timeout = 60, env = env)
 
     def test_module_run_dispatches_a_real_command(self):
         result = self._run_module("--version")
         assert result.returncode == 0, result.stderr
-        assert result.stdout.startswith("celestia-devtools "), (
-            f"-m run produced no version output: stdout={result.stdout!r}"
-        )
+        assert result.stdout.startswith("celestia-devtools "), (f"-m run produced no version output: stdout={result.stdout!r}")
 
     def test_module_run_fails_loudly_on_unknown_command(self):
         result = self._run_module("definitely-not-a-command")

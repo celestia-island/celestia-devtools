@@ -68,7 +68,6 @@ usable as standalone scripts.
 """
 
 from __future__ import annotations
-
 import sys
 from importlib import import_module
 from typing import Sequence
@@ -136,18 +135,16 @@ COMMANDS: dict[str, str] = {
     "e2e-sandbox": "celestia_devtools.env.e2e_sandbox",
     "devenv": "celestia_devtools.env.devenv",
     "ports": "celestia_devtools.env.ports",
-    "brand-stamp": "celestia_devtools.brand.stamp",
+    "brand-stamp": "celestia_devtools.brand.stamp"
 }
 
-
-def _print_help(file=None) -> None:
-    print(__doc__, file=file or sys.stdout)
-
+def _print_help(file = None) -> None:
+    print(__doc__, file = file or sys.stdout)
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
 
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or (args[0] in ("-h", "--help", "help")):
         _print_help()
         return 0
 
@@ -166,20 +163,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     module_path = COMMANDS.get(cmd)
+
     if module_path is None:
-        print(f"error: unknown command '{cmd}'", file=sys.stderr)
-        _print_help(file=sys.stderr)
+        print(f"error: unknown command '{cmd}'", file = sys.stderr)
+        _print_help(file = sys.stderr)
         return 2
 
     mod = import_module(module_path)
     entry = getattr(mod, "main", None)
+
     if not callable(entry):
-        print(f"error: module '{cmd}' has no main()", file=sys.stderr)
+        print(f"error: module '{cmd}' has no main()", file = sys.stderr)
         return 2
 
     sys.argv = [cmd, *rest]
     return int(entry() or 0)
-
 
 if __name__ == "__main__":
     # Without this guard `python3 -m celestia_devtools.core.cli …` imports the

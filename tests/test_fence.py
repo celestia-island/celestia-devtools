@@ -1,9 +1,7 @@
 """Tests for code-fence programming-language inference (doc/linter/fence.py)."""
 
 import pytest
-
 from celestia_devtools.doc.linter.fence import infer_fence_language
-
 
 @pytest.mark.parametrize("lines,expected", [
     # Python
@@ -44,7 +42,7 @@ from celestia_devtools.doc.linter.fence import infer_fence_language
     # Text / fallback
     (["┌─────────┐", "│  Box   │", "└─────────┘"], "text"),
     (["Just some prose without code markers."], "text"),
-    ([], "text"),
+    ([], "text")
 ])
 def test_infer_fence_language(lines, expected):
     assert infer_fence_language(lines) == expected

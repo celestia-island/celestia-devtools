@@ -4,119 +4,70 @@ import json
 import os
 import sys
 from pathlib import Path
-
 import pytest
-
 from celestia_devtools.npm import link_siblings as ls
-from celestia_devtools.npm.link_siblings import (
-    NpmPackage,
-    LinkPlan,
-    apply_link,
-    collect_declared_family_deps,
-    load_state,
-    plan_links,
-    remove_links,
-)
+from celestia_devtools.npm.link_siblings import (NpmPackage, LinkPlan, apply_link, collect_declared_family_deps, load_state, plan_links, remove_links)
 
 SIBLING_VER = "0.29.0"
-
 
 def _argv(monkeypatch, *args: str) -> None:
     """Module mains read sys.argv (no argv parameter) — pin it for argparse."""
     monkeypatch.setattr(sys, "argv", ["prog", *args])
 
-
 def _make_sibling(root: Path, repo: str, pkg: str, version: str = SIBLING_VER) -> NpmPackage:
     pkg_dir = root / repo / "packages" / pkg
-    pkg_dir.mkdir(parents=True)
-    (pkg_dir / "package.json").write_text(
-        json.dumps({"name": f"@celestia-island/{pkg}", "version": version}),
-        encoding="utf-8",
-    )
-    return NpmPackage(
-        name=f"@celestia-island/{pkg}",
-        path=pkg_dir.resolve(),
-        repo=repo,
-        version=version,
-    )
+    pkg_dir.mkdir(parents = True)
+    (pkg_dir / "package.json").write_text(json.dumps({"name": f"@celestia-island/{pkg}", "version": version}), encoding = "utf-8")
+    return NpmPackage(name = f"@celestia-island/{pkg}", path = pkg_dir.resolve(), repo = repo, version = version)
 
-
-def _make_target(root: Path, *, root_deps: dict | None = None,
-                 webui_deps: dict | None = None) -> Path:
+def _make_target(root: Path, *, root_deps: dict | None = None, webui_deps: dict | None = None) -> Path:
     repo = root / "target"
-    (repo / "packages" / "webui").mkdir(parents=True)
+    (repo / "packages" / "webui").mkdir(parents = True)
     (repo / "pnpm-workspace.yaml").write_text("packages:\n  - 'packages/webui'\n")
-    (repo / "package.json").write_text(
-        json.dumps({"name": "@celestia-island/target", "dependencies": root_deps or {}}),
-        encoding="utf-8",
-    )
-    (repo / "packages" / "webui" / "package.json").write_text(
-        json.dumps({"name": "@celestia-island/webui", "dependencies": webui_deps or {}}),
-        encoding="utf-8",
-    )
+    (repo / "package.json").write_text(json.dumps({"name": "@celestia-island/target", "dependencies": root_deps or {}}), encoding = "utf-8")
+    (repo / "packages" / "webui" / "package.json").write_text(json.dumps({"name": "@celestia-island/webui", "dependencies": webui_deps or {}}), encoding = "utf-8")
     return repo
-
 
 @pytest.fixture()
 def hikari_sibling(tmp_path: Path) -> NpmPackage:
     return _make_sibling(tmp_path, "hikari", "hikari")
 
-
 class TestCollectDeclaredFamilyDeps:
     def test_root_and_package_level(self, tmp_path: Path):
-        repo = _make_target(
-            tmp_path,
-            root_deps={"@celestia-island/kirino": "^*"},
-            webui_deps={"@celestia-island/hikari": "workspace:*"},
-        )
+        repo = _make_target(tmp_path, root_deps = {"@celestia-island/kirino": "^*"}, webui_deps = {"@celestia-island/hikari": "workspace:*"})
         declared = collect_declared_family_deps(repo)
         assert set(declared) == {"@celestia-island/kirino", "@celestia-island/hikari"}
         assert declared["@celestia-island/kirino"] == [repo]
         assert declared["@celestia-island/hikari"] == [repo / "packages" / "webui"]
 
     def test_ignores_non_family_and_malformed(self, tmp_path: Path):
-        repo = _make_target(tmp_path, root_deps={"vue": "^*"})
+        repo = _make_target(tmp_path, root_deps = {"vue": "^*"})
         (repo / "packages" / "broken" / "package.json").parent.mkdir()
         (repo / "packages" / "broken" / "package.json").write_text("{not json")
         assert collect_declared_family_deps(repo) == {}
 
     def test_dedupes_repeated_declaration(self, tmp_path: Path):
-        repo = _make_target(
-            tmp_path,
-            root_deps={"@celestia-island/hikari": "^*"},
-            webui_deps={"@celestia-island/hikari": "^*"},
-        )
+        repo = _make_target(tmp_path, root_deps = {"@celestia-island/hikari": "^*"}, webui_deps = {"@celestia-island/hikari": "^*"})
         declared = collect_declared_family_deps(repo)
         assert declared["@celestia-island/hikari"] == [repo, repo / "packages" / "webui"]
 
-
 class TestPlanLinks:
     def test_matches_sibling_and_skips_missing(self, tmp_path: Path, hikari_sibling: NpmPackage):
-        repo = _make_target(
-            tmp_path,
-            webui_deps={"@celestia-island/hikari": "^*", "@celestia-island/ghost": "^*"},
-        )
+        repo = _make_target(tmp_path, webui_deps = {"@celestia-island/hikari": "^*", "@celestia-island/ghost": "^*"})
         plans, notices = plan_links(repo, [hikari_sibling], collect_declared_family_deps(repo))
         assert len(plans) == 1
         assert plans[0].name == "@celestia-island/hikari"
-        assert plans[0].link_path == repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari"
+        assert plans[0].link_path == (repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari")
         assert any("ghost" in n for n in notices)
 
     def test_package_level_links_own_node_modules_only(self, tmp_path: Path, hikari_sibling: NpmPackage):
-        repo = _make_target(tmp_path, webui_deps={"@celestia-island/hikari": "^*"})
+        repo = _make_target(tmp_path, webui_deps = {"@celestia-island/hikari": "^*"})
         plans, _ = plan_links(repo, [hikari_sibling], collect_declared_family_deps(repo))
-        assert [p.link_path for p in plans] == [
-            repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari",
-        ]
-
+        assert [p.link_path for p in plans] == [repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari"]
 
 class TestApplyLink:
     def _plan(self, repo: Path, sibling: NpmPackage) -> LinkPlan:
-        return LinkPlan(
-            name=sibling.name, sibling=sibling,
-            link_path=repo / "packages" / "webui" / "node_modules" / sibling.name,
-            consumer="packages/webui",
-        )
+        return LinkPlan(name = sibling.name, sibling = sibling, link_path = repo / "packages" / "webui" / "node_modules" / sibling.name, consumer = "packages/webui")
 
     def test_creates_link_and_state(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
@@ -137,12 +88,10 @@ class TestApplyLink:
         result = apply_link(plan, repo, state)
         assert result.action == "ok"
 
-    def test_replaces_foreign_symlink_recording_original(
-        self, tmp_path: Path, hikari_sibling: NpmPackage,
-    ):
+    def test_replaces_foreign_symlink_recording_original(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
         plan = self._plan(repo, hikari_sibling)
-        plan.link_path.parent.mkdir(parents=True)
+        plan.link_path.parent.mkdir(parents = True)
         original_dir = tmp_path / "pnpm-store-thing"
         original_dir.mkdir()
         os.symlink(original_dir, plan.link_path)
@@ -155,12 +104,12 @@ class TestApplyLink:
     def test_real_dir_skipped_unless_forced(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
         plan = self._plan(repo, hikari_sibling)
-        plan.link_path.parent.mkdir(parents=True)
+        plan.link_path.parent.mkdir(parents = True)
         plan.link_path.mkdir()
         state = {"links": {}}
         assert apply_link(plan, repo, state).action == "skipped-dir"
         assert plan.link_path.is_dir() and not plan.link_path.is_symlink()
-        forced = apply_link(plan, repo, state, force=True)
+        forced = apply_link(plan, repo, state, force = True)
         assert forced.action == "forced-dir"
         assert plan.link_path.is_symlink()
         assert state["links"][str(plan.link_path)]["was_dir"] is True
@@ -168,13 +117,11 @@ class TestApplyLink:
     def test_dry_run_touches_nothing(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
         plan = self._plan(repo, hikari_sibling)
-        result = apply_link(plan, repo, {"links": {}}, dry_run=True)
+        result = apply_link(plan, repo, {"links": {}}, dry_run = True)
         assert result.action == "dry-run"
         assert not plan.link_path.exists()
 
-    def test_pnpm_replacement_after_overlay_records_new_original(
-        self, tmp_path: Path, hikari_sibling: NpmPackage,
-    ):
+    def test_pnpm_replacement_after_overlay_records_new_original(self, tmp_path: Path, hikari_sibling: NpmPackage):
         """overlay -> pnpm install replaces our link -> re-apply must record
         pnpm's target as the restore point; `setdefault` saw the existing
         ``original: None`` and dropped it, leaving the dep missing on --remove."""
@@ -192,20 +139,18 @@ class TestApplyLink:
         assert result.action == "updated"
         assert state["links"][str(plan.link_path)]["original"] == str(pnpm_target)
 
-    def test_own_link_reapply_never_records_itself_as_original(
-        self, tmp_path: Path, hikari_sibling: NpmPackage,
-    ):
+    def test_own_link_reapply_never_records_itself_as_original(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
         plan = self._plan(repo, hikari_sibling)
         state = {"links": {}}
         apply_link(plan, repo, state)
+
         for _ in range(3):
             assert apply_link(plan, repo, state).action == "ok"
+
         assert state["links"][str(plan.link_path)]["original"] is None
 
-    def test_unreadable_symlink_does_not_crash_apply(
-        self, tmp_path: Path, hikari_sibling: NpmPackage, monkeypatch,
-    ):
+    def test_unreadable_symlink_does_not_crash_apply(self, tmp_path: Path, hikari_sibling: NpmPackage, monkeypatch):
         """The OSError fallback used to call os.readlink a second time
         unguarded — if the first call raised, the second raised again."""
 
@@ -214,7 +159,7 @@ class TestApplyLink:
 
         repo = _make_target(tmp_path)
         plan = self._plan(repo, hikari_sibling)
-        plan.link_path.parent.mkdir(parents=True)
+        plan.link_path.parent.mkdir(parents = True)
         os.symlink(tmp_path / "whatever", plan.link_path)
         state = {"links": {}}
         monkeypatch.setattr(ls.os, "readlink", boom)
@@ -224,15 +169,10 @@ class TestApplyLink:
         assert plan.link_path.is_symlink()
         assert Path(os.readlink(plan.link_path)) == hikari_sibling.path
 
-
 class TestRemoveLinks:
     def test_restores_original_and_clears_state(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
-        plan = LinkPlan(
-            name=hikari_sibling.name, sibling=hikari_sibling,
-            link_path=repo / "packages" / "webui" / "node_modules" / hikari_sibling.name,
-            consumer="packages/webui",
-        )
+        plan = LinkPlan(name = hikari_sibling.name, sibling = hikari_sibling, link_path = repo / "packages" / "webui" / "node_modules" / hikari_sibling.name, consumer = "packages/webui")
         state = {"links": {}}
         apply_link(plan, repo, state)
         ls.save_state(repo, state)
@@ -242,14 +182,10 @@ class TestRemoveLinks:
 
     def test_restore_relinks_original_target(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
-        plan = LinkPlan(
-            name=hikari_sibling.name, sibling=hikari_sibling,
-            link_path=repo / "packages" / "webui" / "node_modules" / hikari_sibling.name,
-            consumer="packages/webui",
-        )
+        plan = LinkPlan(name = hikari_sibling.name, sibling = hikari_sibling, link_path = repo / "packages" / "webui" / "node_modules" / hikari_sibling.name, consumer = "packages/webui")
         original_dir = tmp_path / "pnpm-orig"
         original_dir.mkdir()
-        plan.link_path.parent.mkdir(parents=True)
+        plan.link_path.parent.mkdir(parents = True)
         os.symlink(original_dir, plan.link_path)
         state = {"links": {}}
         apply_link(plan, repo, state)
@@ -267,11 +203,7 @@ class TestRemoveLinks:
         """Worktree node_modules symlinks share one physical state file; a
         --remove must only consume entries keyed under the current repo root."""
         repo = _make_target(tmp_path)
-        plan = LinkPlan(
-            name=hikari_sibling.name, sibling=hikari_sibling,
-            link_path=repo / "packages" / "webui" / "node_modules" / hikari_sibling.name,
-            consumer="packages/webui",
-        )
+        plan = LinkPlan(name = hikari_sibling.name, sibling = hikari_sibling, link_path = repo / "packages" / "webui" / "node_modules" / hikari_sibling.name, consumer = "packages/webui")
         state = {"links": {}}
         apply_link(plan, repo, state)
         foreign_key = str(tmp_path / "worktree-B" / "node_modules" / "@celestia-island/hikari")
@@ -287,11 +219,10 @@ class TestRemoveLinks:
         # node_modules is symlinked to the shared checkout (org convention),
         # so _state_path(worktree-B) resolves to the same physical file.
         wt_b = tmp_path / "worktree-B"
-        (wt_b / "packages" / "webui").mkdir(parents=True)
+        (wt_b / "packages" / "webui").mkdir(parents = True)
         os.symlink(repo / "node_modules", wt_b / "node_modules")
         assert remove_links(wt_b) == 0
         assert not ls._state_path(repo).exists()
-
 
 class TestIsCelestiaRepo:
     def test_reads_raw_config_not_insteadof_rewritten(self, tmp_path: Path):
@@ -302,43 +233,26 @@ class TestIsCelestiaRepo:
 
         repo = tmp_path / "hikari"
         repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "remote", "add", "origin",
-             "https://github.com/celestia-island/hikari.git"],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(repo), "config",
-             'url."/mnt/fast/runner-shared/mirrors/".insteadOf',
-             "https://github.com/celestia-island/"],
-            check=True,
-        )
-        rewritten = subprocess.run(
-            ["git", "-C", str(repo), "remote", "get-url", "origin"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
+        subprocess.run(["git", "init", "-q", str(repo)], check = True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://github.com/celestia-island/hikari.git"], check = True)
+        subprocess.run(["git", "-C", str(repo), "config", 'url."/mnt/fast/runner-shared/mirrors/".insteadOf', "https://github.com/celestia-island/"], check = True)
+        rewritten = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"], capture_output = True, text = True, check = True).stdout.strip()
         assert "mirrors" in rewritten  # sanity: the rewrite is in effect
         assert ls.is_celestia_repo(repo) == "hikari"
-
 
 class TestLinkSiblingsMain:
     def _git_repo(self, path: Path, origin: str) -> None:
         import subprocess
 
-        path.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "init", "-q", str(path)], check=True)
-        subprocess.run(
-            ["git", "-C", str(path), "remote", "add", "origin", origin], check=True,
-        )
+        path.mkdir(parents = True, exist_ok = True)
+        subprocess.run(["git", "init", "-q", str(path)], check = True)
+        subprocess.run(["git", "-C", str(path), "remote", "add", "origin", origin], check = True)
 
     def test_end_to_end_link(self, tmp_path: Path, monkeypatch, capsys):
         scan_dir = tmp_path / "celestia"
         sibling = _make_sibling(scan_dir, "hikari", "hikari")
         self._git_repo(scan_dir / "hikari", "https://github.com/celestia-island/hikari.git")
-        repo = _make_target(
-            scan_dir, webui_deps={"@celestia-island/hikari": "workspace:*"},
-        )
+        repo = _make_target(scan_dir, webui_deps = {"@celestia-island/hikari": "workspace:*"})
         monkeypatch.chdir(repo)
         _argv(monkeypatch, "--scan-dir", str(scan_dir))
         assert ls.main() == 0
@@ -357,7 +271,7 @@ class TestLinkSiblingsMain:
         scan_dir = tmp_path / "celestia"
         _make_sibling(scan_dir, "hikari", "hikari")
         self._git_repo(scan_dir / "hikari", "https://github.com/celestia-island/hikari.git")
-        repo = _make_target(scan_dir, webui_deps={"@celestia-island/hikari": "^*"})
+        repo = _make_target(scan_dir, webui_deps = {"@celestia-island/hikari": "^*"})
         monkeypatch.chdir(repo)
         _argv(monkeypatch, "--scan-dir", str(scan_dir))
         ls.main()
@@ -376,7 +290,7 @@ class TestLinkSiblingsMain:
     def test_missing_sibling_reports_registry_fallback(self, tmp_path: Path, monkeypatch, capsys):
         scan_dir = tmp_path / "celestia"
         scan_dir.mkdir()
-        repo = _make_target(scan_dir, webui_deps={"@celestia-island/hikari": "^*"})
+        repo = _make_target(scan_dir, webui_deps = {"@celestia-island/hikari": "^*"})
         monkeypatch.chdir(repo)
         _argv(monkeypatch, "--scan-dir", str(scan_dir))
         assert ls.main() == 0
@@ -394,10 +308,8 @@ class TestLinkSiblingsMain:
         scan_dir = tmp_path / "celestia"
         _make_sibling(scan_dir, "hikari", "hikari")
         self._git_repo(scan_dir / "hikari", "https://github.com/celestia-island/hikari.git")
-        repo = _make_target(scan_dir, webui_deps={"@celestia-island/hikari": "workspace:*"})
-        (repo / "pnpm-workspace.yaml").write_text(
-            "packages:\n  - 'packages/webui'\n  - '../hikari/packages/vue'\n",
-        )
+        repo = _make_target(scan_dir, webui_deps = {"@celestia-island/hikari": "workspace:*"})
+        (repo / "pnpm-workspace.yaml").write_text("packages:\n  - 'packages/webui'\n  - '../hikari/packages/vue'\n")
         monkeypatch.chdir(repo)
         _argv(monkeypatch, "--scan-dir", str(scan_dir))
         assert ls.main() == 0
@@ -410,7 +322,7 @@ class TestLinkSiblingsMain:
         scan_dir = tmp_path / "celestia"
         _make_sibling(scan_dir, "hikari", "hikari")
         self._git_repo(scan_dir / "hikari", "https://github.com/celestia-island/hikari.git")
-        repo = _make_target(scan_dir, webui_deps={"@celestia-island/hikari": "^*"})
+        repo = _make_target(scan_dir, webui_deps = {"@celestia-island/hikari": "^*"})
         monkeypatch.chdir(repo)
         _argv(monkeypatch, "--scan-dir", str(scan_dir))
         ls.main()
@@ -419,10 +331,7 @@ class TestLinkSiblingsMain:
 
         # Drop the family dep: the repo no longer declares anything to link.
         manifest = repo / "packages" / "webui" / "package.json"
-        manifest.write_text(
-            json.dumps({"name": "@celestia-island/webui", "dependencies": {"vue": "^3"}}),
-            encoding="utf-8",
-        )
+        manifest.write_text(json.dumps({"name": "@celestia-island/webui", "dependencies": {"vue": "^3"}}), encoding = "utf-8")
         _argv(monkeypatch, "--remove")
         assert ls.main() == 0
         link = repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari"
@@ -439,9 +348,11 @@ class TestLinkSiblingsMain:
         assert "status for" in capsys.readouterr().out
 
     def test_status_and_remove_mutually_exclusive(self, tmp_path: Path, monkeypatch):
-        repo = _make_target(tmp_path, webui_deps={"@celestia-island/hikari": "^*"})
+        repo = _make_target(tmp_path, webui_deps = {"@celestia-island/hikari": "^*"})
         monkeypatch.chdir(repo)
         _argv(monkeypatch, "--status", "--remove")
+
         with pytest.raises(SystemExit) as exc:
             ls.main()
+
         assert exc.value.code == 2

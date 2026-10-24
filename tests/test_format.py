@@ -1,14 +1,6 @@
 """Tests for the Markdown formatting pipeline (doc/markdown.py)."""
 
-from celestia_devtools.doc.markdown import (
-    apply_fence_languages,
-    format_markdown,
-    normalize_table_separator,
-    postprocess_lines,
-    split_frontmatter,
-    wrap_code_like_tokens,
-)
-
+from celestia_devtools.doc.markdown import (apply_fence_languages, format_markdown, normalize_table_separator, postprocess_lines, split_frontmatter, wrap_code_like_tokens)
 
 class TestHeadingSpacing:
     def test_missing_space_after_hash(self):
@@ -20,7 +12,6 @@ class TestHeadingSpacing:
 
     def test_multiple_hashes(self):
         assert postprocess_lines(["###Deep"]) == ["### Deep"]
-
 
 class TestListNormalization:
     def test_ordered_marker_normalized(self):
@@ -35,7 +26,6 @@ class TestListNormalization:
         result = postprocess_lines(["paragraph", "- item"])
         assert result == ["paragraph", "", "- item"]
 
-
 class TestTableSeparator:
     def test_simple_separator(self):
         assert normalize_table_separator("|---|---|") == "| --- | --- |"
@@ -44,7 +34,6 @@ class TestTableSeparator:
         result = normalize_table_separator("|:---|---:|")
         # Left-align (:---) → leading space; right-align (---:) → trailing space
         assert result == "|  --- | ---  |"
-
 
 class TestFrontmatter:
     def test_valid_frontmatter(self):
@@ -69,7 +58,6 @@ class TestFrontmatter:
         assert result.startswith("+++\ntitle = \"Test\"\n+++")
         assert "# Hello" in result
 
-
 class TestFenceLanguageApplication:
     def test_bare_fence_gets_language(self):
         lines = ["```", "def foo():", "    pass", "```"]
@@ -80,7 +68,6 @@ class TestFenceLanguageApplication:
         lines = ["```bash", "echo hi", "```"]
         result = apply_fence_languages(lines)
         assert result[0] == "```bash"
-
 
 class TestCodeLikeTokens:
     def test_long_camelcase_wrapped(self):
@@ -98,7 +85,6 @@ class TestCodeLikeTokens:
     def test_inside_backticks_not_wrapped(self):
         result = wrap_code_like_tokens("see `cache_guard` here")
         assert "`cache_guard`" in result
-
 
 class TestFullFormat:
     def test_idempotent(self):

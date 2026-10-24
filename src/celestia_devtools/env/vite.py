@@ -22,7 +22,6 @@ Commands (dispatched on ``sys.argv[0]``, mirroring the mock-* pattern)::
 """
 
 from __future__ import annotations
-
 import functools
 import http.server
 import os
@@ -35,13 +34,13 @@ from pathlib import Path
 
 DEFAULT_PORT = "5173"
 
-
 def _dist_dir() -> Path:
     dist = Path("dist")
+
     if dist.is_dir():
         return dist
-    return Path("../../dist/webui")
 
+    return Path("../../dist/webui")
 
 def _port_of(args: list[str]) -> str:
     """--port flag > CELESTIA_VITE_PORT env > 5173.
@@ -52,16 +51,20 @@ def _port_of(args: list[str]) -> str:
     one variable threads the loop, and two apps on one machine never
     land on the same devUrl."""
     it = iter(range(len(args)))
+
     for i in it:
-        if args[i] == "--port" and i + 1 < len(args):
+        if (args[i] == "--port") and ((i + 1) < len(args)):
             return args[i + 1]
+
         if args[i].startswith("--port="):
             return args[i].split("=", 1)[1]
+
     env = os.environ.get("CELESTIA_VITE_PORT", "").strip()
+
     if env.isdigit():
         return env
-    return DEFAULT_PORT
 
+    return DEFAULT_PORT
 
 class _SpaFallbackHandler(http.server.SimpleHTTPRequestHandler):
     """Static handler with history-API fallback (see the module docstring).
@@ -73,26 +76,30 @@ class _SpaFallbackHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — http.server API
         if self._spa_fallback():
             self.path = "/index.html"
+
         super().do_GET()
 
     def do_HEAD(self) -> None:  # noqa: N802 — http.server API
         if self._spa_fallback():
             self.path = "/index.html"
+
         super().do_HEAD()
 
     def _spa_fallback(self) -> bool:
         path = self.path.split("?", 1)[0].split("#", 1)[0]
         last = path.rsplit("/", 1)[-1]
-        if not last or "." in last:
+
+        if not last or ("." in last):
             return False  # "/" is native; file-shaped misses must 404
+
         if "text/html" not in self.headers.get("Accept", ""):
             return False  # XHR/fetch probes keep their honest status
+
         return not Path(self.translate_path(path)).exists()
 
     def log_message(self, fmt: str, *args: object) -> None:
         # Prefix keeps the watcher-owned terminal scannable.
-        print("[vite-serve] " + (fmt % args), file=sys.stderr)
-
+        print("[vite-serve] " + (fmt % args), file = sys.stderr)
 
 def _serve(dist: Path, port: str, spa: bool = True) -> int:
     handler = _SpaFallbackHandler if spa else http.server.SimpleHTTPRequestHandler
@@ -101,75 +108,68 @@ def _serve(dist: Path, port: str, spa: bool = True) -> int:
     # their own source index.html — the server then happily serves the
     # SOURCE page whose /assets/* references all 404 (the 2026-10-16 live
     # bite: app shell 200, every chunk dead).
-    bound = functools.partial(handler, directory=str(dist))
+    bound = functools.partial(handler, directory = str(dist))
+
     with http.server.ThreadingHTTPServer(("127.0.0.1", int(port)), bound) as srv:
         srv.daemon_threads = True
         mode = " (SPA fallback)" if spa else ""
         print(f"[vite-serve] serving {dist} on http://localhost:{port}{mode}")
+
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
             pass
+
     return 0
 
-
 def _build(extra: list[str]) -> int:
-    if extra and extra[0] == "--":
+    if extra and (extra[0] == "--"):
         extra = extra[1:]
+
     print("[vite-build] pnpm vite build " + " ".join(extra))
     return subprocess.run(["pnpm", "vite", "build", *extra]).returncode
-
 
 def vite_build() -> int:
     return _build(sys.argv[1:])
 
-
 def vite_serve() -> int:
     port = _port_of(sys.argv[1:])
     dist = _dist_dir()
-    return _serve(dist, port, spa="--no-spa" not in sys.argv[1:])
-
+    return _serve(dist, port, spa = "--no-spa" not in sys.argv[1:])
 
 def vite_dev() -> int:
     port = _port_of(sys.argv[1:])
+
     if _build([]) != 0:
         return 1
+
     dist = _dist_dir()
     print(f"[vite-dev] starting static server on port {port}")
     # Daemon thread: dies with the process, no explicit teardown needed.
-    threading.Thread(target=_serve, args=(dist, port), daemon=True).start()
+    threading.Thread(target = _serve, args = (dist, port), daemon = True).start()
     time.sleep(1)
     exe = "malkuth.exe" if os.name == "nt" else "malkuth"
-    malkuth = (
-        os.environ.get("MALKUTH_BIN", "")
-        or shutil.which("malkuth")
-        or os.path.join("..", "malkuth", "target", "release", exe)
-    )
+    malkuth = os.environ.get("MALKUTH_BIN", "") or shutil.which("malkuth") or os.path.join("..", "malkuth", "target", "release", exe)
+
     if os.path.isfile(malkuth) or shutil.which(malkuth):
         print("[vite-dev] watching src/ for changes (malkuth)...")
-        watched = subprocess.run(
-            [malkuth, "--watch", "src", "--drain-secs", "2", "--",
-             "pnpm", "vite", "build"]
-        )
+        watched = subprocess.run([malkuth, "--watch", "src", "--drain-secs", "2", "--", "pnpm", "vite", "build"])
         return watched.returncode
+
     print("[vite-dev] malkuth not found — install: cd ../malkuth && cargo build --release --features cli")
     print("[vite-dev] falling back to one-shot build; restart manually to pick up changes.")
     return 0
 
-
 def main() -> int:
     cmd = Path(sys.argv[0]).stem
-    handlers = {
-        "vite-build": vite_build,
-        "vite-serve": vite_serve,
-        "vite-dev": vite_dev,
-    }
+    handlers = {"vite-build": vite_build, "vite-serve": vite_serve, "vite-dev": vite_dev}
     handler = handlers.get(cmd)
-    if handler is None:
-        print(f"error: unknown vite command '{cmd}'", file=sys.stderr)
-        return 2
-    return handler()
 
+    if handler is None:
+        print(f"error: unknown vite command '{cmd}'", file = sys.stderr)
+        return 2
+
+    return handler()
 
 if __name__ == "__main__":
     raise SystemExit(main())

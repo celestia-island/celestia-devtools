@@ -40,7 +40,6 @@ the message passes all rules.
 """
 
 from __future__ import annotations
-
 import argparse
 import re
 import subprocess
@@ -129,7 +128,7 @@ GITMOJI_WHITELIST: frozenset[str] = frozenset([
     "\U0001f9f5",    # ðŸ§µ :thread:
     "\U0001f9ba",    # ðŸ¦º :safety_vest:
     "📜",    # 📜 :scroll (org: license)
-    "\U0001f6e1\ufe0f",  # 🛡️ :shield:
+    "\U0001f6e1\ufe0f"  # 🛡️ :shield:
 ])
 
 # ── Regexes (compiled once) ──────────────────────────────────────────────────
@@ -138,7 +137,7 @@ GITMOJI_WHITELIST: frozenset[str] = frozenset([
 # test, build, ci, revert, net, init — with optional scope parens.
 _CONVENTIONAL_PREFIX_RE = re.compile(
     r"^(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|net|init)"
-    r"(?:\([^)]*\))?\s*[:!]",
+    r"(?:\([^)]*\))?\s*[:!]"
 )
 
 # Colon-prefix subject ("Topic phrase: details"). Forbidden even when the
@@ -147,13 +146,13 @@ _CONVENTIONAL_PREFIX_RE = re.compile(
 # letter/digit so code tokens like "Support :is()" or timestamps such as
 # "09:34Z" are not false positives.
 _COLON_PREFIX_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s",
+    r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s"
 )
 
 # Leading bare version number or filler phrases (after gitmoji and space).
 _VERSION_OR_FILLER_START_RE = re.compile(
     r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)",
-    re.IGNORECASE,
+    re.IGNORECASE
 )
 
 # CJK and full-width characters (Chinese, Japanese, Korean, etc.).
@@ -164,7 +163,7 @@ _CJK_RE = re.compile(r"[\u2e80-\u2eff\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff"
 # Repositories exempt from the English-only rule (org decision; see AGENTS.md).
 EASY_HYDRO_REPOS: frozenset[str] = frozenset({
     "easy-hydro-erp",
-    "easy-hydro-miniprogram",
+    "easy-hydro-miniprogram"
 })
 
 # First English letter position (used for capital-letter check).
@@ -179,22 +178,23 @@ def _first_line(text: str) -> str:
     """Return the subject line (up to first newline, stripped)."""
     return text.split("\n", 1)[0].rstrip()
 
-
 def _has_any_gitmoji_prefix(subject: str) -> bool:
     """Check whether *subject* starts with any emoji in the whitelist."""
+
     for emoji in GITMOJI_WHITELIST:
         if subject.startswith(emoji):
             return True
-    return False
 
+    return False
 
 def _trim_gitmoji(subject: str) -> str:
     """Strip the leading gitmoji and any whitespace from the subject."""
+
     for emoji in GITMOJI_WHITELIST:
         if subject.startswith(emoji):
             return subject[len(emoji):].lstrip()
-    return subject
 
+    return subject
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
@@ -204,44 +204,43 @@ def repo_allows_cjk(repo: Optional[str]) -> bool:
     keep the strict English convention."""
     return (repo or "") in EASY_HYDRO_REPOS
 
-
 def repo_name_from_gh_flag(args: List[str]) -> Optional[str]:
     """Extract the bare repo name from a gh ``--repo owner/name`` / ``-R`` flag
     anywhere in *args*; ``None`` when the flag is absent."""
+
     for i, a in enumerate(args):
-        if a in ("--repo", "-R") and i + 1 < len(args):
+        if (a in ("--repo", "-R")) and ((i + 1) < len(args)):
             return args[i + 1].split("/")[-1].removesuffix(".git") or None
+
         if a.startswith("--repo="):
             return a.split("=", 1)[1].split("/")[-1].removesuffix(".git") or None
-    return None
 
+    return None
 
 def repo_name_from_git_remote(cwd: Optional[str] = None) -> Optional[str]:
     """Bare repo name from the ``origin`` remote URL of *cwd* (best effort;
     mirrors gate.py's ``_repo_name`` remote branch).  Falls back to the
     directory name, then ``None`` outside any repository."""
     url = ""
+
     try:
-        url = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if url:
-        name = url.rstrip("/").split("/")[-1]
-        if name.endswith(".git"):
-            name = name[:-4]
-        if name:
-            return name
-    try:
-        return subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        ).stdout.strip().replace("\\", "/").rstrip("/").split("/")[-1] or None
+        url = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd = cwd, capture_output = True, text = True, timeout = 5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
 
+    if url:
+        name = url.rstrip("/").split("/")[-1]
+
+        if name.endswith(".git"):
+            name = name[:-4]
+
+        if name:
+            return name
+
+    try:
+        return subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd = cwd, capture_output = True, text = True, timeout = 5).stdout.strip().replace("\\", "/").rstrip("/").split("/")[-1] or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
     """Validate a single commit-message subject line.
@@ -263,17 +262,12 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
 
     # Merge subjects are banned: the org uses squash merges only.
     if subject.startswith("Merge "):
-        violations.append(
-            "merge-commit subjects are forbidden; use squash merge"
-        )
+        violations.append("merge-commit subjects are forbidden; use squash merge")
         return violations
 
     # Rule 1 — gitmoji prefix.
     if not _has_any_gitmoji_prefix(subject):
-        violations.append(
-            "must start with a gitmoji (https://gitmoji.dev); "
-            "e.g. '🐛 Fix the parser crash.'"
-        )
+        violations.append("must start with a gitmoji (https://gitmoji.dev); " "e.g. '🐛 Fix the parser crash.'")
         return violations  # remaining rules depend on correct prefix
 
     # Text after the gitmoji.
@@ -281,17 +275,11 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
 
     # Rule 2 — no Conventional Commits prefix.
     if _CONVENTIONAL_PREFIX_RE.match(tail):
-        violations.append(
-            "must NOT use a Conventional Commits prefix (feat:/fix:/chore:/etc.); "
-            "the emoji is the type marker"
-        )
+        violations.append("must NOT use a Conventional Commits prefix (feat:/fix:/chore:/etc.); " "the emoji is the type marker")
 
     # Rule 7 — no colon-prefix subject.
     if _COLON_PREFIX_RE.match(tail):
-        violations.append(
-            "must NOT use a colon-prefix subject (e.g. 'Fix compliance: ...', "
-            "'Audit round 23: ...'); write one plain sentence instead"
-        )
+        violations.append("must NOT use a colon-prefix subject (e.g. 'Fix compliance: ...', " "'Audit round 23: ...'); write one plain sentence instead")
 
     # Rule 3 — first letter after emoji must be uppercase.
     # For CJK-led summaries (allow_cjk), English tokens appearing later in the
@@ -300,22 +288,16 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
         pass
     else:
         alpha = _FIRST_ALPHA_RE.search(tail)
+
         if alpha is not None:
             if not alpha.group()[0].isupper():
-                violations.append(
-                    "first letter after the emoji must be uppercase; "
-                    f"found lowercase '{alpha.group()}'"
-                )
+                violations.append("first letter after the emoji must be uppercase; " f"found lowercase '{alpha.group()}'")
         elif not allow_cjk:
             violations.append("summary must contain at least one English letter")
 
     # Rule 4 — no version-number / filler start.
     if _VERSION_OR_FILLER_START_RE.match(tail):
-        violations.append(
-            "must NOT start with a bare version number or filler phrase "
-            "(e.g. '0.3', 'Bump version', 'Update to'); "
-            "describe the change instead"
-        )
+        violations.append("must NOT start with a bare version number or filler phrase " "(e.g. '0.3', 'Bump version', 'Update to'); " "describe the change instead")
 
     # Rule 5 — trailing period.
     # 🔄 sync/refresh messages often carry timestamp metadata in parens, so
@@ -327,52 +309,32 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
     else:
         # Strip GitHub squash merge PR reference " (#123)" before checking.
         pr_stripped = re.sub(r'\s*\(#\d+\)\s*$', '', subject)
+
         if not _ENDS_WITH_PERIOD_RE.search(pr_stripped):
             violations.append("must end with a period (.)")
 
     # Rule 6 — English-only (no CJK), except for the org's Easy Hydro repos.
     cjk = _CJK_RE.search(subject)
-    if cjk is not None and not allow_cjk:
-        violations.append(
-            f"must be English-only; found CJK character "
-            f"'{cjk.group()}' at position {cjk.start()}"
-        )
+
+    if (cjk is not None) and not allow_cjk:
+        violations.append(f"must be English-only; found CJK character " f"'{cjk.group()}' at position {cjk.start()}")
 
     return violations
-
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
     """CLI entry point for ``celestia-devtools commit-msg-lint``."""
-    parser = argparse.ArgumentParser(
-        prog="celestia-devtools commit-msg-lint",
-        description="Validate commit messages against the org gitmoji convention.",
-    )
-    sub = parser.add_subparsers(dest="subcmd")
+    parser = argparse.ArgumentParser(prog = "celestia-devtools commit-msg-lint", description = "Validate commit messages against the org gitmoji convention.")
+    sub = parser.add_subparsers(dest = "subcmd")
 
     # check <file>
-    p_check = sub.add_parser("check", help="validate a commit message")
-    p_check.add_argument(
-        "file", nargs="?", default=None,
-        help="path to the commit message file (as passed by git to the hook; $1)",
-    )
-    p_check.add_argument(
-        "--subject", default=None,
-        help="validate a literal subject string instead of a file",
-    )
-    p_check.add_argument(
-        "--stdin-subjects", action="store_true",
-        help="read subjects from stdin (one per line) for batch CI validation",
-    )
-    p_check.add_argument(
-        "--repo", default=None,
-        help="repository name; easy-hydro-erp / easy-hydro-miniprogram allow CJK",
-    )
-    p_check.add_argument(
-        "--allow-cjk", action="store_true",
-        help="allow CJK in commit subjects (used for easy-hydro repos)",
-    )
+    p_check = sub.add_parser("check", help = "validate a commit message")
+    p_check.add_argument("file", nargs = "?", default = None, help = "path to the commit message file (as passed by git to the hook; $1)")
+    p_check.add_argument("--subject", default = None, help = "validate a literal subject string instead of a file")
+    p_check.add_argument("--stdin-subjects", action = "store_true", help = "read subjects from stdin (one per line) for batch CI validation")
+    p_check.add_argument("--repo", default = None, help = "repository name; easy-hydro-erp / easy-hydro-miniprogram allow CJK")
+    p_check.add_argument("--allow-cjk", action = "store_true", help = "allow CJK in commit subjects (used for easy-hydro repos)")
 
     args = parser.parse_args()
 
@@ -389,40 +351,34 @@ def main() -> int:
         subjects = [line.strip() for line in raw.splitlines() if line.strip()]
     elif args.file is not None:
         try:
-            raw = open(args.file, encoding="utf-8").read()
+            raw = open(args.file, encoding = "utf-8").read()
         except OSError as exc:
-            print(f"error: cannot read {args.file}: {exc}", file=sys.stderr)
+            print(f"error: cannot read {args.file}: {exc}", file = sys.stderr)
             return 2
+
         subjects.append(_first_line(raw))
     else:
-        print("error: either FILE, --subject, or --stdin-subjects required",
-              file=sys.stderr)
+        print("error: either FILE, --subject, or --stdin-subjects required", file = sys.stderr)
         return 2
 
     errors: List[str] = []
     allow_cjk = args.allow_cjk or (args.repo in EASY_HYDRO_REPOS)
+
     for subject in subjects:
-        violations = lint(subject, allow_cjk=allow_cjk)
+        violations = lint(subject, allow_cjk = allow_cjk)
+
         if violations:
             errors.append(subject)
+
             for v in violations:
                 errors.append(f"  - {v}")
 
     if errors:
-        print("\n".join(errors), file=sys.stderr)
-        print(
-            "\nCommit message format:  <gitmoji> <Capitalized English summary.>\n"
-            "Examples:\n"
-            "  ✅ 🐛 Fix the parser crash.\n"
-            "  ✅ ✨ Add distributed tracing support.\n"
-            "  ❌ fix: broken thing\n"
-            "  ❌ 🐛 修复解析器\n",
-            file=sys.stderr,
-        )
+        print("\n".join(errors), file = sys.stderr)
+        print("\nCommit message format:  <gitmoji> <Capitalized English summary.>\n" "Examples:\n" "  ✅ 🐛 Fix the parser crash.\n" "  ✅ ✨ Add distributed tracing support.\n" "  ❌ fix: broken thing\n" "  ❌ 🐛 修复解析器\n", file = sys.stderr)
         return 1
 
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -8,21 +8,16 @@ WebView2 CDP line.
 """
 
 from __future__ import annotations
-
 import json
 import socket
-
 import pytest
-
 from celestia_devtools.env import ports
-
 
 @pytest.fixture()
 def registry(tmp_path, monkeypatch):
     path = tmp_path / "ports.json"
     monkeypatch.setenv("CELESTIA_PORTS_REGISTRY", str(path))
     yield path
-
 
 class TestAcquire:
     def test_two_apps_never_share_a_kind_port(self, registry):
@@ -35,10 +30,8 @@ class TestAcquire:
         assert ports.acquire("shittim-chest", "vite") == first
 
     def test_preferred_port_is_deterministic(self):
-        assert ports._preferred("shittim-chest", "vite") == \
-            ports._preferred("shittim-chest", "vite")
-        assert ports._preferred("shittim-chest", "vite") != \
-            ports._preferred("wowsp", "vite")
+        assert ports._preferred("shittim-chest", "vite") == ports._preferred("shittim-chest", "vite")
+        assert ports._preferred("shittim-chest", "vite") != ports._preferred("wowsp", "vite")
 
     def test_kinds_are_independent(self, registry):
         vite = ports.acquire("shittim-chest", "vite")
@@ -61,15 +54,12 @@ class TestAcquire:
         # the SAME key: the GC drops the stale claim and re-allocates
         # (deterministically the preferred port).
         stale_pid = 4_000_000  # far beyond any real pid
-        registry.write_text(json.dumps({
-            "app:vite": {"port": 5999, "pid": stale_pid, "ts": 0},
-        }), encoding="utf-8")
+        registry.write_text(json.dumps({"app:vite": {"port": 5999, "pid": stale_pid, "ts": 0}}), encoding = "utf-8")
         got = ports.acquire("app", "vite")
         assert got == ports._preferred("app", "vite")
-        data = json.loads(registry.read_text(encoding="utf-8"))
+        data = json.loads(registry.read_text(encoding = "utf-8"))
         assert data["app:vite"]["port"] == got
         assert data["app:vite"]["pid"] != stale_pid
-
 
 class TestReleaseAndList:
     def test_release_one_kind_keeps_the_other(self, registry):
@@ -86,7 +76,6 @@ class TestReleaseAndList:
         ports.release("app", None)
         assert ports.list_entries() == {}
 
-
 class TestEnvContract:
     def test_env_carries_both_kinds_and_webview2_line(self, registry):
         exports = ports.env_exports("shittim-chest")
@@ -98,7 +87,6 @@ class TestEnvContract:
 
     def test_env_is_stable_per_app(self, registry):
         assert ports.env_exports("app") == ports.env_exports("app")
-
 
 class TestCli:
     def test_acquire_prints_bare_port(self, registry, capsys):

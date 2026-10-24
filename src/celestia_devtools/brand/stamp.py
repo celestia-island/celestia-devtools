@@ -23,7 +23,6 @@ Windows targets), so one wiring serves every platform.
 """
 
 from __future__ import annotations
-
 import argparse
 import shutil
 import sys
@@ -35,24 +34,27 @@ BUILD_RS = Path(__file__).resolve().parent / "build.rs.tmpl"
 EXIT_USAGE = 2
 EXIT_CONFLICT = 3
 
-
 def _stamp(project: Path, icon: str) -> int:
     if not (project / "Cargo.toml").is_file():
-        print(f"[brand-stamp] no Cargo.toml under {project}", file=sys.stderr)
+        print(f"[brand-stamp] no Cargo.toml under {project}", file = sys.stderr)
         return EXIT_USAGE
+
     icons_dir = Path(__file__).resolve().parent / "icons"
     src_icon = icons_dir / f"{icon}.ico"
+
     if not src_icon.is_file():
-        print(f"[brand-stamp] unknown icon '{icon}' (have: {ICON_NAMES})", file=sys.stderr)
+        print(f"[brand-stamp] unknown icon '{icon}' (have: {ICON_NAMES})", file = sys.stderr)
         return EXIT_USAGE
 
     # 1. build.rs — never overwrite; OUR OWN template counts as done.
     build_rs = project / "build.rs"
-    tmpl = BUILD_RS.read_text(encoding="utf-8")
+    tmpl = BUILD_RS.read_text(encoding = "utf-8")
+
     if build_rs.exists():
-        if build_rs.read_text(encoding="utf-8") != tmpl:
+        if build_rs.read_text(encoding = "utf-8") != tmpl:
             print(f"[brand-stamp] {build_rs} already exists — merge the winresource hook by hand")
             return EXIT_CONFLICT
+
         print(f"[brand-stamp] {build_rs} already stamped — left as is")
     else:
         shutil.copyfile(BUILD_RS, build_rs)
@@ -60,35 +62,31 @@ def _stamp(project: Path, icon: str) -> int:
 
     # 2. Cargo.toml [build-dependencies] — append once.
     manifest = project / "Cargo.toml"
-    text = manifest.read_text(encoding="utf-8")
+    text = manifest.read_text(encoding = "utf-8")
+
     if "winresource" not in text:
         block = "\n[build-dependencies]\nwinresource = \"^0.1\"\n"
         text = text.rstrip("\n") + "\n" if text.endswith("\n") else text
         text += block if text.endswith("\n\n") else "\n" + block
-        manifest.write_text(text, encoding="utf-8")
+        manifest.write_text(text, encoding = "utf-8")
         print(f"[brand-stamp] added [build-dependencies] winresource to {manifest}")
     else:
         print(f"[brand-stamp] {manifest} already carries winresource — left as is")
 
     # 3. The icon asset next to the build hook.
     dst_dir = project / "brand"
-    dst_dir.mkdir(exist_ok=True)
+    dst_dir.mkdir(exist_ok = True)
     dst = dst_dir / f"{icon}.ico"
     shutil.copyfile(src_icon, dst)
     print(f"[brand-stamp] copied {icon}.ico -> {dst}")
     return 0
 
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="brand-stamp",
-        description="Wire the family icon into a Rust project's Windows build (idempotent).",
-    )
-    parser.add_argument("--project", required=True, help="path to the crate root (Cargo.toml)")
-    parser.add_argument("--icon", default="icon", help=f"icon name ({'/'.join(ICON_NAMES)})")
+    parser = argparse.ArgumentParser(prog = "brand-stamp", description = "Wire the family icon into a Rust project's Windows build (idempotent).")
+    parser.add_argument("--project", required = True, help = "path to the crate root (Cargo.toml)")
+    parser.add_argument("--icon", default = "icon", help = f"icon name ({'/'.join(ICON_NAMES)})")
     args = parser.parse_args(argv)
     return _stamp(Path(args.project).resolve(), args.icon)
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

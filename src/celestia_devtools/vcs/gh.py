@@ -16,7 +16,6 @@ Usage (after adding to ~/.bashrc)::
 """
 
 from __future__ import annotations
-
 import os
 import shutil
 import subprocess
@@ -29,33 +28,35 @@ _GUESSES = [
     "/usr/bin/gh",          # apt default
     "/usr/local/bin/gh",     # manual install / brew
     "/opt/homebrew/bin/gh",  # macOS brew
-    "/home/linuxbrew/.linuxbrew/bin/gh",  # brew on Linux
+    "/home/linuxbrew/.linuxbrew/bin/gh"  # brew on Linux
 ]
-
 
 def _find_gh() -> str:
     if os.environ.get(_ENV_SKIP):
         return "gh"
 
     found = shutil.which("gh")
+
     if found:
         canonical = os.path.realpath(found)
         myself = os.path.realpath(sys.argv[0]) if sys.argv[0] else ""
+
         if canonical != myself:
             return found
 
     for guess in _GUESSES:
         if os.access(guess, os.X_OK):
             return guess
-    return "gh"
 
+    return "gh"
 
 def _real_gh() -> str:
     global _REAL_GH
+
     if not _REAL_GH:
         _REAL_GH = _find_gh()
-    return _REAL_GH
 
+    return _REAL_GH
 
 def main() -> int:
     argv = sys.argv[1:]
@@ -66,19 +67,15 @@ def main() -> int:
 
     is_pr = argv[0] == "pr"
     is_pr_merge = argv[0] == "pr-merge"
-    has_merge = is_pr and len(argv) > 1 and argv[1] == "merge"
+    has_merge = is_pr and (len(argv) > 1) and (argv[1] == "merge")
 
     if is_pr_merge or has_merge:
-        from celestia_devtools.vcs.commit_msg import (
-            lint,
-            repo_allows_cjk,
-            repo_name_from_git_remote,
-            repo_name_from_gh_flag,
-        )
+        from celestia_devtools.vcs.commit_msg import (lint, repo_allows_cjk, repo_name_from_git_remote, repo_name_from_gh_flag)
 
         # Extract --subject from args
         subject: str | None = None
         args = list(argv)
+
         # Remove the "pr" and "merge" prefix for arg parsing
         if is_pr:
             args = args[2:]  # skip "pr merge"
@@ -87,11 +84,12 @@ def main() -> int:
 
         # Find --subject value
         for i, a in enumerate(args):
-            if a in ("--subject", "-s") and i + 1 < len(args):
+            if (a in ("--subject", "-s")) and ((i + 1) < len(args)):
                 subject = args[i + 1]
                 break
+
             if a == "--subject=":
-                subject = a.split("=", 1)[1] if len(a) > 10 else args[i + 1] if i + 1 < len(args) else None
+                subject = a.split("=", 1)[1] if len(a) > 10 else args[i + 1] if (i + 1) < len(args) else None
                 break
 
         if subject:
@@ -100,22 +98,18 @@ def main() -> int:
             # it from an explicit --repo/-R flag, else from the origin remote
             # of the cwd (gh pr merge is typically run inside the checkout).
             repo = repo_name_from_gh_flag(argv) or repo_name_from_git_remote()
-            violations = lint(subject, allow_cjk=repo_allows_cjk(repo))
+            violations = lint(subject, allow_cjk = repo_allows_cjk(repo))
+
             if violations:
-                print("\n  " + "\n  ".join(violations), file=sys.stderr)
-                print(
-                    "\n  Merge REJECTED. Format:  <gitmoji> <Capitalized summary.>\n"
-                    "  Example:  🐛 Fix the parser crash.\n",
-                    file=sys.stderr,
-                )
+                print("\n  " + "\n  ".join(violations), file = sys.stderr)
+                print("\n  Merge REJECTED. Format:  <gitmoji> <Capitalized summary.>\n" "  Example:  🐛 Fix the parser crash.\n", file = sys.stderr)
                 return 1
 
     # Pass through to real gh
     env = os.environ.copy()
     env[_ENV_SKIP] = "1"
-    result = subprocess.run([_real_gh()] + argv, env=env)
+    result = subprocess.run([_real_gh()] + argv, env = env)
     return result.returncode
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -17,7 +17,6 @@ Environment: ``WORKSPACE_ROOT`` (default /mnt/codespace), ``EXTERNAL_REVIEW_DAYS
 """
 
 from __future__ import annotations
-
 import argparse
 import hashlib
 import json
@@ -50,17 +49,21 @@ CONTENT_LEAK_RE = re.compile(r"AGENTS\.md|PLAN\.md|CLAUDE\.md|§6\.4|认领|clai
 # 允许"清单式声明"那一行的形态；**只豁免带标记的那一行**，其余正文一律照拦
 _EXCLUDE_DECL_RE = re.compile(r"SECOND_BRAIN_NAMES\s*=")
 
-
 def _content_leak_hits(text: str) -> "List[str]":
     """返回命中硬门的行（已剔除"排除清单声明"那一行）。"""
     hits: List[str] = []
+
     for line in text.splitlines():
         if not CONTENT_LEAK_RE.search(line):
             continue
+
         if _EXCLUDE_DECL_RE.search(line):
             continue
+
         hits.append(line.strip())
+
     return hits
+
 # 逐字源码里对内部文档的引用：只登记、不判失败
 CODE_REF_RE = re.compile(r"AGENTS\.md|PLAN\.md|§[0-9]")
 
@@ -77,7 +80,7 @@ SAMPLE_FILES = (
     "entelecheia/packages/scepter/src/services/l2_plugin_agents.rs",
     "evernight/src/plugin_push.rs",
     "shittim-chest/packages/core/src/suite.rs",
-    "plana/packages/state_types/src/agent_key.rs",
+    "plana/packages/state_types/src/agent_key.rs"
 )
 LOG_REPOS = ("entelecheia", "evernight", "plana", "shittim-chest", "arona", "hikari")
 # 健康探针目标：默认 = 当前真实公网面（生产 dev / 实验 demo / evernight gateway）。
@@ -86,11 +89,9 @@ LOG_REPOS = ("entelecheia", "evernight", "plana", "shittim-chest", "arona", "hik
 DEFAULT_HEALTH_URLS = (
     "https://dev.celestia.world/api/health",
     "https://demo.dev.celestia.world/api/health",
-    "https://gateway.celestia.world/api/health",
+    "https://gateway.celestia.world/api/health"
 )
-HEALTH_URLS = tuple(
-    os.environ.get("EXTERNAL_REVIEW_HEALTH_URLS", "").split()
-) or DEFAULT_HEALTH_URLS
+HEALTH_URLS = tuple(os.environ.get("EXTERNAL_REVIEW_HEALTH_URLS", "").split()) or DEFAULT_HEALTH_URLS
 
 REVIEWER_PROMPT = """# 给验证者的提示词（请在工作区之外、用另一个模型或另一个人执行）
 
@@ -149,54 +150,59 @@ USAGE_TEXT = """external-review.py — 半月度「外部视角」验证：把�
 节奏：每 14 天一次（可用 EXTERNAL_REVIEW_DAYS 覆盖）。
 """
 
-
 def die(message: str):
-    print(f"external-review: {message}", file=sys.stderr)
+    print(f"external-review: {message}", file = sys.stderr)
     raise SystemExit(EXIT_USAGE)
-
 
 def git(*args: str, repo: Optional[Path] = None) -> Optional[str]:
     """Run git and return stripped stdout, or None on any failure."""
     cmd = ["git"]
+
     if repo is not None:
         cmd += ["-C", str(repo)]
+
     cmd += list(args)
+
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 30)
     except (OSError, subprocess.TimeoutExpired):
         return None
+
     if proc.returncode != 0:
         return None
+
     return proc.stdout.strip()
 
-
 # ── 节奏 ──────────────────────────────────────────────────────────────────────
-
 
 def last_review_epoch(reports_dir: Path) -> int:
     """mtime of the newest ``external-review-*.md`` record, or 0 if none."""
     latest = 0
+
     if not reports_dir.is_dir():
         return 0
+
     for path in reports_dir.glob("external-review-*.md"):
         try:
             epoch = int(path.stat().st_mtime)
         except OSError:
             continue
+
         if epoch > latest:
             latest = epoch
-    return latest
 
+    return latest
 
 def epoch_to_date(epoch: int) -> str:
     """``date -d "@$epoch" +%Y-%m-%d`` equivalent (never fails)."""
+
     if epoch <= 0:
         return "?"
+
     try:
         return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d")
     except (OSError, OverflowError, ValueError):
         return "?"
-
 
 def cycle_days_left(last_epoch: int, now_epoch: int, days: int) -> int:
     """Days left in the 14-day cycle; <= 0 means overdue.
@@ -206,98 +212,74 @@ def cycle_days_left(last_epoch: int, now_epoch: int, days: int) -> int:
     age_days = int((now_epoch - last_epoch) / SECONDS_PER_DAY)
     return days - age_days
 
-
 def status_line(last_epoch: int, now_epoch: int, days: int) -> "tuple[str, int]":
     if last_epoch == 0:
-        return (
-            f"⚠️  从未做过外部视角验证（节奏 {days} 天）——立即执行 "
-            "`_tools/external-review.sh pack`",
-            EXIT_FAILURE,
-        )
+        return (f"⚠️  从未做过外部视角验证（节奏 {days} 天）——立即执行 " "`_tools/external-review.sh pack`", EXIT_FAILURE)
+
     days_left = cycle_days_left(last_epoch, now_epoch, days)
     last_date = epoch_to_date(last_epoch)
-    if days_left <= 0:
-        return (
-            f"❌ 外部视角验证已超期 {-days_left} 天（上次 {last_date}，节奏 {days} 天）"
-            f"——跑 `_tools/external-review.sh pack`",
-            EXIT_FAILURE,
-        )
-    return (
-        f"✅ 外部视角验证未到期：上次 {last_date}，还有 {days_left} 天",
-        EXIT_OK,
-    )
 
+    if days_left <= 0:
+        return (f"❌ 外部视角验证已超期 {-days_left} 天（上次 {last_date}，节奏 {days} 天）" f"——跑 `_tools/external-review.sh pack`", EXIT_FAILURE)
+
+    return (f"✅ 外部视角验证未到期：上次 {last_date}，还有 {days_left} 天", EXIT_OK)
 
 def latest_report(reports_dir: Path) -> "Optional[Path]":
     """mtime 最新的 ``external-review-*.md``（与 last_review_epoch 同一判据）。"""
     best, best_epoch = None, 0
+
     if not reports_dir.is_dir():
         return None
+
     for path in reports_dir.glob("external-review-*.md"):
         try:
             epoch = int(path.stat().st_mtime)
         except OSError:
             continue
+
         if epoch > best_epoch:
             best, best_epoch = path, epoch
-    return best
 
+    return best
 
 def latest_record_seal(reports_dir: Path) -> "tuple[Optional[Path], Optional[str]]":
     """最近一次收录里戳的封印哈希；无戳 = legacy / 无封印收录。"""
     path = latest_report(reports_dir)
+
     if path is None:
         return None, None
+
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
         return path, None
+
     match = SEAL_STAMP_RE.search(text)
     return path, (match.group(1) if match else None)
-
 
 def legacy_record_note(ws: Path) -> str:
     """最近一次收录没有封印戳时的提示行（空串 = 一切正常）。"""
     path, seal = latest_record_seal(ws / "_reports")
-    if path is None or seal is not None:
+
+    if (path is None) or (seal is not None):
         return ""
-    return (
-        f"⚠️ 最近一次收录（{path.name}）**没有封印戳**——它不证明包在封口后未被改动，"
-        "按 legacy 弱证据对待；下一轮请用带封印的包走 `pack → 外部作答 → record`。"
-    )
 
+    return f"⚠️ 最近一次收录（{path.name}）**没有封印戳**——它不证明包在封口后未被改动，" "按 legacy 弱证据对待；下一轮请用带封印的包走 `pack → 外部作答 → record`。"
 
-def write_due_file(
-    ws: Path, line: str, now_epoch: int, days: int, rc: int, note: str = ""
-) -> None:
+def write_due_file(ws: Path, line: str, now_epoch: int, days: int, rc: int, note: str = "") -> None:
     """Atomically (tmp + rename) refresh ``<WS>/_lens/DUE.md``; failures ignored."""
     lens = ws / "_lens"
+
     try:
-        lens.mkdir(parents=True, exist_ok=True)
-        generated = datetime.now().astimezone().isoformat(timespec="seconds")
+        lens.mkdir(parents = True, exist_ok = True)
+        generated = datetime.now().astimezone().isoformat(timespec = "seconds")
         status_block = f"{line}\n\n" + (f"{note}\n\n" if note else "")
-        body = (
-            "# 外部视角验证：到期状态（由 `_tools/external-review.sh` 生成，勿手改）\n\n"
-            + status_block
-            + f"生成于 {generated} ｜ 节奏 {days} 天 ｜ 判定 `exit {rc}`\n\n"
-            "## 为什么需要它\n\n"
-            "工作区的三轮验证与子代理交叉验证对**可判定问题**（编译 / 格式 / 死代码 / 变异）有效，\n"
-            "对**方向性问题**（这个设计对不对、这个 P0 该不该先做）近乎无效——"
-            "验证者与作者共享同一批盲区。\n"
-            "实证：2026-09-10 一份 458 行、可复算的审计列出五条 P0，"
-            "三天后真正被做的是图标按钮组的像素打磨。\n\n"
-            "## 怎么做\n\n"
-            "1. `_tools/external-review.sh pack` 打证据包（只有代码 / 数字 / 线上响应）\n"
-            "2. 把整个目录交给**工作区之外**的一个模型或一个人（**不能是本工作区的子代理**——\n"
-            "   它们都会被自动注入 AGENTS.md，已经被规训成内部人）\n"
-            "3. `_tools/external-review.sh record <它的回答.md>` 收录结论\n"
-        )
+        body = "# 外部视角验证：到期状态（由 `_tools/external-review.sh` 生成，勿手改）\n\n" + status_block + f"生成于 {generated} ｜ 节奏 {days} 天 ｜ 判定 `exit {rc}`\n\n" "## 为什么需要它\n\n" "工作区的三轮验证与子代理交叉验证对**可判定问题**（编译 / 格式 / 死代码 / 变异）有效，\n" "对**方向性问题**（这个设计对不对、这个 P0 该不该先做）近乎无效——" "验证者与作者共享同一批盲区。\n" "实证：2026-09-10 一份 458 行、可复算的审计列出五条 P0，" "三天后真正被做的是图标按钮组的像素打磨。\n\n" "## 怎么做\n\n" "1. `_tools/external-review.sh pack` 打证据包（只有代码 / 数字 / 线上响应）\n" "2. 把整个目录交给**工作区之外**的一个模型或一个人（**不能是本工作区的子代理**——\n" "   它们都会被自动注入 AGENTS.md，已经被规训成内部人）\n" "3. `_tools/external-review.sh record <它的回答.md>` 收录结论\n"
         tmp = lens / f"DUE.md.tmp.{os.getpid()}"
-        tmp.write_text(body, encoding="utf-8")
+        tmp.write_text(body, encoding = "utf-8")
         os.replace(tmp, lens / "DUE.md")
     except OSError:
         pass
-
 
 def cmd_status(args: argparse.Namespace, quiet: bool = False) -> int:
     ws = args.workspace
@@ -305,26 +287,27 @@ def cmd_status(args: argparse.Namespace, quiet: bool = False) -> int:
     last = last_review_epoch(ws / "_reports")
     line, rc = status_line(last, now_epoch, args.days)
     note = legacy_record_note(ws)
+
     if not quiet:
         print(line)
+
         if note:
             print(note)
-    write_due_file(ws, line, now_epoch, args.days, rc, note=note)
-    return rc
 
+    write_due_file(ws, line, now_epoch, args.days, rc, note = note)
+    return rc
 
 def cmd_due(args: argparse.Namespace) -> int:
     with open(os.devnull, "w") as devnull:
         old_stdout = sys.stdout
         sys.stdout = devnull
+
         try:
-            return cmd_status(args, quiet=True)
+            return cmd_status(args, quiet = True)
         finally:
             sys.stdout = old_stdout
 
-
 # ── 打包 ──────────────────────────────────────────────────────────────────────
-
 
 def is_dir(path: Path) -> bool:
     """`path.is_dir()` 的容错版：不可 stat（EACCES/EIO）按「不是目录」处理。
@@ -334,11 +317,11 @@ def is_dir(path: Path) -> bool:
     NFS 上 `stat` 直返 EACCES ⇒ 原实现抛 PermissionError ⇒ 整包作废——
     2026-09-20 首份外部视角验证正是被它挡下的。与同文件 `git()` 包装的惯例一致：给哨兵，不抛。
     """
+
     try:
         return path.is_dir()
     except OSError:
         return False
-
 
 def has_git_dir(entry: Path) -> bool:
     """`entry/.git` 是否存在——**用列举判定**，因为 `Path.exists()` 会吞掉 EACCES。
@@ -347,6 +330,7 @@ def has_git_dir(entry: Path) -> bool:
     PermissionError，而 `exists()` 只是返回 False ⇒ 用 `exists()` 会把「读不到」
     静默当成「不是仓」。这里保留异常，让调用方决定记录还是跳过。
     """
+
     try:
         return ".git" in os.listdir(entry)
     except FileNotFoundError:
@@ -354,7 +338,6 @@ def has_git_dir(entry: Path) -> bool:
     except NotADirectoryError:
         return False
     # PermissionError / OSError 向上抛：调用方必须显式处理
-
 
 def find_repos(ws: Path) -> "tuple[List[Path], List[str]]":
     """返回 (仓库目录, 因不可访问而未纳入的条目名)。
@@ -364,96 +347,95 @@ def find_repos(ws: Path) -> "tuple[List[Path], List[str]]":
     """
     repos: List[Path] = []
     skipped: List[str] = []
+
     try:
         entries = sorted(ws.iterdir())
     except OSError as exc:
         die(f"无法列出工作区 {ws}：{exc}")
         return repos, skipped
+
     for entry in entries:
         try:
             if not entry.is_dir():
                 continue
+
             if not has_git_dir(entry):
                 continue
         except OSError:
             skipped.append(entry.name)
             continue
+
         repos.append(entry)
+
     return repos, skipped
 
-
 def write_repos_table(repos: "List[Path]", out: Path) -> None:
-    lines = [
-        "# 证据包：仓库清单与规模\n",
-        "",
-        "> 本文件由 `_tools/external-review.sh` 生成。**只有代码、产物与数字**，",
-        "> 不含任何工作区规则、计划或历史审计。\n",
-        "| 仓库 | 源文件 | 提交数 | 最后提交 |",
-        "|---|---|---|---|",
-    ]
+    lines = ["# 证据包：仓库清单与规模\n", "", "> 本文件由 `_tools/external-review.sh` 生成。**只有代码、产物与数字**，", "> 不含任何工作区规则、计划或历史审计。\n", "| 仓库 | 源文件 | 提交数 | 最后提交 |", "|---|---|---|---|"]
+
     for entry in repos:
-        n_files = git("ls-files", repo=entry)
-        n_log = git("log", "--oneline", repo=entry)
-        last = git("log", "-1", "--format=%ad", "--date=short", repo=entry)
+        n_files = git("ls-files", repo = entry)
+        n_log = git("log", "--oneline", repo = entry)
+        last = git("log", "-1", "--format=%ad", "--date=short", repo = entry)
         n_files = str(len(n_files.splitlines())) if n_files is not None else "0"
         n_log = str(len(n_log.splitlines())) if n_log is not None else "0"
         last = last if last is not None else ""
         lines.append(f"| {entry.name} | {n_files} | {n_log} | {last} |")
-    (out / "01-repos.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    (out / "01-repos.md").write_text("\n".join(lines) + "\n", encoding = "utf-8")
 
 def write_recent_changes(ws: Path, out: Path) -> None:
     lines = ["# 证据包：近期变更（提交标题，倒序）\n", "", "```"]
+
     for repo in LOG_REPOS:
         repo_dir = ws / repo
+
         if not is_dir(repo_dir / ".git"):
             continue
+
         lines.append(f"\n## {repo}")
-        log = git("log", "-40", "--format=%ad %s", "--date=short", repo=repo_dir)
+        log = git("log", "-40", "--format=%ad %s", "--date=short", repo = repo_dir)
+
         if log:
             lines.append(log)
-    lines.append("```")
-    (out / "02-recent-changes.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    lines.append("```")
+    (out / "02-recent-changes.md").write_text("\n".join(lines) + "\n", encoding = "utf-8")
 
 def origin_ref(repo: Path) -> "tuple[Optional[str], Optional[str]]":
     for base in ("master", "main"):
-        sha = git("rev-parse", "--verify", f"origin/{base}", repo=repo)
+        sha = git("rev-parse", "--verify", f"origin/{base}", repo = repo)
+
         if sha:
             return f"origin/{base}", sha
-    return None, None
 
+    return None, None
 
 def write_code_sample(ws: Path, out: Path) -> None:
     code_dir = out / "code"
-    code_dir.mkdir(parents=True, exist_ok=True)
-    provenance: List[str] = [
-        f"# 证据包：`code/` 每个文件的出处（生成于 {now_iso()}）\n",
-        "",
-        "抽样一律取自 `origin/<默认分支>` 的提交对象，而非工作树——工作树可能停在旧提交上。\n",
-        "| 文件 | 仓库 | ref | commit |",
-        "|---|---|---|---|",
-    ]
+    code_dir.mkdir(parents = True, exist_ok = True)
+    provenance: List[str] = [f"# 证据包：`code/` 每个文件的出处（生成于 {now_iso()}）\n", "", "抽样一律取自 `origin/<默认分支>` 的提交对象，而非工作树——工作树可能停在旧提交上。\n", "| 文件 | 仓库 | ref | commit |", "|---|---|---|---|"]
+
     for rel in SAMPLE_FILES:
         src = ws / rel
+
         if not src.is_file():
             continue
+
         repo = ws / rel.split("/", 1)[0]
         repo_rel = rel.split("/", 1)[1]
         ref, sha = origin_ref(repo)
-        (code_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+        (code_dir / rel).parent.mkdir(parents = True, exist_ok = True)
         content: Optional[bytes] = None
+
         if sha:
             try:
-                proc = subprocess.run(
-                    ["git", "-C", str(repo), "show", f"{sha}:{repo_rel}"],
-                    capture_output=True,
-                    timeout=30,
-                )
+                proc = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{repo_rel}"], capture_output = True, timeout = 30)
+
                 if proc.returncode == 0:
                     content = proc.stdout
             except (OSError, subprocess.TimeoutExpired):
                 content = None
+
         if content is not None:
             (code_dir / rel).write_bytes(content)
             provenance.append(f"| `{rel}` | {repo.name} | `{ref}` | `{sha[:12]}` |")
@@ -461,136 +443,114 @@ def write_code_sample(ws: Path, out: Path) -> None:
             # 取不到 origin（新仓 / 无远端）就退回工作树，并且**明写出来**——不静默降级
             shutil.copyfile(src, code_dir / rel)
             provenance.append(f"| `{rel}` | {repo.name} | **工作树（无 origin ref）** | — |")
+
     provenance.append("\n## 工作树 vs origin（只记录，不评判）\n")
     provenance.append("```")
+
     for repo_name in ("entelecheia", "evernight"):
         repo = ws / repo_name
         ref, _sha = origin_ref(repo)
+
         if not ref:
             continue
-        counts = git("rev-list", "--left-right", "--count", f"HEAD...{ref}", repo=repo)
+
+        counts = git("rev-list", "--left-right", "--count", f"HEAD...{ref}", repo = repo)
+
         if counts:
             parts = counts.split()
             ahead, behind = (parts + ["0", "0"])[:2]
             provenance.append(f"{repo_name:<14} ahead {ahead} / behind {behind}")
-    provenance.append("```")
-    (out / "00-code-provenance.md").write_text(
-        "\n".join(provenance) + "\n", encoding="utf-8"
-    )
 
+    provenance.append("```")
+    (out / "00-code-provenance.md").write_text("\n".join(provenance) + "\n", encoding = "utf-8")
 
 def write_live_surface(out: Path) -> None:
     import urllib.request
 
     lines = [f"# 证据包：线上可观测面（生成于 {now_iso()}）\n"]
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
     for url in HEALTH_URLS:
         lines.append(f"## {url}\n")
         lines.append("```")
         body = ""
+
         try:
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with opener.open(req, timeout=8) as resp:
-                body = resp.read(1200).decode("utf-8", errors="replace")
+            req = urllib.request.Request(url, headers = {"Accept": "application/json"})
+
+            with opener.open(req, timeout = 8) as resp:
+                body = resp.read(1200).decode("utf-8", errors = "replace")
         except Exception as exc:  # noqa: BLE001 — 与 bash 版一致：失败即 (不可达)
             body = str(exc)[:1200]
+
         lines.append(body if body else "(不可达)")
         lines.append("```\n")
-    (out / "03-live-surface.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    (out / "03-live-surface.md").write_text("\n".join(lines) + "\n", encoding = "utf-8")
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
-
+    return datetime.now().astimezone().isoformat(timespec = "seconds")
 
 def isolation_violations(out: Path) -> List[str]:
     """Return human-readable violations; empty list means the pack is clean."""
     problems: List[str] = []
     names = {p.name for p in out.rglob("*")}
+
     for name in EXCLUDE_NAMES:
         if name in names:
             problems.append(f"❌ 隔离失败：证据包里出现了 {name}")
+
     dirs = {p.name for p in out.rglob("*") if p.is_dir()}
+
     for dirname in EXCLUDE_DIRS:
         if dirname in dirs:
             problems.append(f"❌ 隔离失败：证据包里出现了 {dirname}/")
+
     for path in sorted(out.glob("0*.md")):
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding = "utf-8", errors = "replace")
         except OSError:
             continue
+
         for hit in _content_leak_hits(text):
             problems.append(f"❌ 隔离失败：生成的 {path.name} 引用了工作区规则：{hit[:80]}")
+
     return problems
 
-
 def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
-    code_files = sorted(
-        str(p.relative_to(out)) for p in (out / "code").rglob("*") if p.is_file()
-    )
+    code_files = sorted(str(p.relative_to(out))for p in (out / "code").rglob("*")if p.is_file())
     # 「只有提交标题」的仓必须**排除**已取源码的仓——否则 manifest 与自己的
     # code/ 清单自相矛盾（改 SAMPLE_FILES 而忘改这句话就会把读包人带偏）。
     sampled_repos = {rel.split("/", 1)[0] for rel in SAMPLE_FILES}
     log_only_repos = [repo for repo in LOG_REPOS if repo not in sampled_repos]
-    lines = [
-        "# 证据包构成说明\n",
-        f"生成于 {now_iso()}。本包**只有**四样东西：仓库规模数字、近期提交标题、"
-        "若干关键源码原文、线上响应。\n",
-        "**不含**任何项目内部规则、计划、路线或历史审计。\n",
-        '## 本包**不含**什么（"没看到"不等于"没实现"）\n',
-        '第一轮外部验证（2026-09-14）把"包里没有"读成了"代码里没有"，并据此给出了三条高危结论。\n',
-        "那是**取材**的问题，不是验证者的问题——所以边界必须写在包内：\n",
-        "- `code/` 只有下面这些文件，**不是**每个仓都取，也**不是**沿调用链取全：\n\n```",
-        *code_files,
-        "```\n",
-        f"- 其它仓库（{' / '.join(log_only_repos)} 等，见 `01-repos.md`）"
-        "**只有提交标题**（或仅有仓库规模数字），没有源码。\n",
-        "- **外部依赖的源码完全没有**。若代码调用了一个包外实现（第三方 crate / 另一个服务），\n"
-        "  本包**无法**证实或证伪那个实现的行为——请把这类判断标成'输入不足'，而不是'未实现'。\n",
-        "- 服务端入口（RPC / HTTP handler）、CI workflow、systemd 单元、部署脚本："
-        "除上面列出的文件外都没有。\n",
-        "- 测试只以'被抽样文件内部的 `#[cfg(test)]`'形式出现，没有单独的测试目录。\n",
-        '请在结论里区分"本包没给"与"代码没做"，并写明你还需要哪些文件才能判定。\n',
-        "## ⚠️ 本轮验证者的隔离性（2026-09-20 由第一次实跑的结果补写）\n",
-        "本工具能保证**包内**不含工作区规则，**保证不了验证者的运行环境**：任何在本工作区里\n"
-        "启动的 agent 都会在会话开始时被**自动注入**工作区规则文件全文（含架构、冻结清单、\n"
-        "事故史与验收线；该文件的身份见下行声明），而验证者无法选择不接受。第一次实跑\n"
-        "（2026-09-20）的验证者主动披露了这一点——它没有主动读取规则，但规则确实在它的上下文里。\n",
-        "<!-- 排除清单声明（自指，非泄漏）：SECOND_BRAIN_NAMES = AGENTS.md / PLAN.md / CLAUDE.md -->\n",
-        "⇒ **若验证者是在本工作区内启动的，请在结论里明确标注它是「被部分污染的」**，\n"
-        "并把本轮当作弱证据；真正的包外验证需要另一台机 / 另一个工具链 / 一个人。\n",
-        "⇒ 反之，**验证者若指出的结论与工作区内部共识相左，那是它没在复述的正面信号**。\n",
-        "\n## 封印\n",
-        f"本包由 `{SEAL_NAME}` 封印（每个文件的 sha256 + 总摘要）。**封印之外的任何文件都不属于本包**：\n"
-        "引用它们等于引用包外材料；`record` 在收录结论前会复算封印，封口后被塞进来的文件会整批暴露。\n",
-    ]
+    lines = ["# 证据包构成说明\n", f"生成于 {now_iso()}。本包**只有**四样东西：仓库规模数字、近期提交标题、" "若干关键源码原文、线上响应。\n", "**不含**任何项目内部规则、计划、路线或历史审计。\n", '## 本包**不含**什么（"没看到"不等于"没实现"）\n', '第一轮外部验证（2026-09-14）把"包里没有"读成了"代码里没有"，并据此给出了三条高危结论。\n', "那是**取材**的问题，不是验证者的问题——所以边界必须写在包内：\n", "- `code/` 只有下面这些文件，**不是**每个仓都取，也**不是**沿调用链取全：\n\n```", *code_files, "```\n", f"- 其它仓库（{' / '.join(log_only_repos)} 等，见 `01-repos.md`）" "**只有提交标题**（或仅有仓库规模数字），没有源码。\n", "- **外部依赖的源码完全没有**。若代码调用了一个包外实现（第三方 crate / 另一个服务），\n" "  本包**无法**证实或证伪那个实现的行为——请把这类判断标成'输入不足'，而不是'未实现'。\n", "- 服务端入口（RPC / HTTP handler）、CI workflow、systemd 单元、部署脚本：" "除上面列出的文件外都没有。\n", "- 测试只以'被抽样文件内部的 `#[cfg(test)]`'形式出现，没有单独的测试目录。\n", '请在结论里区分"本包没给"与"代码没做"，并写明你还需要哪些文件才能判定。\n', "## ⚠️ 本轮验证者的隔离性（2026-09-20 由第一次实跑的结果补写）\n", "本工具能保证**包内**不含工作区规则，**保证不了验证者的运行环境**：任何在本工作区里\n" "启动的 agent 都会在会话开始时被**自动注入**工作区规则文件全文（含架构、冻结清单、\n" "事故史与验收线；该文件的身份见下行声明），而验证者无法选择不接受。第一次实跑\n" "（2026-09-20）的验证者主动披露了这一点——它没有主动读取规则，但规则确实在它的上下文里。\n", "<!-- 排除清单声明（自指，非泄漏）：SECOND_BRAIN_NAMES = AGENTS.md / PLAN.md / CLAUDE.md -->\n", "⇒ **若验证者是在本工作区内启动的，请在结论里明确标注它是「被部分污染的」**，\n" "并把本轮当作弱证据；真正的包外验证需要另一台机 / 另一个工具链 / 一个人。\n", "⇒ 反之，**验证者若指出的结论与工作区内部共识相左，那是它没在复述的正面信号**。\n", "\n## 封印\n", f"本包由 `{SEAL_NAME}` 封印（每个文件的 sha256 + 总摘要）。**封印之外的任何文件都不属于本包**：\n" "引用它们等于引用包外材料；`record` 在收录结论前会复算封印，封口后被塞进来的文件会整批暴露。\n"]
+
     if skipped:
         # 跳过必须是响亮的：否则读包人会把「包里的仓」当成「工作区的全部」
         lines.append("## 工作区里**没有**进入本包的条目\n")
-        lines.append(
-            "下列顶层条目因**权限或 I/O 错误不可访问**而被跳过，"
-            "它们既未计入仓库表，也未出现在任何提交历史里：\n"
-        )
+        lines.append("下列顶层条目因**权限或 I/O 错误不可访问**而被跳过，" "它们既未计入仓库表，也未出现在任何提交历史里：\n")
         lines.append("```")
         lines.extend(sorted(skipped))
         lines.append("```\n")
-        lines.append(
-            "跳过理由是「读不到」（不是「不存在」、也不是「已排除」）——"
-            "但如果你的结论依赖某个具体的仓，请先确认它不在上面这串里。\n"
-        )
+        lines.append("跳过理由是「读不到」（不是「不存在」、也不是「已排除」）——" "但如果你的结论依赖某个具体的仓，请先确认它不在上面这串里。\n")
+
     lines.append("## 已知的内部引用（出现在逐字源码的注释里，请忽略）\n")
     hits: List[str] = []
+
     for path in sorted((out / "code").rglob("*")):
         if not path.is_file():
             continue
+
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding = "utf-8", errors = "replace")
         except OSError:
             continue
+
         for lineno, line in enumerate(text.splitlines(), 1):
             if CODE_REF_RE.search(line):
                 rel = path.relative_to(out)
                 hits.append(f"{rel}:{lineno}:{line.strip()}")
+
     if hits:
         lines.append("```")
         lines.extend(hits)
@@ -598,45 +558,31 @@ def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
         lines.append("这些只是注释里对内部文档的引用，**与代码行为无关**；不要据此推断设计意图。\n")
     else:
         lines.append("（无）\n")
-    (out / "00-manifest.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    (out / "00-manifest.md").write_text("\n".join(lines) + "\n", encoding = "utf-8")
 
 # ── 封印（2026-10-08：封包后加料洞的对症件） ──────────────────────────────────
 
 SEAL_NAME = "PACK-SEAL.json"
 SEAL_STAMP_RE = re.compile(r"pack_seal=([0-9a-f]{64})")
 
-
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
+
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(65536), b""):
             digest.update(chunk)
-    return digest.hexdigest()
 
+    return digest.hexdigest()
 
 def _pack_files(out: Path):
     """包内全部文件（封印自身除外），按相对 posix 路径排序。"""
-    return sorted(
-        (
-            p
-            for p in out.rglob("*")
-            if p.is_file() and p.relative_to(out).as_posix() != SEAL_NAME
-        ),
-        key=lambda p: p.relative_to(out).as_posix(),
-    )
-
+    return sorted((p for p in out.rglob("*")if p.is_file() and (p.relative_to(out).as_posix() != SEAL_NAME)), key = lambda p: p.relative_to(out).as_posix())
 
 def _seal_hash(pairs) -> str:
     """对 (path, sha256) 序列的规范 JSON 求 sha256 —— 封印的唯一摘要。"""
-    canonical = json.dumps(
-        [{"path": p, "sha256": h} for p, h in pairs],
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
+    canonical = json.dumps([{"path": p, "sha256": h}for p, h in pairs], sort_keys = True, separators = (",", ":"), ensure_ascii = False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
 
 def write_seal(out: Path) -> str:
     """封包的最后一步：给包内每个文件记 sha256，写 ``PACK-SEAL.json``。
@@ -646,117 +592,97 @@ def write_seal(out: Path) -> str:
     另一台机）再让 record 比对。2026-10-08 实证：10-08 的包在 manifest 封口后
     17-49 秒被塞进 7 个源文件，收录的评审恰好引用它们——封印就是为这个形状。
     """
-    entries = [
-        {
-            "path": path.relative_to(out).as_posix(),
-            "sha256": _sha256_file(path),
-            "bytes": path.stat().st_size,
-        }
-        for path in _pack_files(out)
-    ]
+    entries = [{"path": path.relative_to(out).as_posix(), "sha256": _sha256_file(path), "bytes": path.stat().st_size}for path in _pack_files(out)]
     seal_hash = _seal_hash([(e["path"], e["sha256"]) for e in entries])
-    payload = {
-        "tool": "external_review.py",
-        "generated_at": now_iso(),
-        "file_count": len(entries),
-        "seal_hash": seal_hash,
-        "entries": entries,
-    }
-    (out / SEAL_NAME).write_text(
-        json.dumps(payload, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
-    )
+    payload = {"tool": "external_review.py", "generated_at": now_iso(), "file_count": len(entries), "seal_hash": seal_hash, "entries": entries}
+    (out / SEAL_NAME).write_text(json.dumps(payload, ensure_ascii = False, indent = 1) + "\n", encoding = "utf-8")
     return seal_hash
-
 
 def verify_pack(out: Path) -> dict:
     """复算封印。返回 dict：present / ok / missing / unexpected / modified / seal_hash。"""
-    verdict = {
-        "present": False,
-        "ok": False,
-        "missing": [],
-        "unexpected": [],
-        "modified": [],
-        "seal_hash": None,
-    }
+    verdict = {"present": False, "ok": False, "missing": [], "unexpected": [], "modified": [], "seal_hash": None}
     seal_path = out / SEAL_NAME
+
     if not out.is_dir() or not seal_path.is_file():
         return verdict
+
     verdict["present"] = True
+
     try:
-        payload = json.loads(seal_path.read_text(encoding="utf-8"))
+        payload = json.loads(seal_path.read_text(encoding = "utf-8"))
         sealed = {e["path"]: e["sha256"] for e in payload["entries"]}
         verdict["seal_hash"] = payload.get("seal_hash")
     except (OSError, ValueError, KeyError, TypeError):
         verdict["modified"] = [SEAL_NAME + "（读不出/损坏）"]
         return verdict
-    current = {
-        path.relative_to(out).as_posix(): _sha256_file(path) for path in _pack_files(out)
-    }
+
+    current = {path.relative_to(out).as_posix(): _sha256_file(path)for path in _pack_files(out)}
+
     # 目录符号链接：rglob 不下钻、也不把它当 file——封印覆盖不到，而直读包目录的
     # 评审（10-08 事故形状）能读到里面的内容。按夹带处理，fail-closed。
     for path in out.rglob("*"):
         if path.is_symlink() and path.is_dir():
             current[path.relative_to(out).as_posix() + "/（符号链接目录）"] = "<symlink-dir>"
+
     verdict["missing"] = sorted(set(sealed) - set(current))
     verdict["unexpected"] = sorted(set(current) - set(sealed))
-    verdict["modified"] += sorted(
-        p for p in set(sealed) & set(current) if sealed[p] != current[p]
-    )
-    verdict["ok"] = (
-        not verdict["missing"]
-        and not verdict["unexpected"]
-        and not verdict["modified"]
-        and _seal_hash(sorted(current.items())) == verdict["seal_hash"]
-    )
+    verdict["modified"]+=sorted(p for p in set(sealed) & set(current)if sealed[p] != current[p])
+    verdict["ok"] = not verdict["missing"] and not verdict["unexpected"] and not verdict["modified"] and (_seal_hash(sorted(current.items())) == verdict["seal_hash"])
     return verdict
-
 
 def format_drift(verdict: dict) -> str:
     parts = []
+
     if verdict["unexpected"]:
         parts.append("封印后新增（不在 manifest 里，却出现在包内）：\n  " + "\n  ".join(verdict["unexpected"]))
+
     if verdict["modified"]:
         parts.append("封印后被改写：\n  " + "\n  ".join(verdict["modified"]))
+
     if verdict["missing"]:
         parts.append("封印后缺失：\n  " + "\n  ".join(verdict["missing"]))
-    return "\n".join(parts)
 
+    return "\n".join(parts)
 
 def cmd_pack(args: argparse.Namespace) -> int:
     ws = args.workspace
     out = args.out if args.out is not None else ws / "_lens" / datetime.now().strftime("%Y-%m-%d")
+
     if out.exists():
         die(f"目标已存在：{out}（换个 --out，或先删掉）")
+
     try:
-        out.mkdir(parents=True)
+        out.mkdir(parents = True)
     except OSError as exc:
         die(f"无法创建 {out}\n  {exc}")
 
     print(f"正在打证据包 → {out}")
 
     repos, skipped = find_repos(ws)
+
     try:
         write_repos_table(repos, out)
         write_recent_changes(ws, out)
         write_code_sample(ws, out)
-        (out / "REVIEWER-PROMPT.md").write_text(REVIEWER_PROMPT, encoding="utf-8")
+        (out / "REVIEWER-PROMPT.md").write_text(REVIEWER_PROMPT, encoding = "utf-8")
         write_live_surface(out)
 
         problems = isolation_violations(out)
+
         if problems:
             for problem in problems:
-                print(problem, file=sys.stderr)
-            print("证据包已作废（隔离性是硬门）。", file=sys.stderr)
-            shutil.rmtree(out, ignore_errors=True)
+                print(problem, file = sys.stderr)
+
+            print("证据包已作废（隔离性是硬门）。", file = sys.stderr)
+            shutil.rmtree(out, ignore_errors = True)
             return EXIT_FAILURE
 
         write_manifest(out, skipped)
         seal_hash = write_seal(out)
-        print(f"   封印：{SEAL_NAME}（seal_hash={seal_hash[:12]}…，"
-              f"共 {len(_pack_files(out))} 个文件；record 时复算）")
+        print(f"   封印：{SEAL_NAME}（seal_hash={seal_hash[:12]}…，" f"共 {len(_pack_files(out))} 个文件；record 时复算）")
     except Exception as exc:  # noqa: BLE001 — 任何中途失败都不得留下半成品包
-        shutil.rmtree(out, ignore_errors=True)
-        print(f"❌ 打包失败，已清理 {out}：{type(exc).__name__}: {exc}", file=sys.stderr)
+        shutil.rmtree(out, ignore_errors = True)
+        print(f"❌ 打包失败，已清理 {out}：{type(exc).__name__}: {exc}", file = sys.stderr)
         return EXIT_FAILURE
 
     if skipped:
@@ -769,17 +695,20 @@ def cmd_pack(args: argparse.Namespace) -> int:
     print("           `_tools/external-review.sh record <它的回答.md>`")
     return EXIT_OK
 
-
 def cmd_verify(args: argparse.Namespace) -> int:
     out = args.pack if args.pack is not None else args.workspace / "_lens" / datetime.now().strftime("%Y-%m-%d")
+
     if not out.is_dir():
         die(f"证据包目录不存在：{out}")
+
     verdict = verify_pack(out)
+
     if not verdict["present"]:
         print(f"❌ {out} 没有封印（{SEAL_NAME}）——无法证明包在封口后未被改动。")
         print("   封印功能上线（2026-10-08）之前打的 legacy 包没有封印；")
         print("   需要收录 legacy 结论时用 record --allow-unsealed 显式放行。")
         return EXIT_FAILURE
+
     # 判据必须是 ok（= 文件集/逐文件哈希/总摘要三者全对），不能只看 drift：
     # 伪造者改文件后补 entries 的 sha256、保留旧 seal_hash 时 drift 为空而 ok=False。
     if not verdict["ok"]:
@@ -787,143 +716,100 @@ def cmd_verify(args: argparse.Namespace) -> int:
         drift = format_drift(verdict)
         print(drift if drift else f"  封印本体不自洽：entries 复算摘要 ≠ 声明的 seal_hash（{verdict['seal_hash']}）")
         return EXIT_FAILURE
+
     print(f"✅ 封印一致：{out}（seal_hash={verdict['seal_hash']}）")
     return EXIT_OK
 
-
 def cmd_record(args: argparse.Namespace) -> int:
     src = args.file
+
     if not src or not src.is_file():
         die("用法：external-review.sh record <验证者回答的 .md 文件>")
-    pack = (
-        args.pack
-        if args.pack is not None
-        else args.workspace / "_lens" / datetime.now().strftime("%Y-%m-%d")
-    )
-    if args.pack is not None and not pack.is_dir():
+
+    pack = args.pack if args.pack is not None else args.workspace / "_lens" / datetime.now().strftime("%Y-%m-%d")
+
+    if (args.pack is not None) and not pack.is_dir():
         die(f"--pack 指向的证据包目录不存在：{pack}")
+
     verdict = verify_pack(pack)
     seal_note = ""
+
     if not verdict["present"]:
         if not args.allow_unsealed:
-            die(
-                f"证据包 {pack} 没有封印（{SEAL_NAME}）——拒绝收录。\n"
-                "  2026-10-08 实证：当天的包在 manifest 封口后 17-49 秒被塞进 7 个源文件，\n"
-                "  收录的评审恰好引用了那些文件。此后 record 只收封印完好的包。\n"
-                "  确属封印功能上线前的 legacy 包，用 --allow-unsealed 显式放行（会留下标记）。"
-            )
-        seal_note = (
-            f"> ⚠️ **无封印收录**：`{pack}` 没有 {SEAL_NAME}（--allow-unsealed 放行）——\n"
-            "> 本记录**不证明**包在封口后未被改动，按 legacy 弱证据对待。\n\n"
-        )
+            die(f"证据包 {pack} 没有封印（{SEAL_NAME}）——拒绝收录。\n" "  2026-10-08 实证：当天的包在 manifest 封口后 17-49 秒被塞进 7 个源文件，\n" "  收录的评审恰好引用了那些文件。此后 record 只收封印完好的包。\n" "  确属封印功能上线前的 legacy 包，用 --allow-unsealed 显式放行（会留下标记）。")
+
+        seal_note = f"> ⚠️ **无封印收录**：`{pack}` 没有 {SEAL_NAME}（--allow-unsealed 放行）——\n" "> 本记录**不证明**包在封口后未被改动，按 legacy 弱证据对待。\n\n"
     elif not verdict["ok"]:
-        print(f"❌ 拒绝收录：证据包封印不匹配（{pack}）——封口后有人动过包。", file=sys.stderr)
+        print(f"❌ 拒绝收录：证据包封印不匹配（{pack}）——封口后有人动过包。", file = sys.stderr)
         drift = format_drift(verdict)
-        print(drift if drift else "  封印本体不自洽：entries 复算摘要 ≠ 声明的 seal_hash", file=sys.stderr)
-        print("   修法：重新 `pack` 一个干净包，把新包交给验证者。", file=sys.stderr)
+        print(drift if drift else "  封印本体不自洽：entries 复算摘要 ≠ 声明的 seal_hash", file = sys.stderr)
+        print("   修法：重新 `pack` 一个干净包，把新包交给验证者。", file = sys.stderr)
         return EXIT_FAILURE
     else:
-        seal_note = (
-            f"> 封印校验：`{pack}` → `pack_seal={verdict['seal_hash']}`（收录时复算一致，\n"
-            f"> 共 {len(_pack_files(pack))} 个文件）。评审引用封印之外的文件 = 引用包外材料。\n\n"
-        )
+        seal_note = f"> 封印校验：`{pack}` → `pack_seal={verdict['seal_hash']}`（收录时复算一致，\n" f"> 共 {len(_pack_files(pack))} 个文件）。评审引用封印之外的文件 = 引用包外材料。\n\n"
+
     reports = args.workspace / "_reports"
-    reports.mkdir(parents=True, exist_ok=True)
+    reports.mkdir(parents = True, exist_ok = True)
     today = datetime.now().strftime("%Y-%m-%d")
     dst = reports / f"external-review-{today}.md"
-    body = (
-        f"# 外部视角验证记录（{today}）\n\n"
-        "> 由 `_tools/external-review.sh record` 收录。验证者的**输入**仅为被评审的证据包\n"
-        f"> （`{pack}`），包内不含本工作区任何规则、计划或历史审计。\n"
-        "> ⚠️ **但运行环境不受本工具控制**：若验证者是在本工作区内启动的 agent，它的上下文里\n"
-        "> 会被自动注入工作区规则文件（验证者无法拒绝）。2026-09-20 的第一次实跑即为此种情况，\n"
-        "> 验证者已主动披露；该轮按**弱证据**对待。严格包外验证需另一台机 / 另一个工具链 / 一个人。\n\n"
-        + seal_note
-        + "---\n\n" + src.read_text(encoding="utf-8", errors="replace")
-    )
-    dst.write_text(body, encoding="utf-8")
+    body = f"# 外部视角验证记录（{today}）\n\n" "> 由 `_tools/external-review.sh record` 收录。验证者的**输入**仅为被评审的证据包\n" f"> （`{pack}`），包内不含本工作区任何规则、计划或历史审计。\n" "> ⚠️ **但运行环境不受本工具控制**：若验证者是在本工作区内启动的 agent，它的上下文里\n" "> 会被自动注入工作区规则文件（验证者无法拒绝）。2026-09-20 的第一次实跑即为此种情况，\n" "> 验证者已主动披露；该轮按**弱证据**对待。严格包外验证需另一台机 / 另一个工具链 / 一个人。\n\n" + seal_note + "---\n\n" + src.read_text(encoding = "utf-8", errors = "replace")
+    dst.write_text(body, encoding = "utf-8")
     print(f"✅ 已收录到 {dst}")
     print("   提醒：外部验证的价值在于**它的结论没被内部共识污染**——")
     print("   对它的处置应当是「逐条回应」而不是「逐条解释掉」。")
     return EXIT_OK
 
-
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="external_review.py",
-        description="半月中「外部视角」验证证据包工具（stdlib only, port of external-review.sh）.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=USAGE_TEXT,
-    )
-    parser.add_argument(
-        "--workspace-root",
-        type=Path,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    sub = parser.add_subparsers(dest="command", metavar="{pack,status,due,record,verify}")
+    parser = argparse.ArgumentParser(prog = "external_review.py", description = "半月中「外部视角」验证证据包工具（stdlib only, port of external-review.sh）.", formatter_class = argparse.RawDescriptionHelpFormatter, epilog = USAGE_TEXT)
+    parser.add_argument("--workspace-root", type = Path, default = None, help = argparse.SUPPRESS)
+    sub = parser.add_subparsers(dest = "command", metavar = "{pack,status,due,record,verify}")
 
-    p_pack = sub.add_parser("pack", help="打证据包（默认 _lens/<日期>/）")
-    p_pack.add_argument("--out", type=Path, default=None, help="输出目录（默认 _lens/<日期>/）")
-    p_pack.set_defaults(func=cmd_pack)
+    p_pack = sub.add_parser("pack", help = "打证据包（默认 _lens/<日期>/）")
+    p_pack.add_argument("--out", type = Path, default = None, help = "输出目录（默认 _lens/<日期>/）")
+    p_pack.set_defaults(func = cmd_pack)
 
-    for name, func, help_ in (
-        ("status", cmd_status, "距上次外部验证多久；超期退出码 1"),
-        ("due", cmd_due, "仅供 timer/cron 判断（静默，超期退出 1）"),
-    ):
-        p = sub.add_parser(name, help=help_)
-        p.set_defaults(func=func)
+    for name, func, help_ in (("status", cmd_status, "距上次外部验证多久；超期退出码 1"), ("due", cmd_due, "仅供 timer/cron 判断（静默，超期退出 1）")):
+        p = sub.add_parser(name, help = help_)
+        p.set_defaults(func = func)
 
-    p_record = sub.add_parser("record", help="把外部验证者的结论收进 _reports/")
-    p_record.add_argument("file", type=Path, nargs="?", default=None)
-    p_record.add_argument(
-        "--pack",
-        type=Path,
-        default=None,
-        help="被评审的证据包目录（默认 _lens/<今天>/；收录前复算封印）",
-    )
-    p_record.add_argument(
-        "--allow-unsealed",
-        action="store_true",
-        help="显式放行没有封印的 legacy 包（记录会带上无封印标记）",
-    )
-    p_record.set_defaults(func=cmd_record)
+    p_record = sub.add_parser("record", help = "把外部验证者的结论收进 _reports/")
+    p_record.add_argument("file", type = Path, nargs = "?", default = None)
+    p_record.add_argument("--pack", type = Path, default = None, help = "被评审的证据包目录（默认 _lens/<今天>/；收录前复算封印）")
+    p_record.add_argument("--allow-unsealed", action = "store_true", help = "显式放行没有封印的 legacy 包（记录会带上无封印标记）")
+    p_record.set_defaults(func = cmd_record)
 
-    p_verify = sub.add_parser(
-        "verify", help="复算证据包封印（封口后被改动则退出 1）"
-    )
-    p_verify.add_argument(
-        "--pack", type=Path, default=None, help="证据包目录（默认 _lens/<今天>/）"
-    )
-    p_verify.set_defaults(func=cmd_verify)
+    p_verify = sub.add_parser("verify", help = "复算证据包封印（封口后被改动则退出 1）")
+    p_verify.add_argument("--pack", type = Path, default = None, help = "证据包目录（默认 _lens/<今天>/）")
+    p_verify.set_defaults(func = cmd_verify)
     return parser
 
-
 KNOWN_COMMANDS = ("pack", "status", "due", "record", "verify", "help", "-h", "--help")
-
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ws = Path(os.environ.get("WORKSPACE_ROOT", "/mnt/codespace"))
     ws = ws if ws.is_absolute() else Path.cwd() / ws
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] not in KNOWN_COMMANDS:
+
+    if argv and (argv[0] not in KNOWN_COMMANDS):
         die(f"未知子命令：{argv[0]}（pack/status/due/record/verify）")
-    if argv and argv[0] == "help":
-        print(USAGE_TEXT, end="")
+
+    if argv and (argv[0] == "help"):
+        print(USAGE_TEXT, end = "")
         return EXIT_OK
+
     args = build_parser().parse_args(argv)
     args.workspace = args.workspace_root if args.workspace_root else ws
     args.days = int(os.environ.get("EXTERNAL_REVIEW_DAYS", "14"))
     args.now_epoch = None
     func = getattr(args, "func", None)
-    if func is None:
-        print(USAGE_TEXT, end="")
-        return EXIT_OK
-    return func(args)
 
+    if func is None:
+        print(USAGE_TEXT, end = "")
+        return EXIT_OK
+
+    return func(args)
 
 if __name__ == "__main__":
     sys.exit(main())

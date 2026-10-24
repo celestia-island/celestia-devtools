@@ -3,7 +3,6 @@
 
 from celestia_devtools.vcs.commit_msg import lint, GITMOJI_WHITELIST
 
-
 class TestGitmojiWhitelist:
     """Verify the gitmoji whitelist covers common cases."""
 
@@ -17,7 +16,6 @@ class TestGitmojiWhitelist:
         assert "\u267b\ufe0f" in GITMOJI_WHITELIST  # ♻️
         assert "\U0001f504" in GITMOJI_WHITELIST  # 🔄 (org extension)
 
-
 class TestMergeBanned:
     def test_merge_branch_subject_rejected(self):
         v = lint("Merge branch 'fix' into master")
@@ -27,12 +25,10 @@ class TestMergeBanned:
         v = lint("Merge pull request #42 from celestia-island/dev")
         assert any("merge" in violation.lower() for violation in v)
 
-
 class TestRevertExemption:
     def test_revert_commit_bypasses_all_rules(self):
         assert lint('Revert "Fix the parser crash."') == []
         assert lint("Revert something") == []
-
 
 class TestEasyHydroCjkExemption:
     def test_cjk_rejected_by_default(self):
@@ -40,14 +36,13 @@ class TestEasyHydroCjkExemption:
         assert any("CJK" in violation for violation in v)
 
     def test_cjk_allowed_with_flag(self):
-        assert lint("✨ 修复解析器", allow_cjk=True) == []
+        assert lint("✨ 修复解析器", allow_cjk = True) == []
 
     def test_easy_hydro_repos_are_in_the_whitelist(self):
         from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
 
         assert "easy-hydro-erp" in EASY_HYDRO_REPOS
         assert "easy-hydro-miniprogram" in EASY_HYDRO_REPOS
-
 
 class TestRule1GitmojiPrefix:
     def test_passes_with_valid_emoji(self):
@@ -68,7 +63,6 @@ class TestRule1GitmojiPrefix:
     def test_sync_emoji_with_period_also_passes(self):
         assert lint("\U0001f504 Sync provider model list.") == []
 
-
 class TestSyncEmojiPeriodExemption:
     """🔄-prefixed messages are exempt from the trailing-period rule."""
 
@@ -82,7 +76,6 @@ class TestSyncEmojiPeriodExemption:
     def test_sync_still_requires_uppercase(self):
         v = lint("\U0001f504 sync provider model list.")
         assert any("uppercase" in violation for violation in v)
-
 
 class TestRule2NoConventionalPrefix:
     def test_fails_feat_prefix(self):
@@ -101,7 +94,6 @@ class TestRule2NoConventionalPrefix:
         v = lint("\U0001f41b refactor: split module.")
         assert any("Conventional Commits" in violation for violation in v)
 
-
 class TestRule3CapitalLetter:
     def test_passes_uppercase(self):
         assert lint("\U0001f41b Fix the parser crash.") == []
@@ -113,7 +105,6 @@ class TestRule3CapitalLetter:
     def test_fails_no_alpha(self):
         v = lint("\U0001f41b 123")
         assert any("least one English letter" in violation for violation in v)
-
 
 class TestRule4NoVersionOrFillerPrefix:
     def test_fails_version_number_start(self):
@@ -127,7 +118,6 @@ class TestRule4NoVersionOrFillerPrefix:
     def test_passes_descriptive_content(self):
         assert lint("\u2b06\ufe0f Upgrade the HTTP client to v2.") == []
 
-
 class TestRule5TrailingPeriod:
     def test_passes_with_period(self):
         assert lint("\U0001f41b Fix the parser crash.") == []
@@ -135,7 +125,6 @@ class TestRule5TrailingPeriod:
     def test_fails_without_period(self):
         v = lint("\U0001f41b Fix the parser crash")
         assert any("period" in violation.lower() for violation in v)
-
 
 class TestRule6EnglishOnly:
     def test_passes_english(self):
@@ -148,7 +137,6 @@ class TestRule6EnglishOnly:
     def test_fails_mixed(self):
         v = lint("\u2728 Fix \u89e3\u6790\u5668 crash.")
         assert any("CJK" in violation for violation in v)
-
 
 class TestRule7NoColonPrefix:
     """Topic-phrase colon prefixes are forbidden, even capitalized."""
@@ -185,7 +173,6 @@ class TestRule7NoColonPrefix:
     def test_passes_dependabot_style_quoted_subject(self):
         assert lint('\u2b07\ufe0f "Bump actions/setup-python from 6 to 7". (#38)') == []
 
-
 class TestEmptyAndWhitespace:
     def test_empty_fails(self):
         v = lint("")
@@ -194,7 +181,6 @@ class TestEmptyAndWhitespace:
     def test_whitespace_fails(self):
         v = lint("   ")
         assert any("empty" in violation.lower() for violation in v)
-
 
 class TestRegressionRealHistory:
     """Sample real commit subjects from celestia-island master branches."""
@@ -217,7 +203,6 @@ class TestRegressionRealHistory:
             "\U0001f41b Use license-file only so crates.io accepts the non-SPDX SySL license."
         ) == []
 
-
 class TestCjkLedUppercaseRule:
     """Rule 3 must not fire on English tokens inside CJK-led summaries."""
 
@@ -225,39 +210,32 @@ class TestCjkLedUppercaseRule:
         # easy-hydro-miniprogram #42: lowercase token "base_qty" mid-sentence.
         assert lint(
             "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。",
-            allow_cjk=True,
+            allow_cjk = True
         ) == []
 
     def test_cjk_led_no_period_passes(self):
-        assert lint("✨ 修复解析器", allow_cjk=True) == []
+        assert lint("✨ 修复解析器", allow_cjk = True) == []
 
     def test_gitmoji_still_required_with_cjk(self):
-        v = lint("修复解析器。", allow_cjk=True)
+        v = lint("修复解析器。", allow_cjk = True)
         assert any("gitmoji" in violation for violation in v)
 
     def test_english_led_lowercase_still_flagged_under_cjk(self):
-        v = lint("✨ fix 解析器。", allow_cjk=True)
+        v = lint("✨ fix 解析器。", allow_cjk = True)
         assert any("uppercase" in violation for violation in v)
 
     def test_cjk_rejected_without_flag(self):
         v = lint("✨ 修复解析器。")
         assert any("CJK" in violation for violation in v)
 
-
 class TestRegressionEasyHydroHistory:
     """Real squash-merge subjects from easy-hydro master (Chinese + gitmoji)."""
 
-    SUBJECTS = [
-        "✨ 登录补齐手机号一键授权弹窗并修复重登后重复索要手机号。 (#44)",
-        "🐛 修复订单卡片溢出与详情页静默卡死，增加超时与重试。 (#29)",
-        "💄 交互防误触：点按统一改 tap 语义并把过小热区提到微信规范尺寸。 (#43)",
-        "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。 (#42)",
-    ]
+    SUBJECTS = ["✨ 登录补齐手机号一键授权弹窗并修复重登后重复索要手机号。 (#44)", "🐛 修复订单卡片溢出与详情页静默卡死，增加超时与重试。 (#29)", "💄 交互防误触：点按统一改 tap 语义并把过小热区提到微信规范尺寸。 (#43)", "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。 (#42)"]
 
     def test_all_pass_with_allow_cjk(self):
         for subject in self.SUBJECTS:
-            assert lint(subject, allow_cjk=True) == [], subject
-
+            assert lint(subject, allow_cjk = True) == [], subject
 
 class TestRepoDetectionHelpers:
     def test_allows_cjk_for_easy_hydro_repos(self):
@@ -276,12 +254,7 @@ class TestRepoDetectionHelpers:
     def test_gh_flag_long_form(self):
         from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
 
-        assert (
-            repo_name_from_gh_flag(
-                ["pr", "merge", "44", "--repo", "langyo/easy-hydro-miniprogram"]
-            )
-            == "easy-hydro-miniprogram"
-        )
+        assert (repo_name_from_gh_flag(["pr", "merge", "44", "--repo", "langyo/easy-hydro-miniprogram"]) == "easy-hydro-miniprogram")
 
     def test_gh_flag_short_form_with_git_suffix(self):
         from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag

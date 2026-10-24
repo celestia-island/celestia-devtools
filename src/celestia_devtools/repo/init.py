@@ -41,14 +41,11 @@ Usage::
 """
 
 from __future__ import annotations
-
 import argparse
 import re
 from pathlib import Path
 from typing import Optional
-
 import yaml
-
 from celestia_devtools import __version__
 from celestia_devtools.core import logger
 
@@ -58,9 +55,9 @@ INTEROP_NAME = "git-bash-interop.just"
 GITIGNORE_RULES = ("/.just/", "/celestia-devtools.just")
 _VERSION_RE = re.compile(r"^#\s*Version:\s*(\S+)", re.MULTILINE)
 
-
 def common_just_path() -> Path:
     """Return the filesystem path to the bundled ``common.just``."""
+
     try:
         from importlib.resources import files
 
@@ -70,118 +67,91 @@ def common_just_path() -> Path:
 
         return Path(celestia_devtools.__file__).resolve().parent / "common.just"
 
-
 def _read_version(text: str) -> str | None:
     m = _VERSION_RE.search(text)
     return m.group(1) if m else None
 
-
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Vendor celestia-devtools justfile recipes into a repo"
-    )
-    parser.add_argument(
-        "--force", action="store_true",
-        help="overwrite even if the existing copy is identical",
-    )
-    parser.add_argument(
-        "--check", action="store_true",
-        help="report drift without writing (exit 1 if the staged justfile, the "
-        ".gitignore rules, or a canonical caller workflow need updating)",
-    )
-    parser.add_argument(
-        "--name", default=LINK_NAME,
-        help=f"output filename inside {DEST_DIR}/ (default: {LINK_NAME})",
-    )
-    parser.add_argument(
-        "--no-hooks", action="store_true",
-        help="skip automatic commit-msg hook install",
-    )
-    parser.add_argument(
-        "--with-workflows", action="store_true",
-        help="also generate the three required org workflows "
-        "(commit-msg lint, CI cache policy, PR title check)",
-    )
-    parser.add_argument(
-        "--gate", action="append", choices=sorted(OPT_IN_GATES), metavar="NAME",
-        help="also (re)generate one opt-in gate caller: "
-        + ", ".join(sorted(OPT_IN_GATES))
-        + " (repeatable; requires --with-workflows)",
-    )
+    parser = argparse.ArgumentParser(description = "Vendor celestia-devtools justfile recipes into a repo")
+    parser.add_argument("--force", action = "store_true", help = "overwrite even if the existing copy is identical")
+    parser.add_argument("--check", action = "store_true", help = "report drift without writing (exit 1 if the staged justfile, the " ".gitignore rules, or a canonical caller workflow need updating)")
+    parser.add_argument("--name", default = LINK_NAME, help = f"output filename inside {DEST_DIR}/ (default: {LINK_NAME})")
+    parser.add_argument("--no-hooks", action = "store_true", help = "skip automatic commit-msg hook install")
+    parser.add_argument("--with-workflows", action = "store_true", help = "also generate the three required org workflows " "(commit-msg lint, CI cache policy, PR title check)")
+    parser.add_argument("--gate", action = "append", choices = sorted(OPT_IN_GATES), metavar = "NAME", help = "also (re)generate one opt-in gate caller: " + ", ".join(sorted(OPT_IN_GATES)) + " (repeatable; requires --with-workflows)")
     args = parser.parse_args()
 
     src = common_just_path()
+
     if not src.is_file():
         logger.error(f"common.just not found at {src}")
         return 1
 
-    bundled = src.read_text(encoding="utf-8")
+    bundled = src.read_text(encoding = "utf-8")
     dest_dir = Path.cwd() / DEST_DIR
     dest = dest_dir / args.name
 
     # ── --check: CI drift + gitignore gate ───────────────
     if args.check:
         problems = []
+
         if not dest.is_file():
             problems.append(f"{DEST_DIR}/{args.name} missing — run: celestia-devtools init")
         else:
-            current = dest.read_text(encoding="utf-8")
+            current = dest.read_text(encoding = "utf-8")
+
             if current != bundled:
                 cur_ver = _read_version(current)
-                problems.append(
-                    f"{DEST_DIR}/{args.name} drifted"
-                    + (f" (staged v{cur_ver}" if cur_ver else "")
-                    + f" ≠ bundled v{__version__}) — run: celestia-devtools init"
-                )
+                problems.append(f"{DEST_DIR}/{args.name} drifted" + (f" (staged v{cur_ver}" if cur_ver else "") + f" ≠ bundled v{__version__}) — run: celestia-devtools init")
+
         missing_rules = _missing_gitignore_rules()
+
         if missing_rules:
-            problems.append(
-                f".gitignore missing rule(s) {missing_rules} — run: celestia-devtools init"
-            )
-        problems.extend(
-            _workflow_drift_problems(Path.cwd() / ".github" / "workflows")
-        )
+            problems.append(f".gitignore missing rule(s) {missing_rules} — run: celestia-devtools init")
+
+        problems.extend(_workflow_drift_problems(Path.cwd() / ".github" / "workflows"))
+
         if problems:
             for p in problems:
                 logger.error(p)
+
             return 1
+
         logger.ok(f"{DEST_DIR}/{args.name} up to date (v{__version__}) and gitignored")
         return 0
 
     # ── Stage / refresh ──────────────────────────────────
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir.mkdir(parents = True, exist_ok = True)
+
     if dest.is_file():
-        current = dest.read_text(encoding="utf-8")
-        if current == bundled and not args.force:
+        current = dest.read_text(encoding = "utf-8")
+
+        if (current == bundled) and not args.force:
             logger.info(f"{DEST_DIR}/{args.name} already up to date (v{__version__})")
         else:
             if not args.force:
                 cur_ver = _read_version(current)
-                logger.warn(
-                    f"{DEST_DIR}/{args.name} is outdated"
-                    + (f" (staged v{cur_ver}" if cur_ver else "")
-                    + f" ≠ v{__version__}) — updating"
-                )
-            dest.write_text(bundled, encoding="utf-8")
+                logger.warn(f"{DEST_DIR}/{args.name} is outdated" + (f" (staged v{cur_ver}" if cur_ver else "") + f" ≠ v{__version__}) — updating")
+
+            dest.write_text(bundled, encoding = "utf-8")
     else:
         logger.info(f"staging {DEST_DIR}/{args.name}")
-        dest.write_text(bundled, encoding="utf-8")
+        dest.write_text(bundled, encoding = "utf-8")
 
     # ── Retire the Git Bash interop file ─────────────────────────────
     # Since the de-bash doctrine (common.just 0.5.0) no recipe in the shared
     # layer uses `[script]` bodies or shebangs, `set script-interpreter` is
     # dead configuration. Remove stale staged copies instead of regenerating.
     interop_path = dest_dir / INTEROP_NAME
+
     if interop_path.is_file():
         interop_path.unlink()
         logger.ok(f"removed stale {DEST_DIR}/{INTEROP_NAME} — bash is no longer used by any shared recipe")
 
     if args.force or not _gitignore_has_rules():
         _ensure_gitignore()
-    logger.ok(
-        f"staged {DEST_DIR}/{args.name} (v{__version__}) — gitignored, NOT committed. "
-        f"Refresh after upgrading with: celestia-devtools init --force"
-    )
+
+    logger.ok(f"staged {DEST_DIR}/{args.name} (v{__version__}) — gitignored, NOT committed. " f"Refresh after upgrading with: celestia-devtools init --force")
 
     _check_justfile_import(args.name)
 
@@ -190,25 +160,26 @@ def main() -> int:
         from celestia_devtools.vcs.hook import install_hook
 
         hooks_dir = Path.cwd() / ".git" / "hooks"
+
         if not hooks_dir.is_dir():
             logger.info("not a git repository — skipping hook install")
         else:
             hook_path = hooks_dir / "commit-msg"
+
             try:
-                install_hook(hook_path, devtools_bin=None, force=args.force)
+                install_hook(hook_path, devtools_bin = None, force = args.force)
                 logger.ok(f"installed commit-msg hook → {hook_path}")
             except SystemExit:
                 logger.warn("hook install skipped (use --force to overwrite, --no-hooks to suppress)")
 
     # ── Opt-in: GitHub Actions commit-lint workflow ───────────────
     if args.with_workflows:
-        _ensure_workflows(Path.cwd(), force=args.force, gates=tuple(args.gate or ()))
+        _ensure_workflows(Path.cwd(), force = args.force, gates = tuple(args.gate or ()))
     elif args.gate:
         logger.error("--gate requires --with-workflows (it extends the generated set)")
         return 2
 
     return 0
-
 
 # 规范形态（canonical）：全 org caller **逐字节**相同，改这里等于改全部仓的模板。
 # 2026-09-15：此前这里缺 `ready_for_review`，导致 `init --force --with-workflows` 会把
@@ -333,7 +304,6 @@ jobs:
     uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master
 """
 
-
 # Canonical caller for the org PR-title check. It had no template until 2026-09-20, which is
 # why 21 repositories carried a hand-written copy whose `types` omitted `synchronize` -- see
 # the constant above for what that omission costs.
@@ -351,7 +321,6 @@ jobs:
     uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master
 """
 
-
 # Canonical callers for the six gates that had none until 2026-10-24. Until then the
 # fleet's other gates existed only as hand-written copies in each repository, which is why
 # the same drift kept reappearing: `pr-title-check` lost `synchronize` in five repositories,
@@ -362,7 +331,6 @@ jobs:
 # `p0-gate` and `family-versions` are opt-in by nature (only a repository named in the P0
 # ledger's scope, or one consuming a cross-repository family edge, needs them), so they are
 # written by `init --with-workflows` only when asked for explicitly with `--gate`.
-
 WORKFLOW_P0_GATE = """\
 name: P0 Gate
 
@@ -397,7 +365,6 @@ jobs:
   p0-gate:
     uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
 """
-
 
 WORKFLOW_FAMILY_VERSIONS = """\
 name: Family dependency identity
@@ -489,7 +456,6 @@ jobs:
     secrets: inherit
 """
 
-
 #: Opt-in gate callers: a repository needs only the ones whose scope covers it
 #: (P0 ledger scope, a cross-repository family edge, a version line, a repository
 #: AGENTS.md, a release tag, or the CNB spill lane), so they are generated only
@@ -501,9 +467,8 @@ OPT_IN_GATES: dict[str, tuple[str, str, str]] = {
     "verify": ("verify-versions.yml", WORKFLOW_VERIFY_VERSIONS, "version consistency"),
     "rules": ("rules-lint.yml", WORKFLOW_RULES_LINT, "rules tree lint"),
     "release-notes": ("release-notes.yml", WORKFLOW_RELEASE_NOTES, "release notes"),
-    "cnb": ("cnb-overflow-lane.yml", WORKFLOW_CNB_OVERFLOW, "CNB overflow lane"),
+    "cnb": ("cnb-overflow-lane.yml", WORKFLOW_CNB_OVERFLOW, "CNB overflow lane")
 }
-
 
 #: The three callers every repository needs, in generation order. Both the
 #: generator and ``--check`` read this table, so a new required caller cannot be
@@ -511,9 +476,8 @@ OPT_IN_GATES: dict[str, tuple[str, str, str]] = {
 REQUIRED_WORKFLOWS: tuple[tuple[str, str, str], ...] = (
     ("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"),
     ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"),
-    ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"),
+    ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check")
 )
-
 
 def _is_callee_definition(text: str) -> bool:
     """True for the reusable workflow itself (``on: workflow_call``).
@@ -527,32 +491,31 @@ def _is_callee_definition(text: str) -> bool:
     compared (a substring test would silently exempt any drifted file that
     quotes the word — a one-line bypass of this gate).
     """
+
     try:
-        root = yaml.compose(text, Loader=yaml.SafeLoader)
+        root = yaml.compose(text, Loader = yaml.SafeLoader)
     except yaml.YAMLError:
         # Unparseable: not a callee. The caller comparison then reports drift,
         # which is the honest outcome for a file GitHub cannot run either.
         return False
+
     if not isinstance(root, yaml.nodes.MappingNode):
         return False
+
     for key, value in root.value:
-        if not isinstance(key, yaml.nodes.ScalarNode) or key.value != "on":
+        if not isinstance(key, yaml.nodes.ScalarNode) or (key.value != "on"):
             continue
+
         if isinstance(value, yaml.nodes.ScalarNode):
             return value.value == "workflow_call"
-        if isinstance(value, yaml.nodes.SequenceNode):
-            return any(
-                isinstance(item, yaml.nodes.ScalarNode) and item.value == "workflow_call"
-                for item in value.value
-            )
-        if isinstance(value, yaml.nodes.MappingNode):
-            return any(
-                isinstance(item_key, yaml.nodes.ScalarNode)
-                and item_key.value == "workflow_call"
-                for item_key, _item_value in value.value
-            )
-    return False
 
+        if isinstance(value, yaml.nodes.SequenceNode):
+            return any(isinstance(item, yaml.nodes.ScalarNode) and (item.value == "workflow_call") for item in value.value)
+
+        if isinstance(value, yaml.nodes.MappingNode):
+            return any(isinstance(item_key, yaml.nodes.ScalarNode) and (item_key.value == "workflow_call") for item_key, _item_value in value.value)
+
+    return False
 
 def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Optional[Path]:
     """A differently-named file carrying the canonical caller bytes.
@@ -563,16 +526,18 @@ def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Optio
     check, so content identity counts as "in place" and the caller is asked to
     rename it instead.
     """
+
     for candidate in sorted(workflows_dir.glob("*.y*ml")):
         if candidate.name == filename:
             continue
+
         try:
-            if candidate.read_bytes().decode("utf-8", errors="replace") == template:
+            if candidate.read_bytes().decode("utf-8", errors = "replace") == template:
                 return candidate
         except OSError:
             continue
-    return None
 
+    return None
 
 def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
     """Missing/drifted canonical callers under *workflows_dir*.
@@ -581,69 +546,68 @@ def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
     warns about drifted opt-in callers. A callee definition is never compared.
     """
     problems: list[str] = []
+
     for filename, template, _label in REQUIRED_WORKFLOWS:
         path = workflows_dir / filename
         rel = f".github/workflows/{filename}"
+
         if not path.is_file():
             alias = _canonical_alias(workflows_dir, template, filename)
+
             if alias is not None:
-                logger.warn(
-                    f"{rel} missing, but {alias.name} carries the canonical caller — "
-                    f"rename it to {filename} (regenerating would install a second caller)"
-                )
+                logger.warn(f"{rel} missing, but {alias.name} carries the canonical caller — " f"rename it to {filename} (regenerating would install a second caller)")
                 continue
-            problems.append(
-                f"{rel} missing — run: celestia-devtools init --with-workflows"
-            )
+
+            problems.append(f"{rel} missing — run: celestia-devtools init --with-workflows")
             continue
-        text = path.read_bytes().decode("utf-8", errors="replace")
+
+        text = path.read_bytes().decode("utf-8", errors = "replace")
+
         if _is_callee_definition(text):
             continue
+
         if text != template:
-            problems.append(
-                f"{rel} drifted ({len(text.encode('utf-8'))} B ≠ canonical "
-                f"{len(template.encode('utf-8'))} B) — run: celestia-devtools "
-                f"init --with-workflows --force"
-            )
+            problems.append(f"{rel} drifted ({len(text.encode('utf-8'))} B ≠ canonical " f"{len(template.encode('utf-8'))} B) — run: celestia-devtools " f"init --with-workflows --force")
+
     for name, (filename, template, label) in OPT_IN_GATES.items():
         path = workflows_dir / filename
+
         if not path.is_file():
             continue
-        text = path.read_bytes().decode("utf-8", errors="replace")
+
+        text = path.read_bytes().decode("utf-8", errors = "replace")
+
         if _is_callee_definition(text):
             continue
+
         if text != template:
-            logger.warn(
-                f".github/workflows/{filename} drifted from the {label} template — "
-                f"regenerate with: celestia-devtools init --with-workflows --gate {name} --force"
-                " (hand-edited inputs are why this is a warning, not a failure)"
-            )
+            logger.warn(f".github/workflows/{filename} drifted from the {label} template — " f"regenerate with: celestia-devtools init --with-workflows --gate {name} --force" " (hand-edited inputs are why this is a warning, not a failure)")
+
     return problems
 
-
-def _ensure_workflows(
-    repo_root: Path, *, force: bool = False, gates: tuple[str, ...] = ()
-) -> None:
+def _ensure_workflows(repo_root: Path, *, force: bool = False, gates: tuple[str, ...] = ()) -> None:
     workflows_dir = repo_root / ".github" / "workflows"
-    workflows_dir.mkdir(parents=True, exist_ok=True)
+    workflows_dir.mkdir(parents = True, exist_ok = True)
 
     wanted = list(REQUIRED_WORKFLOWS)
+
     for gate in gates:
         wanted.append(OPT_IN_GATES[gate])
+
     for filename, template, label in wanted:
         target = workflows_dir / filename
+
         if target.exists() and not force:
             logger.info(f"{filename} already exists — skipping (use --force to regenerate)")
             continue
+
         if not target.exists():
             alias = _canonical_alias(workflows_dir, template, filename)
+
             if alias is not None:
-                logger.warn(
-                    f"{filename} not generated: {alias.name} already carries the "
-                    f"canonical caller — rename it to {filename} instead "
-                    "(generating would install a second caller for the same check)"
-                )
+                logger.warn(f"{filename} not generated: {alias.name} already carries the " f"canonical caller — rename it to {filename} instead " "(generating would install a second caller for the same check)")
                 continue
+
         # write_bytes, not write_text: the generated callers are pinned
         # byte-for-byte across the fleet, and write_text's default
         # newline=os.linesep would turn their LF into CRLF on Windows.
@@ -655,63 +619,62 @@ def _check_justfile_import(name: str) -> None:
     justfile = Path.cwd() / "justfile"
     recipe_import = f'import? "./{DEST_DIR}/{name}"'
     interop_import = f'import? "./{DEST_DIR}/{INTEROP_NAME}"'
+
     if not justfile.is_file():
         logger.info("no justfile found — create one starting with:")
         print(f"\n    {recipe_import}\n")
         return
-    content = justfile.read_text(errors="replace")
-    has_recipes = (
-        recipe_import in content or f'import "./{DEST_DIR}/{name}"' in content
-    )
+
+    content = justfile.read_text(errors = "replace")
+    has_recipes = (recipe_import in content) or (f'import "./{DEST_DIR}/{name}"' in content)
+
     if interop_import in content:
-        logger.warn(
-            f"justfile still imports {DEST_DIR}/{INTEROP_NAME} — that file is "
-            f"obsolete (bash is banned in recipes); delete the import line"
-        )
+        logger.warn(f"justfile still imports {DEST_DIR}/{INTEROP_NAME} — that file is " f"obsolete (bash is banned in recipes); delete the import line")
+
     if has_recipes:
         logger.info(f"justfile already imports {DEST_DIR}/{name}")
     else:
         logger.info("add near the top of your justfile:")
         print(f"\n    {recipe_import}\n")
 
-
 def _gitignore_path() -> Path:
     return Path.cwd() / ".gitignore"
-
 
 def _gitignore_has_rules() -> bool:
     """True if .gitignore already contains all required ignore rules."""
     return not _missing_gitignore_rules()
 
-
 def _missing_gitignore_rules() -> list[str]:
     """Return the subset of GITIGNORE_RULES not yet present in .gitignore."""
     gi = _gitignore_path()
+
     if not gi.is_file():
         return list(GITIGNORE_RULES)
-    lines = gi.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    lines = gi.read_text(encoding = "utf-8", errors = "replace").splitlines()
     stripped = {ln.strip() for ln in lines}
     return [r for r in GITIGNORE_RULES if r not in stripped]
-
 
 def _ensure_gitignore() -> None:
     """Append any missing GITIGNORE_RULES to .gitignore (idempotent)."""
     missing = _missing_gitignore_rules()
+
     if not missing:
         return
+
     gi = _gitignore_path()
-    header = (
-        "\n# celestia-devtools: staged-on-demand shared justfile recipes "
-        "(celestia-devtools init / just fetch)\n"
-    )
-    with gi.open("a", encoding="utf-8") as f:
-        if gi.stat().st_size > 0 and not gi.read_text(encoding="utf-8").endswith("\n"):
+    header = "\n# celestia-devtools: staged-on-demand shared justfile recipes " "(celestia-devtools init / just fetch)\n"
+
+    with gi.open("a", encoding = "utf-8") as f:
+        if (gi.stat().st_size > 0) and not gi.read_text(encoding = "utf-8").endswith("\n"):
             f.write("\n")
+
         f.write(header)
+
         for rule in missing:
             f.write(f"{rule}\n")
-    logger.ok(f"added .gitignore rule(s): {', '.join(missing)}")
 
+    logger.ok(f"added .gitignore rule(s): {', '.join(missing)}")
 
 if __name__ == "__main__":
     raise SystemExit(main())
