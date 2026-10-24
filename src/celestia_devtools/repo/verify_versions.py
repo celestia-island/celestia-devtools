@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Verify version consistency across the cargo and npm tracks of a repository.
+"""Verify version consistency across the cargo, npm and python tracks of a repository.
 
-A celestia-island repo may carry **two independent version lines** (e.g. hikari:
-Rust crates at ``0.3.19`` and the Vue/npm port at ``0.4.5``).  ``verify-versions``
-gates against *drift* — a package in one track silently diverging from that
-track's baseline.
+A celestia-island repo may carry **independent version lines** (e.g. hikari:
+Rust crates at ``0.3.19`` and the Vue/npm port at ``0.4.5``; Python distributions
+carry their own ``pyproject.toml`` line).  ``verify-versions`` gates against
+*drift* — a package in one track silently diverging from that track's baseline.
 
 (2026-09-26) The former CHANGELOG.md rule is gone: the org bans maintained
 changelogs outright (squashed PRs are the changelog), so consulting one both
@@ -31,12 +31,27 @@ Rules
     (publishable) packages wins.  Any ``package.json`` whose ``version`` differs
     is DRIFT — ``private: true`` packages are included in the comparison (their
     versions must still agree).
-3.  **Exemptions** — an optional ``.versions.toml`` overrides the baselines and
+3.  **python track (2026-10-25, structural audit SR-21)** — Python
+    distributions had no gate at all: ``verify-versions`` reported ``ok: true``
+    with ``cargo_base=null`` / ``npm_base=null`` for the whole Python half of
+    the fleet (``celestia-plugin``, ``electrode_recon``, ``celestia-integration``,
+    ``official-plugins``), so a tag/lock/manifest drift could never fail.  The
+    root ``pyproject.toml`` ``[project].version`` (or ``[tool.poetry].version``)
+    is the baseline; every versioned ``pyproject.toml`` that is *distributable*
+    is compared against it.  Helper projects under ``tests/`` (or ``test/``),
+    ``examples/``, ``scripts/``, ``tools/``, ``fixtures/``, ``benchmarks/`` and
+    ``vendor/`` are not distributions and are skipped (a test harness pinned to a
+    release line is not drift); a distributable manifest that *declares* a
+    version which is empty or not a string is an error, not a skip.  A root ``pyproject.toml`` that declares ``dynamic =
+    ["version"]`` has no static identity to compare: the track is absent, not
+    an error — pin ``[track] python`` to gate it explicitly.
+4.  **Exemptions** — an optional ``.versions.toml`` overrides the baselines and
     skips whole packages::
 
         [track]
         cargo = "0.3.19"   # optional: override the detected cargo baseline
         npm = "0.4.5"      # optional: override the detected npm baseline
+        python = "0.2.0"   # optional: override the detected python baseline
 
         [exempt.cargo]
         "packages/e2e" = "test-only crate"
@@ -44,17 +59,29 @@ Rules
         [exempt.npm]
         "packages/theme" = "vendored fork"
 
-4.  **Fail-closed baselines (2026-09-27, structural scan S1-1)** — a track
+        [exempt.python]
+        "packages/vendor/harness" = "not a distribution"
+
+    Every exemption key is a path relative to the repository root, and since
+    2026-10-25 it may be a shell glob (``fnmatch`` semantics; ``*`` crosses
+    path separators): ``packages/vendor/*`` exempts a vendored tree with one
+    line instead of one entry per manifest.  This is what lets the shared
+    vendored-upstream rule (``patches/boa_*``, ``packages/vendor/``,
+    test-fixture crates) be expressed without 65 hand-written keys.
+
+5.  **Fail-closed baselines (2026-09-27, structural scan S1-1)** — a track
     that *exists* (any gated ``Cargo.toml`` declaring ``[package].version`` or
-    ``[workspace.package].version``, or any ``package.json`` declaring a
-    ``version``) must resolve to a baseline.  An unresolvable baseline is a
+    ``[workspace.package].version``, any ``package.json`` declaring a
+    ``version``, or a root ``pyproject.toml`` declaring a static version)
+    must resolve to a baseline.  An unresolvable baseline is a
     hard error, not a silent pass: a repo whose gate cannot decide must not
     get a green gate.  Remediation: add ``[workspace.package].version`` +
     ``version.workspace = true``, or pin ``[track]`` in ``.versions.toml``.
-5.  **Output** — a human-readable drift table (package → actual → expected →
+6.  **Output** — a human-readable drift table (package → actual → expected →
     suggestion) plus baseline errors; exit 1 when drift is present **or** a
     baseline cannot be resolved, exit 0 otherwise.  ``--json`` emits the same
-    report as machine-readable JSON.
+    report as machine-readable JSON (one block per track: ``cargo``, ``npm``,
+    ``python``).
 
 Usage::
 
@@ -64,6 +91,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import sys
@@ -80,16 +108,27 @@ except ImportError:  # Python 3.9/3.10
     except ImportError:  # pragma: no cover - no TOML parser available
         _toml = None
 
-# Directories never walked: build artefacts / vendored trees whose manifests are
-# not part of either version track.
+# Directories never walked: build artefacts, virtualenvs and vendored trees whose
+# manifests are not part of any version track.
 _SKIP_DIRS = frozenset(
-    {"node_modules", "target", "dist", ".git", "build", ".next", ".venv", "__pycache__"}
+    {
+        "node_modules", "target", "dist", ".git", "build", ".next", ".venv",
+        "venv", ".tox", ".nox", "site-packages", "__pycache__",
+    }
 )
 
 # A Cargo.toml living under an ``examples/`` directory is a demo/example crate,
 # not a published member — its version is not gated (mirrors the common
 # ``exclude = ["examples/*"]`` convention).
 _EXAMPLE_SEGMENT = "examples"
+
+#: Directories whose ``pyproject.toml`` is a helper project, not a
+#: distribution: test harnesses, example apps, tooling shims and vendored
+#: trees.  Their versions intentionally follow whatever they import and must
+#: not be dragged into the package's release line (SR-21).
+_PY_HELPER_SEGMENTS = frozenset(
+    {"tests", "test", "examples", "scripts", "tools", "fixtures", "benchmarks", "vendor"}
+)
 
 
 @dataclass
@@ -110,6 +149,7 @@ class VerifyResult:
     repo: str
     cargo_base: Optional[str] = None
     npm_base: Optional[str] = None
+    python_base: Optional[str] = None
     drifts: List[Drift] = field(default_factory=list)
     # Non-drift failures: a present track whose baseline could not be resolved.
     # These fail the gate exactly like drifts do (fail-closed, S1-1).
@@ -140,6 +180,7 @@ class VerifyResult:
             "repo": self.repo,
             "cargo": {"base": self.cargo_base, "drifts": _drift_dict("cargo")},
             "npm": {"base": self.npm_base, "drifts": _drift_dict("npm")},
+            "python": {"base": self.python_base, "drifts": _drift_dict("python")},
             "errors": list(self.errors),
         }
 
@@ -301,7 +342,7 @@ def load_versions_config(repo: Path, errors: Optional[List[str]] = None) -> dict
         )
     if not data:
         return {}
-    result: dict = {"exempt": {"cargo": set(), "npm": set()}}
+    result: dict = {"exempt": {"cargo": set(), "npm": set(), "python": set()}}
     track = data.get("track")
     if isinstance(track, dict):
         overrides = {
@@ -311,7 +352,7 @@ def load_versions_config(repo: Path, errors: Optional[List[str]] = None) -> dict
             result["track"] = overrides
     exempt = data.get("exempt")
     if isinstance(exempt, dict):
-        for key in ("cargo", "npm"):
+        for key in ("cargo", "npm", "python"):
             table = exempt.get(key)
             if isinstance(table, dict):
                 result["exempt"][key] = set(_norm_path(k) for k in table)
@@ -324,6 +365,19 @@ def _norm_path(path: str) -> str:
     while p.startswith("./"):
         p = p[2:]
     return p.rstrip("/") or "."
+
+
+def _is_exempt(package_id: str, patterns: set) -> bool:
+    """True when *package_id* matches any exemption key.
+
+    Keys are repository-relative paths.  A key without wildcards matches its own
+    directory (the historical behaviour); a key with ``*`` is a shell glob where
+    ``*`` also crosses ``/``, so ``packages/vendor/*`` exempts the whole vendored
+    tree and ``patches/boa_*`` covers ``patches/boa_engine`` / ``_gc`` / ``_parser``
+    (2026-10-25 structural audit SR-22 — the shared vendored-upstream rule must be
+    expressible without one key per manifest).
+    """
+    return any(fnmatch.fnmatchcase(package_id, pattern) for pattern in patterns)
 
 
 # ── cargo track ──────────────────────────────────────────────────────────────
@@ -382,7 +436,7 @@ def collect_cargo_drifts(
             continue  # the workspace / root manifest defines the baseline
         if _is_example_crate(repo, manifest):
             continue
-        if _package_id(repo, manifest) in exempt:
+        if _is_exempt(_package_id(repo, manifest), exempt):
             continue
         data, reason = _load_toml(manifest)
         if reason and errors is not None:
@@ -480,7 +534,7 @@ def collect_npm_drifts(
         return []
     drifts: List[Drift] = []
     for manifest in _iter_manifests(repo, "package.json"):
-        if _package_id(repo, manifest) in exempt:
+        if _is_exempt(_package_id(repo, manifest), exempt):
             continue
         pkg, reason = _load_json(manifest)
         if reason and errors is not None:
@@ -508,6 +562,172 @@ def collect_npm_drifts(
                 )
             )
     return drifts
+
+
+# ── python track ─────────────────────────────────────────────────────────────
+
+
+def _is_python_helper(repo: Path, manifest: Path) -> bool:
+    """True for a pyproject that is a helper project, not a distribution."""
+    parts = manifest.parent.relative_to(repo).parts
+    return any(part in _PY_HELPER_SEGMENTS for part in parts)
+
+
+def _python_version_field(data: dict) -> tuple[Optional[str], object]:
+    """Return ``(source, raw_version)`` for a pyproject-shaped table.
+
+    ``source`` is ``"project"`` (PEP 621), ``"poetry"`` or ``"dynamic"`` when
+    ``[project].dynamic`` names ``version`` (the identity is only known at build
+    time, so there is nothing to compare).  ``(None, None)`` means the table
+    declares no version at all.  The raw value is returned untyped so a
+    malformed declaration (``version = 1``, ``version = ""``) still counts as
+    present and trips the fail-closed baseline check instead of being silently
+    skipped.
+    """
+    project = data.get("project")
+    if isinstance(project, dict):
+        dynamic = project.get("dynamic")
+        if isinstance(dynamic, list) and "version" in [str(v) for v in dynamic]:
+            return "dynamic", None
+        if "version" in project:
+            return "project", project["version"]
+    tool = data.get("tool")
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry")
+        if isinstance(poetry, dict) and "version" in poetry:
+            return "poetry", poetry["version"]
+    return None, None
+
+
+def _python_declared_version(data: dict) -> Optional[str]:
+    """Static, non-empty string version from ``[project]`` or ``[tool.poetry]``."""
+    _source, raw = _python_version_field(data)
+    if not isinstance(raw, str):
+        return None
+    normalized = _norm_version(raw)
+    return normalized or None
+
+
+def detect_python_base(
+    repo: Path, override: Optional[str], errors: Optional[List[str]] = None
+) -> Optional[str]:
+    if override is not None:
+        return _norm_version(override)
+    root, reason = _load_toml(repo / "pyproject.toml")
+    if reason and errors is not None:
+        errors.append(f"pyproject.toml unparseable, python baseline unknown: {reason}")
+    if not root:
+        return None
+    return _python_declared_version(root)
+
+
+def python_track_present(repo: Path) -> bool:
+    """True when the root pyproject declares a static version.
+
+    Helper-only trees (``tests/python``) and dynamic-version projects do not
+    create an identity the repository has to keep in line; an explicit
+    ``[track] python`` pin does (see :func:`verify`).
+    """
+    root = repo / "pyproject.toml"
+    if not root.is_file():
+        return False
+    data, _reason = _load_toml(root)
+    if not isinstance(data, dict):
+        # A corrupt root may well carry a version: count it as present so the
+        # gate fails closed.  detect_python_base/_python_root_drifts are the
+        # only places that report the parse failure (no duplicate errors).
+        return True
+    source, _raw = _python_version_field(data)
+    return source is not None and source != "dynamic"
+
+
+def collect_python_drifts(
+    repo: Path,
+    base: Optional[str],
+    exempt: set,
+    errors: Optional[List[str]] = None,
+) -> List[Drift]:
+    if base is None:
+        return []
+    drifts: List[Drift] = []
+    root_manifest = repo / "pyproject.toml"
+    for manifest in _iter_manifests(repo, "pyproject.toml"):
+        if manifest == root_manifest:
+            continue  # the root defines the baseline
+        if _is_python_helper(repo, manifest):
+            continue
+        if _is_exempt(_package_id(repo, manifest), exempt):
+            continue
+        data, reason = _load_toml(manifest)
+        if reason and errors is not None:
+            errors.append(
+                f"{_norm_path(str(manifest.relative_to(repo)))} unparseable, its version unchecked: {reason}"
+            )
+        if not isinstance(data, dict):
+            continue
+        source, raw = _python_version_field(data)
+        actual = _python_declared_version(data)
+        if source not in (None, "dynamic") and actual is None:
+            if errors is not None:
+                errors.append(
+                    f"{_norm_path(str(manifest.relative_to(repo)))} declares an "
+                    f"unusable version {raw!r}; expected a non-empty string"
+                )
+            continue
+        if actual is not None and actual != base:
+            drifts.append(
+                Drift(
+                    track="python",
+                    package=_package_id(repo, manifest),
+                    actual=actual,
+                    expected=base,
+                    suggestion=f"set version to {base}",
+                )
+            )
+    return drifts
+
+
+def _python_root_drifts(
+    repo: Path, base: str, errors: Optional[List[str]] = None
+) -> List[Drift]:
+    """Compare the root pyproject against a ``[track] python`` pin.
+
+    The parse failure is reported here because :func:`detect_python_base`
+    returns the override before ever loading the root — the pinned-repo
+    variant of the 2026-10-03 master incident (see :func:`_cargo_root_drifts`).
+    """
+    root, reason = _load_toml(repo / "pyproject.toml")
+    if reason:
+        if errors is not None:
+            errors.append(
+                f"pyproject.toml unparseable, root version unchecked: {reason}"
+            )
+        return []
+    if not isinstance(root, dict):
+        return []
+    source, raw = _python_version_field(root)
+    declared = _python_declared_version(root)
+    if source not in (None, "dynamic") and declared is None:
+        if errors is not None:
+            errors.append(
+                f"pyproject.toml declares an unusable version {raw!r}; expected a "
+                "non-empty string"
+            )
+        return []
+    if declared is None or declared == base:
+        return []
+    return [
+        Drift(
+            track="python",
+            package=".",
+            actual=declared,
+            expected=base,
+            suggestion=(
+                "root pyproject.toml version diverged from the [track] python pin — "
+                "bump the pin in .versions.toml in the same release commit"
+            ),
+        )
+    ]
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
@@ -577,6 +797,8 @@ def verify(repo: Path) -> VerifyResult:
     cargo_base = detect_cargo_base(repo, cargo_override, errors)
     npm_override = track.get("npm")
     npm_base = detect_npm_base(repo, npm_override, errors)
+    python_override = track.get("python")
+    python_base = detect_python_base(repo, python_override, errors)
     if cargo_track_present(repo, errors) and cargo_base is None:
         errors.append(
             "cargo track is present (versioned Cargo.toml manifests exist) but "
@@ -594,6 +816,14 @@ def verify(repo: Path) -> VerifyResult:
             "package.json version and no majority among publishable packages. "
             "Pin [track] npm in .versions.toml."
         )
+    if (python_track_present(repo) or python_override is not None) and python_base is None:
+        if not any("pyproject.toml" in err for err in errors):
+            errors.append(
+                "python track is present (the root pyproject.toml declares a "
+                "version, or [track] python is pinned) but no baseline could be "
+                "resolved. Fix the declaration, or pin [track] python in "
+                ".versions.toml."
+            )
 
     drifts: List[Drift] = []
     drifts.extend(
@@ -616,12 +846,18 @@ def verify(repo: Path) -> VerifyResult:
             publishable_only=npm_baseline_source(repo, npm_override) == "majority",
         )
     )
+    drifts.extend(
+        collect_python_drifts(repo, python_base, exempt.get("python", set()), errors)
+    )
+    if python_override is not None and python_base is not None:
+        drifts.extend(_python_root_drifts(repo, python_base, errors))
     drifts.sort(key=lambda d: (d.track, d.package))
 
     return VerifyResult(
         repo=str(repo),
         cargo_base=cargo_base,
         npm_base=npm_base,
+        python_base=python_base,
         drifts=drifts,
         errors=errors,
     )
@@ -662,6 +898,8 @@ def _render_text(result: VerifyResult) -> str:
             summary.append(f"cargo={result.cargo_base}")
         if result.npm_base is not None:
             summary.append(f"npm={result.npm_base}")
+        if result.python_base is not None:
+            summary.append(f"python={result.python_base}")
         detail = f" ({', '.join(summary)})" if summary else ""
         lines.append(f"No version drift detected{detail}.")
 
@@ -680,7 +918,7 @@ def _render_json(result: VerifyResult, ok: bool) -> str:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="celestia-devtools verify-versions",
-        description="Verify version consistency across cargo/npm tracks.",
+        description="Verify version consistency across cargo/npm/python tracks.",
     )
     parser.add_argument(
         "repo", nargs="?", default=".",
