@@ -1,0 +1,53 @@
+# Family-layer baselines for `celestia-devtools family-versions`.
+#
+# Why this is data, not code (SR-20, 2026-10-25 structural audit): the three
+# tables below used to be literals inside family_versions.py, so every plana
+# release or npm-line change required editing Python and re-reading the release
+# workflow to know whether a member is really published. Keeping them in one
+# stamped TOML file makes the update a data change and lets the gate tell the
+# user WHICH baseline is stale.
+#
+# Update rule: when plana's publish.yml adds/removes a published member, or an
+# npm binding changes its published line, edit this file in the same wave.
+# `source` names the authority; `updated_at` is the manual re-check date.
+updated_at = "2026-10-25"
+source = "plana/.github/workflows/publish.yml + crates.io published lines; npm bindings published by their own repos"
+
+[plana_published]
+# member = published minor line (crates.io). A member that is not listed here is
+# not published yet and must stay a git reference on master — that includes
+# members with `publish = true` in their manifest but no publish.yml lane
+# (e.g. plana-celestia-config, plana-evernight-client).
+plana = "0.2"
+plana-rpc-client = "0.2"
+plana-rpc-server = "0.1"
+plana-celestia-types = "0.1"
+plana-tauri = "0.1"
+
+[rust_layers.kirino]
+line = "0.7"
+why = "auth primitives: JWT/RBAC/sessions (Layer 0)"
+
+[rust_layers.plana]
+line = "0.2"
+why = "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"
+
+[rust_layers.hikari]
+line = "0.3"
+why = "UI components, Rust track (Layer 2); published line is 0.3.x — the workspace has bumped to 0.4.0, bump this entry when 0.4 ships so ^0.4 consumers are not judged stale"
+
+[npm_layers."@celestia-island/hikari"]
+line = "0.55"
+why = "UI component library (Layer 2)"
+
+[npm_layers."@celestia-island/kirino"]
+line = "0.7"
+why = "auth bindings (Layer 0, npm track)"
+
+[npm_layers."@celestia-island/plana-types"]
+line = "0.1"
+why = "shared protocol types (Layer 1, npm track)"
+
+[npm_layers."@celestia-island/plana-rpc-client"]
+line = "0.1"
+why = "RPC client (Layer 1, npm track)"

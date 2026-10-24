@@ -68,31 +68,79 @@ REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
 #: share one line: `plana` / `plana-rpc-client` ride 0.2 while
 #: `plana-rpc-server` / `plana-celestia-types` / `plana-tauri` are on 0.1, so a
 #: single 0.2 comparison would fail a correct `plana-celestia-types = "^0.1"`.
-PLANA_PUBLISHED: dict[str, version] = {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 1, 0), "plana-tauri": (0, 1, 0)}
+#: The published/consumed family lines live in ``family_layers.toml`` (next to
+#: this module) so a release wave updates data, not code — see that file's
+#: header for the update rule and the authority of each table.
+_FAMILY_LAYERS_PATH = Path(__file__).with_name("family_layers.toml")
 
-#: `(crate-family prefix, canonical version, why)` for the Rust layers.  A crate
-#: belongs to the family when its name — with `-` read as `_` — is the prefix
-#: itself or starts with `prefix_`; that is what catches `kirino-session` and
-#: `plana-jsonrpc`, which is where the real consumption lives.
-# The Rust track of the UI layer is 0.3.x while the npm binding is 0.55.x;
-# without it a `[patch."…/hikari.git"] hikari-* = { path = "../hikari/…" }`
-# (a cross-repository path dependency the rules forbid) reads as unknown.
-RUST_LAYERS: tuple[tuple[str, version, str], ...] = (("kirino", (0, 7, 0), "auth primitives: JWT/RBAC/sessions (Layer 0)"), ("plana", (0, 2, 0), "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"), ("hikari", (0, 3, 0), "UI components, Rust track (Layer 2)"))
+class family_layers_error(ValueError):
+    """The data file is missing or does not match the documented schema."""
+
+def parse_layer_line(text: object, where: str) -> version:
+    """Parse ``"major.minor"`` (a published line) into ``(major, minor, 0)``."""
+
+    if not isinstance(text, str):
+        raise family_layers_error("%s: expected a string line, got %r" % (where, text))
+
+    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)", text.strip())
+
+    if match is None:
+        raise family_layers_error("%s: expected a major.minor line, got %r" % (where, text))
+
+    return (int(match.group(1)), int(match.group(2)), 0)
+
+def load_family_layers(path: Path | None = None) -> dict:
+    """Load and validate the family-layer data file."""
+    data_path = path or _FAMILY_LAYERS_PATH
+
+    if not data_path.is_file():
+        raise family_layers_error("family layer data not found at %s" % data_path)
+
+    try:
+        data = tomllib.loads(data_path.read_bytes().decode("utf-8"))
+    except Exception as exc:
+        raise family_layers_error("%s is not valid TOML: %s: %s" % (data_path, type(exc).__name__, exc)) from exc
+
+    for key in ("updated_at", "source"):
+        if not isinstance(data.get(key), str) or not data[key].strip():
+            raise family_layers_error("%s: [%s] must be a non-empty string" % (data_path, key))
+
+    published_raw = data.get("plana_published")
+
+    if not isinstance(published_raw, dict) or not published_raw:
+        raise family_layers_error("%s: [plana_published] must be a non-empty table" % data_path)
+
+    plana_published = {member.replace("_", "-"): parse_layer_line(line, "plana_published.%s" % member) for member, line in published_raw.items()}
+    layers: dict = {"updated_at": data["updated_at"], "source": data["source"], "plana_published": plana_published}
+
+    for table, name in (("rust_layers", "rust_layers"), ("npm_layers", "npm_layers")):
+        raw = data.get(table)
+
+        if not isinstance(raw, dict) or not raw:
+            raise family_layers_error("%s: [%s] must be a non-empty table" % (data_path, name))
+
+        entries = []
+
+        for key, entry in raw.items():
+            if not isinstance(entry, dict):
+                raise family_layers_error("%s: [%s.%s] must be a table with line/why" % (data_path, name, key))
+
+            if not isinstance(entry.get("why"), str) or not entry["why"].strip():
+                raise family_layers_error("%s: [%s.%s].why must be a non-empty string" % (data_path, name, key))
+
+            entries.append((key, parse_layer_line(entry.get("line"), "%s.%s.line" % (name, key)), entry["why"]))
+
+        layers[name] = tuple(entries)
+
+    return layers
+
+_FAMILY_LAYERS = load_family_layers()
+PLANA_PUBLISHED: dict[str, version] = _FAMILY_LAYERS["plana_published"]
+RUST_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["rust_layers"]
+NPM_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["npm_layers"]
 
 #: `crate family → repository` for the git-source check.
 FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
-
-#: `(npm package, canonical version, why)` — informational: the workspace rules
-#: currently mandate `^*` for family packages, so an unbounded range warns
-#: (showing what the audit measured) instead of failing.
-# (package, the line that package is actually published on, why). The npm
-# binding tracks the crate on its own schedule: until 2026-10-24
-# `@celestia-island/kirino` was stuck at 0.6.x while the crate was 0.7.x, and
-# the table said so — which made every correct `^0.7` declaration look like a
-# deviation (chest carried the one remaining warning for exactly that). The
-# npm release of 0.7.10 closes the gap, so the two tracks agree again and the
-# cross-track check below stops warning.
-NPM_LAYERS: tuple[tuple[str, version, str], ...] = (("@celestia-island/hikari", (0, 55, 0), "UI component library (Layer 2)"), ("@celestia-island/kirino", (0, 7, 0), "auth bindings (Layer 0, npm track)"), ("@celestia-island/plana-types", (0, 1, 0), "shared protocol types (Layer 1, npm track)"), ("@celestia-island/plana-rpc-client", (0, 1, 0), "RPC client (Layer 1, npm track)"))
 
 #: `layer → (rust crate family, npm package)` for the cross-track check: the same
 #: layer shipped on two tracks has to agree on which generation it is.
