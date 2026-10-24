@@ -263,11 +263,12 @@ CHECK_RULES: tuple[Rule, ...] = (
         "explicit-precedence",
         "Mixed operators use explicit parentheses",
         ("P07", "P30", "P32"),
-        False,
+        True,
         "A nested expression whose operator precedence differs from its parent needs "
         "explicit parentheses, e.g. (a + b) * c, target and (not ready). Exempt: "
         "same-precedence chains (a + b + c), chained comparisons (a < b < c), "
-        "unary not operands and right-associative ** chains. Reported as a warning "
+        "unary not operands and right-associative ** chains. Fix inserts the missing "
+        "parentheses around the lower-precedence operand. Reported as a warning "
         "by default; use the config severity table to raise it to error. Nothing "
         "inside an f-string token span is reported (the span is opaque on 3.11 and "
         "3.12+).",
@@ -283,8 +284,10 @@ CHECK_RULES: tuple[Rule, ...] = (
         "match). A block header and its first body statement are adjacent with no "
         "blank line. The module top level is included unless blank_line_scope = "
         '"nested". else/elif/except/finally branch gaps belong to branch-adjacency. '
-        "Fix only deletes extra blank lines; missing blank lines are reported but not "
-        "inserted.",
+        "Fix deletes extra blank lines and inserts a missing blank line between "
+        "adjacent statements (never between a block header and its first body "
+        "statement); a missing blank line before a comment block goes before the "
+        "comment so it stays attached to the following statement.",
     ),
     _rule(
         "branch-adjacency",
@@ -310,7 +313,8 @@ CHECK_RULES: tuple[Rule, ...] = (
         False,
         "Class names, function names, parameters, assignment targets and attribute "
         "definitions must match [a-z_][a-z0-9_]*. Exempt: dunder names, '_', "
-        "ALL_CAPS constants (variables/attributes), naming_allow patterns, framework "
+        "ALL_CAPS constants including the leading-underscore form "
+        "(_FOO, _MAX_SIZE; variables/attributes), naming_allow patterns, framework "
         "callbacks (setUp, tearDown, ... plus framework_callbacks), "
         "NamedTuple/TypedDict classes, assignments whose value is a TypeVar/NewType/"
         "ParamSpec/TypeVarTuple/NamedTuple/TypedDict, and re-export aliases in "
@@ -2058,10 +2062,10 @@ def _operator_operands(node: ast.AST) -> list[ast.AST]:
     return []
 
 
-def check_explicit_precedence(context: FileContext, config: "StyleConfig") -> list[Issue]:
-    """Report nested operators of different precedence without parentheses."""
+def _explicit_precedence_children(context: FileContext) -> list[ast.AST]:
+    """Return the operands that need explicit parentheses (shared by check/fix)."""
 
-    issues: list[Issue] = []
+    children: list[ast.AST] = []
     for node in context.nodes():
         parent_precedence = operator_precedence(node)
         if parent_precedence is None:
@@ -2080,15 +2084,39 @@ def check_explicit_precedence(context: FileContext, config: "StyleConfig") -> li
                 continue
             if is_parenthesized(context, child):
                 continue
-            issues.append(
-                _issue(
-                    "explicit-precedence",
-                    child_start[0],
-                    child_start[1] + 1,
-                    "Mixed operators need explicit parentheses.",
-                )
+            children.append(child)
+    return children
+
+
+def check_explicit_precedence(context: FileContext, config: "StyleConfig") -> list[Issue]:
+    """Report nested operators of different precedence without parentheses."""
+
+    issues: list[Issue] = []
+    for child in _explicit_precedence_children(context):
+        child_start = context.ast_start(child)
+        issues.append(
+            _issue(
+                "explicit-precedence",
+                child_start[0],
+                child_start[1] + 1,
+                "Mixed operators need explicit parentheses.",
             )
+        )
     return issues
+
+
+def fix_explicit_precedence(context: FileContext, config: "StyleConfig") -> str:
+    """Wrap mixed-precedence operands in parentheses."""
+
+    edits: list[LineEdit] = []
+    for child in _explicit_precedence_children(context):
+        start = context.ast_start(child)
+        end = context.ast_end(child)
+        edits.append(LineEdit(start[0], start[1], start[1], "("))
+        edits.append(LineEdit(end[0], end[1], end[1], ")"))
+    if not edits:
+        return context.text
+    return _apply_line_edits(context, edits)
 
 
 def _blank_runs(rows: list[int]) -> list[list[int]]:
@@ -2256,7 +2284,7 @@ def check_decorator_adjacency(context: FileContext, config: "StyleConfig") -> li
 
 
 _SNAKE_CASE_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
-_ALL_CAPS_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_ALL_CAPS_RE = re.compile(r"^_*[A-Z][A-Z0-9_]*$")
 _FRAMEWORK_CALLBACKS = frozenset(
     {
         "setUp",
@@ -2811,8 +2839,11 @@ def fix_decorator_adjacency(context: FileContext, config: "StyleConfig") -> str:
     return _delete_rows(context, delete)
 
 
-def _blank_lines_around_block_rows(context: FileContext, config: "StyleConfig") -> set[int]:
+def _blank_line_edits(context: FileContext, config: "StyleConfig") -> tuple[set[int], set[int]]:
+    """Return (blank rows to delete, rows that need a blank line inserted before)."""
+
     delete: set[int] = set()
+    insert: set[int] = set()
     for container, statements, header_check in _body_entries(context):
         if not statements:
             continue
@@ -2831,19 +2862,44 @@ def _blank_lines_around_block_rows(context: FileContext, config: "StyleConfig") 
             current_start = current.lineno
             if current_start <= previous_end:
                 continue
-            for run in _blank_runs(context.blank_rows_between(previous_end, current_start)):
+            blanks = context.blank_rows_between(previous_end, current_start)
+            if not blanks:
+                # No blank line at all: insert one directly after the previous
+                # statement, so a comment block attached to the next statement
+                # keeps travelling with it.
+                insert.add(previous_end + 1)
+                continue
+            for run in _blank_runs(blanks):
                 if len(run) > 1:
                     delete.update(run[1:])
-    return delete
+    return delete, insert
+
+
+def _apply_blank_row_edits(context: FileContext, delete: set[int], insert: set[int]) -> str:
+    """Return the text with the given rows deleted and blank rows inserted.
+
+    An inserted blank line goes before the row recorded in *insert*.
+    """
+
+    if not delete and not insert:
+        return context.text
+    rewritten: list[str] = []
+    for row in range(1, context.line_count + 1):
+        if row in insert:
+            rewritten.append("")
+        if row in delete:
+            continue
+        rewritten.append(context.lines[row - 1])
+    if context.text.endswith("\n"):
+        rewritten.append("")
+    return "\n".join(rewritten)
 
 
 def fix_blank_lines_around_blocks(context: FileContext, config: "StyleConfig") -> str:
-    """Remove extra blank lines around complete blocks."""
+    """Delete extra blank lines and insert the missing lines around blocks."""
 
-    delete = _blank_lines_around_block_rows(context, config)
-    if not delete:
-        return context.text
-    return _delete_rows(context, delete)
+    delete, insert = _blank_line_edits(context, config)
+    return _apply_blank_row_edits(context, delete, insert)
 
 
 def _comment_blank_rows(context: FileContext, config: "StyleConfig") -> set[int]:
@@ -3010,6 +3066,104 @@ def _merge_statement_tokens(tokens: Sequence[tokenize.TokenInfo]) -> str:
     return "".join(parts)
 
 
+_FRAGMENT_OPERATOR_CHARS = "+-*/%@<>=&|^~"
+
+
+def _char_needs_space(previous: str, current: str) -> bool:
+    """Return whether a single space is needed when joining two source fragments."""
+
+    if not previous or not current:
+        return False
+    last = previous[-1]
+    first = current[0]
+    if last in "([{.":
+        return False
+    if first in ")]},;:.":
+        return False
+    if last in _FRAGMENT_OPERATOR_CHARS or first in _FRAGMENT_OPERATOR_CHARS:
+        return True
+    if last in ",;:":
+        return True
+    wordish_last = last.isalnum() or last == "_" or last in "\"'"
+    wordish_first = first.isalnum() or first == "_" or first in "\"'"
+    if last in ")]}" and (first.isalnum() or first == "_" or first in "\"'"):
+        return True
+    if wordish_last and wordish_first:
+        return True
+    return False
+
+
+def _group_has_multiline_fstring(context: FileContext, start_row: int, end_row: int) -> bool:
+    """Return whether a single f-string inside the logical line spans rows."""
+
+    for span_start_row, _start_column, span_end_row, _end_column in context.fstring_spans:
+        if (
+            span_start_row < span_end_row
+            and start_row <= span_start_row
+            and span_end_row <= end_row
+        ):
+            return True
+    return False
+
+
+def _merge_source_fragments(
+    context: FileContext,
+    start_row: int,
+    end_row: int,
+    tokens: list[tokenize.TokenInfo],
+) -> str | None:
+    """Join the source fragments of a logical line whose tokens include f-strings.
+
+    The token text inside an f-string is runtime data, so this path never
+    re-spaces tokens: it keeps every token's original source text, adds only the
+    whitespace needed at the removed line breaks, and accepts the result only if
+    re-tokenizing the merged line yields exactly the same significant tokens and
+    the whole file still parses.
+    """
+
+    first = tokens[0]
+    last = tokens[-1]
+    first_by_row: dict[int, tokenize.TokenInfo] = {}
+    last_by_row: dict[int, tokenize.TokenInfo] = {}
+    for tok in tokens:
+        first_by_row.setdefault(tok.start[0], tok)
+        last_by_row[tok.end[0]] = tok
+    pieces: list[str] = []
+    for row in range(start_row, end_row + 1):
+        line = context.line(row)
+        left = first.start[1] if row == start_row else first_by_row[row].start[1]
+        right = last.end[1] if row == end_row else len(line)
+        pieces.append(line[left:right].strip())
+    merged = pieces[0]
+    for offset in range(1, len(pieces)):
+        if _char_needs_space(merged, pieces[offset]):
+            merged += " "
+        merged += pieces[offset]
+    prefix = context.line(start_row)[: first.start[1]]
+    merged = prefix + merged
+    try:
+        merged_tokens = [
+            tok
+            for tok in tokenize.generate_tokens(io.StringIO(merged).readline)
+            if tok.type not in _SKIP_TOKEN_TYPES
+        ]
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    if tuple((tok.type, tok.string) for tok in merged_tokens) != tuple(
+        (tok.type, tok.string) for tok in tokens
+    ):
+        return None
+    candidate_lines = list(context.lines[: context.line_count])
+    candidate_lines[start_row - 1 : end_row] = [merged]
+    if context.text.endswith("\n"):
+        candidate_lines.append("")
+    try:
+        ast.parse("\n".join(candidate_lines))
+    except SyntaxError:
+        return None
+    return merged
+
+
 def _mergeable_logical_lines(
     context: FileContext, config: "StyleConfig"
 ) -> list[tuple[int, int, str]]:
@@ -3033,8 +3187,6 @@ def _mergeable_logical_lines(
             tok.type == tokenize.COMMENT for tok in [context.tokens[i] for i in logical.token_ids]
         ):
             continue
-        if any(tok.type in _FSTRING_TYPES for tok in tokens):
-            continue
         if any(tok.start[0] != tok.end[0] for tok in tokens):
             continue
         first_line = context.line(start_row)
@@ -3043,6 +3195,14 @@ def _mergeable_logical_lines(
         last_line = context.line(end_row)
         last = tokens[-1]
         if last_line[last.end[1] :].strip():
+            continue
+        if any(tok.type in _FSTRING_TYPES for tok in tokens):
+            if _group_has_multiline_fstring(context, start_row, end_row):
+                continue
+            merged = _merge_source_fragments(context, start_row, end_row, tokens)
+            if merged is None:
+                continue
+            merges.append((start_row, end_row, merged))
             continue
         merged = _merge_statement_tokens(tokens)
         prefix = first_line[: first.start[1]]
@@ -3246,6 +3406,7 @@ FIX_FUNCS: dict[str, Callable[[FileContext, "StyleConfig"], str]] = {
     "binary-operator-spacing": fix_binary_operator_spacing,
     "equal-spacing": fix_equal_spacing,
     "colon-spacing": fix_colon_spacing,
+    "explicit-precedence": fix_explicit_precedence,
     "redundant-parens": fix_redundant_parens,
 }
 
@@ -3266,6 +3427,7 @@ FIX_ORDER: tuple[str, ...] = (
     "binary-operator-spacing",
     "equal-spacing",
     "colon-spacing",
+    "explicit-precedence",
     "redundant-parens",
 )
 

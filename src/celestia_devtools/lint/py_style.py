@@ -124,6 +124,7 @@ SKIP_DIRECTORY_NAMES = frozenset(
 BUILD_ARTIFACT_DIRECTORY_NAMES = frozenset({"build", "dist", "target"})
 
 _DIRECTIVE_RE = re.compile(r"#\s*py-style-ok:(?P<body>.*)$")
+_FILE_DIRECTIVE_RE = re.compile(r"#\s*py-style-ok-file:(?P<body>.*)$")
 
 _USAGE = """usage: py-style <command> [options]
 
@@ -367,6 +368,55 @@ def parse_directives(
     return directives, diagnostics
 
 
+@dataclass(frozen=True)
+class FileDirective:
+    """Parsed '# py-style-ok-file:' exemption of one file."""
+
+    active: bool
+    rules: frozenset[str] | None
+
+
+def parse_file_directive(context: FileContext, shown: str) -> tuple[FileDirective, list[str]]:
+    """Parse file-level exemption directives from the header comment block.
+
+    Only comment-only lines before the first code statement are considered. A
+    directive without a reason never exempts, and unknown rule ids are
+    diagnostics; both cases leave the rest of the directive ineffective.
+    """
+
+    diagnostics: list[str] = []
+    selected: set[str] = set()
+    all_rules = False
+    active = False
+    for row in sorted(context.comment_rows):
+        if context.first_sig_row is not None and row >= context.first_sig_row:
+            continue
+        match = _FILE_DIRECTIVE_RE.search(context.line(row))
+        if match is None:
+            continue
+        rules_text, separator, reason_text = match.group("body").partition(":")
+        reason = reason_text.strip() if separator else ""
+        names = {piece.strip() for piece in rules_text.split(",") if piece.strip()}
+        unknown = names - CHECK_RULE_IDS - {"*"}
+        if unknown:
+            rendered = ", ".join(sorted(unknown))
+            diagnostics.append(
+                f"{shown}:{row}: unknown rule id(s) in py-style-ok-file directive: {rendered}"
+            )
+        if not reason:
+            diagnostics.append(
+                f"{shown}:{row}: py-style-ok-file directive without a reason is ignored"
+            )
+            continue
+        active = True
+        if "*" in names:
+            all_rules = True
+        selected.update(names & CHECK_RULE_IDS)
+    if not active:
+        return FileDirective(False, None), diagnostics
+    return FileDirective(True, None if all_rules else frozenset(selected)), diagnostics
+
+
 def _issue_is_inline_exempted(issue: Issue, directives: dict[int, list[Directive]]) -> bool:
     for row in (issue.line, issue.line - 1):
         for directive in directives.get(row, ()):
@@ -513,6 +563,7 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
     reports: dict[Path, FileReport] = {}
     warnings: list[str] = []
     contexts: dict[Path, tuple[FileContext, dict[int, list[Directive]]]] = {}
+    file_directives: dict[Path, FileDirective] = {}
     modules: list[ModuleInfo] = []
 
     for path in discovery.files:
@@ -540,6 +591,9 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
         directives, directive_diagnostics = parse_directives(context, shown)
         warnings.extend(directive_diagnostics)
         contexts[path] = (context, directives)
+        file_directive, file_diagnostics = parse_file_directive(context, shown)
+        warnings.extend(file_diagnostics)
+        file_directives[path] = file_directive
         for rule_id in active:
             checker = CHECK_FUNCS.get(rule_id)
             if checker is not None:
@@ -598,6 +652,14 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
     exempted = 0
     flattened: list[tuple[str, Issue]] = []
     for path, shown, issue in raw:
+        file_directive = file_directives.get(path)
+        if (
+            file_directive is not None
+            and file_directive.active
+            and (file_directive.rules is None or issue.rule in file_directive.rules)
+        ):
+            exempted += 1
+            continue
         if _issue_is_config_exempted(issue, path, config, cwd):
             exempted += 1
             continue
@@ -846,11 +908,24 @@ def run_fix_command(args: argparse.Namespace) -> int:
         if not text:
             continue
         try:
-            FileContext.build(shown, text)
+            context = FileContext.build(shown, text)
         except ParseFailure:
             skipped.append(f"{shown}: parse error")
             continue
-        rewritten, applied, fatal = _fix_one_file(path, text, fixers, config)
+        file_directive, file_diagnostics = parse_file_directive(context, shown)
+        if not args.quiet:
+            for diagnostic in file_diagnostics:
+                print(f"py-style: warning: {diagnostic}", file=sys.stderr)
+        active_fixers = fixers
+        if file_directive.active:
+            active_fixers = [
+                rule_id
+                for rule_id in fixers
+                if file_directive.rules is not None and rule_id not in file_directive.rules
+            ]
+            if not active_fixers:
+                continue
+        rewritten, applied, fatal = _fix_one_file(path, text, active_fixers, config)
         if fatal is not None:
             print(f"py-style: fatal: {shown}: {fatal}", file=sys.stderr)
             return EXIT_ERROR

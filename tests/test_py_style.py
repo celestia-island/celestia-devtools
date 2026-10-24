@@ -708,6 +708,62 @@ def test_snake_case_definition_exemptions_good(tmp_path):
     assert rule_hits(tmp_path, body, "snake-case-definition") == []
 
 
+def test_snake_case_definition_underscore_constants_exempt(tmp_path):
+    body = (
+        "_FOO = 1\n"
+        "MAX_SIZE = 1\n"
+        "_MAX_SIZE = 1\n"
+        "__X__ = 1\n"
+        "_TYPE_NAME: int = 1\n"
+        "\n"
+        "\n"
+        "class worker:\n"
+        "    _CLASS_CONST = 1\n"
+        "    __PRIVATE_CONST = 2\n"
+        "\n"
+        "    def run(self):\n"
+        "        return self._CLASS_CONST\n"
+    )
+    assert rule_hits(tmp_path, body, "snake-case-definition") == []
+
+
+def test_snake_case_definition_underscore_camel_is_still_bad(tmp_path):
+    body = (
+        "_maxSize = 1\n"
+        "_mixed_CASE = 2\n"
+        "lowerCase = 3\n"
+        "\n"
+        "\n"
+        "class worker:\n"
+        "    def run(self):\n"
+        "        self._camelAttr = 1\n"
+        "        return self._camelAttr\n"
+    )
+    hits = rule_hits(tmp_path, body, "snake-case-definition")
+    assert hits == [
+        "snake-case-definition",
+        "snake-case-definition",
+        "snake-case-definition",
+        "snake-case-definition",
+    ]
+
+
+def test_snake_case_definition_named_tuple_classes_still_exempt(tmp_path):
+    body = (
+        "from typing import NamedTuple, TypedDict\n"
+        "\n"
+        "\n"
+        "class Step(NamedTuple):\n"
+        "    label: str\n"
+        "    index: int\n"
+        "\n"
+        "\n"
+        "class StepMap(TypedDict):\n"
+        "    label: str\n"
+    )
+    assert rule_hits(tmp_path, body, "snake-case-definition") == []
+
+
 def test_snake_case_definition_init_reexport_exempt(tmp_path):
     body = "from .thing import thing\n\nThing = thing\n"
     hits = rule_hits(tmp_path, body, "snake-case-definition", name="__init__.py")
@@ -1408,6 +1464,214 @@ def test_inline_directive_unknown_rule_warns(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# File-level exemption directives
+# ---------------------------------------------------------------------------
+
+
+def test_file_directive_with_reason_exempts_whole_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(
+        tmp_path,
+        "# py-style-ok-file: *: generated lookup table\nx = 1   \n# note\there\n",
+        "code.py",
+    )
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace,no-tabs",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 0
+    assert payload["issues"] == []
+    assert payload["summary"]["exempted"] == 2
+
+
+def test_file_directive_limits_rules(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(
+        tmp_path,
+        "# py-style-ok-file: trailing-whitespace: generated table\nx = 1+2   \n",
+        "code.py",
+    )
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace,binary-operator-spacing",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 1
+    assert [issue["rule"] for issue in payload["issues"]] == ["binary-operator-spacing"]
+    assert payload["summary"]["exempted"] == 1
+
+
+def test_file_directive_without_reason_does_not_exempt(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path, "# py-style-ok-file: trailing-whitespace\nx = 1   \n", "code.py")
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 1
+    assert [issue["rule"] for issue in payload["issues"]] == ["trailing-whitespace"]
+    assert payload["summary"]["exempted"] == 0
+    assert payload["summary"]["diagnostics"] == 1
+    assert "py-style-ok-file directive without a reason" in payload["warnings"][0]
+
+
+def test_file_directive_unknown_rule_warns(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path, "# py-style-ok-file: made-up-rule: because\nx = 1   \n", "code.py")
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 1
+    assert [issue["rule"] for issue in payload["issues"]] == ["trailing-whitespace"]
+    assert payload["summary"]["exempted"] == 0
+    assert "unknown rule id" in payload["warnings"][0]
+
+
+def test_file_directive_after_code_is_not_a_file_directive(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(
+        tmp_path,
+        "x = 1\n# py-style-ok-file: *: late directive\nx = 2   \n",
+        "code.py",
+    )
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 1
+    assert [issue["rule"] for issue in payload["issues"]] == ["trailing-whitespace"]
+    assert payload["warnings"] == []
+
+
+def test_file_directive_after_docstring_is_not_a_file_directive(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(
+        tmp_path,
+        '"""Module docstring."""\n\n# py-style-ok-file: *: generated\nx = 1   \n',
+        "code.py",
+    )
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 1
+    assert [issue["rule"] for issue in payload["issues"]] == ["trailing-whitespace"]
+    assert payload["warnings"] == []
+
+
+def test_file_directive_covers_engine_rule(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(
+        tmp_path,
+        "# py-style-ok-file: *: generated scaffold\nx = 1\n",
+        "BadName.py",
+    )
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "snake-case-file",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 0
+    assert payload["issues"] == []
+    assert payload["summary"]["exempted"] == 1
+
+
+def test_file_directive_merges_multiple_header_directives(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(
+        tmp_path,
+        "# py-style-ok-file: trailing-whitespace: generated table\n"
+        "# py-style-ok-file: no-tabs: generated table\n"
+        "x = 1   \n"
+        "# note\there\n",
+        "code.py",
+    )
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "trailing-whitespace,no-tabs",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 0
+    assert payload["issues"] == []
+    assert payload["summary"]["exempted"] == 2
+
+
+def test_file_directive_does_not_exempt_parse_errors(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path, "# py-style-ok-file: *: generated\n", "broken.py")
+    (tmp_path / "broken.py").write_text(
+        "# py-style-ok-file: *: generated\ndef broken(:\n    pass\n",
+        encoding="utf-8",
+    )
+    code, out, err = cli(capsys, "check", ".", "--no-config", "--json")
+    payload = json.loads(out)
+    assert code == 1
+    assert [issue["rule"] for issue in payload["issues"]] == ["parse-error"]
+    assert payload["summary"]["exempted"] == 0
+
+
+def test_fix_respects_file_directive(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    target = write(
+        tmp_path,
+        "# py-style-ok-file: trailing-whitespace: generated table\nx = 1+2   \n",
+        "code.py",
+    )
+    code, out, err = cli(capsys, "fix", ".", "--no-config")
+    assert code == 0
+    assert (
+        target.read_text(encoding="utf-8")
+        == "# py-style-ok-file: trailing-whitespace: generated table\nx = 1 + 2   \n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fix engine
 # ---------------------------------------------------------------------------
 
@@ -1615,6 +1879,241 @@ def test_fix_config_error_exits_2(tmp_path, monkeypatch, capsys):
     write(tmp_path, "x = 1\n", "code.py")
     code, out, err = cli(capsys, "fix", ".")
     assert code == 2
+
+
+# ---------------------------------------------------------------------------
+# single-line-statement: merge statements that contain single-line f-strings
+# ---------------------------------------------------------------------------
+
+
+def test_fix_single_line_merges_single_line_fstring_call(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = 'value = call(\n    f"{a + b}",\n    other,\n)\n'
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == 'value = call(f"{a + b}", other)\n'
+
+
+def test_fix_single_line_merges_parenthesized_fstring(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = 'text = (\n    f"value {a + b}"\n)\n'
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == 'text = f"value {a + b}"\n'
+
+
+def test_fix_single_line_preserves_fstring_expression_text(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = 'value = call(\n    f"{a+b}",\n)\n'
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == 'value = call(f"{a+b}")\n'
+
+
+def test_fix_single_line_skips_multiline_fstring(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = 'value = call(\n    f"""line one\nline two""",\n    other,\n)\n'
+    target = write(tmp_path, body, "code.py")
+    assert (
+        cli(
+            capsys,
+            "fix",
+            ".",
+            "--no-config",
+            "--select",
+            "single-line-statement",
+        )[0]
+        == 0
+    )
+    assert target.read_text(encoding="utf-8") == body
+
+
+def test_fix_single_line_fstring_merge_idempotent(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = 'first = call(\n    f"{a} {b}",\n    other,\n)\nsecond = other_call(\n    f"{c}",\n)\n'
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    first = target.read_bytes()
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_bytes() == first
+    assert ast.dump(ast.parse(body), include_attributes=False) == ast.dump(
+        ast.parse(first.decode("utf-8")), include_attributes=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# blank-lines-around-blocks: insert the missing blank line
+# ---------------------------------------------------------------------------
+
+
+def test_fix_blank_lines_inserts_missing_at_module_top(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    target = write(tmp_path, "def f():\n    return 1\nx = 2\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == "def f():\n    return 1\n\nx = 2\n"
+
+
+def test_fix_blank_lines_inserts_in_nested_body(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = "def outer():\n    x = 1\n    if x:\n        y = 2\n    return x\n"
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == (
+        "def outer():\n    x = 1\n\n    if x:\n        y = 2\n\n    return x\n"
+    )
+
+
+def test_fix_blank_lines_inserts_before_attached_comment(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = "def f():\n    return 1\n# about x\nx = 2\n"
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == ("def f():\n    return 1\n\n# about x\nx = 2\n")
+
+
+def test_fix_blank_lines_does_not_insert_between_header_and_body(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    target = write(tmp_path, "def f():\n\n    return 1\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == "def f():\n    return 1\n"
+
+
+def test_fix_blank_lines_does_not_pad_first_or_last_statement(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = "x = 1\ny = 2\n"
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == body
+
+
+def test_fix_blank_lines_deletes_extra_and_inserts_missing(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = "def f():\n    return 1\n\n\nx = 2\n"
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == "def f():\n    return 1\n\nx = 2\n"
+
+
+def test_fix_blank_lines_idempotent_and_ast_equal(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = "def outer():\n    x = 1\n    if x:\n        y = 2\n    return x\nz = 1\n"
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    first = target.read_bytes()
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_bytes() == first
+    assert ast.dump(ast.parse(body), include_attributes=False) == ast.dump(
+        ast.parse(first.decode("utf-8")), include_attributes=False
+    )
+
+
+def test_fix_blank_lines_respects_nested_scope_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path, 'blank_line_scope = "nested"\n', "py-style.toml")
+    target = write(tmp_path, "def f():\n    return 1\nz = 1\n", "code.py")
+    assert cli(capsys, "fix", ".")[0] == 0
+    assert target.read_text(encoding="utf-8") == "def f():\n    return 1\nz = 1\n"
+
+
+def test_fix_blank_lines_then_check_is_clean(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path, "def f():\n    return 1\nx = 2\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "blank-lines-around-blocks",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert code == 0
+    assert payload["issues"] == []
+
+
+# ---------------------------------------------------------------------------
+# explicit-precedence: insert the missing parentheses
+# ---------------------------------------------------------------------------
+
+
+def test_fix_explicit_precedence_simple(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    target = write(tmp_path, "value = 1 + 2 * 3\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == "value = 1 + (2 * 3)\n"
+
+
+def test_fix_explicit_precedence_boolop_compare(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    target = write(tmp_path, "valid = a and b == c\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == "valid = a and (b == c)\n"
+
+
+def test_fix_explicit_precedence_nested_same_close(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    target = write(tmp_path, "value = a + b * c == d\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == "value = (a + (b * c)) == d\n"
+
+
+def test_fix_explicit_precedence_exceptions_untouched(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = (
+        "chained = a < b < c\n"
+        "simple_not = not ready\n"
+        "power = 2 ** 3 ** 4\n"
+        "same = a + b + c\n"
+        "wrapped = 1 + (2 * 3)\n"
+    )
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_text(encoding="utf-8") == body
+
+
+def test_fix_explicit_precedence_idempotent_and_ast_equal(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    body = "first = 1 + 2 * 3\nsecond = a and b == c\n"
+    target = write(tmp_path, body, "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    first = target.read_bytes()
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    assert target.read_bytes() == first
+    assert ast.dump(ast.parse(body), include_attributes=False) == ast.dump(
+        ast.parse(first.decode("utf-8")), include_attributes=False
+    )
+
+
+def test_fix_explicit_precedence_removes_findings(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    write(tmp_path, "value = a + b * c\n", "code.py")
+    assert cli(capsys, "fix", ".", "--no-config")[0] == 0
+    code, out, err = cli(
+        capsys,
+        "check",
+        ".",
+        "--no-config",
+        "--select",
+        "explicit-precedence",
+        "--json",
+    )
+    payload = json.loads(out)
+    assert payload["issues"] == []
+
+
+def test_list_rules_marks_explicit_precedence_fixable(capsys):
+    code, out, err = cli(capsys, "list-rules", "--json")
+    payload = json.loads(out)
+    rule = next(entry for entry in payload["rules"] if entry["id"] == "explicit-precedence")
+    assert rule["fixable"] is True
+
+
+def test_fix_order_contains_explicit_precedence():
+    order = list(py_style_rules.FIX_ORDER)
+    assert "explicit-precedence" in order
+    assert order.index("explicit-precedence") < order.index("redundant-parens")
 
 
 # ---------------------------------------------------------------------------
