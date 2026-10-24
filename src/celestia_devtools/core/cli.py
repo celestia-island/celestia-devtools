@@ -32,7 +32,7 @@ Commands::
     release-notes     Generate categorized GitHub release notes from squash PR subjects
     sign-agent        Keygen/sign/verify Ed25519 signatures for Layer-3 agents
     gate              Run the local CI gate (modes + DAG ordering + job budget)
-    verify-versions   Check cargo/npm version drift across a repository
+    verify-versions   Check cargo/npm/python version drift across a repository
     family-versions   Check that the shared family layers are consumed as one identity
     protocol-bundle   Vendor the five org protocol docs from docs.celestia.world
                       into packages/webui/.generated/protocols as lazy assets
