@@ -229,3 +229,7 @@ WantedBy=timers.target
 - `0`（`EXIT_OK`）成功：`gates` 门禁全过；`apply --dry-run` 走到 diff 为止（不提交、不 push、不开 PR）；`apply` 已推送并开成 PR；`audit` 正常输出（含「暂无审计流水」的空流水情形）；`sweep` 一轮巡航完成（逐仓结果看 audit.jsonl 的 `event: sweep` 行——单仓 warn/跳过不是整轮失败）。
 - `1`（`EXIT_FAILURE`）失败：门禁违禁（`gates` 与 `apply` 同判，`apply` 此时不做任何 git 操作）；worktree 路径已被占用；`apply` 阶段 git/gh 抛错——若分支已 push 但 PR 未开成，需人工对该分支执行 `gh pr create`（本工具按设计绝不删分支）。
 - `2`（`EXIT_USAGE`）用法错误：`die()` 统一抛出（drop 目录不存在、`sweep` 的 ws-root 不存在）；未给子命令时打印帮助后返回。
+
+## sweep 审计粒度
+
+`sweep` 每轮对 ws-root 下的每个仓只写一行审计记录（`event: "sweep"`），该行的 `outcome` 字段即该仓本轮的处置结果，取值见上节枚举；整轮汇总只打印各 outcome 的计数，逐仓细节一律以 audit.jsonl 为准。
