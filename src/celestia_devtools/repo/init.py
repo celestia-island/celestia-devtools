@@ -340,22 +340,40 @@ jobs:
 # written by `init --with-workflows` only when asked for explicitly with `--gate`.
 
 WORKFLOW_P0_GATE = """\
-name: P0 Ledger Gate
+name: P0 Gate
+
+# An unresolved P0 finding must cost something. This job fails while any P0 whose
+# scope covers this repository is still open, unless the pull request explicitly
+# acknowledges it with a `P0-ACK: <id>` line in its description.
+#
+# The ledger lives in celestia-devtools so one place, not seven, decides what is
+# still outstanding; the reusable workflow checks out master for exactly that
+# reason — a runner-preinstalled copy could read a stale ledger.
+#
+# `edited` is deliberate: the acknowledgment is written in the PR body, so editing
+# the body has to re-run the gate.
+#
+# The concurrency group MUST differ from the callee's (`p0-gate-${{ github.ref }}`).
+# A called workflow's `concurrency` is evaluated in the CALLER's context, so an
+# identical group makes the callee cancel the run that invoked it: the caller then
+# completes as a failure with zero jobs, which GitHub reports as "workflow file
+# issue" — indistinguishable from a broken YAML file. The generated template had
+# exactly that collision until 2026-10-24.
 
 on:
   pull_request:
-    types: [opened, edited, reopened, ready_for_review]
-  merge_group:
-    types: [checks_requested]
+    types: [opened, edited, reopened, ready_for_review, synchronize]
+  workflow_dispatch:
 
 concurrency:
-  group: p0-gate-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   p0-gate:
     uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
 """
+
 
 WORKFLOW_FAMILY_VERSIONS = """\
 name: Family dependency identity
