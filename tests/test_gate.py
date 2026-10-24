@@ -218,8 +218,22 @@ class TestGraphBuilders:
 
     def test_python_order(self, tmp_path):
         assert [s.name for s in build_python_graph(tmp_path)] == [
-            "ruff-check", "ruff-format", "pytest", "lint-commits",
+            "ruff-check", "py-style", "pytest", "lint-commits",
         ]
+
+    def test_python_graph_has_no_formatter(self, tmp_path):
+        """The custom layout conventions are checker-owned; no formatter runs.
+
+        The style rules (keyword `=` spacing, one-line statements, block blank
+        lines) are the opposite of ruff format / Black, so a formatting step in
+        the gate would fight the checker. This test is the internalized guard
+        for that policy (see pyproject [tool.py_style]).
+        """
+        for step in build_python_graph(tmp_path):
+            if not isinstance(step.cmd, list):
+                continue
+            command = " ".join(step.cmd)
+            assert " format" not in command, f"{step.name} must not run a formatter: {command}"
 
     def test_python_graph_is_linear(self, tmp_path):
         graph = build_python_graph(tmp_path)

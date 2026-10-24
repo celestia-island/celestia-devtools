@@ -37,6 +37,15 @@ jobs:
         run: .venv/bin/pip install ruff
       - name: Lint
         run: .venv/bin/ruff check src/ tests/
+      # The layout conventions are enforced by the handwritten checker, not by
+      # a formatter: Black-style rewrites (keyword `=` spacing, wrapping,
+      # trailing commas, two blank lines) are the opposite of the rules. This is
+      # the same blocking step `gate python` runs, and it has no third-party
+      # dependency, so PYTHONPATH is enough (no package install needed).
+      - name: Style (py-style)
+        env:
+          PYTHONPATH: src
+        run: .venv/bin/python -m celestia_devtools py-style check src tests tools
 
   test:
     # Fork pull requests pay for their own CI: this job is heavy (it compiles,

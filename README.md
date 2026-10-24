@@ -206,6 +206,13 @@ The division of labour is deliberate:
 - **Auto-fix is conservative**: only `autofix` rules run, every rewrite is
   checked for AST equality and unchanged string tokens, and `check` never writes.
 
+This repository itself is fully migrated to these conventions: `gate python`
+runs `ruff check → py-style → pytest → lint-commits`, CI runs the same blocking
+`py-style` step, and `ruff format` is deliberately absent (see the style-policy
+block in `pyproject.toml`). The single documented exception is the CLI's lazy
+command dispatcher (`src/celestia_devtools/core/cli.py`), which declares a
+file-level exemption and explains why.
+
 Repos that adopt the conventions opt in with the reusable workflow (sub-minute,
 stdlib-only, safe on hosted runners):
 
@@ -228,7 +235,7 @@ elements: **modes**, **dependency ordering**, and a **concurrency budget**.
 celestia-devtools gate              # auto-detect the repo's mode
 celestia-devtools gate rust         # cargo fmt/clippy/test/deny + lint-commits
 celestia-devtools gate web          # pnpm install/lint/build/test + lint-commits
-celestia-devtools gate python       # ruff check/format + pytest + lint-commits
+celestia-devtools gate python       # ruff check + py-style + pytest + lint-commits
 celestia-devtools gate all          # every mode detectable in the repo
 celestia-devtools gate rust --list  # print the resolved step graph (dry-run)
 celestia-devtools gate web --jobs 2 # cap parallel execution at 2 workers

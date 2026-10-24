@@ -1051,10 +1051,15 @@ def build_web_graph(root: Path) -> List[Step]:
 
 
 def build_python_graph(root: Path) -> List[Step]:
-    """Canonical python DAG: ruff-check → ruff-format → pytest → lint-commits."""
+    """Canonical python DAG: ruff-check → py-style → pytest → lint-commits.
+
+    `py-style` (the handwritten checker) owns the layout conventions; no
+    formatter runs in this gate. See the style-policy block in pyproject.toml.
+    """
     steps: List[Step] = [Step("ruff-check", ["ruff", "check", "."], (), str(root))]
-    steps.append(Step("ruff-format", ["ruff", "format", "--check", "."], ("ruff-check",), str(root)))
-    steps.append(Step("pytest", ["pytest"], ("ruff-format",), str(root)))
+    style_cmd = [sys.executable, "-m", "celestia_devtools", "py-style", "check", "."]
+    steps.append(Step("py-style", style_cmd, ("ruff-check",), str(root)))
+    steps.append(Step("pytest", ["pytest"], ("py-style",), str(root)))
     steps.append(Step("lint-commits", _lint_commits(root), ("pytest",), str(root)))
     return steps
 
