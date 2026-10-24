@@ -458,14 +458,19 @@ def test_every_published_family_package_is_checked(tmp_path):
 
 
 def test_the_two_tracks_of_one_layer_are_compared(tmp_path):
-    # shittim-chest really does this: cargo kirino ^0.7 and npm
-    # @celestia-island/kirino ^0.6 in the same repository.
+    # shittim-chest used to be the real instance (cargo ^0.7 with npm ^0.6) until
+    # `@celestia-island/kirino` was published on the 0.7 line on 2026-10-24; the
+    # shape is still possible in the other direction, so keep the check honest by
+    # pinning the legacy generation on the Cargo side instead.
     _cargo(tmp_path, '[dependencies]\nkirino = "^0.7"\n')
     _write(tmp_path / "web/package.json",
            json.dumps({"dependencies": {"@celestia-island/kirino": "^0.6"}}))
     findings = check(tmp_path)
-    assert _levels(findings) == ["warning"], findings
-    assert "different generations" in findings[0].message
+    cross = [f for f in findings if "different generations" in f.message]
+    assert cross, findings
+    # The legacy npm declaration is also named on its own, so the reader learns
+    # both facts (which track is stale, and that the two disagree).
+    assert any("0.6" in f.message for f in findings), findings
 
 
 def test_a_cargo_lock_linking_two_generations_is_reported(tmp_path):

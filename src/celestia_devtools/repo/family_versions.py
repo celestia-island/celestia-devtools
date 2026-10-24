@@ -99,11 +99,14 @@ FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
 #: (showing what the audit measured) instead of failing.
 NPM_LAYERS: tuple[tuple[str, Version, str], ...] = (
     # (package, the line that package is actually published on, why). The npm
-    # binding has its own version track: `@celestia-island/kirino` is published
-    # at 0.6.x while the Rust crate is 0.7.x, so comparing the npm declaration
-    # against the CRATE's line would invent violations.
+    # binding tracks the crate on its own schedule: until 2026-10-24
+    # `@celestia-island/kirino` was stuck at 0.6.x while the crate was 0.7.x, and
+    # the table said so — which made every correct `^0.7` declaration look like a
+    # deviation (chest carried the one remaining warning for exactly that). The
+    # npm release of 0.7.10 closes the gap, so the two tracks agree again and the
+    # cross-track check below stops warning.
     ("@celestia-island/hikari", (0, 55, 0), "UI component library (Layer 2)"),
-    ("@celestia-island/kirino", (0, 6, 0), "auth bindings (Layer 0, npm track)"),
+    ("@celestia-island/kirino", (0, 7, 0), "auth bindings (Layer 0, npm track)"),
     ("@celestia-island/plana-types", (0, 1, 0), "shared protocol types (Layer 1, npm track)"),
     ("@celestia-island/plana-rpc-client", (0, 1, 0), "RPC client (Layer 1, npm track)"),
 )

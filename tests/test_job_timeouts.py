@@ -1119,3 +1119,37 @@ class TestOnKeyNotMisparsed:
         assert lines.index("    timeout-minutes: 120") == lines.index(
             "    runs-on: [self-hosted, linux]"
         ) + 1
+
+
+class TestWorkflowsDirectoryIsAcceptedAsARoot:
+    """The audit must scan a ``.github/workflows`` path instead of reporting zero jobs.
+
+    A caller naturally holds the workflows directory (``ci-audit`` takes exactly
+    that), so ``audit <repo>/.github/workflows`` was silently scanning
+    ``<repo>/.github/workflows/.github/workflows`` and reporting ``0 jobs`` with
+    exit 0 — a clean bill of health for a directory that was never read.
+    """
+
+    def test_audit_accepts_the_workflows_directory(self, tmp_path):
+        _workflow(tmp_path, _simple("    runs-on: [self-hosted, linux]\n"))
+        workflows = tmp_path / ".github" / "workflows"
+        from celestia_devtools.ci.job_timeouts import workflow_files
+
+        assert workflow_files(workflows) == workflow_files(tmp_path) != []
+
+    def test_audit_reports_the_job_when_given_the_workflows_directory(self, tmp_path):
+        _workflow(tmp_path, _simple("    runs-on: [self-hosted, linux]\n"))
+        workflows = tmp_path / ".github" / "workflows"
+        assert main(["audit", str(workflows)]) == 1  # a missing timeout is a finding
+
+    def test_fix_works_through_the_workflows_directory(self, tmp_path):
+        target = _workflow(tmp_path, _simple("    runs-on: [self-hosted, linux]\n"))
+        workflows = tmp_path / ".github" / "workflows"
+        assert main(["fix", str(workflows)]) == 0
+        assert "timeout-minutes" in target.read_text(encoding="utf-8")
+
+    def test_a_directory_that_is_not_a_workflows_dir_is_still_rejected(self, tmp_path):
+        from celestia_devtools.ci.job_timeouts import workflow_files
+
+        (tmp_path / "random").mkdir()
+        assert workflow_files(tmp_path / "random") == []

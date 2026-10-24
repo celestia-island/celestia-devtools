@@ -729,8 +729,19 @@ def _is_inside(child: Path, parent: Path) -> bool:
 
 
 def workflow_files(root: Path) -> List[Path]:
-    """List ``*.yml`` / ``*.yaml`` under ``<root>/.github/workflows`` (sorted, for deterministic output)."""
-    directory = root / ".github" / "workflows"
+    """List the workflow files for *root* (sorted, for deterministic output).
+
+    *root* is normally a repository root, but a ``.github/workflows`` directory
+    is accepted as well.  It used to be appended unconditionally, so passing the
+    workflows directory — the thing a caller naturally has in hand, and what
+    ``ci-audit`` takes — looked for ``<dir>/.github/workflows`` and returned an
+    empty list.  The audit then reported ``0 jobs`` and exited 0, i.e. a clean
+    bill of health for a directory that was never scanned.
+    """
+    if root.name == "workflows" and root.parent.name == ".github":
+        directory = root
+    else:
+        directory = root / ".github" / "workflows"
     if not directory.is_dir():
         return []
     found = [item for item in directory.glob("*.yml") if item.is_file()]
