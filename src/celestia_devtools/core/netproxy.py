@@ -125,7 +125,7 @@ def _net_or_none(url: str | None) -> str | None:
 
     return url.rstrip("/")
 
-class ProxyConfig:
+class proxy_config:
     """Immutable result of one detection pass."""
 
     __slots__ = ("proxy_url", "display", "source", "no_proxy")
@@ -270,7 +270,7 @@ def _from_wpad(suffixes: tuple[str, ...], timeout: float) -> tuple[str, str] | N
 
     return None
 
-def detect(*, explicit: str | None = None, no_proxy_flag: bool = False, disabled: bool | None = None, ports: tuple[int, ...] = COMMON_PORTS, listener_hosts: tuple[str, ...] = ("127.0.0.1",), gateway_hosts: tuple[str, ...] | None = None, dns_suffixes: tuple[str, ...] | None = None, timeout: float = 0.3, env: dict[str, str] | None = None) -> ProxyConfig:
+def detect(*, explicit: str | None = None, no_proxy_flag: bool = False, disabled: bool | None = None, ports: tuple[int, ...] = COMMON_PORTS, listener_hosts: tuple[str, ...] = ("127.0.0.1",), gateway_hosts: tuple[str, ...] | None = None, dns_suffixes: tuple[str, ...] | None = None, timeout: float = 0.3, env: dict[str, str] | None = None) -> proxy_config:
     """Run the five-level cascade and compose the NO_PROXY list.
 
     ``explicit`` ("http://…" or "none") and ``no_proxy_flag`` are the
@@ -282,36 +282,36 @@ def detect(*, explicit: str | None = None, no_proxy_flag: bool = False, disabled
     no_proxy = _compose_no_proxy(e, suffixes)
 
     if no_proxy_flag or (explicit and (explicit.lower() in ("none", "direct"))):
-        return ProxyConfig(None, "flag:none", no_proxy)
+        return proxy_config(None, "flag:none", no_proxy)
 
     forced = _net_or_none(explicit)
 
     if forced:
-        return ProxyConfig(forced, "flag:explicit", no_proxy)
+        return proxy_config(forced, "flag:explicit", no_proxy)
 
     if disabled is None:
         disabled = e.get(_DISABLE_ENV, "") == "1"
 
     if disabled:
-        return ProxyConfig(None, "disabled", no_proxy)
+        return proxy_config(None, "disabled", no_proxy)
 
     hit = _from_env(e)
 
     if hit:
-        return ProxyConfig(hit[0], hit[1], no_proxy)
+        return proxy_config(hit[0], hit[1], no_proxy)
 
     # A git http.proxy the user configured themselves outranks any guessing
     # (listeners / gateway / DNS / WPAD), so it belongs here at level 1.
     git_url = _git_config_proxy()
 
     if git_url:
-        return ProxyConfig(git_url, "git:http.proxy", no_proxy)
+        return proxy_config(git_url, "git:http.proxy", no_proxy)
 
     for host in listener_hosts:  # level 2
         for port in ports:
             if _tcp_reachable(host, port, timeout):
                 url = "http://{}:{}".format(host, port)
-                return ProxyConfig(url, "listen:{}:{}".format(host, port), no_proxy)
+                return proxy_config(url, "listen:{}:{}".format(host, port), no_proxy)
 
     gw = _gateway_hosts() if gateway_hosts is None else gateway_hosts
 
@@ -319,7 +319,7 @@ def detect(*, explicit: str | None = None, no_proxy_flag: bool = False, disabled
         for port in ports:
             if _tcp_reachable(host, port, timeout):
                 url = "http://{}:{}".format(host, port)
-                return ProxyConfig(url, "gateway:{}:{}".format(host, port), no_proxy)
+                return proxy_config(url, "gateway:{}:{}".format(host, port), no_proxy)
 
     for suffix in suffixes:  # level 4
         for stem in ("proxy", "sing-box"):
@@ -328,14 +328,14 @@ def detect(*, explicit: str | None = None, no_proxy_flag: bool = False, disabled
             for port in ports:
                 if _tcp_reachable(host, port, timeout):
                     url = "http://{}:{}".format(host, port)
-                    return ProxyConfig(url, "dns:{}".format(host), no_proxy)
+                    return proxy_config(url, "dns:{}".format(host), no_proxy)
 
     hit = _from_wpad(suffixes, timeout)  # level 5
 
     if hit:
-        return ProxyConfig(hit[0], hit[1], no_proxy)
+        return proxy_config(hit[0], hit[1], no_proxy)
 
-    return ProxyConfig(None, "direct", no_proxy)
+    return proxy_config(None, "direct", no_proxy)
 
 def _compose_no_proxy(env: dict[str, str], suffixes: tuple[str, ...]) -> tuple[str, ...]:
     """Base direct list + caller's existing NO_PROXY, de-duplicated, in order."""
@@ -355,7 +355,7 @@ def _compose_no_proxy(env: dict[str, str], suffixes: tuple[str, ...]) -> tuple[s
     seen: set[str] = set()
     return tuple(x for x in entries if not ((x in seen) or seen.add(x)))
 
-def child_env(cfg: ProxyConfig, base: dict[str, str] | None = None) -> dict[str, str]:
+def child_env(cfg: proxy_config, base: dict[str, str] | None = None) -> dict[str, str]:
     """Environment for child processes: proxy vars set/cleared + NO_PROXY.
 
     Never relies on inheritance — build the full dict so a ``sudo``-stripped

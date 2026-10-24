@@ -74,7 +74,7 @@ _OPERATORS_TWO = ("::", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&
 _CONDITIONAL_STARTS = frozenset({"if", "ifdef", "ifndef"})
 
 @dataclass(frozen = True)
-class Token:
+class token_record:
     """One lexical token; end_line/end_col are exclusive."""
 
     kind: str
@@ -85,7 +85,7 @@ class Token:
     end_col: int
 
 @dataclass(frozen = True)
-class Directive:
+class directive:
     """A preprocessor directive occurrence with its conditional nesting depth.
 
     depth is the nesting depth that is entered (for #if / #ifdef / #ifndef), the
@@ -98,14 +98,14 @@ class Directive:
     depth: int
 
 @dataclass
-class Tokenized:
+class tokenized:
     """Result of tokenizing one source text."""
 
     text: str
-    tokens: List[Token]
-    significant: List[Token]
-    code: List[Token]
-    directives: List[Directive]
+    tokens: List[token_record]
+    significant: List[token_record]
+    code: List[token_record]
+    directives: List[directive]
     warnings: List[str]
 
 def _normalize(text: str) -> str:
@@ -135,7 +135,7 @@ def _is_ident_start(char: str) -> bool:
 def _is_ident_char(char: str) -> bool:
     return (char == "_") or char.isalnum()
 
-class _Locator:
+class _locator:
     """Map absolute string offsets to 1-based (line, col) positions."""
 
     __slots__ = ("starts",)
@@ -157,17 +157,17 @@ class _Locator:
 
         return index + 1, offset - self.starts[index] + 1
 
-class _Scanner:
+class _scanner:
     """One-pass scanner; all state lives on the instance."""
 
     def __init__(self, text: str) -> None:
         self.text = text
         self.length = len(text)
         self.position = 0
-        self.tokens: List[Token] = []
-        self.directives: List[Directive] = []
+        self.tokens: List[token_record] = []
+        self.directives: List[directive] = []
         self.warnings: List[str] = []
-        self.locator = _Locator(text)
+        self.locator = _locator(text)
         self.conditional_stack: List[str] = []
 
     # -- helpers ---------------------------------------------------------
@@ -179,10 +179,10 @@ class _Scanner:
         line, _ = self.locator.line_col(offset)
         self.warnings.append("line %d: %s" % (line, message))
 
-    def _emit(self, kind: str, start: int, end: int) -> Token:
+    def _emit(self, kind: str, start: int, end: int) -> token_record:
         line, col = self.locator.line_col(start)
         end_line, end_col = self.locator.line_col(end)
-        token = Token(kind, self.text[start:end], line, col, end_line, end_col)
+        token = token_record(kind, self.text[start:end], line, col, end_line, end_col)
         self.tokens.append(token)
         return token
 
@@ -385,7 +385,7 @@ class _Scanner:
         self._record_directive(token)
         self.position = end
 
-    def _record_directive(self, token: Token) -> None:
+    def _record_directive(self, token: token_record) -> None:
         body = token.text.lstrip()
 
         if body.startswith("#"):
@@ -416,7 +416,7 @@ class _Scanner:
         else:
             depth = len(self.conditional_stack)
 
-        self.directives.append(Directive(name, token.line, depth))
+        self.directives.append(directive(name, token.line, depth))
 
     def _operator(self) -> None:
         start = self.position
@@ -437,7 +437,7 @@ class _Scanner:
         self.position = start + 1
 
     # -- main loop --------------------------------------------------------
-    def run(self) -> Tokenized:
+    def run(self) -> tokenized:
         while self.position < self.length:
             char = self.text[self.position]
             following = self._peek(1)
@@ -474,13 +474,13 @@ class _Scanner:
 
         significant = [token for token in self.tokens if token.kind not in TRIVIA]
         code = [token for token in significant if token.kind != NEWLINE]
-        return Tokenized(text = self.text, tokens = self.tokens, significant = significant, code = code, directives = self.directives, warnings = self.warnings)
+        return tokenized(text = self.text, tokens = self.tokens, significant = significant, code = code, directives = self.directives, warnings = self.warnings)
 
-def tokenize(text: str) -> Tokenized:
+def tokenize(text: str) -> tokenized:
     """Tokenize text (BOM stripped, CRLF normalized)."""
-    return _Scanner(_normalize(text)).run()
+    return _scanner(_normalize(text)).run()
 
-def tokenize_bytes(data: bytes) -> Tokenized:
+def tokenize_bytes(data: bytes) -> tokenized:
     """Decode UTF-8 data (invalid bytes replaced with a warning) and tokenize it."""
     decode_warnings: List[str] = []
 

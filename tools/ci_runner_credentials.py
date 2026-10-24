@@ -69,7 +69,7 @@ REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest",
 MANAGED_BEGIN = "# >>> celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
 MANAGED_END = "# <<< celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
 
-class CredentialsError(Exception):
+class credentials_error(Exception):
     """Actionable ci-runner-credentials error (exit 1)."""
 
 def key_basename(repo: str) -> str:
@@ -185,7 +185,7 @@ def check_key_material(keys_dir: Path) -> None:
     """Die like the bash script when the key directory or any key is missing."""
 
     if not keys_dir.is_dir():
-        raise CredentialsError(f"key directory not found: {keys_dir}")
+        raise credentials_error(f"key directory not found: {keys_dir}")
 
     missing: list[str] = []
 
@@ -199,7 +199,7 @@ def check_key_material(keys_dir: Path) -> None:
             missing.append(str(key) + ".pub")
 
     if missing:
-        raise CredentialsError("missing key material: " + " ".join(missing))
+        raise credentials_error("missing key material: " + " ".join(missing))
 
 def resolve_password(env: dict) -> str:
     """Password from ``CI_RUNNER_PASSWORD`` or the 600-mode password file."""
@@ -226,7 +226,7 @@ def build_ssh_command(env: dict) -> list[str]:
 
     if password:
         if not any(os.access(os.path.join(dirpath, "sshpass"), os.X_OK)for dirpath in os.get_exec_path()):
-            raise CredentialsError("sshpass not found but a password is set")
+            raise credentials_error("sshpass not found but a password is set")
 
         return ["sshpass", "-p", password, "ssh", *ssh_opts]
 
@@ -462,7 +462,7 @@ def all_hosts(env: dict) -> list[str]:
     raw = env.get("CI_RUNNER_ALL_HOSTS", "").strip()
 
     if not raw:
-        raise CredentialsError("CI_RUNNER_ALL_HOSTS is not set; 'all' needs the runner list " "(space-separated hostnames/IPs, e.g. from AGENTS §8.1)")
+        raise credentials_error("CI_RUNNER_ALL_HOSTS is not set; 'all' needs the runner list " "(space-separated hostnames/IPs, e.g. from AGENTS §8.1)")
 
     return raw.split()
 
@@ -498,7 +498,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ssh_cmd = build_ssh_command(env)
         remote_script = emit_remote_script(env, args.keys_dir)
         hosts = all_hosts(env) if args.host == "all" else [args.host]
-    except CredentialsError as exc:
+    except credentials_error as exc:
         print(f"ci-runner-credentials: {exc}", file = sys.stderr)
         return EXIT_FAILURE
 

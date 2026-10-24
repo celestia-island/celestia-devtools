@@ -128,7 +128,7 @@ CARGO_DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
 NPM_DEP_SECTIONS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
 
 @dataclass(frozen = True)
-class Finding:
+class finding_record:
     level: str  # "violation" | "warning"
     subject: str
     message: str
@@ -405,11 +405,11 @@ def _crate_name(key: str, spec: object) -> str:
 
     return key
 
-def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str, rust_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
+def _check_cargo(path: Path, root: Path, findings: list[finding_record], repo: str, rust_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
     try:
         document = tomllib.loads(path.read_text(encoding = "utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover - unreadable manifest
-        findings.append(Finding("warning", str(path.relative_to(root)), f"unreadable: {exc}"))
+        findings.append(finding_record("warning", str(path.relative_to(root)), f"unreadable: {exc}"))
         return
 
     for key, raw_spec, section in _cargo_deps(document):
@@ -435,7 +435,7 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str, rus
             if (target == root) or (root in target.parents):
                 continue  # inside this repository: not a cross-repo dependency
 
-            findings.append(Finding("violation", subject, f"local path dependency to {spec['path']!r} outside this repository; " "cross-repo Rust dependencies must be git references on master"))
+            findings.append(finding_record("violation", subject, f"local path dependency to {spec['path']!r} outside this repository; " "cross-repo Rust dependencies must be git references on master"))
             continue
 
         if prefix == "plana":
@@ -447,13 +447,13 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str, rus
 
             if "git" not in spec:
                 if not published:
-                    findings.append(Finding("violation", subject, "consumed from crates.io, but this plana member is not published; " "members whose manifest carries `publish = false` must come from " f'{PLANA_REPO} on branch = "master"'))
+                    findings.append(finding_record("violation", subject, "consumed from crates.io, but this plana member is not published; " "members whose manifest carries `publish = false` must come from " f'{PLANA_REPO} on branch = "master"'))
                     continue
 
                 requirement = spec.get("version")
 
                 if not isinstance(requirement, str) or not requirement.strip():
-                    findings.append(Finding("violation", subject, "no version requirement"))
+                    findings.append(finding_record("violation", subject, "no version requirement"))
                     continue
 
                 if (rust_lines is not None) and _parse_version(requirement.lstrip("^~>=< ")):
@@ -466,27 +466,27 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str, rus
                 verdict = intersects(requirement, member, line)
 
                 if verdict is False:
-                    findings.append(Finding("violation", subject, f"declares {requirement}, which cannot resolve to this member's " f"published {member[0]}.{member[1]} line; 0.x carets do not overlap, " "so this is a different primitive, not an older build"))
+                    findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to this member's " f"published {member[0]}.{member[1]} line; 0.x carets do not overlap, " "so this is a different primitive, not an older build"))
                 elif verdict is None:
-                    findings.append(Finding("warning", subject, f"cannot judge the requirement {requirement!r}"))
+                    findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
 
                 continue
 
             url = str(spec.get("git", ""))
 
             if "celestia-island/plana" not in url:
-                findings.append(Finding("violation", subject, f"git source {url!r} is not the family's {PLANA_REPO}"))
+                findings.append(finding_record("violation", subject, f"git source {url!r} is not the family's {PLANA_REPO}"))
                 continue
 
             if "rev" in spec:
                 if repo not in REV_PIN_ALLOWED:
-                    findings.append(Finding("violation", subject, f"pins plana to rev {spec['rev']!r}; only the frozen repositories " f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin"))
+                    findings.append(finding_record("violation", subject, f"pins plana to rev {spec['rev']!r}; only the frozen repositories " f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin"))
             elif spec.get("branch") != "master":
-                findings.append(Finding("violation", subject, f"tracks {spec.get('branch') or spec.get('tag') or 'an unnamed ref'}; " 'the family tracks branch = "master"'))
+                findings.append(finding_record("violation", subject, f"tracks {spec.get('branch') or spec.get('tag') or 'an unnamed ref'}; " 'the family tracks branch = "master"'))
             elif published:
                 # Migration signal, not a failure: every consumer that has not
                 # moved yet shows up here until it declares the registry line.
-                findings.append(Finding(
+                findings.append(finding_record(
                     "warning", subject,
                     f"published on crates.io at {member[0]}.{member[1]}; prefer "
                     f"version = \"^0.{member[1]}\" (registry-first, AGENTS §3.2.2) so the "
@@ -507,20 +507,20 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str, rus
             repository = FAMILY_REPOS.get(prefix, prefix)
 
             if f"celestia-island/{repository}" not in url:
-                findings.append(Finding("violation", subject, f"git source {url!r} is not the family's " f"https://github.com/celestia-island/{repository}.git"))
+                findings.append(finding_record("violation", subject, f"git source {url!r} is not the family's " f"https://github.com/celestia-island/{repository}.git"))
                 continue
 
             if ("rev" in spec) and (repo not in REV_PIN_ALLOWED):
-                findings.append(Finding("violation", subject, f"pins {prefix} to rev {spec['rev']!r}; only the frozen repositories " f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin"))
+                findings.append(finding_record("violation", subject, f"pins {prefix} to rev {spec['rev']!r}; only the frozen repositories " f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin"))
             elif ("rev" not in spec) and (spec.get("branch") not in (None, "master")):
-                findings.append(Finding("violation", subject, f"tracks {spec.get('branch') or spec.get('tag')!r}; the family tracks " 'branch = "master"'))
+                findings.append(finding_record("violation", subject, f"tracks {spec.get('branch') or spec.get('tag')!r}; the family tracks " 'branch = "master"'))
 
             continue
 
         requirement = spec.get("version")
 
         if not isinstance(requirement, str):
-            findings.append(Finding("violation", subject, "no version requirement"))
+            findings.append(finding_record("violation", subject, "no version requirement"))
             continue
 
         if (rust_lines is not None) and _parse_version(requirement.lstrip("^~>=< ")):
@@ -533,9 +533,9 @@ def _check_cargo(path: Path, root: Path, findings: list[Finding], repo: str, rus
         verdict = intersects(requirement, canonical, line)
 
         if verdict is False:
-            findings.append(Finding("violation", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line; 0.x carets do not overlap, so this " "is a different primitive, not an older build"))
+            findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line; 0.x carets do not overlap, so this " "is a different primitive, not an older build"))
         elif verdict is None:
-            findings.append(Finding("warning", subject, f"cannot judge the requirement {requirement!r}"))
+            findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
 
 def _npm_values(table: object, package: str) -> list[str]:
     """Every declaration of ``package`` in one table.
@@ -572,11 +572,11 @@ def _npm_values(table: object, package: str) -> list[str]:
 
     return found
 
-def _check_npm(path: Path, root: Path, findings: list[Finding], npm_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
+def _check_npm(path: Path, root: Path, findings: list[finding_record], npm_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
     try:
         document = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - unreadable manifest
-        findings.append(Finding("warning", str(path.relative_to(root)), f"unreadable: {exc}"))
+        findings.append(finding_record("warning", str(path.relative_to(root)), f"unreadable: {exc}"))
         return
 
     tables: list[tuple[str, object]] = [(section, document.get(section))for section in NPM_DEP_SECTIONS]
@@ -594,14 +594,14 @@ def _check_npm(path: Path, root: Path, findings: list[Finding], npm_lines: dict[
                 subject = f"{package} @ {path.relative_to(root)} ({section})"
 
                 if requirement.startswith(SIBLING_PROTOCOLS):
-                    findings.append(Finding("violation", subject, f"declares {requirement!r} — a sibling-directory dependency, " "retired family-wide in favour of the published package"))
+                    findings.append(finding_record("violation", subject, f"declares {requirement!r} — a sibling-directory dependency, " "retired family-wide in favour of the published package"))
                     continue
 
                 if requirement.startswith(SKIP_PROTOCOLS):
                     continue
 
                 if requirement.strip() in UNBOUNDED:
-                    findings.append(Finding("warning", subject, f"declares {requirement!r}, which node-semver reads as `*` — any " "future major is admitted on a fresh resolve"))
+                    findings.append(finding_record("warning", subject, f"declares {requirement!r}, which node-semver reads as `*` — any " "future major is admitted on a fresh resolve"))
                     continue
 
                 if npm_lines is not None:
@@ -613,9 +613,9 @@ def _check_npm(path: Path, root: Path, findings: list[Finding], npm_lines: dict[
                 verdict = intersects(requirement, canonical, (canonical[0], canonical[1] + 1, 0))
 
                 if verdict is False:
-                    findings.append(Finding("warning", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line"))
+                    findings.append(finding_record("warning", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line"))
                 elif verdict is None:
-                    findings.append(Finding("warning", subject, f"cannot judge the requirement {requirement!r}"))
+                    findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
 
 def _own_cargo_line(root: Path) -> tuple[int, int] | None:
     """This repository's own Rust version line, from its root manifest."""
@@ -656,7 +656,7 @@ def _published_family_lines(root: Path) -> dict[str, set[tuple[int, int]]]:
 
     return published
 
-def _workspace_override_findings(root: Path) -> list[Finding]:
+def _workspace_override_findings(root: Path) -> list[finding_record]:
     """`pnpm-workspace.yaml` carries `overrides` for the pnpm 11 layout.
 
     The family moved `pnpm.overrides` there (see the frontend skill), so a check
@@ -670,25 +670,25 @@ def _workspace_override_findings(root: Path) -> list[Finding]:
     try:
         document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:  # pragma: no cover - unreadable manifest
-        return [Finding("warning", path.name, f"unreadable: {exc}")]
+        return [finding_record("warning", path.name, f"unreadable: {exc}")]
 
     overrides = document.get("overrides") if isinstance(document, dict) else None
-    findings: list[Finding] = []
+    findings: list[finding_record] = []
 
     for package, canonical, _why in NPM_LAYERS:
         for requirement in _npm_values(overrides, package):
             subject = f"{package} @ pnpm-workspace.yaml (overrides)"
 
             if requirement.startswith(SIBLING_PROTOCOLS):
-                findings.append(Finding("violation", subject, f"declares {requirement!r} — a sibling-directory dependency, " "retired family-wide in favour of the published package"))
+                findings.append(finding_record("violation", subject, f"declares {requirement!r} — a sibling-directory dependency, " "retired family-wide in favour of the published package"))
             elif requirement.strip() in UNBOUNDED:
-                findings.append(Finding("warning", subject, f"declares {requirement!r}, which node-semver reads as `*`"))
+                findings.append(finding_record("warning", subject, f"declares {requirement!r}, which node-semver reads as `*`"))
             elif intersects(requirement, canonical, (canonical[0], canonical[1] + 1, 0)) is False:
-                findings.append(Finding("warning", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line"))
+                findings.append(finding_record("warning", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line"))
 
     return findings
 
-def _lock_findings(root: Path) -> list[Finding]:
+def _lock_findings(root: Path) -> list[finding_record]:
     """What the LOCKFILES resolved, which is what actually gets built.
 
     A declaration can be satisfied by a version the auditor did not expect: four
@@ -697,7 +697,7 @@ def _lock_findings(root: Path) -> list[Finding]:
     declaration looks fine. These are warnings: a transitive dependency can pin
     the split, so they are evidence to act on rather than a gate.
     """
-    findings: list[Finding] = []
+    findings: list[finding_record] = []
     # What every lock resolved, so the workspaces can be compared WITH EACH
     # OTHER. Reading each lock on its own still reported a repository as clean
     # when its root locked one generation and a second workspace locked another
@@ -713,14 +713,14 @@ def _lock_findings(root: Path) -> list[Finding]:
             # let a repository whose root locked cleanly while `fuzz/Cargo.lock`
             # held an older generation print `ok` — and that output gets cited
             # as evidence, so it must not be able to miss one.
-            findings.append(Finding(
+            findings.append(finding_record(
                 "info", where,
                 "this is a separate workspace's lockfile, checked on its own below"))
 
         try:
             data = tomllib.loads(cargo_lock.read_text(encoding = "utf-8"))
         except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover
-            findings.append(Finding("warning", where, f"unreadable: {exc}"))
+            findings.append(finding_record("warning", where, f"unreadable: {exc}"))
             data = {}
 
         # Grouped by crate NAME, not by family prefix: `kirino-macro` and
@@ -746,7 +746,7 @@ def _lock_findings(root: Path) -> list[Finding]:
                 across.setdefault(crate, {}).setdefault(line, set()).add(where)
 
             if len(versions) > 1:
-                findings.append(Finding("warning", f"{crate} @ {where}", "the lock links " + ", ".join(f"{m}.{n}" for m, n in sorted(versions)) + " of the same crate (" + ", ".join(sorted(seen[crate])) + ") — more than one generation in one binary"))
+                findings.append(finding_record("warning", f"{crate} @ {where}", "the lock links " + ", ".join(f"{m}.{n}" for m, n in sorted(versions)) + " of the same crate (" + ", ".join(sorted(seen[crate])) + ") — more than one generation in one binary"))
 
     for crate, per_line in sorted(across.items()):
         # Only when the generations come from DIFFERENT locks: one lock linking
@@ -758,7 +758,7 @@ def _lock_findings(root: Path) -> list[Finding]:
             continue
 
         where = ", ".join(f"{m}.{n} in {', '.join(sorted(paths))}" for (m, n), paths in sorted(per_line.items()))
-        findings.append(Finding("warning", crate, "different workspaces in this repository lock different generations " f"of the same crate ({where}) — each build is internally consistent, " "so only a comparison across them can see it"))
+        findings.append(finding_record("warning", crate, "different workspaces in this repository lock different generations " f"of the same crate ({where}) — each build is internally consistent, " "so only a comparison across them can see it"))
 
     for lock in _manifests(root, "pnpm-lock.yaml"):
         where = lock.relative_to(root).as_posix()
@@ -766,7 +766,7 @@ def _lock_findings(root: Path) -> list[Finding]:
         try:
             data = yaml.safe_load(lock.read_text(encoding = "utf-8")) or {}
         except (OSError, yaml.YAMLError) as exc:  # pragma: no cover
-            findings.append(Finding("warning", where, f"unreadable: {exc}"))
+            findings.append(finding_record("warning", where, f"unreadable: {exc}"))
             data = {}
 
         importers = data.get("importers") if isinstance(data, dict) else None
@@ -801,11 +801,11 @@ def _lock_findings(root: Path) -> list[Finding]:
             below = sorted(line for line in lines if line < canonical[:2])
 
             if below:
-                findings.append(Finding("warning", f"{package} @ {where}", "the lock resolves " + ", ".join(f"{m}.{n}" for m, n in below) + f" while the family line is {canonical[0]}.{canonical[1]}"))
+                findings.append(finding_record("warning", f"{package} @ {where}", "the lock resolves " + ", ".join(f"{m}.{n}" for m, n in below) + f" while the family line is {canonical[0]}.{canonical[1]}"))
 
             if len(lines) > 1:
                 where = ", ".join(f"{imp}: {', '.join(f'{m}.{n}' for m, n in sorted(found))}" for imp, found in sorted(per_importer.items()))
-                findings.append(Finding("warning", f"{package} @ {where}", f"the lock resolves {len(lines)} different lines across importers ({where})"))
+                findings.append(finding_record("warning", f"{package} @ {where}", f"the lock resolves {len(lines)} different lines across importers ({where})"))
 
     return findings
 
@@ -813,10 +813,10 @@ def _scanned_counts(root: Path) -> dict[str, int]:
     """How much was actually read — so `ok` cannot mean "found nothing"."""
     return {"Cargo.toml": len(list(_manifests(root, "Cargo.toml"))), "package.json": len(list(_manifests(root, "package.json"))), "Cargo.lock": len(list(_manifests(root, "Cargo.lock"))), "pnpm-lock.yaml": len(list(_manifests(root, "pnpm-lock.yaml")))}
 
-def check(root: Path) -> list[Finding]:
+def check(root: Path) -> list[finding_record]:
     """Every family-consumption finding in ``root``, violations first."""
     root = Path(root).resolve()
-    findings: list[Finding] = []
+    findings: list[finding_record] = []
     repo = _repo_name(root)
     rust_lines: dict[str, set[tuple[int, int]]] = {}
     npm_lines: dict[str, set[tuple[int, int]]] = {}
@@ -834,7 +834,7 @@ def check(root: Path) -> list[Finding]:
         npm = npm_lines.get(package, set())
 
         if rust and npm and not (rust & npm):
-            findings.append(Finding("warning", f"{package} (npm) vs {crate} (cargo)", "the two tracks of " f"{crate} are on different generations (cargo " + ", ".join(f"{m}.{n}" for m, n in sorted(rust)) + " vs npm " + ", ".join(f"{m}.{n}" for m, n in sorted(npm)) + "); the binding lags the crate until it is republished, so a " "consumer cannot align on its own"))
+            findings.append(finding_record("warning", f"{package} (npm) vs {crate} (cargo)", "the two tracks of " f"{crate} are on different generations (cargo " + ", ".join(f"{m}.{n}" for m, n in sorted(rust)) + " vs npm " + ", ".join(f"{m}.{n}" for m, n in sorted(npm)) + "); the binding lags the crate until it is republished, so a " "consumer cannot align on its own"))
 
         # The actionable side: a repository that PUBLISHES the binding while its
         # own crates have moved on is the one that has to republish. Its own
@@ -844,12 +844,12 @@ def check(root: Path) -> list[Finding]:
 
         for line in sorted(published.get(package, set())):
             if ours and (line not in ours):
-                findings.append(Finding("warning", f"{package} @ published here", "this repository publishes the binding on " + f"{line[0]}.{line[1]} while its Rust crates are on " + ", ".join(f"{m}.{n}" for m, n in sorted(ours)) + " — the binding is behind the crates it wraps"))
+                findings.append(finding_record("warning", f"{package} @ published here", "this repository publishes the binding on " + f"{line[0]}.{line[1]} while its Rust crates are on " + ", ".join(f"{m}.{n}" for m, n in sorted(ours)) + " — the binding is behind the crates it wraps"))
 
     findings.extend(_workspace_override_findings(root))
     findings.extend(_lock_findings(root))
     order = {"violation": 0, "warning": 1, "info": 2}
-    unique: dict[tuple[str, str, str], Finding] = {}
+    unique: dict[tuple[str, str, str], finding_record] = {}
 
     for finding in findings:
         unique.setdefault((finding.level, finding.subject, finding.message), finding)

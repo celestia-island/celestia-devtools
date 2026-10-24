@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.env import vite
 
-class _TestHandler(vite._SpaFallbackHandler):
+class _test_handler(vite._spa_fallback_handler):
     def log_message(self, fmt, *args):  # keep test output clean
         pass
 
@@ -30,11 +30,11 @@ def spa_server(tmp_path: Path):
     (tmp_path / "data.json").write_text("{}", encoding = "utf-8")
     import http.server
 
-    class _Bound(_TestHandler):
+    class _bound(_test_handler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory = str(tmp_path), **kw)
 
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Bound)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _bound)
     threading.Thread(target = srv.serve_forever, daemon = True).start()
     yield f"http://127.0.0.1:{srv.socket.getsockname()[1]}"
     srv.shutdown()
@@ -48,7 +48,7 @@ def _get(url: str, accept: str | None = "text/html,application/xhtml+xml,*/*"):
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode(errors = "replace")
 
-class TestPortResolution:
+class test_port_resolution:
     def test_env_port_used_when_flag_absent(self, monkeypatch):
         monkeypatch.setenv("CELESTIA_VITE_PORT", "5204")
         assert vite._port_of([]) == "5204"
@@ -61,7 +61,7 @@ class TestPortResolution:
         monkeypatch.setenv("CELESTIA_VITE_PORT", "not-a-port")
         assert vite._port_of([]) == vite.DEFAULT_PORT
 
-class TestServesTheGivenDirectory:
+class test_serves_the_given_directory:
     def test_directory_wins_over_process_cwd(self, tmp_path, monkeypatch):
         """Regression (2026-10-16 live bite): without directory=, the handler
         resolves against the PROCESS cwd — and a vite project root carries
@@ -78,7 +78,7 @@ class TestServesTheGivenDirectory:
         (cwd / "index.html").write_text("<html>SOURCE</html>", encoding = "utf-8")
         monkeypatch.chdir(cwd)
 
-        bound = functools.partial(vite._SpaFallbackHandler, directory = str(dist))
+        bound = functools.partial(vite._spa_fallback_handler, directory = str(dist))
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), bound)
         threading.Thread(target = srv.serve_forever, daemon = True).start()
         url = f"http://127.0.0.1:{srv.socket.getsockname()[1]}"
@@ -91,7 +91,7 @@ class TestServesTheGivenDirectory:
         finally:
             srv.shutdown()
 
-class TestSpaFallback:
+class test_spa_fallback:
     def test_history_route_serves_index(self, spa_server):
         status, body = _get(f"{spa_server}/@124268ea-91a1-4d89-9a02-f72a103e067e")
         assert status == 200

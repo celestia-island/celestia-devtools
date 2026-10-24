@@ -4,15 +4,15 @@ from __future__ import annotations
 import os
 import stat
 import pytest
-from celestia_devtools.deploy.profile import (DeployProfile, FrontSection, HostSection, ProfileError)
+from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section, profile_error)
 
-def _valid_profile() -> DeployProfile:
-    return DeployProfile(host = HostSection(face = "chest", level = "selfhosted", listen = 3000), front = FrontSection(enabled = True, domain = "acme.example", email = "ops@acme.example"))
+def _valid_profile() -> deploy_profile:
+    return deploy_profile(host = host_section(face = "chest", level = "selfhosted", listen = 3000), front = front_section(enabled = True, domain = "acme.example", email = "ops@acme.example"))
 
-class TestRoundTrip:
+class test_round_trip:
     def test_toml_round_trip_preserves_sections(self):
         p = _valid_profile()
-        q = DeployProfile.from_toml(p.to_toml())
+        q = deploy_profile.from_toml(p.to_toml())
         assert q.host == p.host
         assert q.front == p.front
         assert q.admin == p.admin
@@ -33,8 +33,8 @@ class TestRoundTrip:
         p = _valid_profile()
         text = p.to_toml().replace("[host]", "[host]\nnope = 1")
 
-        with pytest.raises(ProfileError, match = "host.nope"):
-            DeployProfile.from_toml(text)
+        with pytest.raises(profile_error, match = "host.nope"):
+            deploy_profile.from_toml(text)
 
     def test_read_rejects_wrong_types(self):
         """R2-F2: hand-edited wrong types must be refused — a string "n" in
@@ -42,22 +42,22 @@ class TestRoundTrip:
         p = _valid_profile()
         text = p.to_toml().replace("listen = 3000", 'listen = "3000"')
 
-        with pytest.raises(ProfileError, match = "host.listen"):
-            DeployProfile.from_toml(text)
+        with pytest.raises(profile_error, match = "host.listen"):
+            deploy_profile.from_toml(text)
 
         text = p.to_toml().replace("password_to_file = false", 'password_to_file = "n"')
 
-        with pytest.raises(ProfileError, match = "password_to_file"):
-            DeployProfile.from_toml(text)
+        with pytest.raises(profile_error, match = "password_to_file"):
+            deploy_profile.from_toml(text)
 
     def test_read_rejects_invalid_embedded_values(self):
         p = _valid_profile()
         text = p.to_toml().replace('face = "chest"', 'face = "Bad Face!"')
 
-        with pytest.raises(ProfileError, match = "host.face"):
-            DeployProfile.from_toml(text)
+        with pytest.raises(profile_error, match = "host.face"):
+            deploy_profile.from_toml(text)
 
-class TestValidation:
+class test_validation:
     def test_valid_profile_has_no_errors(self):
         assert _valid_profile().validate() == []
 
@@ -81,7 +81,7 @@ class TestValidation:
         p.admin.email = "not-an-email"
         assert any("admin.email" in e for e in p.validate())
 
-class TestDerivedPaths:
+class test_derived_paths:
     def test_unit_and_paths_derive_from_face(self):
         p = _valid_profile()
         assert p.host.unit_name() == "chest.service"

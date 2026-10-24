@@ -116,14 +116,14 @@ def test_cargo_patch_idempotent():
 # ── preflight: missing key directory / keys ─────────────────────────────────
 
 def test_missing_key_directory_raises(tmp_path: Path):
-    with pytest.raises(crc.CredentialsError, match = "key directory not found"):
+    with pytest.raises(crc.credentials_error, match = "key directory not found"):
         crc.check_key_material(tmp_path / "does-not-exist")
 
 def test_missing_key_files_reported(tmp_path: Path):
     (tmp_path / "gh-ci-readonly").write_text("KEY")
     (tmp_path / "gh-ci-readonly.pub").write_text("PUB")
 
-    with pytest.raises(crc.CredentialsError, match = "missing key material") as excinfo:
+    with pytest.raises(crc.credentials_error, match = "missing key material") as excinfo:
         crc.check_key_material(tmp_path)
 
     message = str(excinfo.value)
@@ -232,5 +232,5 @@ def test_ssh_command_fails_without_sshpass(monkeypatch):
 
     monkeypatch.setattr(crc.os, "access", fake_access)
 
-    with pytest.raises(crc.CredentialsError, match = "sshpass not found"):
+    with pytest.raises(crc.credentials_error, match = "sshpass not found"):
         crc.build_ssh_command({})

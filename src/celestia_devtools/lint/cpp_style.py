@@ -91,10 +91,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 from celestia_devtools.lint.cpp.checks import run_checks
-from celestia_devtools.lint.cpp.config import (Config, ConfigError, load_config, matches_globs, path_variants)
+from celestia_devtools.lint.cpp.config import (config_record, config_error, load_config, matches_globs, path_variants)
 from celestia_devtools.lint.cpp.rules import RULE_BY_ID, RULE_IDS, RULES
-from celestia_devtools.lint.cpp.structure import AnalyzedFile, Finding, analyze
-from celestia_devtools.lint.cpp.tokenizer import COMMENT, Token
+from celestia_devtools.lint.cpp.structure import analyzed_file, finding_record, analyze
+from celestia_devtools.lint.cpp.tokenizer import COMMENT, token_record
 
 #: File suffixes the checker scans.
 SOURCE_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".inl"})
@@ -123,17 +123,17 @@ DEFAULT_SKIP_DIRS = frozenset(
 _INLINE_DIRECTIVE = re.compile(r"//\s*cpp-style-ok\s*:\s*(?P<payload>.*)$")
 _RULE_TOKEN_SPLIT = re.compile(r"[\s,]+")
 
-class _UsageError(Exception):
+class _usage_error(Exception):
     """Argument parsing problem; mapped to exit code 2 with a cpp-style: error."""
 
-class _Parser(argparse.ArgumentParser):
+class _parser(argparse.ArgumentParser):
     """argparse parser that raises instead of calling sys.exit on usage errors."""
 
     def error(self, message: str) -> None:
-        raise _UsageError(message)
+        raise _usage_error(message)
 
 @dataclass
-class Discovery:
+class discovery:
     """Result of expanding CLI paths into C++ source files."""
 
     files: List[Path]
@@ -141,7 +141,7 @@ class Discovery:
     errors: List[str]
 
 @dataclass
-class InlineExemptions:
+class inline_exemptions:
     """Parsed inline cpp-style-ok directives of one file."""
 
     applicable: Dict[int, Set[str]]
@@ -155,7 +155,7 @@ def display_path(path: Path, cwd: Path) -> str:
     except ValueError:
         return path.as_posix()
 
-def discover_sources(paths: Sequence[str], config: Config, cwd: Path) -> Discovery:
+def discover_sources(paths: Sequence[str], config: config_record, cwd: Path) -> discovery:
     """Expand file/directory arguments into the source files to check."""
     files: List[Path] = []
     skipped = 0
@@ -202,15 +202,15 @@ def discover_sources(paths: Sequence[str], config: Config, cwd: Path) -> Discove
         unique.append(path)
 
     unique.sort(key = lambda path: display_path(path, cwd))
-    return Discovery(files = unique, skipped = skipped, errors = errors)
+    return discovery(files = unique, skipped = skipped, errors = errors)
 
-def _excluded(path: Path, config: Config) -> bool:
+def _excluded(path: Path, config: config_record) -> bool:
     if not config.exclude:
         return False
 
     return matches_globs(path_variants(path, config), config.exclude)
 
-def _walk_directory(root: Path, config: Config) -> Tuple[List[Path], int]:
+def _walk_directory(root: Path, config: config_record) -> Tuple[List[Path], int]:
     files: List[Path] = []
     skipped = 0
 
@@ -263,11 +263,11 @@ def _require_rule(name: str, where: str) -> str:
         return name
 
     if name not in RULE_BY_ID:
-        raise ConfigError("unknown rule id %r in %s (run 'cpp-style list-rules' for the catalogue)" % (name, where))
+        raise config_error("unknown rule id %r in %s (run 'cpp-style list-rules' for the catalogue)" % (name, where))
 
     return name
 
-def resolve_selection(config: Config, cli_select: Optional[Sequence[str]], cli_ignore: Optional[Sequence[str]]) -> frozenset:
+def resolve_selection(config: config_record, cli_select: Optional[Sequence[str]], cli_ignore: Optional[Sequence[str]]) -> frozenset:
     """Effective rule set: CLI --select/--ignore override/extend the config."""
     requested = _split_rule_values(cli_select)
 
@@ -293,11 +293,11 @@ def resolve_selection(config: Config, cli_select: Optional[Sequence[str]], cli_i
 
     return frozenset(selected)
 
-def _comment_starts_line(af: AnalyzedFile, token: Token) -> bool:
+def _comment_starts_line(af: analyzed_file, token: token_record) -> bool:
     line = af.line_text(token.line)
     return not line[: max(token.col - 1, 0)].strip()
 
-def parse_inline_exemptions(af: AnalyzedFile, shown: str) -> InlineExemptions:
+def parse_inline_exemptions(af: analyzed_file, shown: str) -> inline_exemptions:
     """Collect cpp-style-ok directives from line comments of one file."""
     applicable: Dict[int, Set[str]] = {}
     warnings: List[str] = []
@@ -339,9 +339,9 @@ def parse_inline_exemptions(af: AnalyzedFile, shown: str) -> InlineExemptions:
         if _comment_starts_line(af, token):
             applicable.setdefault(token.end_line + 1, set()).update(accepted)
 
-    return InlineExemptions(applicable = applicable, warnings = warnings)
+    return inline_exemptions(applicable = applicable, warnings = warnings)
 
-def _is_exempt(config: Config, variants: Sequence[str], inline: InlineExemptions, finding: Finding) -> bool:
+def _is_exempt(config: config_record, variants: Sequence[str], inline: inline_exemptions, finding: finding_record) -> bool:
     for exemption in config.exempt:
         if ("*" not in exemption.rules) and (finding.rule not in exemption.rules):
             continue
@@ -356,10 +356,10 @@ def _is_exempt(config: Config, variants: Sequence[str], inline: InlineExemptions
 
     return False
 
-def _render(shown: str, finding: Finding) -> str:
+def _render(shown: str, finding: finding_record) -> str:
     return "cpp-style: %s:%d:%d: %s: %s" % (shown, finding.line, finding.col, finding.rule, finding.message)
 
-def _issue_payload(shown: str, finding: Finding) -> dict:
+def _issue_payload(shown: str, finding: finding_record) -> dict:
     return {"path": shown, "line": finding.line, "column": finding.col, "rule": finding.rule, "severity": finding.severity, "message": finding.message}
 
 def _run_check(args: argparse.Namespace) -> int:
@@ -368,7 +368,7 @@ def _run_check(args: argparse.Namespace) -> int:
     try:
         config = load_config(explicit = args.config, no_config = args.no_config, cwd = cwd)
         selected = resolve_selection(config, args.select, args.ignore)
-    except ConfigError as exc:
+    except config_error as exc:
         print("cpp-style: error: %s" % exc, file = sys.stderr)
         return 2
 
@@ -385,7 +385,7 @@ def _run_check(args: argparse.Namespace) -> int:
 
         return 2
 
-    findings: List[Tuple[str, Finding]] = []
+    findings: List[Tuple[str, finding_record]] = []
     diagnostics: List[str] = []
     exempted = 0
 
@@ -467,7 +467,7 @@ def _run_list_rules(args: argparse.Namespace) -> int:
     return 0
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog = "cpp-style", description = "Check C++ sources against the org's custom layout rules.", formatter_class = argparse.RawDescriptionHelpFormatter, epilog = "examples:\n" "  cpp-style check src\n" "  cpp-style check src --json\n" "  cpp-style check . --select control-braces --ignore include-block\n" "  cpp-style list-rules\n")
+    parser = _parser(prog = "cpp-style", description = "Check C++ sources against the org's custom layout rules.", formatter_class = argparse.RawDescriptionHelpFormatter, epilog = "examples:\n" "  cpp-style check src\n" "  cpp-style check src --json\n" "  cpp-style check . --select control-braces --ignore include-block\n" "  cpp-style list-rules\n")
     subparsers = parser.add_subparsers(dest = "command", metavar = "{check,list-rules}")
     subparsers.required = True
     check = subparsers.add_parser("check", help = "report violations (exit 1 when any are found)", description = "Check C++ sources against the custom layout rules.")
@@ -496,7 +496,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         args = parser.parse_args(arguments)
-    except _UsageError as exc:
+    except _usage_error as exc:
         print("cpp-style: error: %s" % exc, file = sys.stderr)
         return 2
     except SystemExit as exc:

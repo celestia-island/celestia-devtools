@@ -48,11 +48,11 @@ def _field_type(annotation) -> type | None:
 
     return annotation if isinstance(annotation, type) else None
 
-class ProfileError(ValueError):
+class profile_error(ValueError):
     """Validation failure with a field path for actionable messages."""
 
 @dataclass
-class HostSection:
+class host_section:
     face: str = "chest"
     admin_user: str = "celestia"
     level: str = "hosted"  # hosted (our machine) | selfhosted (customer-held)
@@ -75,34 +75,34 @@ class HostSection:
         return "{}.service".format(self.face)
 
 @dataclass
-class ArtifactSection:
+class artifact_section:
     # file:// or https:// index for D3; a bare file path works for tests.
     source: str = "file:///opt/celestia-devtools/artifacts/index.toml"
     channel: str = "stable"
 
 @dataclass
-class DatabaseSection:
+class database_section:
     mode: str = "external"  # external | local
     url_file: str = ""      # empty = D3 derives from host.etc_base; never inline URLs
 
 @dataclass
-class FrontSection:
+class front_section:
     enabled: bool = True
     domain: str = ""        # required when enabled (HTTP-01 only, no int-DNS)
     email: str = ""         # ACME account contact
 
 @dataclass
-class AdminSection:
+class admin_section:
     email: str = ""         # first registered user; auto-promoted, no captcha
     password_to_file: bool = False  # False: print once on stdout
 
 @dataclass
-class DeployProfile:
-    host: HostSection = field(default_factory = HostSection)
-    artifact: ArtifactSection = field(default_factory = ArtifactSection)
-    database: DatabaseSection = field(default_factory = DatabaseSection)
-    front: FrontSection = field(default_factory = FrontSection)
-    admin: AdminSection = field(default_factory = AdminSection)
+class deploy_profile:
+    host: host_section = field(default_factory = host_section)
+    artifact: artifact_section = field(default_factory = artifact_section)
+    database: database_section = field(default_factory = database_section)
+    front: front_section = field(default_factory = front_section)
+    admin: admin_section = field(default_factory = admin_section)
 
     # ── validation ────────────────────────────────────────────────────
     def validate(self) -> list[str]:
@@ -142,9 +142,9 @@ class DeployProfile:
         return FACE_COMMENT + "\n" + text
 
     @classmethod
-    def from_toml(cls, text: str) -> "DeployProfile":
+    def from_toml(cls, text: str) -> "deploy_profile":
         if tomllib is None:  # pragma: no cover
-            raise ProfileError("tomllib unavailable (below 3.11)")
+            raise profile_error("tomllib unavailable (below 3.11)")
 
         doc = tomllib.loads(text)
         profile = cls()
@@ -152,7 +152,7 @@ class DeployProfile:
         unknown_top = set(doc) - known
 
         if unknown_top:
-            raise ProfileError("unknown top-level section(s): {} (typo?)".format(", ".join(sorted(unknown_top))))
+            raise profile_error("unknown top-level section(s): {} (typo?)".format(", ".join(sorted(unknown_top))))
 
         for sec in fields(profile):
             incoming = doc.get(sec.name)
@@ -166,19 +166,19 @@ class DeployProfile:
 
             for key, value in incoming.items():
                 if key not in known:
-                    raise ProfileError("{}.{}: unknown key".format(sec.name, key))
+                    raise profile_error("{}.{}: unknown key".format(sec.name, key))
 
                 want = types.get(key)
 
                 if (want is not None) and ((value is None) or not isinstance(value, want)):
-                    raise ProfileError("{}.{}: expected {}, got {!r}".format(sec.name, key, getattr(want, "__name__", want), value))
+                    raise profile_error("{}.{}: expected {}, got {!r}".format(sec.name, key, getattr(want, "__name__", want), value))
 
                 setattr(section, key, value)
 
         errors = profile.validate()
 
         if errors:
-            raise ProfileError("; ".join(errors))
+            raise profile_error("; ".join(errors))
 
         return profile
 
@@ -188,5 +188,5 @@ class DeployProfile:
         os.chmod(path, 0o600)  # reveals topology even without secrets
 
     @classmethod
-    def read(cls, path: Path) -> "DeployProfile":
+    def read(cls, path: Path) -> "deploy_profile":
         return cls.from_toml(path.read_text(encoding = "utf-8"))

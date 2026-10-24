@@ -88,7 +88,7 @@ _NAV_OK_RE = re.compile(r"nav-ok\b")
 _NAV_OK_REASON_RE = re.compile(r"nav-ok\s*[:：]\s*\S+")
 
 @dataclass
-class Finding:
+class finding_record:
     path: Path
     line: int
     code: str
@@ -280,7 +280,7 @@ def _classify_history_args(source: str, open_paren: int) -> str | None:
 # Scanning
 # ---------------------------------------------------------------------------
 
-def scan_file(path: Path, require_reason: bool = True) -> List[Finding]:
+def scan_file(path: Path, require_reason: bool = True) -> List[finding_record]:
     try:
         text = path.read_text(encoding = "utf-8", errors = "replace")
     except OSError:
@@ -290,7 +290,7 @@ def scan_file(path: Path, require_reason: bool = True) -> List[Finding]:
     # only exist inside prose (doc comments) never count.
     text = re.sub(r"/\*.*?\*/", "", text, flags = re.DOTALL)
     lines = text.splitlines()
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     def annotated_ok(idx: int) -> bool:
         window = lines[max(0, idx - 1) : idx + 1]
@@ -316,7 +316,7 @@ def scan_file(path: Path, require_reason: bool = True) -> List[Finding]:
             code = _classify_router_arg(arg)
 
             if code:
-                findings.append(Finding(path, idx + 1, code, raw, f"router.{m.group(2)} target is not provably in-app " f"(arg: {arg[:60].replace(chr(10), ' ')!r}); annotate with " f"'nav-ok: <reason>' or navigate via a /-rooted literal"))
+                findings.append(finding_record(path, idx + 1, code, raw, f"router.{m.group(2)} target is not provably in-app " f"(arg: {arg[:60].replace(chr(10), ' ')!r}); annotate with " f"'nav-ok: <reason>' or navigate via a /-rooted literal"))
 
         m = _LOCATION_CALL_RE.search(line)
 
@@ -324,13 +324,13 @@ def scan_file(path: Path, require_reason: bool = True) -> List[Finding]:
             arg = _first_argument(joined, m.end())
 
             if _classify_location_arg(arg):
-                findings.append(Finding(path, idx + 1, "location-target", raw, f"location.{m.group(1)} bypasses the History net — " f"target must be a /-rooted literal or carry " f"'nav-ok: <reason>' (arg: {arg[:60].replace(chr(10), ' ')!r})"))
+                findings.append(finding_record(path, idx + 1, "location-target", raw, f"location.{m.group(1)} bypasses the History net — " f"target must be a /-rooted literal or carry " f"'nav-ok: <reason>' (arg: {arg[:60].replace(chr(10), ' ')!r})"))
 
         m = _LOCATION_HREF_RE.search(line)
 
         if m and not annotated_ok(idx):
             if _classify_location_arg(m.group(1)):
-                findings.append(Finding(path, idx + 1, "location-target", raw, f"location.href write bypasses the History net — " f"target must be a /-rooted literal or carry " f"'nav-ok: <reason>' (arg: {m.group(1)[:60]!r})"))
+                findings.append(finding_record(path, idx + 1, "location-target", raw, f"location.href write bypasses the History net — " f"target must be a /-rooted literal or carry " f"'nav-ok: <reason>' (arg: {m.group(1)[:60]!r})"))
 
         m = _HISTORY_CALL_RE.search(line)
 
@@ -338,7 +338,7 @@ def scan_file(path: Path, require_reason: bool = True) -> List[Finding]:
             code = _classify_history_args(joined, m.end() - 1)
 
             if code:
-                findings.append(Finding(path, idx + 1, code, raw, f"history.{m.group(1)} URL argument is not provably " "same-origin; use a /-#-?-rooted literal or a " "location.pathname-prefixed composition"))
+                findings.append(finding_record(path, idx + 1, code, raw, f"history.{m.group(1)} URL argument is not provably " "same-origin; use a /-#-?-rooted literal or a " "location.pathname-prefixed composition"))
 
     return findings
 
@@ -373,7 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--include-tests", action = "store_true", help = "Also scan *.test.* / *.spec.* files (they intentionally feed hostile targets).")
     args = parser.parse_args(argv)
 
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for f in iter_targets(args.paths, include_tests = args.include_tests):
         findings.extend(scan_file(f, require_reason = not args.allow_bare_nav_ok))

@@ -434,7 +434,7 @@ def test_description_accepts_emoji_variation_sequences(repo_env, tmp_path, monke
 
 # ── stage ────────────────────────────────────────────────────────────────────
 
-class TestStage:
+class test_stage:
     @staticmethod
     def _stage_argv(repo, drop_root, *extra):
         return ["--drop-root", str(drop_root), "stage", str(repo), "--repo", REPO_NAME, "--description", "📝 Document the exit codes.", *extra]

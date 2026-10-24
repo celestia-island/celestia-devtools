@@ -73,8 +73,8 @@ import tokenize
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from celestia_devtools.lint.py_style_config import ConfigError, StyleConfig, load_config
-from celestia_devtools.lint.py_style_rules import (BUILTIN_RULES, CHECK_FUNCS, CHECK_RULES, CHECK_RULE_IDS, FIX_FUNCS, FIX_ORDER, MANUAL_RULES, FileContext, Issue, ModuleInfo, ParseFailure, check_import_cycles, check_snake_case_file, module_import_edges, module_name_for_path, rule_severity, string_token_texts)
+from celestia_devtools.lint.py_style_config import config_error, style_config, load_config
+from celestia_devtools.lint.py_style_rules import (BUILTIN_RULES, CHECK_FUNCS, CHECK_RULES, CHECK_RULE_IDS, FIX_FUNCS, FIX_ORDER, MANUAL_RULES, file_context, issue_record, module_info, parse_failure, check_import_cycles, check_snake_case_file, module_import_edges, module_name_for_path, rule_severity, string_token_texts)
 
 EXIT_OK = 0
 EXIT_VIOLATIONS = 1
@@ -117,7 +117,7 @@ commands:
 
 Run 'py-style <command> --help' for the options of a command."""
 
-class UsageError(Exception):
+class usage_error(Exception):
     """Raised for a usage problem that should exit with status 2."""
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ def display_path(path: Path, cwd: Path) -> str:
     except ValueError:
         return path.as_posix()
 
-def _path_variants(path: Path, config: StyleConfig, cwd: Path) -> list[str]:
+def _path_variants(path: Path, config: style_config, cwd: Path) -> list[str]:
     """Return the spellings of *path* that path globs may match."""
 
     variants = [path.resolve().as_posix()]
@@ -197,7 +197,7 @@ def _glob_matches(pattern: str, candidates: Sequence[str]) -> bool:
     regex = _glob_to_regex(simple)
     return any(re.fullmatch(regex, candidate) for candidate in candidates)
 
-def _excluded(path: Path, config: StyleConfig, cwd: Path) -> bool:
+def _excluded(path: Path, config: style_config, cwd: Path) -> bool:
     if not config.exclude:
         return False
 
@@ -223,7 +223,7 @@ def _skip_directory(name: str, path: Path) -> bool:
 
     return False
 
-def _walk_python_files(root: Path, config: StyleConfig, cwd: Path) -> tuple[list[Path], int]:
+def _walk_python_files(root: Path, config: style_config, cwd: Path) -> tuple[list[Path], int]:
     """Walk *root* collecting Python files and counting skipped paths.
 
     Directory symlinks are never followed and file symlinks are never collected
@@ -270,14 +270,14 @@ def _walk_python_files(root: Path, config: StyleConfig, cwd: Path) -> tuple[list
     return found, skipped
 
 @dataclass
-class Discovery:
+class discovery:
     """Expanded CLI paths of one run."""
 
     files: list[Path]
     skipped: int
     directory_scan: bool
 
-def discover_files(paths: Sequence[str], config: StyleConfig) -> Discovery:
+def discover_files(paths: Sequence[str], config: style_config) -> discovery:
     """Resolve CLI paths into a sorted list of Python files.
 
     directory_scan enables the file-name rule and the import-graph rule.
@@ -307,7 +307,7 @@ def discover_files(paths: Sequence[str], config: StyleConfig) -> Discovery:
             skipped += pruned
             candidates = found
         else:
-            raise UsageError(f"path not found: {entry}")
+            raise usage_error(f"path not found: {entry}")
 
         for candidate in candidates:
             # Keep the lexical absolute path: resolving here would turn a
@@ -327,23 +327,23 @@ def discover_files(paths: Sequence[str], config: StyleConfig) -> Discovery:
             files.append(absolute)
 
     files.sort(key = lambda item: display_path(item, cwd))
-    return Discovery(files = files, skipped = skipped, directory_scan = directory_scan)
+    return discovery(files = files, skipped = skipped, directory_scan = directory_scan)
 
 # ---------------------------------------------------------------------------
 # Inline exemption directives and configured exemptions
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen = True)
-class Directive:
+class directive:
     """One parsed '# py-style-ok: rules[: reason]' comment."""
 
     rules: frozenset[str] | None
     has_reason: bool
 
-def parse_directives(context: FileContext, shown: str) -> tuple[dict[int, list[Directive]], list[str]]:
+def parse_directives(context: file_context, shown: str) -> tuple[dict[int, list[directive]], list[str]]:
     """Parse inline exemption directives of one file."""
 
-    directives: dict[int, list[Directive]] = {}
+    directives: dict[int, list[directive]] = {}
     diagnostics: list[str] = []
 
     for tok in context.tokens:
@@ -367,11 +367,11 @@ def parse_directives(context: FileContext, shown: str) -> tuple[dict[int, list[D
 
         if not reason:
             diagnostics.append(f"{shown}:{row}: py-style-ok directive without a reason is ignored")
-            directives.setdefault(row, []).append(Directive(None, False))
+            directives.setdefault(row, []).append(directive(None, False))
             continue
 
         rules = None if "*" in names else frozenset(names & CHECK_RULE_IDS)
-        directives.setdefault(row, []).append(Directive(rules, True))
+        directives.setdefault(row, []).append(directive(rules, True))
 
     return directives, diagnostics
 
@@ -382,7 +382,7 @@ class FileDirective:
     active: bool
     rules: frozenset[str] | None
 
-def parse_file_directive(context: FileContext, shown: str) -> tuple[FileDirective, list[str]]:
+def parse_file_directive(context: file_context, shown: str) -> tuple[FileDirective, list[str]]:
     """Parse file-level exemption directives from the header comment block.
 
     Only comment-only lines before the first code statement are considered. A
@@ -429,7 +429,7 @@ def parse_file_directive(context: FileContext, shown: str) -> tuple[FileDirectiv
 
     return FileDirective(True, None if all_rules else frozenset(selected)), diagnostics
 
-def _issue_is_inline_exempted(issue: Issue, directives: dict[int, list[Directive]]) -> bool:
+def _issue_is_inline_exempted(issue: issue_record, directives: dict[int, list[directive]]) -> bool:
     for row in (issue.line, issue.line - 1):
         for directive in directives.get(row, ()):
             if not directive.has_reason:
@@ -440,7 +440,7 @@ def _issue_is_inline_exempted(issue: Issue, directives: dict[int, list[Directive
 
     return False
 
-def _issue_is_config_exempted(issue: Issue, path: Path, config: StyleConfig, cwd: Path) -> bool:
+def _issue_is_config_exempted(issue: issue_record, path: Path, config: style_config, cwd: Path) -> bool:
     if not config.exempt:
         return False
 
@@ -479,11 +479,11 @@ def _require_rule_ids(values: Sequence[str], option: str) -> tuple[str, ...]:
             continue
 
         if value not in CHECK_RULE_IDS:
-            raise UsageError(f"unknown rule id '{value}' for {option}; run 'py-style list-rules' for the catalog")
+            raise usage_error(f"unknown rule id '{value}' for {option}; run 'py-style list-rules' for the catalog")
 
     return tuple(values)
 
-def active_rule_ids(config: StyleConfig, select: Sequence[str], ignore: Sequence[str]) -> tuple[str, ...]:
+def active_rule_ids(config: style_config, select: Sequence[str], ignore: Sequence[str]) -> tuple[str, ...]:
     """Resolve the enabled rule ids.
 
     Contract: effective = (CLI --select when given, else the config select when
@@ -511,11 +511,11 @@ def active_rule_ids(config: StyleConfig, select: Sequence[str], ignore: Sequence
 
     return tuple(rule.id for rule in CHECK_RULES if (rule.id in selected) and (rule.id not in ignored))
 
-def _severities(config: StyleConfig) -> dict[str, str]:
+def _severities(config: style_config) -> dict[str, str]:
     overrides = dict(config.severity)
     return {rule_id: rule_severity(rule_id, overrides) for rule_id in CHECK_RULE_IDS}
 
-def config_origin(config: StyleConfig) -> str:
+def config_origin(config: style_config) -> str:
     """Return the human-readable origin of the effective configuration."""
 
     if config.source is None:
@@ -528,21 +528,21 @@ def config_origin(config: StyleConfig) -> str:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class FileReport:
+class file_report:
     """Collected result for one scanned file."""
 
     path: Path
     shown: str
-    issues: list[Issue] = field(default_factory = list)
+    issues: list[issue_record] = field(default_factory = list)
 
 @dataclass
-class CheckResult:
+class check_result:
     """Aggregated result of one check run."""
 
     checked: int
     skipped: int
     files: list[str]
-    issues: list[tuple[str, Issue]]
+    issues: list[tuple[str, issue_record]]
     warnings: list[str]
     exempted: int
     rule_count: int
@@ -565,34 +565,34 @@ def _read_source(path: Path) -> tuple[str, bool, bool]:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text, used_crlf, decode_error
 
-def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig) -> CheckResult:
+def run_checks(discovery: discovery, active: Sequence[str], config: style_config) -> check_result:
     """Run all selected rules over the discovered files and filter exemptions."""
 
     cwd = Path.cwd()
     active_set = set(active)
-    reports: dict[Path, FileReport] = {}
+    reports: dict[Path, file_report] = {}
     warnings: list[str] = []
-    contexts: dict[Path, tuple[FileContext, dict[int, list[Directive]]]] = {}
+    contexts: dict[Path, tuple[file_context, dict[int, list[directive]]]] = {}
     file_directives: dict[Path, FileDirective] = {}
-    modules: list[ModuleInfo] = []
+    modules: list[module_info] = []
 
     for path in discovery.files:
         shown = display_path(path, cwd)
-        report = FileReport(path, shown)
+        report = file_report(path, shown)
         reports[path] = report
 
         try:
             text, _used_crlf, decode_error = _read_source(path)
         except OSError as exc:
-            raise UsageError(f"cannot read {shown}: {exc}") from exc
+            raise usage_error(f"cannot read {shown}: {exc}") from exc
 
         if decode_error:
             warnings.append(f"{shown}: not valid UTF-8; decoded with replacement characters")
 
         try:
-            context = FileContext.build(shown, text)
-        except ParseFailure as failure:
-            report.issues.append(Issue("parse-error", failure.line, failure.column, f"could not parse source: {failure.message}"))
+            context = file_context.build(shown, text)
+        except parse_failure as failure:
+            report.issues.append(issue_record("parse-error", failure.line, failure.column, f"could not parse source: {failure.message}"))
             continue
 
         directives, directive_diagnostics = parse_directives(context, shown)
@@ -626,7 +626,7 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
                 # a documented exception (mapping Q5) and would create false
                 # parent/child cycles.
                 modules.append(
-                    ModuleInfo(
+                    module_info(
                         module_name,
                         path,
                         is_package,
@@ -640,12 +640,12 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
             report = reports.get(graph_issue.path)
 
             if report is None:
-                report = FileReport(graph_issue.path, shown)
+                report = file_report(graph_issue.path, shown)
                 reports[graph_issue.path] = report
 
-            report.issues.append(Issue("acyclic-imports", graph_issue.line, graph_issue.column, graph_issue.message))
+            report.issues.append(issue_record("acyclic-imports", graph_issue.line, graph_issue.column, graph_issue.message))
 
-    raw: list[tuple[Path, str, Issue]] = []
+    raw: list[tuple[Path, str, issue_record]] = []
 
     for path in discovery.files:
         report = reports.get(path)
@@ -664,7 +664,7 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
             raw.append((path, report.shown, issue))
 
     exempted = 0
-    flattened: list[tuple[str, Issue]] = []
+    flattened: list[tuple[str, issue_record]] = []
 
     for path, shown, issue in raw:
         file_directive = file_directives.get(path)
@@ -686,19 +686,19 @@ def run_checks(discovery: Discovery, active: Sequence[str], config: StyleConfig)
         flattened.append((shown, issue))
 
     flattened.sort(key = lambda item: (item[0], item[1].line, item[1].column, item[1].rule))
-    return CheckResult(checked = len(discovery.files), skipped = discovery.skipped, files = sorted(display_path(path, cwd)for path in discovery.files), issues = flattened, warnings = warnings, exempted = exempted, rule_count = len(active), severities = _severities(config), config_origin = config_origin(config))
+    return check_result(checked = len(discovery.files), skipped = discovery.skipped, files = sorted(display_path(path, cwd)for path in discovery.files), issues = flattened, warnings = warnings, exempted = exempted, rule_count = len(active), severities = _severities(config), config_origin = config_origin(config))
 
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 
-def _issue_payload(shown: str, issue: Issue, severities: dict[str, str]) -> dict:
+def _issue_payload(shown: str, issue: issue_record, severities: dict[str, str]) -> dict:
     return {"path": shown, "line": issue.line, "column": issue.column, "rule": issue.rule, "severity": severities.get(issue.rule, "error"), "message": issue.message}
 
-def _summary_line(result: CheckResult, total: int, errors: int, warning_count: int) -> str:
+def _summary_line(result: check_result, total: int, errors: int, warning_count: int) -> str:
     return f"py-style: checked {result.checked} file(s), {total} issue(s) " f"({errors} error(s), {warning_count} warning(s)) - {result.rule_count} rule(s)"
 
-def emit_check_report(result: CheckResult, *, json_output: bool, quiet: bool, max_issues: int, stream_out: object, stream_err: object) -> tuple[int, int]:
+def emit_check_report(result: check_result, *, json_output: bool, quiet: bool, max_issues: int, stream_out: object, stream_err: object) -> tuple[int, int]:
     """Write the check report; return (total findings, error count)."""
 
     severities = result.severities
@@ -732,7 +732,7 @@ def emit_check_report(result: CheckResult, *, json_output: bool, quiet: bool, ma
 # ---------------------------------------------------------------------------
 
 def _fix_one_file(
-    path: Path, text: str, fixers: Sequence[str], config: StyleConfig
+    path: Path, text: str, fixers: Sequence[str], config: style_config
 ) -> tuple[str | None, list[str], str | None]:
     """Run fixer rounds; return (new text or None, applied rules, fatal reason)."""
 
@@ -744,8 +744,8 @@ def _fix_one_file(
 
         for rule_id in fixers:
             try:
-                context = FileContext.build(str(path), current)
-            except ParseFailure as failure:
+                context = file_context.build(str(path), current)
+            except parse_failure as failure:
                 return None, applied, f"fix pass produced unparseable source: {failure.message}"
 
             rewritten = FIX_FUNCS[rule_id](context, config)
@@ -798,11 +798,11 @@ def _write_source(path: Path, text: str, used_crlf: bool) -> None:
 
 def _load_style_config(
     paths: Sequence[str], config_path: str | None, no_config: bool
-) -> StyleConfig:
+) -> style_config:
     try:
         return load_config(paths = paths, explicit = config_path, disabled = no_config)
-    except ConfigError as exc:
-        raise UsageError(str(exc)) from exc
+    except config_error as exc:
+        raise usage_error(str(exc)) from exc
 
 def run_check_command(args: argparse.Namespace) -> int:
     """Implement 'py-style check'."""
@@ -813,7 +813,7 @@ def run_check_command(args: argparse.Namespace) -> int:
     active = active_rule_ids(config, args.select or (), args.ignore or ())
 
     if args.max_issues < 0:
-        raise UsageError("--max-issues must be zero or a positive integer")
+        raise usage_error("--max-issues must be zero or a positive integer")
 
     result = run_checks(discovery, active, config)
     _total, errors = emit_check_report(result, json_output = args.json_output, quiet = args.quiet, max_issues = args.max_issues, stream_out = sys.stdout, stream_err = sys.stderr)
@@ -874,7 +874,7 @@ def run_fix_command(args: argparse.Namespace) -> int:
         try:
             text, used_crlf, decode_error = _read_source(path)
         except OSError as exc:
-            raise UsageError(f"cannot read {shown}: {exc}") from exc
+            raise usage_error(f"cannot read {shown}: {exc}") from exc
 
         if decode_error:
             skipped.append(f"{shown}: not valid UTF-8")
@@ -884,8 +884,8 @@ def run_fix_command(args: argparse.Namespace) -> int:
             continue
 
         try:
-            context = FileContext.build(shown, text)
-        except ParseFailure:
+            context = file_context.build(shown, text)
+        except parse_failure:
             skipped.append(f"{shown}: parse error")
             continue
 
@@ -1075,7 +1075,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if parsed.command == "list-rules":
             return run_list_rules_command(parsed)
-    except UsageError as exc:
+    except usage_error as exc:
         print(f"py-style: error: {exc}", file = sys.stderr)
         return EXIT_ERROR
     except OSError as exc:

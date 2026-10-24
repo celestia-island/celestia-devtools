@@ -27,12 +27,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 from celestia_devtools.deploy.artifact import sha256_file
-from celestia_devtools.deploy.profile import DeployProfile
+from celestia_devtools.deploy.profile import deploy_profile
 
 ENV_KEY_WARNING = "⚠ /etc/celestia/<face>.env 含 SHITTIM_CHEST_ENCRYPTION_KEY——丢了它，" "库里与桶里的全部密文永久解不开。备份介质请同等保护。"
 
 @dataclass
-class BackupResult:
+class backup_result:
     path: Path
     entries: dict[str, str] = field(default_factory = dict)  # file -> sha256
     skipped: list[str] = field(default_factory = list)
@@ -43,7 +43,7 @@ class BackupResult:
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output = True, text = True, **kw)
 
-def resolve_db_url(profile: DeployProfile) -> str | None:
+def resolve_db_url(profile: deploy_profile) -> str | None:
     """DB URL from the face's url file; SHITTIM_CHEST_DATABASE_URL style."""
     env = profile.host.etc_env()
     default_url_file = env.with_name(env.stem + "-db.url")
@@ -62,11 +62,11 @@ def resolve_db_url(profile: DeployProfile) -> str | None:
 
     return None
 
-def backup(profile: DeployProfile, dest: Path, executor: Callable[..., subprocess.CompletedProcess] = _run) -> BackupResult:
+def backup(profile: deploy_profile, dest: Path, executor: Callable[..., subprocess.CompletedProcess] = _run) -> backup_result:
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = Path(dest) / "{}-{}".format(profile.host.face, stamp)
     out.mkdir(parents = True)
-    result = BackupResult(path = out)
+    result = backup_result(path = out)
 
     data_root = profile.host.deploy_root() / "data"
 
@@ -109,7 +109,7 @@ def backup(profile: DeployProfile, dest: Path, executor: Callable[..., subproces
     print(ENV_KEY_WARNING)
     return result
 
-def restore(profile: DeployProfile, backup_dir: Path, executor: Callable[..., subprocess.CompletedProcess] = _run) -> list[str]:
+def restore(profile: deploy_profile, backup_dir: Path, executor: Callable[..., subprocess.CompletedProcess] = _run) -> list[str]:
     """Restore data/env/db from a backup directory. Returns applied steps.
 
     Callers own service stop/start around this (the upgrade path restarts

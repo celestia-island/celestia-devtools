@@ -16,19 +16,19 @@ import os
 import subprocess
 from pathlib import Path
 from celestia_devtools.deploy import (artifact, backup as backup_mod, bootstrap, lifecycle, wizard)
-from celestia_devtools.deploy.profile import (DeployProfile, FrontSection, HostSection)
+from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
 
 _PY_FLOOR = "3.11"  # must track pyproject requires-python (R2 P3)
 
-class NonTty(io.StringIO):
+class non_tty(io.StringIO):
     def isatty(self):
         return False
 
 def _ok(cmd, **kw):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
-def _chain_profile(tmp_path: Path) -> DeployProfile:
-    return DeployProfile(host = HostSection(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = FrontSection(enabled = True, domain = "acme.example", email = "ops@acme.example"))
+def _chain_profile(tmp_path: Path) -> deploy_profile:
+    return deploy_profile(host = host_section(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = front_section(enabled = True, domain = "acme.example", email = "ops@acme.example"))
 
 def _fake_bin(tmp_path: Path, payload: bytes = b"chest-v1") -> Path:
     p = tmp_path / "fakebin"
@@ -36,7 +36,7 @@ def _fake_bin(tmp_path: Path, payload: bytes = b"chest-v1") -> Path:
     os.chmod(p, 0o755)
     return p
 
-class TestRootlessChain:
+class test_rootless_chain:
     def test_wizard_to_upgrade_to_backup_full_chain(self, tmp_path, capsys):
         # ── 1. wizard (non-interactive, seeded like the CLI would) ──
         seed = {
@@ -53,9 +53,9 @@ class TestRootlessChain:
         prof.write(prof.host.profile_path())
 
         # ── 2. bootstrap stages: real fs for secrets, injected executor ──
-        ctx = bootstrap.StageContext(profile = prof, executor = _ok,
+        ctx = bootstrap.stage_context(profile = prof, executor = _ok,
                                      assume_root = True)
-        ctx.getpwnam = lambda u: _FakePw(os.getuid(), os.getgid())
+        ctx.getpwnam = lambda u: _fake_pw(os.getuid(), os.getgid())
         code, results = bootstrap.run_stages(ctx)
         assert code == 2  # pending slices, loudly
         by = {r.name: r.status for r in results}
@@ -119,7 +119,7 @@ class TestRootlessChain:
         prof.admin.email = "ops@acme.example"
         path = prof.host.profile_path()
         prof.write(path)
-        monkeypatch.setattr("sys.stdin", NonTty())
+        monkeypatch.setattr("sys.stdin", non_tty())
         monkeypatch.setattr("sys.argv", ["deploy", "--profile", str(path), "--non-interactive", "--dry-run", "--json"])
         rc = deploy_cli.main()
         captured = capsys.readouterr()
@@ -132,7 +132,7 @@ class TestRootlessChain:
             f"PENDING stages found: {[n for n, st in statuses.items() if st == 'pending-slice']}"
         assert names[-1] == 'summary'  # summary always runs
 
-class _FakePw:
+class _fake_pw:
     def __init__(self, uid, gid):
         self.pw_uid = uid
         self.pw_gid = gid
@@ -140,7 +140,7 @@ class _FakePw:
 def _boom(_prompt = ""):
     raise AssertionError("stdin must not be touched")
 
-class TestDockerGatedE2E:
+class test_docker_gated_e2_e:
     """The real fresh-container run. Gated on a live docker/podman daemon —
     CI runs it when the farm provides one; otherwise it skips loudly."""
 

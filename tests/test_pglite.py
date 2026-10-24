@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.env import pglite
 
-class _FakeProc:
+class _fake_proc:
     """Stands in for the detached Node server process."""
 
     def __init__(self, pid: int, url: str, exit_after_read: bool = False):
@@ -39,7 +39,7 @@ class _FakeProc:
     def kill(self):
         self.returncode = -9
 
-def _patch_env(monkeypatch, tmp_path: Path, procs: list[_FakeProc]):
+def _patch_env(monkeypatch, tmp_path: Path, procs: list[_fake_proc]):
     """Point the module at a temp data dir and stub process spawning."""
     monkeypatch.setattr(pglite, "_data_dir", lambda: tmp_path)
     monkeypatch.setattr(pglite, "_require_tools", lambda *a: None)
@@ -49,7 +49,7 @@ def _patch_env(monkeypatch, tmp_path: Path, procs: list[_FakeProc]):
     real_popen = pglite.subprocess.Popen
 
     def fake_popen(*args, **kwargs):
-        proc = procs.pop(0)if procs else _FakeProc(4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
+        proc = procs.pop(0)if procs else _fake_proc(4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
         # keep the log-file handle the caller opened so it isn't leaked
         proc._stderr = kwargs.get("stderr")
         return proc
@@ -98,7 +98,7 @@ def test_start_reuses_live_instance_of_same_name(tmp_path, monkeypatch, capsys):
     assert "postgresql://x@127.0.0.1:1/postgres" in capsys.readouterr().out
 
 def test_start_different_name_spawns_its_own(tmp_path, monkeypatch, capsys):
-    fake = _FakeProc(4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
+    fake = _fake_proc(4242, "postgresql://postgres:postgres@127.0.0.1:15432/postgres")
     _patch_env(monkeypatch, tmp_path, procs = [fake])
     pglite._write_sidecar({"pid": 999, "url": "postgresql://x@127.0.0.1:1/postgres"}, "arona")
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: True)
@@ -111,7 +111,7 @@ def test_start_different_name_spawns_its_own(tmp_path, monkeypatch, capsys):
     assert pglite._read_sidecar("scepter")["name"] == "scepter"
 
 def test_start_records_url_and_pid(tmp_path, monkeypatch, capsys):
-    fake = _FakeProc(777, "postgresql://postgres:postgres@127.0.0.1:15440/postgres")
+    fake = _fake_proc(777, "postgresql://postgres:postgres@127.0.0.1:15440/postgres")
     _patch_env(monkeypatch, tmp_path, procs = [fake])
     monkeypatch.setattr(pglite, "_proc_alive", lambda pid: False)
     assert pglite.start(name = "neo") == 0

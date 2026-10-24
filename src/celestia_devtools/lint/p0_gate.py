@@ -97,7 +97,7 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 #: rest of the line is the (optional) stated reason.
 _ACK_RE = re.compile(r"P0-ACK\s*:\s*(?P<rest>[^\n]*)", re.IGNORECASE)
 
-class LedgerError(Exception):
+class ledger_error(Exception):
     """Raised for a missing / unreadable / invalid ledger (fail-closed)."""
 
 def normalize_repo_name(name: str) -> str:
@@ -121,7 +121,7 @@ def normalize_repo_name(name: str) -> str:
     return value.strip()
 
 @dataclass(frozen = True)
-class P0Entry:
+class p0_entry:
     """One ledger row."""
 
     id: str
@@ -146,7 +146,7 @@ class P0Entry:
         return "%s: %s" % (self.id, self.title)
 
 @dataclass(frozen = True)
-class Ack:
+class ack_record:
     """An explicit acknowledgment of one ledger entry."""
 
     id: str
@@ -181,21 +181,21 @@ def resolve_ledger_path(explicit: Optional[str] = None, repo_root: Optional[Path
 
     return bundled_ledger_path()
 
-def _validate_entry(raw: object, index: int) -> P0Entry:
+def _validate_entry(raw: object, index: int) -> p0_entry:
     where = "p0[%d]" % index
 
     if not isinstance(raw, dict):
-        raise LedgerError("%s must be a table, got %s" % (where, type(raw).__name__))
+        raise ledger_error("%s must be a table, got %s" % (where, type(raw).__name__))
 
     unknown = sorted(set(raw) - _ENTRY_KEY_SET)
 
     if unknown:
-        raise LedgerError("%s has unknown key(s): %s (known: %s)" % (where, ", ".join(unknown), ", ".join(_ENTRY_KEYS)))
+        raise ledger_error("%s has unknown key(s): %s (known: %s)" % (where, ", ".join(unknown), ", ".join(_ENTRY_KEYS)))
 
     missing = [key for key in _ENTRY_KEYS if key not in raw]
 
     if missing:
-        raise LedgerError("%s is missing required key(s): %s" % (where, ", ".join(missing)))
+        raise ledger_error("%s is missing required key(s): %s" % (where, ", ".join(missing)))
 
     values: Dict[str, str] = {}
 
@@ -206,106 +206,106 @@ def _validate_entry(raw: object, index: int) -> P0Entry:
         value = raw[key]
 
         if not isinstance(value, str):
-            raise LedgerError("%s.%s must be a string" % (where, key))
+            raise ledger_error("%s.%s must be a string" % (where, key))
 
         values[key] = value
 
     scope_raw = raw["scope"]
 
     if not isinstance(scope_raw, list) or not scope_raw:
-        raise LedgerError("%s.scope must be a non-empty list of repo names" % where)
+        raise ledger_error("%s.scope must be a non-empty list of repo names" % where)
 
     scope: List[str] = []
 
     for item in scope_raw:
         if not isinstance(item, str) or not item.strip():
-            raise LedgerError("%s.scope entries must be non-empty strings" % where)
+            raise ledger_error("%s.scope entries must be non-empty strings" % where)
 
         scope.append(item.strip())
 
     entry_id = values["id"].strip()
 
     if not _ID_RE.match(entry_id):
-        raise LedgerError("%s.id %r is not a valid identifier" % (where, values["id"]))
+        raise ledger_error("%s.id %r is not a valid identifier" % (where, values["id"]))
 
     if not values["title"].strip():
-        raise LedgerError("%s.title must not be empty" % where)
+        raise ledger_error("%s.title must not be empty" % where)
 
     if values["severity"] not in SEVERITIES:
-        raise LedgerError("%s.severity %r is not one of %s" % (where, values["severity"], ", ".join(SEVERITIES)))
+        raise ledger_error("%s.severity %r is not one of %s" % (where, values["severity"], ", ".join(SEVERITIES)))
 
     if values["status"] not in STATUSES:
-        raise LedgerError("%s.status %r is not one of %s" % (where, values["status"], ", ".join(STATUSES)))
+        raise ledger_error("%s.status %r is not one of %s" % (where, values["status"], ", ".join(STATUSES)))
 
     if not _DATE_RE.match(values["opened_at"]):
-        raise LedgerError("%s.opened_at %r is not YYYY-MM-DD" % (where, values["opened_at"]))
+        raise ledger_error("%s.opened_at %r is not YYYY-MM-DD" % (where, values["opened_at"]))
 
     if not values["evidence"].strip():
-        raise LedgerError("%s.evidence must not be empty" % where)
+        raise ledger_error("%s.evidence must not be empty" % where)
 
     if (values["status"] == STATUS_CLOSED) and not values["closed_by"].strip():
-        raise LedgerError("%s.status is closed but closed_by is empty — name the PR that closed it" % where)
+        raise ledger_error("%s.status is closed but closed_by is empty — name the PR that closed it" % where)
 
     if (values["status"] == STATUS_OPEN) and values["closed_by"].strip():
-        raise LedgerError("%s.status is open but closed_by is set — close it or clear the field" % where)
+        raise ledger_error("%s.status is open but closed_by is set — close it or clear the field" % where)
 
-    return P0Entry(id = entry_id, title = values["title"].strip(), severity = values["severity"], scope = tuple(scope), status = values["status"], opened_at = values["opened_at"], closed_by = values["closed_by"].strip(), evidence = values["evidence"].strip())
+    return p0_entry(id = entry_id, title = values["title"].strip(), severity = values["severity"], scope = tuple(scope), status = values["status"], opened_at = values["opened_at"], closed_by = values["closed_by"].strip(), evidence = values["evidence"].strip())
 
-def parse_ledger_text(text: str, origin: str = "<ledger>") -> List[P0Entry]:
+def parse_ledger_text(text: str, origin: str = "<ledger>") -> List[p0_entry]:
     """Parse and validate ledger *text*; raise :class:`LedgerError` otherwise."""
 
     if _toml is None:  # pragma: no cover - depends on the interpreter
-        raise LedgerError("no TOML parser available (need Python 3.11+ or the 'tomli' package) — " "refusing to treat an unreadable ledger as a pass")
+        raise ledger_error("no TOML parser available (need Python 3.11+ or the 'tomli' package) — " "refusing to treat an unreadable ledger as a pass")
 
     try:
         data = _toml.loads(text)
     except Exception as exc:  # tomllib.TOMLDecodeError and friends
-        raise LedgerError("%s is not valid TOML: %s" % (origin, exc)) from exc
+        raise ledger_error("%s is not valid TOML: %s" % (origin, exc)) from exc
 
     if not isinstance(data, dict):
-        raise LedgerError("%s must contain a TOML table at the top level" % origin)
+        raise ledger_error("%s must contain a TOML table at the top level" % origin)
 
     unknown = sorted(set(data) - _META_KEYS - {"p0"})
 
     if unknown:
-        raise LedgerError("%s has unknown top-level key(s): %s (known: %s)" % (origin, ", ".join(unknown), ", ".join(sorted(_META_KEYS | {"p0"}))))
+        raise ledger_error("%s has unknown top-level key(s): %s (known: %s)" % (origin, ", ".join(unknown), ", ".join(sorted(_META_KEYS | {"p0"}))))
 
     version = data.get("version")
 
     if version != LEDGER_VERSION:
-        raise LedgerError("%s.version is %r but this tool understands %d" % (origin, version, LEDGER_VERSION))
+        raise ledger_error("%s.version is %r but this tool understands %d" % (origin, version, LEDGER_VERSION))
 
     raw_entries = data.get("p0")
 
     if raw_entries is None:
-        raise LedgerError("%s has no [[p0]] entries — an empty ledger is not a pass" % origin)
+        raise ledger_error("%s has no [[p0]] entries — an empty ledger is not a pass" % origin)
 
     if not isinstance(raw_entries, list):
-        raise LedgerError("%s.p0 must be an array of tables ([[p0]])" % origin)
+        raise ledger_error("%s.p0 must be an array of tables ([[p0]])" % origin)
 
     if not raw_entries:
-        raise LedgerError("%s has no [[p0]] entries — an empty ledger is not a pass" % origin)
+        raise ledger_error("%s has no [[p0]] entries — an empty ledger is not a pass" % origin)
 
     entries = [_validate_entry(raw, i) for i, raw in enumerate(raw_entries)]
     seen: Dict[str, int] = {}
 
     for entry in entries:
         if entry.id in seen:
-            raise LedgerError("%s declares duplicate id %r" % (origin, entry.id))
+            raise ledger_error("%s declares duplicate id %r" % (origin, entry.id))
 
         seen[entry.id] = 1
 
     return entries
 
-def load_ledger(path: Path) -> List[P0Entry]:
+def load_ledger(path: Path) -> List[p0_entry]:
     """Read + validate the ledger at *path*; fail-closed on any problem."""
 
     try:
         text = Path(path).read_text(encoding = "utf-8")
     except FileNotFoundError as exc:
-        raise LedgerError("ledger not found: %s" % path) from exc
+        raise ledger_error("ledger not found: %s" % path) from exc
     except OSError as exc:
-        raise LedgerError("ledger unreadable: %s: %s" % (path, exc)) from exc
+        raise ledger_error("ledger unreadable: %s: %s" % (path, exc)) from exc
 
     return parse_ledger_text(text, origin = str(path))
 
@@ -313,11 +313,11 @@ def load_ledger(path: Path) -> List[P0Entry]:
 # Queries
 # ---------------------------------------------------------------------------
 
-def entries_for_repo(entries: Iterable[P0Entry], repo: str) -> List[P0Entry]:
+def entries_for_repo(entries: Iterable[p0_entry], repo: str) -> List[p0_entry]:
     """Every entry (open or closed) whose scope covers *repo*."""
     return [entry for entry in entries if entry.covers(repo)]
 
-def open_entries_for_repo(entries: Iterable[P0Entry], repo: str) -> List[P0Entry]:
+def open_entries_for_repo(entries: Iterable[p0_entry], repo: str) -> List[p0_entry]:
     """Open entries whose scope covers *repo*."""
     return [entry for entry in entries_for_repo(entries, repo) if entry.is_open]
 
@@ -351,9 +351,9 @@ def repo_name_from_url(url: str) -> Optional[str]:
 # Acknowledgments
 # ---------------------------------------------------------------------------
 
-def parse_ack_markers(text: str, source: str) -> List[Ack]:
+def parse_ack_markers(text: str, source: str) -> List[ack_record]:
     """Extract ``P0-ACK: <id> [<id>…] [reason]`` markers from a PR body."""
-    acks: List[Ack] = []
+    acks: List[ack_record] = []
 
     for match in _ACK_RE.finditer(text or ""):
         ids: List[str] = []
@@ -370,30 +370,30 @@ def parse_ack_markers(text: str, source: str) -> List[Ack]:
         reason = " ".join(reason_words).strip()
 
         for entry_id in ids:
-            acks.append(Ack(id = entry_id, source = source, reason = reason))
+            acks.append(ack_record(id = entry_id, source = source, reason = reason))
 
     return acks
 
-def collect_acks(cli_acks: Sequence[str] = (), pr_bodies: Sequence[Tuple[str, str]] = (), env: Optional[Dict[str, str]] = None) -> List[Ack]:
+def collect_acks(cli_acks: Sequence[str] = (), pr_bodies: Sequence[Tuple[str, str]] = (), env: Optional[Dict[str, str]] = None) -> List[ack_record]:
     """Merge the three acknowledgment channels (CLI, env, PR body)."""
     environ = os.environ if env is None else env
-    acks: List[Ack] = []
+    acks: List[ack_record] = []
 
     for raw in cli_acks:
         for token in re.split(r"[\s,]+", raw or ""):
             if token:
-                acks.append(Ack(id = token, source = "--ack"))
+                acks.append(ack_record(id = token, source = "--ack"))
 
     for token in re.split(r"[\s,]+", environ.get(ACK_ENV, "") or ""):
         if token:
-            acks.append(Ack(id = token, source = "%s" % ACK_ENV))
+            acks.append(ack_record(id = token, source = "%s" % ACK_ENV))
 
     for body, source in pr_bodies:
         acks.extend(parse_ack_markers(body, source))
 
     return acks
 
-def _format_ack(ack: Ack) -> str:
+def _format_ack(ack: ack_record) -> str:
     reason = " — %s" % ack.reason if ack.reason else ""
     return "%s (via %s)%s" % (ack.id, ack.source, reason)
 
@@ -401,7 +401,7 @@ def _format_ack(ack: Ack) -> str:
 # Rendering
 # ---------------------------------------------------------------------------
 
-def render_list(entries: Sequence[P0Entry]) -> str:
+def render_list(entries: Sequence[p0_entry]) -> str:
     """Whole ledger, grouped open/closed, oldest first within a group."""
     lines: List[str] = []
 
@@ -421,7 +421,7 @@ def render_list(entries: Sequence[P0Entry]) -> str:
 
     return "\n".join(lines).rstrip("\n")
 
-def render_blocked(repo: str, blocked: Sequence[P0Entry]) -> str:
+def render_blocked(repo: str, blocked: Sequence[p0_entry]) -> str:
     lines = ["p0-gate: %s is covered by %d unresolved P0 finding(s):" % (repo, len(blocked))]
 
     for entry in blocked:
@@ -445,7 +445,7 @@ def _read_pr_bodies(args: argparse.Namespace, env: Dict[str, str]) -> List[Tuple
         try:
             text = Path(args.pr_body_file).read_text(encoding = "utf-8")
         except OSError as exc:
-            raise LedgerError("--pr-body-file unreadable: %s: %s" % (args.pr_body_file, exc)) from exc
+            raise ledger_error("--pr-body-file unreadable: %s: %s" % (args.pr_body_file, exc)) from exc
 
         bodies.append((text, "--pr-body-file"))
 
@@ -473,7 +473,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         ledger_path = resolve_ledger_path(args.ledger, repo_root = root, env = env)
         entries = load_ledger(ledger_path)
-    except LedgerError as exc:
+    except ledger_error as exc:
         print("p0-gate: %s" % exc, file = sys.stderr)
         print("p0-gate: refusing to pass on an unusable ledger (fail-closed)", file = sys.stderr)
         return 2
@@ -504,17 +504,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         acks = collect_acks(args.ack, _read_pr_bodies(args, env), env = env)
-    except LedgerError as exc:
+    except ledger_error as exc:
         print("p0-gate: %s" % exc, file = sys.stderr)
         return 2
 
-    acked: Dict[str, Ack] = {}
+    acked: Dict[str, ack_record] = {}
 
     for ack in acks:
         acked.setdefault(ack.id, ack)
 
-    blocked: List[P0Entry] = []
-    acknowledged: List[Tuple[P0Entry, Ack]] = []
+    blocked: List[p0_entry] = []
+    acknowledged: List[Tuple[p0_entry, ack_record]] = []
     covered_ids: set = set()
     blocked_ids: set = set()
     ack_seen: set = set()

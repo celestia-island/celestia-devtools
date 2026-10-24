@@ -31,7 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--json", action = "store_true", help = "machine-readable stage results")
     return ap
 
-def _seed_from_args(args, parsed_profile: profile_mod.DeployProfile | None) -> dict[str, str]:
+def _seed_from_args(args, parsed_profile: profile_mod.deploy_profile | None) -> dict[str, str]:
     seed: dict[str, str] = {}
 
     if parsed_profile is not None:
@@ -70,8 +70,8 @@ def _run_bootstrap_inner(argv: list[str]) -> int:
 
     if args.profile:
         try:
-            parsed_profile = profile_mod.DeployProfile.read(Path(args.profile))
-        except (OSError, profile_mod.ProfileError) as exc:
+            parsed_profile = profile_mod.deploy_profile.read(Path(args.profile))
+        except (OSError, profile_mod.profile_error) as exc:
             print("error: --profile: {}".format(exc), file = sys.stderr)
             return 2
 
@@ -81,7 +81,7 @@ def _run_bootstrap_inner(argv: list[str]) -> int:
     try:
         answers, provenance = wizard.collect(seed, interactive = interactive)
         prof = wizard.build_profile(answers, base = parsed_profile)
-    except wizard.WizardAbort as exc:
+    except wizard.wizard_abort as exc:
         print("error: {}".format(exc), file = sys.stderr)
         return 2
 
@@ -118,7 +118,7 @@ def _run_bootstrap_inner(argv: list[str]) -> int:
         sys.stdout = sys.stderr
 
     try:
-        ctx = bootstrap.StageContext(profile = prof, assume_root = False, dry_run = args.dry_run)
+        ctx = bootstrap.stage_context(profile = prof, assume_root = False, dry_run = args.dry_run)
         code, results = bootstrap.run_stages(ctx)
     finally:
         sys.stdout = real_stdout

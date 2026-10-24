@@ -141,7 +141,7 @@ def content_start(lines: List[str]) -> int:
     return n
 
 @dataclass
-class Finding:
+class finding_record:
     path: Path
     line: int
     rule: str
@@ -157,14 +157,14 @@ class Finding:
         return "rules-lint: %s:%d: %s: %s" % (shown, self.line, self.rule, self.message)
 
 @dataclass
-class Context:
+class context:
     root: Path
     core: Path
-    findings: List[Finding] = field(default_factory = list)
+    findings: List[finding_record] = field(default_factory = list)
     checked: int = 0
 
     def report(self, path: Path, line: int, rule: str, message: str, severity: str = "error") -> None:
-        self.findings.append(Finding(path, line, rule, message, severity))
+        self.findings.append(finding_record(path, line, rule, message, severity))
 
 def _read(path: Path) -> List[str]:
     return path.read_text(encoding = "utf-8").split("\n")
@@ -239,7 +239,7 @@ def skill_body_lines(path: Path) -> int:
 
 # --------------------------------------------------------------------------- rules
 
-def check_skill_frontmatter(ctx: Context) -> None:
+def check_skill_frontmatter(ctx: context) -> None:
     skills = skill_bodies(ctx.root)
 
     if not skills:
@@ -289,7 +289,7 @@ def check_skill_frontmatter(ctx: Context) -> None:
         if body_line_count(body) < MIN_SKILL_BODY_LINES:
             ctx.report(path, 1, "skill-body", "body has %d non-blank line(s), expected >= %d — a pointer that resolves to an " "empty skill loses the rule" % (body_line_count(body), MIN_SKILL_BODY_LINES))
 
-def check_pointers(ctx: Context) -> None:
+def check_pointers(ctx: context) -> None:
     """Every 'moved out' pointer must resolve to a non-empty target."""
 
     if not ctx.core.is_file():
@@ -328,7 +328,7 @@ def check_pointers(ctx: Context) -> None:
             elif not any(line.strip() for line in _read(target)):
                 ctx.report(ctx.core, idx, "pointer-target", "pointer names %r, which is empty" % rel)
 
-def check_dead_references(ctx: Context) -> None:
+def check_dead_references(ctx: context) -> None:
     """`§x.y` inside the core must resolve to a heading that still exists."""
 
     if not ctx.core.is_file():
@@ -372,7 +372,7 @@ def check_dead_references(ctx: Context) -> None:
 
             ctx.report(ctx.core, idx, "dead-reference", "§%s does not resolve to any heading in this file (renamed or removed section?)" % ref, severity = "warning")
 
-def check_ledger_schema(ctx: Context) -> None:
+def check_ledger_schema(ctx: context) -> None:
     ledger_dir = ctx.root / LEDGER_RELPATH
 
     if not ledger_dir.is_dir():
@@ -392,7 +392,7 @@ def check_ledger_schema(ctx: Context) -> None:
         if not any(line.lstrip().startswith(">") for line in lines):
             ctx.report(path, 1, "ledger-schema", "no provenance blockquote; add one stating that this is a ledger, not rules, " "and how it is maintained")
 
-def check_duplication(ctx: Context, allowlist: Iterable[str] = (), include_repo_local: bool = False) -> None:
+def check_duplication(ctx: context, allowlist: Iterable[str] = (), include_repo_local: bool = False) -> None:
     """A rule sentence should live on exactly one surface.
 
     Only structural scaffolding is skipped — headings, table rows, and the pointer
@@ -436,7 +436,7 @@ def check_duplication(ctx: Context, allowlist: Iterable[str] = (), include_repo_
             else:
                 seen[line] = (path, idx)
 
-def check_stale_paths(ctx: Context, path_root: Optional[str] = None) -> None:
+def check_stale_paths(ctx: context, path_root: Optional[str] = None) -> None:
     """Absolute paths quoted in an injected surface should exist.
 
     A tooling migration that renames scripts leaves the rules pointing at files that no
@@ -467,7 +467,7 @@ def check_stale_paths(ctx: Context, path_root: Optional[str] = None) -> None:
                 if not Path(ref).exists():
                     ctx.report(path, idx, "stale-path", "%s does not exist — a rename or migration left this reference behind" % ref)
 
-def check_secrets(ctx: Context) -> None:
+def check_secrets(ctx: context) -> None:
     for path in injected_surfaces(ctx.root):
         for idx, line in enumerate(_read(path), 1):
             for label, pattern in SECRET_PATTERNS:
@@ -513,7 +513,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         root = found
 
-    ctx = Context(root = root, core = root / CORE_NAME)
+    ctx = context(root = root, core = root / CORE_NAME)
     disabled = set(args.disable)
 
     for name, fn in RULES:

@@ -84,7 +84,7 @@ def _new_sandbox(label: str) -> Path:
     (box / "tmp").mkdir(parents = True, exist_ok = True)
     return box
 
-class _Terminated(BaseException):
+class _terminated(BaseException):
     """Raised by SIGTERM/SIGHUP so the finally-cleanup path runs (2026-09-21:
     without this, a SIGTERM from CI's `timeout` command killed the wrapper
     outright, the finally never ran, the sandbox leaked, and the child became
@@ -95,7 +95,7 @@ class _Terminated(BaseException):
         self.signum = signum
 
 def _term_handler(signum: int, frame) -> None:  # noqa: ARG001
-    raise _Terminated(signum)
+    raise _terminated(signum)
 
 def cmd_run(argv: Sequence[str]) -> int:
     """Wrap a command with an isolated, always-cleaned TMPDIR sandbox."""
@@ -156,7 +156,7 @@ def cmd_run(argv: Sequence[str]) -> int:
         _kill_tree(child, signal.SIGINT)
         rc = child.wait() if child else 130
         rc = rc if rc >= 0 else 130
-    except _Terminated as exc:
+    except _terminated as exc:
         _kill_tree(child, exc.signum)
         rc = child.wait() if child else 128 + exc.signum
         rc = rc if rc >= 0 else 128 + exc.signum

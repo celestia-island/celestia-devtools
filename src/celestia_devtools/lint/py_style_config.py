@@ -27,11 +27,11 @@ CONFIG_FILE_NAME = "py-style.toml"
 PYPROJECT_FILE_NAME = "pyproject.toml"
 PYPROJECT_SECTION = "py_style"
 
-class ConfigError(Exception):
+class config_error(Exception):
     """Raised when a py-style configuration file is unreadable or invalid."""
 
 @dataclass(frozen = True)
-class ExemptEntry:
+class exempt_entry:
     """A path glob plus rule ids whose violations are ignored."""
 
     path: str
@@ -39,14 +39,14 @@ class ExemptEntry:
     reason: str
 
 @dataclass
-class StyleConfig:
+class style_config:
     """Resolved py-style configuration."""
 
     root: Path = field(default_factory = Path.cwd)
     source: Path | None = None
     select: tuple[str, ...] = ()
     ignore: tuple[str, ...] = ()
-    exempt: tuple[ExemptEntry, ...] = ()
+    exempt: tuple[exempt_entry, ...] = ()
     exclude: tuple[str, ...] = ()
     final_newline: str = "one"
     slice_colons: str = "pep8"
@@ -99,12 +99,12 @@ def _read_toml(origin: Path) -> dict[str, Any]:
     try:
         data = tomllib.loads(origin.read_text(encoding = "utf-8"))
     except OSError as exc:
-        raise ConfigError(f"cannot read config file {origin}: {exc}") from exc
+        raise config_error(f"cannot read config file {origin}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"cannot parse config file {origin}: {exc}") from exc
+        raise config_error(f"cannot parse config file {origin}: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise ConfigError(f"config file {origin} must contain a TOML table")
+        raise config_error(f"config file {origin} must contain a TOML table")
 
     return data
 
@@ -116,7 +116,7 @@ def _select_table(data: dict[str, Any], origin: Path) -> dict[str, Any]:
 
         if section is not None:
             if not isinstance(section, dict):
-                raise ConfigError(f"[tool.{PYPROJECT_SECTION}] in {origin} must be a table")
+                raise config_error(f"[tool.{PYPROJECT_SECTION}] in {origin} must be a table")
 
             return section
 
@@ -124,10 +124,10 @@ def _select_table(data: dict[str, Any], origin: Path) -> dict[str, Any]:
 
 def _expect_string_list(value: Any, key: str, origin: Path) -> tuple[str, ...]:
     if isinstance(value, str):
-        raise ConfigError(f"{key} in {origin} must be an array of strings, not a string")
+        raise config_error(f"{key} in {origin} must be an array of strings, not a string")
 
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ConfigError(f"{key} in {origin} must be an array of strings")
+        raise config_error(f"{key} in {origin} must be an array of strings")
 
     return tuple(value)
 
@@ -137,79 +137,79 @@ def _expect_rule_ids(values: tuple[str, ...], key: str, origin: Path) -> tuple[s
             continue
 
         if value not in KNOWN_RULE_IDS:
-            raise ConfigError(f"unknown rule id '{value}' in {key} of {origin}; " "see 'py-style list-rules' for the catalog")
+            raise config_error(f"unknown rule id '{value}' in {key} of {origin}; " "see 'py-style list-rules' for the catalog")
 
     return values
 
-def _parse_exempt(value: Any, origin: Path) -> tuple[ExemptEntry, ...]:
+def _parse_exempt(value: Any, origin: Path) -> tuple[exempt_entry, ...]:
     if not isinstance(value, list):
-        raise ConfigError(f"exempt in {origin} must be an array of tables")
+        raise config_error(f"exempt in {origin} must be an array of tables")
 
-    entries: list[ExemptEntry] = []
+    entries: list[exempt_entry] = []
 
     for index, raw in enumerate(value):
         if not isinstance(raw, dict):
-            raise ConfigError(f"exempt[{index}] in {origin} must be a table")
+            raise config_error(f"exempt[{index}] in {origin} must be a table")
 
         unknown = set(raw) - {"path", "rules", "reason"}
 
         if unknown:
             names = ", ".join(sorted(unknown))
-            raise ConfigError(f"unknown key(s) {names} in exempt[{index}] of {origin}")
+            raise config_error(f"unknown key(s) {names} in exempt[{index}] of {origin}")
 
         path_value = raw.get("path")
 
         if not isinstance(path_value, str) or not path_value.strip():
-            raise ConfigError(f"exempt[{index}].path in {origin} must be a non-empty glob")
+            raise config_error(f"exempt[{index}].path in {origin} must be a non-empty glob")
 
         rules_value = raw.get("rules")
 
         if not isinstance(rules_value, list) or not all(isinstance(item, str)for item in rules_value):
-            raise ConfigError(f"exempt[{index}].rules in {origin} must be an array of rule ids")
+            raise config_error(f"exempt[{index}].rules in {origin} must be an array of rule ids")
 
         if not rules_value:
-            raise ConfigError(f"exempt[{index}].rules in {origin} must not be empty")
+            raise config_error(f"exempt[{index}].rules in {origin} must not be empty")
 
         for rule in rules_value:
             if (rule != "*") and (rule not in KNOWN_RULE_IDS):
-                raise ConfigError(f"unknown rule id '{rule}' in exempt[{index}].rules of {origin}")
+                raise config_error(f"unknown rule id '{rule}' in exempt[{index}].rules of {origin}")
 
         reason_value = raw.get("reason")
 
         if not isinstance(reason_value, str) or not reason_value.strip():
-            raise ConfigError(f"exempt[{index}].reason in {origin} must be a non-empty string")
+            raise config_error(f"exempt[{index}].reason in {origin} must be a non-empty string")
 
-        entries.append(ExemptEntry(path_value, tuple(rules_value), reason_value))
+        entries.append(exempt_entry(path_value, tuple(rules_value), reason_value))
 
     return tuple(entries)
 
 def _parse_severity(value: Any, origin: Path) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise ConfigError(f"severity in {origin} must be a table of rule id to severity")
+        raise config_error(f"severity in {origin} must be a table of rule id to severity")
 
     parsed: dict[str, str] = {}
 
     for rule, severity in value.items():
         if not isinstance(rule, str) or (rule not in KNOWN_RULE_IDS):
-            raise ConfigError(f"unknown rule id '{rule}' in severity of {origin}")
+            raise config_error(f"unknown rule id '{rule}' in severity of {origin}")
 
         if severity not in {"error", "warning"}:
-            raise ConfigError(f"severity of '{rule}' in {origin} must be 'error' or 'warning'")
+            raise config_error(f"severity of '{rule}' in {origin} must be 'error' or 'warning'")
 
         parsed[rule] = severity
 
     return parsed
 
-def parse_config_table(table: Mapping[str, Any], origin: Path, root: Path, source: Path | None) -> StyleConfig:
+def parse_config_table(table: Mapping[str, Any], origin: Path, root: Path, source: Path | None) -> style_config:
     """Validate *table* and build a StyleConfig."""
 
     unknown = set(table) - _KNOWN_KEYS
 
     if unknown:
         names = ", ".join(sorted(unknown))
-        raise ConfigError(f"unknown key(s) {names} in {origin}")
+        raise config_error(f"unknown key(s) {names} in {origin}")
 
-    config = StyleConfig(root = root, source = source)
+    config = style_config(root = root, source = source)
 
     for key in _STRING_ENUM_KEYS:
         if key in table:
@@ -217,7 +217,7 @@ def parse_config_table(table: Mapping[str, Any], origin: Path, root: Path, sourc
 
             if not isinstance(raw, str) or (raw not in _STRING_ENUM_KEYS[key]):
                 allowed = ", ".join(sorted(_STRING_ENUM_KEYS[key]))
-                raise ConfigError(f"{key} in {origin} must be one of: {allowed}")
+                raise config_error(f"{key} in {origin} must be one of: {allowed}")
 
             setattr(config, key, raw)
 
@@ -226,7 +226,7 @@ def parse_config_table(table: Mapping[str, Any], origin: Path, root: Path, sourc
             raw = table[key]
 
             if not isinstance(raw, bool):
-                raise ConfigError(f"{key} in {origin} must be a boolean")
+                raise config_error(f"{key} in {origin} must be a boolean")
 
             setattr(config, key, raw)
 
@@ -247,20 +247,20 @@ def parse_config_table(table: Mapping[str, Any], origin: Path, root: Path, sourc
 
     return config
 
-def load_config(*, paths: Sequence[str], explicit: str | None = None, disabled: bool = False) -> StyleConfig:
+def load_config(*, paths: Sequence[str], explicit: str | None = None, disabled: bool = False) -> style_config:
     """Resolve and load the configuration for a CLI run."""
 
     start = _scanned_start(paths)
     root = find_repo_root(start)
 
     if disabled:
-        return StyleConfig(root = root, source = None)
+        return style_config(root = root, source = None)
 
     if explicit:
         origin = Path(explicit)
 
         if not origin.is_file():
-            raise ConfigError(f"config file not found: {origin}")
+            raise config_error(f"config file not found: {origin}")
 
         data = _read_toml(origin)
         table = _select_table(data, origin)
@@ -284,8 +284,8 @@ def load_config(*, paths: Sequence[str], explicit: str | None = None, disabled: 
             return parse_config_table(table, pyproject, root, pyproject)
 
         if table is not None:
-            raise ConfigError(f"[tool.{PYPROJECT_SECTION}] in {pyproject} must be a table")
+            raise config_error(f"[tool.{PYPROJECT_SECTION}] in {pyproject} must be a table")
 
-    return StyleConfig(root = root, source = None)
+    return style_config(root = root, source = None)
 
-__all__ = ["CONFIG_FILE_NAME", "ConfigError", "ExemptEntry", "PYPROJECT_SECTION", "StyleConfig", "find_repo_root", "load_config", "parse_config_table"]
+__all__ = ["CONFIG_FILE_NAME", "config_error", "exempt_entry", "PYPROJECT_SECTION", "style_config", "find_repo_root", "load_config", "parse_config_table"]

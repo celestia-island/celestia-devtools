@@ -34,7 +34,7 @@ from celestia_devtools.core import logger as _logger
 WSL_HINT = "just wsl-ensure"
 
 @dataclass
-class Probe:
+class probe_record:
     """Result of probing one tool. `ok` False → caller should bail or warn."""
     name: str
     ok: bool
@@ -72,64 +72,64 @@ def _run_version(args: Sequence[str]) -> tuple[bool, str]:
 # ── Atomic tool probes ────────────────────────────────────────────────
 # Each returns a Probe. Naming convention: check_<req_id>. The req id passed
 # to check()/require() is the function suffix (e.g. "node" → check_node).
-def check_node() -> Probe:
+def check_node() -> probe_record:
     ok, ver = _run_version(["node", "--version"])
-    return Probe("node", ok, ver, hint = f"install via {WSL_HINT} (apt nodejs) or https://nodejs.org")
+    return probe_record("node", ok, ver, hint = f"install via {WSL_HINT} (apt nodejs) or https://nodejs.org")
 
-def check_npm() -> Probe:
+def check_npm() -> probe_record:
     ok, ver = _run_version(["npm", "--version"])
-    return Probe("npm", ok, ver, hint = f"ships with nodejs — {WSL_HINT}")
+    return probe_record("npm", ok, ver, hint = f"ships with nodejs — {WSL_HINT}")
 
-def check_rust() -> Probe:
+def check_rust() -> probe_record:
     ok, ver = _run_version(["rustc", "--version"])
-    return Probe("rust", ok, ver, hint = "curl https://sh.rustup.rs | sh")
+    return probe_record("rust", ok, ver, hint = "curl https://sh.rustup.rs | sh")
 
-def check_cargo() -> Probe:
+def check_cargo() -> probe_record:
     ok, ver = _run_version(["cargo", "--version"])
-    return Probe("cargo", ok, ver, hint = "part of rustup — install rust first")
+    return probe_record("cargo", ok, ver, hint = "part of rustup — install rust first")
 
-def check_just() -> Probe:
+def check_just() -> probe_record:
     ok, ver = _run_version(["just", "--version"])
-    return Probe("just", ok, ver, hint = "cargo install just  (or: just wsl-ensure)")
+    return probe_record("just", ok, ver, hint = "cargo install just  (or: just wsl-ensure)")
 
-def check_git() -> Probe:
+def check_git() -> probe_record:
     ok, ver = _run_version(["git", "--version"])
-    return Probe("git", ok, ver, hint = "system package manager")
+    return probe_record("git", ok, ver, hint = "system package manager")
 
-def check_docker() -> Probe:
+def check_docker() -> probe_record:
     ok, ver = _run_version(["docker", "--version"])
-    return Probe("docker", ok, ver, hint = "https://get.docker.com  (or use Docker Desktop + --no-docker)")
+    return probe_record("docker", ok, ver, hint = "https://get.docker.com  (or use Docker Desktop + --no-docker)")
 
 def _is_windows() -> bool:
     return os.name == "nt"
 
-def check_wsl() -> Probe:
+def check_wsl() -> probe_record:
     """WSL2 availability (Windows only). On Linux this is trivially 'na'."""
 
     if not _is_windows():
-        return Probe("wsl", True, "n/a (already on Linux)")
+        return probe_record("wsl", True, "n/a (already on Linux)")
 
     if not shutil.which("wsl"):
-        return Probe("wsl", False, hint = "wsl --install --no-distribution")
+        return probe_record("wsl", False, hint = "wsl --install --no-distribution")
 
     r = subprocess.run(["wsl", "--status"], capture_output = True, timeout = 10)
-    return Probe("wsl", r.returncode == 0, hint = "wsl --install --no-distribution")
+    return probe_record("wsl", r.returncode == 0, hint = "wsl --install --no-distribution")
 
-def check_linux() -> Probe:
+def check_linux() -> probe_record:
     """A non-Windows kernel is available — either natively or via WSL2."""
 
     if not _is_windows():
-        return Probe("linux", True, "native")
+        return probe_record("linux", True, "native")
 
     wsl = check_wsl()
 
     if not wsl.ok:
-        return Probe("linux", False, hint = "needs WSL2 — " + wsl.hint)
+        return probe_record("linux", False, hint = "needs WSL2 — " + wsl.hint)
 
     # Confirm at least one distro is registered.
     r = subprocess.run(["wsl", "--list", "--quiet"], capture_output = True, timeout = 10)
     has_distro = bool(r.stdout.strip())
-    return Probe("linux", has_distro, hint = "wsl --install -d Ubuntu  (then just wsl-ensure)" if not has_distro else "")
+    return probe_record("linux", has_distro, hint = "wsl --install -d Ubuntu  (then just wsl-ensure)" if not has_distro else "")
 
 # Registry — req id → checker. Adding a new tool = one function + one entry.
 CHECKERS = {
@@ -144,18 +144,18 @@ CHECKERS = {
     "linux": check_linux
 }
 
-def check(*reqs: str, quiet: bool = False) -> list[Probe]:
+def check(*reqs: str, quiet: bool = False) -> list[probe_record]:
     """Run the named checks, print a compact report, return the failed ones.
 
     Unknown req ids are reported as failures with a clear message (typo guard).
     """
-    results: list[Probe] = []
+    results: list[probe_record] = []
 
     for req in reqs:
         checker = CHECKERS.get(req)
 
         if checker is None:
-            results.append(Probe(req, False, detail = f"unknown requirement '{req}'"))
+            results.append(probe_record(req, False, detail = f"unknown requirement '{req}'"))
             continue
 
         results.append(checker())
@@ -174,7 +174,7 @@ def require(*reqs: str) -> None:
         _logger.error(f"missing {len(missing)} requirement(s): {[r.name for r in missing]}. " + (hints + "." if hints else "Install them and re-run."))
         sys.exit(2)
 
-def _report(results: list[Probe]) -> None:
+def _report(results: list[probe_record]) -> None:
     """One line per probe: ✓/✗ name version (hint if missing)."""
 
     for r in results:

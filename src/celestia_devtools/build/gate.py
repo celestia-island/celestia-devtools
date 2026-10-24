@@ -407,7 +407,7 @@ def classify_credential_line(line: str) -> str:
 # violation classifier over them. It only reports — it never rewrites a
 # checkout.
 @dataclass
-class CredentialFinding:
+class credential_finding:
     """One non-clean line surfaced by the workspace sweep."""
 
     path: Path
@@ -419,7 +419,7 @@ class CredentialFinding:
         return "%s:%d: [%s] %s" % (self.path, self.line, self.verdict, self.excerpt.strip())
 
 @dataclass
-class SkippedPath:
+class skipped_path:
     """A path the sweep could not read, with the reason why."""
 
     path: Path
@@ -431,9 +431,9 @@ class SkippedPath:
 def _oserror_reason(exc: OSError) -> str:
     return "%s: %s" % (type(exc).__name__, exc.strerror or exc)
 
-def _record_skip(skipped: Optional[List[SkippedPath]], path: Path, reason: str) -> None:
+def _record_skip(skipped: Optional[List[skipped_path]], path: Path, reason: str) -> None:
     if skipped is not None:
-        skipped.append(SkippedPath(path, reason))
+        skipped.append(skipped_path(path, reason))
 
 def git_dir(root: Path) -> Optional[Path]:
     """The ``.git`` directory for *root*, following a worktree ``gitdir:`` file."""
@@ -460,7 +460,7 @@ def git_dir(root: Path) -> Optional[Path]:
 
     return None
 
-def git_config_paths(root: Path, skipped: Optional[List[SkippedPath]] = None) -> List[Path]:
+def git_config_paths(root: Path, skipped: Optional[List[skipped_path]] = None) -> List[Path]:
     """Existing git config files carrying *root*'s remotes.
 
     A checkout's ``.git/config`` holds the credential-bearing remote URL; a
@@ -502,7 +502,7 @@ def git_config_paths(root: Path, skipped: Optional[List[SkippedPath]] = None) ->
 
     return existing
 
-def repo_remote_urls(root: Path, skipped: Optional[List[SkippedPath]] = None) -> List[str]:
+def repo_remote_urls(root: Path, skipped: Optional[List[skipped_path]] = None) -> List[str]:
     """Remote URLs declared in *root*'s git config (text-level, no git call)."""
     urls: List[str] = []
 
@@ -518,7 +518,7 @@ def repo_remote_urls(root: Path, skipped: Optional[List[SkippedPath]] = None) ->
 
     return urls
 
-def is_langyo_repo(root: Path, skipped: Optional[List[SkippedPath]] = None) -> bool:
+def is_langyo_repo(root: Path, skipped: Optional[List[skipped_path]] = None) -> bool:
     """True for a business checkout of the ``langyo/*`` account.
 
     Detected from the origin URL (the remote may itself carry an embedded
@@ -530,7 +530,7 @@ def is_langyo_repo(root: Path, skipped: Optional[List[SkippedPath]] = None) -> b
 
     return Path(root).name.startswith("easy-hydro-")
 
-def discover_langyo_repos(scan_root: Path, skipped: Optional[List[SkippedPath]] = None) -> List[Path]:
+def discover_langyo_repos(scan_root: Path, skipped: Optional[List[skipped_path]] = None) -> List[Path]:
     """Sibling checkouts under *scan_root* belonging to the langyo account.
 
     A sibling that cannot be probed (``lost+found`` on the NFS export is
@@ -604,7 +604,7 @@ def _head_is_binary(path: Path) -> bool:
 
     return not any(head.startswith(bom) for bom in _UTF16_BOMS)
 
-def iter_sweep_files(root: Path, skipped: Optional[List[SkippedPath]] = None, excluded: Optional[Set[str]] = None) -> Iterator[Path]:
+def iter_sweep_files(root: Path, skipped: Optional[List[skipped_path]] = None, excluded: Optional[Set[str]] = None) -> Iterator[Path]:
     """Text files under *root* worth scanning, streaming as they are found.
 
     ``os.walk`` with in-place directory pruning and an ``onerror`` hook, so an
@@ -672,7 +672,7 @@ def _decode_text(data: bytes) -> str:
 
     return data.decode("utf-8", errors = "replace")
 
-def scan_file_credentials(path: Path, skipped: Optional[List[SkippedPath]] = None) -> List[CredentialFinding]:
+def scan_file_credentials(path: Path, skipped: Optional[List[skipped_path]] = None) -> List[credential_finding]:
     """Classify every line of *path*, returning the non-clean findings.
 
     UTF-16 text is decoded rather than mistaken for binary; a file that is
@@ -687,17 +687,17 @@ def scan_file_credentials(path: Path, skipped: Optional[List[SkippedPath]] = Non
         _record_skip(skipped, path, "binary content")
         return []
 
-    findings: List[CredentialFinding] = []
+    findings: List[credential_finding] = []
 
     for lineno, line in enumerate(text.splitlines(), 1):
         verdict = classify_credential_line(line)
 
         if verdict != "clean":
-            findings.append(CredentialFinding(path, lineno, verdict, line))
+            findings.append(credential_finding(path, lineno, verdict, line))
 
     return findings
 
-def credential_sweep(roots: Sequence[Path], include_git_config: bool = True, include_sources: bool = True, skipped: Optional[List[SkippedPath]] = None, excluded: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None) -> List[CredentialFinding]:
+def credential_sweep(roots: Sequence[Path], include_git_config: bool = True, include_sources: bool = True, skipped: Optional[List[skipped_path]] = None, excluded: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None) -> List[credential_finding]:
     """Sweep *.git/config* and source trees of *roots* for literal secrets.
 
     Unreadable paths land in *skipped* (with a reason) instead of raising or
@@ -710,7 +710,7 @@ def credential_sweep(roots: Sequence[Path], include_git_config: bool = True, inc
     if stats is not None:
         stats.setdefault("files", 0)
 
-    findings: List[CredentialFinding] = []
+    findings: List[credential_finding] = []
     seen: set = set()
 
     for root in roots:
@@ -758,7 +758,7 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
         return 2
 
     scan_root = Path(args.scan_root).resolve() if args.scan_root else root.parent
-    skipped: List[SkippedPath] = []
+    skipped: List[skipped_path] = []
     excluded: Set[str] = set()
     stats: Dict[str, int] = {}
     targets: List[Path] = []
@@ -866,7 +866,7 @@ def detect_modes(root: Path) -> List[str]:
 
     return modes
 
-class UsageError(Exception):
+class usage_error(Exception):
     """Raised for CLI usage problems (mapped to exit code 2)."""
 
 def resolve_modes(root: Path, mode: Optional[str]) -> List[str]:
@@ -878,7 +878,7 @@ def resolve_modes(root: Path, mode: Optional[str]) -> List[str]:
     detected = detect_modes(root)
 
     if not detected:
-        raise UsageError("no project detected (no Cargo.toml / package.json / " "pnpm-workspace.yaml / pyproject.toml); pass an explicit mode")
+        raise usage_error("no project detected (no Cargo.toml / package.json / " "pnpm-workspace.yaml / pyproject.toml); pass an explicit mode")
 
     if mode == "all":
         return detected
@@ -1135,7 +1135,7 @@ def build_graph(root: Path, mode: str, coverage: bool = False) -> List[Step]:
     if mode == "python":
         return build_python_graph(root)
 
-    raise UsageError("unknown mode: %s" % mode)
+    raise usage_error("unknown mode: %s" % mode)
 
 def _prefix_steps(steps: List[Step], prefix: str) -> List[Step]:
     return [Step("%s:%s" % (prefix, s.name), s.cmd, tuple("%s:%s" % (prefix, d)for d in s.deps), s.cwd)for s in steps]
@@ -1352,7 +1352,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         modes = resolve_modes(root, args.mode)
-    except UsageError as exc:
+    except usage_error as exc:
         print("error: %s" % exc, file = sys.stderr)
         return 2
 

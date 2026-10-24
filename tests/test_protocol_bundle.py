@@ -27,7 +27,7 @@ def fake_docs(tmp_path):
     (root / "docs" / "zh-Hans" / "meta" / "security.md").unlink()
     return root
 
-class TestResolveDocsRoot:
+class test_resolve_docs_root:
     def test_explicit_docs_root(self, fake_docs):
         repo = fake_docs.parent / "repo"
         repo.mkdir()
@@ -69,7 +69,7 @@ class TestResolveDocsRoot:
         got = resolve_docs_root(repo, docs_root = None)
         assert got is None
 
-class TestGenerate:
+class test_generate:
     def test_generates_vendor_files_and_manifest(self, fake_docs, tmp_path):
         repo = fake_docs.parent / "repo"
         out = tmp_path / "out" / "protocols"
@@ -109,7 +109,7 @@ class TestGenerate:
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(cwd), *args], check = True, capture_output = True, env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"})
 
-class TestOwnedCloneSelfRefresh:
+class test_owned_clone_self_refresh:
     """The target/docs-celestia-shared clone must track the remote head."""
 
     def _origin_with_docs(self, tmp_path: Path) -> Path:
@@ -188,7 +188,7 @@ class TestOwnedCloneSelfRefresh:
         assert got == clone.resolve()
         assert "refusing to refresh non-owned clone" in capsys.readouterr().err
 
-class TestCheckMode:
+class test_check_mode:
     """--check freshness gate: missing / source-newer / content-diff."""
 
     def test_in_sync_after_generate(self, fake_docs, tmp_path):

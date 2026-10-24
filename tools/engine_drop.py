@@ -94,10 +94,10 @@ DEFAULT_WS_ROOT = Path("/mnt/work/engine-ws")
 # sweep 的描述回落控制面文件（工作区根首行）；绝不作为内容进 drop。
 DROP_DESCRIPTION_FILE = ".drop-description"
 
-class StageError(RuntimeError):
+class stage_error(RuntimeError):
     """stage 的 fail-closed 拒绝：CLI（cmd_stage）转 die()；sweep 转 warn 跳过。"""
 
-class DropExistsError(StageError):
+class drop_exists_error(stage_error):
     """drop 目录已存在——幂等信号（同内容处理过），sweep 视为「本轮已处理」。"""
 
     def __init__(self, message: str, drop: Path) -> None:
@@ -414,24 +414,24 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
     """
 
     if not worktree.is_dir():
-        raise StageError(f"worktree 不存在：{worktree}")
+        raise stage_error(f"worktree 不存在：{worktree}")
 
     if not (worktree / ".git").exists():
-        raise StageError(f"不是 git worktree：{worktree}")
+        raise stage_error(f"不是 git worktree：{worktree}")
 
     if not REPO_RE.match(repo):
-        raise StageError(f"repo 名不合法：{repo!r}")
+        raise stage_error(f"repo 名不合法：{repo!r}")
 
     if drop_id and not REPO_RE.match(drop_id):
-        raise StageError(f"drop id 必须是单段名（拒绝路径穿越）：{drop_id!r}")
+        raise stage_error(f"drop id 必须是单段名（拒绝路径穿越）：{drop_id!r}")
 
     if not base.startswith("origin/"):
-        raise StageError(f"base 必须形如 origin/<分支>（与 G5 同口径）：{base!r}")
+        raise stage_error(f"base 必须形如 origin/<分支>（与 G5 同口径）：{base!r}")
 
     desc_violations = check_description(description)
 
     if desc_violations:
-        raise StageError(desc_violations[0])
+        raise stage_error(desc_violations[0])
 
     # Full refname for show-ref --verify (G5 与 check_base 同口径：短名不解析)。
     base_check = _git(
@@ -439,14 +439,14 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
     )
 
     if base_check.returncode != 0:
-        raise StageError(f"base 引用不存在于 worktree：{base}")
+        raise stage_error(f"base 引用不存在于 worktree：{base}")
 
     # -uall：默认 porcelain 把 untracked 目录折叠成 `?? dir/`——新目录里的
     # 新文件会不可见，目录条目本身也无从拷贝。
     status = _git(worktree, "status", "--porcelain", "--untracked-files=all")
 
     if status.returncode != 0:
-        raise StageError(f"git status 失败：{status.stderr.strip()}")
+        raise stage_error(f"git status 失败：{status.stderr.strip()}")
 
     porcelain: List[str] = []
     saw_entries = False
@@ -472,7 +472,7 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
     )
 
     if diff_names.returncode != 0:
-        raise StageError(f"git diff --name-only {base} 失败：{diff_names.stderr.strip()}")
+        raise stage_error(f"git diff --name-only {base} 失败：{diff_names.stderr.strip()}")
 
     diff_paths = [p for p in diff_names.stdout.split("\0") if p]
     changed: List[str] = []
@@ -504,20 +504,20 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
         reason = forbidden_path(rel)
 
         if reason:
-            raise StageError(f"{reason}——stage 拒绝把禁区文件写进 drop")
+            raise stage_error(f"{reason}——stage 拒绝把禁区文件写进 drop")
 
         src = worktree / rel
 
         try:
             st = src.lstat()
         except OSError:
-            raise StageError(f"条目在磁盘上不存在（净删除类改动？）：{rel}") from None
+            raise stage_error(f"条目在磁盘上不存在（净删除类改动？）：{rel}") from None
 
         if stat_mod.S_ISLNK(st.st_mode):
-            raise StageError(f"拒绝符号链接条目（drop 不承载链接，防借道读取 worktree 之外）：{rel}")
+            raise stage_error(f"拒绝符号链接条目（drop 不承载链接，防借道读取 worktree 之外）：{rel}")
 
         if not stat_mod.S_ISREG(st.st_mode):
-            raise StageError(f"只搬运普通文件（目录/嵌套 git 仓/子模不进 drop）：{rel}")
+            raise stage_error(f"只搬运普通文件（目录/嵌套 git 仓/子模不进 drop）：{rel}")
 
     # drop id：改动内容哈希（diff + 逐条目内容摘要，见 docstring）；
     # content_addressed（sweep）不带时间戳 → 同内容幂等。
@@ -541,7 +541,7 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
     drop = drop_root / repo / drop_id
 
     if drop.exists():
-        raise DropExistsError(f"drop 目录已存在（ refusing to overwrite ）：{drop}", drop)
+        raise drop_exists_error(f"drop 目录已存在（ refusing to overwrite ）：{drop}", drop)
 
     drop.mkdir(parents = True)
 
@@ -550,7 +550,7 @@ def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path,
             copy_file_strict(worktree / rel, drop / "files" / rel)
     except (RuntimeError, OSError) as exc:
         shutil.rmtree(drop, ignore_errors = True)  # 清掉半成品，不留误导性 drop
-        raise StageError(f"快照拷贝失败（半成品 drop 已清理）：{exc}") from exc
+        raise stage_error(f"快照拷贝失败（半成品 drop 已清理）：{exc}") from exc
 
     manifest = {"repo": repo, "base": base, "branch": branch or f"engine/{drop_id}", "description": description, "files": changed}
     (drop / "MANIFEST.json").write_text(json.dumps(manifest, ensure_ascii = False, indent = 2) + "\n", encoding = "utf-8")
@@ -565,7 +565,7 @@ def cmd_stage(args: argparse.Namespace) -> int:
 
     try:
         drop = stage_worktree(args.worktree, args.repo, args.description, args.drop_root, base = args.base, branch = args.branch, drop_id = args.drop_id)
-    except StageError as exc:
+    except stage_error as exc:
         die(str(exc))
 
     return EXIT_OK if drop is not None else EXIT_FAILURE
@@ -838,11 +838,11 @@ def _sweep_one(worktree: Path, args: argparse.Namespace) -> str:
     # stage：与 CLI stage 同一内部实现；content_addressed → 同内容幂等。
     try:
         drop = stage_worktree(worktree, repo, description, args.drop_root, content_addressed = True)
-    except DropExistsError as exc:
+    except drop_exists_error as exc:
         print(f"ℹ️ {repo}: 同内容 drop 已存在（{exc.drop.name}），本轮已处理，跳过")
         record("already-staged", drop = exc.drop.name)
         return "already-staged"
-    except StageError as exc:
+    except stage_error as exc:
         # 违禁（禁区/链接/目录…）→ warn 跳过，**不回收**工作区——留人看。
         print(f"⚠️ {repo}: stage 拒绝，工作区保留待人工：{exc}", file = sys.stderr)
         record("gates-failed", error = str(exc)[:2000])

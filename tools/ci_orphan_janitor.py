@@ -66,7 +66,7 @@ def read_text_file(path):
     with open(path, errors = "replace") as f:
         return f.read()
 
-class RealProc:
+class real_proc:
     """Thin /proc reader. The selftest swaps in a dict-backed fake."""
 
     def pids(self):
@@ -128,7 +128,7 @@ class RealProc:
     def read_text(self, path):
         return read_text_file(path)
 
-PROC = RealProc()
+PROC = real_proc()
 
 def starttime_epoch(pid):
     return PROC.starttime(pid)
@@ -552,7 +552,7 @@ H1 = "/home/lab/actions-runner"
 H2 = "/home/lab/actions-runner-2"
 NOW = time.time()  # real clock: --grace must actually bite in the fixtures
 
-class FakeProc:
+class fake_proc:
     def __init__(self, table):
         self.table = table
 
@@ -591,7 +591,7 @@ def _case(name, table, homes, expect, grace = 900):
     """Run orphan_candidates against a synthetic table; return (ok, detail)."""
     global PROC
     saved = PROC
-    PROC = FakeProc(table)
+    PROC = fake_proc(table)
 
     try:
         got = sorted(v[0] for v in orphan_candidates(grace, homes))
@@ -690,7 +690,7 @@ def selftest():
                        "cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2",
                        "ppid": 1, "start": time.time() - 5000}}
         saved = PROC
-        globals()["PROC"] = FakeProc(table)
+        globals()["PROC"] = fake_proc(table)
 
         try:
             fired_wrong = zombie_worker_check(diag, 600, True, "actions.runner.x.node-b.service", home_a)
@@ -773,7 +773,7 @@ def selftest():
         os.makedirs(os.path.join(home, "_work"))
         runner = os.path.join(home, ".runner")
         saved = PROC
-        globals()["PROC"] = FakeProc({runner: {"text": "\ufeff" + json.dumps({"agentName": "node-ci-9"})}})
+        globals()["PROC"] = fake_proc({runner: {"text": "\ufeff" + json.dumps({"agentName": "node-ci-9"})}})
 
         try:
             name = read_agent_name(home)
@@ -820,7 +820,7 @@ def selftest():
     # on the same tables must get the two multi-slot cases WRONG.
     def old_rule(table, homes, grace = 900):
         saved = PROC
-        globals()["PROC"] = FakeProc(table)
+        globals()["PROC"] = fake_proc(table)
 
         try:
             active = set()

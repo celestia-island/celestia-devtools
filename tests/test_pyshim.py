@@ -33,7 +33,7 @@ def _parse_floor(source: str):
     except (ValueError, TypeError):
         return ast.parse(source, feature_version = (PYSHIM_GRAMMAR_FLOOR[0], PYSHIM_GRAMMAR_FLOOR[1] + 1))
 
-class TestSyntaxFloor:
+class test_syntax_floor:
     def test_parses_under_floor_grammar(self):
         _parse_floor(SHIM)
 
@@ -55,7 +55,7 @@ class TestSyntaxFloor:
             code = line.strip()
             assert not code.startswith("f\"") and not code.startswith("f'"), line
 
-class TestAssetPicker:
+class test_asset_picker:
     NAMES = ["cpython-3.10.21+20260901-x86_64-unknown-linux-gnu-install_only.tar.gz", "cpython-3.11.16+20260901-x86_64-unknown-linux-gnu-install_only.tar.gz", "cpython-3.14.7+20260901-x86_64-unknown-linux-gnu-install_only.tar.gz", "cpython-3.14.7+20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz", "cpython-3.14.7+20260901-x86_64-unknown-linux-gnu-debug-full.tar.zst", "cpython-3.14.7+20260901-aarch64-apple-darwin-install_only.tar.gz", "cpython-3.9.99+20260901-x86_64-unknown-linux-gnu-install_only.tar.gz"]
 
     def test_picks_newest_at_or_above_floor(self):
@@ -74,7 +74,7 @@ class TestAssetPicker:
         only_old = [self.NAMES[0], self.NAMES[-1]]
         assert pyshim.pick_pbs_asset(only_old, "x86_64", "Linux") is None
 
-class TestTriple:
+class test_triple:
     def test_mappings(self):
         assert pyshim._triple("x86_64", "Linux") == "x86_64-unknown-linux-gnu"
         assert pyshim._triple("amd64", "Linux") == "x86_64-unknown-linux-gnu"
@@ -82,7 +82,7 @@ class TestTriple:
         assert pyshim._triple("arm64", "Darwin") == "aarch64-apple-darwin"
         assert pyshim._triple("x86_64", "Plan9") == ""
 
-class TestRunGuards:
+class test_run_guards:
     def test_sentinel_loop_detected(self, monkeypatch):
         monkeypatch.setenv(pyshim.SENTINEL, "1")
 
@@ -136,7 +136,7 @@ class TestRunGuards:
 
         assert ei.value.code == 2
 
-class TestSafeExtract:
+class test_safe_extract:
     """R1-F6: validated extraction — no traversal, no links, no devices."""
 
     def _tar_bytes(self, infos):
@@ -178,7 +178,7 @@ class TestSafeExtract:
 
         assert (tmp_path / "bin" / "python3").read_bytes() == b"py"
 
-class TestConsent:
+class test_consent:
     def test_non_tty_never_asks(self, monkeypatch):
         monkeypatch.setattr(sys, "stdin", io.StringIO(""))  # isatty() is False
         assert pyshim._consent("proceed?", assume_yes = False) is False

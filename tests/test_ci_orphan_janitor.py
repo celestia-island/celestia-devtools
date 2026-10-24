@@ -125,7 +125,7 @@ def test_dry_run_does_not_restart(tmp_path, monkeypatch):
     assert jan.zombie_worker_check(diag, cancel_grace = 0, dry_run = True, unit = "u") is True
     assert calls == []
 
-class _FakeProc:
+class _fake_proc:
     """Only cmdline/starttime matter for the worker scan."""
 
     def __init__(self, table):
@@ -157,7 +157,7 @@ def test_zombie_never_uses_another_slots_worker(tmp_path, monkeypatch):
     diag_a = _write_log(tmp_path, CANCEL_LINE + "\n", slot = "actions-runner")
     home_b = tmp_path / "actions-runner-2"
     (home_b / "_work").mkdir(parents = True, exist_ok = True)
-    monkeypatch.setattr(jan, "PROC", _FakeProc({4242: {"cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2", "start": jan.last_cancel_request(diag_a) - 100}}))
+    monkeypatch.setattr(jan, "PROC", _fake_proc({4242: {"cmdline": f"{home_b}/bin/Runner.Worker spawnclient 1 2", "start": jan.last_cancel_request(diag_a) - 100}}))
     calls = []
     monkeypatch.setattr(jan.subprocess, "run", lambda cmd, timeout = None: calls.append(cmd) or type("R", (), {"returncode": 0})())
     assert jan.zombie_worker_check(diag_a, cancel_grace = 600, dry_run = False, unit = "u-b") is False
@@ -218,7 +218,7 @@ def test_worker_pids_attributes_a_relative_argv_by_cwd(tmp_path, monkeypatch):
     for h in (home_a, home_b):
         (h / "_work").mkdir(parents = True)
 
-    class _P:
+    class _p:
         def pids(self):
             return [700, 701]
 
@@ -233,7 +233,7 @@ def test_worker_pids_attributes_a_relative_argv_by_cwd(tmp_path, monkeypatch):
         def cwd(self, pid):
             return str(home_a) if pid == 700 else str(home_b)
 
-    monkeypatch.setattr(jan, "PROC", _P())
+    monkeypatch.setattr(jan, "PROC", _p())
     assert jan.worker_pids(str(home_a)) == [700]
     assert jan.worker_pids(str(home_b)) == [701]
 
@@ -286,19 +286,19 @@ def test_selftest_panel_passes():
     got = re.findall(r"^selftest (?:ok  |FAIL) (.+?): ", r.stdout, re.M)
     assert got == expected, r.stdout
 
-class _Result:
+class _result:
     def __init__(self, stdout, returncode = 0):
         self.stdout, self.returncode = stdout, returncode
 
 def test_unit_serves_home_rejects_a_unit_for_another_home(monkeypatch):
     """LoadState alone is not enough - the unit must serve THIS home."""
-    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _Result("/home/lab/actions-runner-2\n"))
+    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _result("/home/lab/actions-runner-2\n"))
     assert jan.unit_serves_home("u", "/home/lab/actions-runner") is False
 
 def test_unit_serves_home_accepts_slashes_and_symlinks(tmp_path, monkeypatch):
     home = tmp_path / "actions-runner"
     home.mkdir()
-    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _Result(f"{home}/\n"))
+    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _result(f"{home}/\n"))
     assert jan.unit_serves_home("u", str(home)) is True
     link = tmp_path / "linked-runner"
     link.symlink_to(home)
@@ -313,7 +313,7 @@ def test_unit_serves_home_rejects_an_empty_working_directory(tmp_path, monkeypat
     home = tmp_path / "actions-runner"
     home.mkdir()
     monkeypatch.chdir(home)
-    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _Result("\n"))
+    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _result("\n"))
     assert jan.unit_serves_home("u", str(home)) is False
 
 def test_units_by_home_normalises_the_home(tmp_path, monkeypatch):
@@ -323,9 +323,9 @@ def test_units_by_home_normalises_the_home(tmp_path, monkeypatch):
 
     def fake(cmd, **kwargs):
         if cmd[1] == "list-units":
-            return _Result("actions.runner.o.n.service loaded active running GitHub\n")
+            return _result("actions.runner.o.n.service loaded active running GitHub\n")
 
-        return _Result(f"{home}/\n")  # trailing slash in WorkingDirectory
+        return _result(f"{home}/\n")  # trailing slash in WorkingDirectory
 
     monkeypatch.setattr(jan.subprocess, "run", fake)
     assert jan.units_by_home([str(home)]) == {str(home): "actions.runner.o.n.service"}
@@ -353,12 +353,12 @@ def _systemd(units, working_dirs):
 
     def run(cmd, **kwargs):
         if "list-units" in cmd:
-            return _Result(listing)
+            return _result(listing)
 
         if "LoadState" in cmd:
-            return _Result("loaded\n")
+            return _result("loaded\n")
 
-        return _Result(working_dirs.get(cmd[-1], "") + "\n")
+        return _result(working_dirs.get(cmd[-1], "") + "\n")
 
     return run
 
@@ -403,7 +403,7 @@ def test_units_by_home_never_attributes_across_sibling_slots(tmp_path, monkeypat
 
 def test_unit_serves_home_compares_the_whole_path(monkeypatch):
     """Comparing only the last component accepts a directory of the same name elsewhere."""
-    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _Result("/srv/actions-runner\n"))
+    monkeypatch.setattr(jan.subprocess, "run", lambda *a, **k: _result("/srv/actions-runner\n"))
     assert jan.unit_serves_home("u", "/somewhere/else/actions-runner") is False
 
 def test_selftest_panel_discriminates(monkeypatch):
@@ -419,7 +419,7 @@ def test_reap_kills_a_stale_orphan_and_honours_dry_run(tmp_path, monkeypatch):
     """The SIGKILL path had no coverage anywhere, including its dry-run guard."""
     h1, _ = _two_homes(tmp_path)
     now = time.time()
-    monkeypatch.setattr(jan, "PROC", _FakeProc({1: {"comm": "systemd", "cmdline": "/sbin/init", "ppid": 0}, 77: {"comm": "cargo", "cmdline": "cargo test", "ppid": 1, "cwd": h1 + "/_work/plana/plana", "start": now - 7200}}))
+    monkeypatch.setattr(jan, "PROC", _fake_proc({1: {"comm": "systemd", "cmdline": "/sbin/init", "ppid": 0}, 77: {"comm": "cargo", "cmdline": "cargo test", "ppid": 1, "cwd": h1 + "/_work/plana/plana", "start": now - 7200}}))
     killed = []
     monkeypatch.setattr(jan.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     assert jan.reap(900, [h1], True) == 0

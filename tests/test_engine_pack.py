@@ -58,7 +58,7 @@ def env_meta_dict() -> dict:
     """Same manifest as VALID_META, as a plain dict (no tomllib needed)."""
     return {"pack": {"name": "cep-speech", "engine": "faster-whisper-fastapi", "version": "1.0.0"}, "env": {"python": "3.11", "packages": ["faster-whisper==1.2.1", "fastapi>=0.110"]}, "service": {"unit": "cep-speech", "command": ["python", "asr_server.py"], "port": 3004, "health_path": "/healthz"}, "systemd": {"user": "root", "after": "network-online.target", "description": "CEP Speech local ASR"}}
 
-class PackFixtureCase(unittest.TestCase):
+class pack_fixture_case(unittest.TestCase):
     """Base: a temp pack directory written by the test itself."""
 
     def setUp(self):
@@ -80,7 +80,7 @@ class PackFixtureCase(unittest.TestCase):
         return subprocess.run([sys.executable, str(MODULE_PATH), *cli_args], cwd = str(REPO_ROOT), text = True, capture_output = True, timeout = 60)
 
 @unittest.skipUnless(PY311, "engine-pack CLI needs Python 3.11+ (tomllib)")
-class TestPlanOffline(PackFixtureCase):
+class test_plan_offline(pack_fixture_case):
     def test_plan_exits_zero_and_mentions_name_and_port(self):
         proc = self.run_cli("plan", str(self.write_pack()))
         self.assertEqual(proc.returncode, 0, msg = proc.stderr)
@@ -107,7 +107,7 @@ class TestPlanOffline(PackFixtureCase):
         self.assertIn("native", proc.stdout)
 
 @unittest.skipUnless(PY311, "engine-pack CLI needs Python 3.11+ (tomllib)")
-class TestMetaErrors(PackFixtureCase):
+class test_meta_errors(pack_fixture_case):
     def test_missing_engine_meta_fails_with_clear_stderr(self):
         proc = self.run_cli("plan", str(self.pack_dir))  # no engine.meta written
         self.assertNotEqual(proc.returncode, 0)
@@ -132,7 +132,7 @@ class TestMetaErrors(PackFixtureCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("absolute path", proc.stderr)
 
-class TestRenderUnit(PackFixtureCase):
+class test_render_unit(pack_fixture_case):
     """Pure render logic — no tomllib, no systemd, runs on 3.9+."""
 
     def test_render_unit_env_python_prefix(self):
@@ -166,26 +166,26 @@ class TestRenderUnit(PackFixtureCase):
         del meta["env"]
         meta["service"]["command"] = ["llama-server"]
 
-        with self.assertRaises(engine_pack.MetaError) as ctx:
+        with self.assertRaises(engine_pack.meta_error) as ctx:
             engine_pack.parse_spec(meta)
 
         self.assertIn("absolute path", str(ctx.exception))
 
     def test_parse_spec_collects_multiple_errors(self):
-        with self.assertRaises(engine_pack.MetaError) as ctx:
+        with self.assertRaises(engine_pack.meta_error) as ctx:
             engine_pack.parse_spec({"pack": {}})
 
         message = str(ctx.exception)
         self.assertIn("service", message)
         self.assertIn("pack.name", message)
 
-class TestPipRecordLogic(PackFixtureCase):
+class test_pip_record_logic(pack_fixture_case):
     """Record-file round trip and skip logic — filesystem only, no subprocess."""
 
     def test_record_roundtrip_is_sorted(self):
         prefix = self.tmpdir / "env"
         prefix.mkdir()
-        env = engine_pack.EnvSpec(python = "3.11", packages = ("b-pkg==2", "a-pkg==1"))
+        env = engine_pack.env_spec(python = "3.11", packages = ("b-pkg==2", "a-pkg==1"))
         engine_pack.write_installed_record(prefix, "cep-speech", env)
         record = json.loads((prefix / ".engine-pack-installed.json").read_text())
         self.assertEqual(record["pack"], "cep-speech")
@@ -195,7 +195,7 @@ class TestPipRecordLogic(PackFixtureCase):
     def test_matching_record_skips_pip(self):
         prefix = self.tmpdir / "env"
         prefix.mkdir()
-        env = engine_pack.EnvSpec(python = "3.11", packages = ("a-pkg==1",))
+        env = engine_pack.env_spec(python = "3.11", packages = ("a-pkg==1",))
         engine_pack.write_installed_record(prefix, "cep-speech", env)
         self.assertFalse(engine_pack.ensure_pip_packages(prefix, env, "cep-speech"))
 
@@ -204,7 +204,7 @@ class TestPipRecordLogic(PackFixtureCase):
         prefix.mkdir()
         self.assertIsNone(engine_pack.read_installed_packages(prefix))
 
-class TestSpecHelpers(PackFixtureCase):
+class test_spec_helpers(pack_fixture_case):
     def test_health_url_and_unit_name(self):
         spec = engine_pack.parse_spec(env_meta_dict())
         self.assertEqual(spec.health_url, "http://127.0.0.1:3004/healthz")

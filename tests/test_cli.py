@@ -5,7 +5,7 @@ import sys
 import pytest
 from celestia_devtools.core.cli import COMMANDS, main
 
-class TestCommandRegistry:
+class test_command_registry:
     def test_all_commands_registered(self):
         # The full set of commands the dispatcher knows about. Update this set
         # whenever a command is added or removed in core/cli.py — keeping it an
@@ -98,7 +98,7 @@ class TestCommandRegistry:
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
 
-class TestVersionHelp:
+class test_version_help:
     def test_version(self, capsys):
         rc = main(["--version"])
         captured = capsys.readouterr()
@@ -117,28 +117,28 @@ class TestVersionHelp:
         assert rc == 0
         assert "format-markdown" in captured.out
 
-class TestUnknownCommand:
+class test_unknown_command:
     def test_unknown_returns_error(self, capsys):
         rc = main(["nonexistent-command"])
         assert rc == 2
         captured = capsys.readouterr()
         assert "unknown command" in captured.err
 
-class TestIncludePath:
+class test_include_path:
     def test_include_path_prints_common_just(self, capsys):
         rc = main(["include-path"])
         captured = capsys.readouterr()
         assert rc == 0
         assert "common.just" in captured.out
 
-class TestModuleRun:
+class test_module_run:
     def test_python_m_invocation(self):
         """`python -m celestia_devtools --version` should work."""
         result = subprocess.run([sys.executable, "-m", "celestia_devtools", "--version"], capture_output = True, text = True)
         assert result.returncode == 0
         assert "celestia-devtools" in result.stdout
 
-class TestStaleLocalPatchCleanup:
+class test_stale_local_patch_cleanup:
     def test_removes_stale_absolute_path(self):
         from celestia_devtools.repo.register_patches import _clean_stale_local_patches
 
@@ -189,7 +189,7 @@ test = {{ path = \"{td}\" }}
             assert len(warnings) == 0
             assert 'test' in cleaned
 
-class TestModuleMainGuard:
+class test_module_main_guard:
     """`python3 -m celestia_devtools.core.cli …` must actually dispatch.
 
     Before the `__main__` guard, `-m` imported the module, exited 0, and ran

@@ -10,7 +10,7 @@ self-hosted-only-by-default scope, ``--policy-override`` and the exit codes.
 
 import os
 import pytest
-from celestia_devtools.ci.job_timeouts import (WorkflowParseError, main, scan_workflow_text, suggest)
+from celestia_devtools.ci.job_timeouts import (workflow_parse_error, main, scan_workflow_text, suggest)
 
 try:  # PyYAML 用于交叉校验“插入后仍是合法 YAML”——见下面的 ImportError 说明。
     import yaml
@@ -42,7 +42,7 @@ def _simple(text):
 
 # ── 策略表：9 条逐条 ─────────────────────────────────────────────────────────
 
-class TestSuggestRule1Bench:
+class test_suggest_rule1_bench:
     """Rule 1: a name containing bench -> 360."""
 
     def test_run_benchmarks_gets_360(self):
@@ -51,33 +51,33 @@ class TestSuggestRule1Bench:
     def test_bench_case_insensitive(self):
         assert suggest("BENCH harness", "ubuntu-latest", "") == 360
 
-class TestSuggestRule2Fuzz:
+class test_suggest_rule2_fuzz:
     """Rule 2: a name containing fuzz -> 180."""
 
     def test_fuzz_targets_get_180(self):
         assert suggest("Fuzz targets", "[self-hosted, linux]", "") == 180
 
-class TestSuggestRule3Coverage:
+class test_suggest_rule3_coverage:
     """Rule 3: a name containing coverage -> 180."""
 
     def test_coverage_gets_180(self):
         assert suggest("Coverage", "[self-hosted, linux]", "") == 180
 
-class TestSuggestRule4HeavyJobs:
+class test_suggest_rule4_heavy_jobs:
     """Rule 4: install / e2e / integration / smoke / drill / docker -> 180."""
 
     @pytest.mark.parametrize("name", ["Install test", "E2E", "integration suite", "smoke test", "drill", "docker"])
     def test_heavy_names_get_180(self, name):
         assert suggest(name, "[self-hosted, linux]", "") == 180
 
-class TestSuggestRule5ReleaseJobs:
+class test_suggest_rule5_release_jobs:
     """Rule 5: release / publish / deploy -> 120."""
 
     @pytest.mark.parametrize("name", ["Release", "Publish crates", "deploy"])
     def test_release_names_get_120(self, name):
         assert suggest(name, "ubuntu-latest", "") == 120
 
-class TestSuggestRule6CargoBody:
+class test_suggest_rule6_cargo_body:
     """Rule 6: the job body contains cargo -> 300."""
 
     def test_clippy_stable_with_cargo_body_gets_300(self):
@@ -91,7 +91,7 @@ class TestSuggestRule6CargoBody:
     def test_cargo_keyword_is_case_insensitive(self):
         assert suggest("test", "[self-hosted, linux]", "uses: CARGO_HOME=/x") == 300
 
-class TestSuggestRule7FrontendBody:
+class test_suggest_rule7_frontend_body:
     """Rule 7: the job body contains pnpm / npm / yarn / vite / vue-tsc -> 120."""
 
     def test_lint_name_with_pnpm_body_gets_120(self):
@@ -101,7 +101,7 @@ class TestSuggestRule7FrontendBody:
     def test_other_frontend_tools_get_120(self, tool):
         assert suggest("build", "[self-hosted, linux]", f"run: {tool}") == 120
 
-class TestSuggestRule8LightNames:
+class test_suggest_rule8_light_names:
     """Rule 8: a light job name and no cargo / frontend toolchain in the body -> 60."""
 
     def test_lint_name_without_toolchain_gets_60(self):
@@ -117,7 +117,7 @@ class TestSuggestRule8LightNames:
         assert suggest("cargo deny", "[self-hosted, linux]", "") == 60
         assert suggest("cargo deny", "[self-hosted, linux]", "run: cargo deny check") == 300
 
-class TestSuggestRule9Default:
+class test_suggest_rule9_default:
     """Rule 9: everything else -> 120."""
 
     def test_unknown_job_gets_120(self):
@@ -126,7 +126,7 @@ class TestSuggestRule9Default:
     def test_default_is_120(self):
         assert suggest("whatever", None, "") == 120
 
-class TestSuggestPrecedence:
+class test_suggest_precedence:
     """Name rules take precedence over job-body rules."""
 
     def test_bench_beats_cargo_body(self):
@@ -137,7 +137,7 @@ class TestSuggestPrecedence:
 
 # ── 插入行为 ─────────────────────────────────────────────────────────────────
 
-class TestFixSimpleJob:
+class test_fix_simple_job:
     """(1) Simple job: correct value and indentation matching ``runs-on``."""
 
     def test_value_and_indent(self, tmp_path):
@@ -160,7 +160,7 @@ class TestFixSimpleJob:
         main(["fix", str(tmp_path)])
         assert "      timeout-minutes: 120" in _read(path)
 
-class TestFixIdempotent:
+class test_fix_idempotent:
     """(2) An existing timeout is untouched; a second run changes nothing."""
 
     def test_existing_timeout_untouched(self, tmp_path):
@@ -180,7 +180,7 @@ class TestFixIdempotent:
         assert _read(path) == first
         assert "inserted 0 line(s) in 0 file(s)" in capsys.readouterr().out
 
-class TestFixMultilineRunsOn:
+class test_fix_multiline_runs_on:
     """(3) Multi-line ``runs-on``: insert after the last item, otherwise the YAML becomes invalid."""
 
     def test_insert_after_last_list_item(self, tmp_path):
@@ -196,7 +196,7 @@ class TestFixMultilineRunsOn:
         assert document["jobs"]["test"]["runs-on"] == ["self-hosted", "linux"]
         assert document["jobs"]["test"]["timeout-minutes"] == 120
 
-class TestFixCallerJob:
+class test_fix_caller_job:
     """(4) Caller job (``uses:`` only): inserted after ``uses:``; out of scope by default."""
 
     CALLER = "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    secrets: inherit\n"
@@ -213,7 +213,7 @@ class TestFixCallerJob:
         index = lines.index("    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master")
         assert lines[index + 1] == "    timeout-minutes: 60"
 
-class TestFixQuotedJobName:
+class test_fix_quoted_job_name:
     """(5) Quoted job names."""
 
     def test_double_quoted_name(self, tmp_path):
@@ -226,7 +226,7 @@ class TestFixQuotedJobName:
         assert main(["fix", str(tmp_path)]) == 0
         assert "    timeout-minutes: 360\n" in _read(path)
 
-class TestFixDryRun:
+class test_fix_dry_run:
     """(7) ``--dry-run`` writes nothing (content and mtime both unchanged)."""
 
     def test_dry_run_does_not_write(self, tmp_path, capsys):
@@ -241,7 +241,7 @@ class TestFixDryRun:
         assert "would insert 1 line(s) in 1 file(s)" in out
         assert "dry-run, no file written" in out
 
-class TestCrlfPreserved:
+class test_crlf_preserved:
     """(8) A CRLF file keeps CRLF endings after insertion."""
 
     def test_crlf_stays_crlf(self, tmp_path):
@@ -262,7 +262,7 @@ class TestCrlfPreserved:
         main(["fix", str(tmp_path)])
         assert _read(path) == after_first
 
-class TestNoTrailingNewline:
+class test_no_trailing_newline:
     """A file without a trailing newline still yields parseable YAML and gains no trailing newline."""
 
     def test_no_trailing_newline(self, tmp_path):
@@ -279,7 +279,7 @@ class TestNoTrailingNewline:
         main(["fix", str(tmp_path)])
         assert _read(path) == first
 
-class TestNoWorkflowsDirectory:
+class test_no_workflows_directory:
     """(9) A directory without ``.github/workflows`` is not an error."""
 
     def test_audit_without_workflows(self, tmp_path, capsys):
@@ -295,7 +295,7 @@ class TestNoWorkflowsDirectory:
         assert main(["fix", str(tmp_path)]) == 0
         assert "timeout-minutes: 120" in _read(path)
 
-class TestYamlStillValid:
+class test_yaml_still_valid:
     """(10) After insertion the file is still valid YAML with an unchanged job count."""
 
     def test_valid_yaml_and_job_count(self, tmp_path):
@@ -319,7 +319,7 @@ class TestYamlStillValid:
         new_lines = [line for line in _read(path).split("\n") if line not in original_lines]
         assert new_lines == ["    timeout-minutes: 120"]
 
-class TestTabIndentationRejected:
+class test_tab_indentation_rejected:
     """Tab indentation exits 2 without guessing the width and without touching the file."""
 
     def test_tab_indentation_exits_2(self, tmp_path, capsys):
@@ -334,12 +334,12 @@ class TestTabIndentationRejected:
         assert main(["audit", str(tmp_path)]) == 2
 
     def test_scan_raises(self, tmp_path):
-        with pytest.raises(WorkflowParseError):
+        with pytest.raises(workflow_parse_error):
             scan_workflow_text("jobs:\n\ttest:\n", tmp_path / "x.yml", "x.yml")
 
 # ── 范围：自托管 / hosted / caller ───────────────────────────────────────────
 
-class TestScopeSelfHostedByDefault:
+class test_scope_self_hosted_by_default:
     """(5, revised) A hosted job is not fixed by default; ``--include-hosted`` opts in."""
 
     WORKFLOW = "jobs:\n" "  hosted-job:\n" "    runs-on: macos-latest\n" "    steps:\n" "      - run: cargo test\n" "  self-job:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - run: cargo test\n"
@@ -376,7 +376,7 @@ class TestScopeSelfHostedByDefault:
         assert by_name["self-job"]["timeout_minutes"] is None
         assert by_name["self-job"]["suggested"] == 300
 
-class TestMatrixAndStepTimeout:
+class test_matrix_and_step_timeout:
     """A ``strategy.matrix`` does not affect insertion; a step-level timeout is not a job-level one."""
 
     def test_matrix_job_is_handled(self, tmp_path):
@@ -400,7 +400,7 @@ class TestMatrixAndStepTimeout:
 
 # ── 策略覆盖与退出码 ─────────────────────────────────────────────────────────
 
-class TestPolicyOverride:
+class test_policy_override:
     """``--policy-override JOB=MINUTES`` forces the value of a same-named job."""
 
     def test_override_wins(self, tmp_path):
@@ -439,7 +439,7 @@ class TestPolicyOverride:
         with pytest.raises(SystemExit):
             main(["fix", str(tmp_path), "--policy-override", "test=abc"])
 
-class TestExitCodes:
+class test_exit_codes:
     """Exit codes: 0 success / 1 missing timeout (audit only) / 2 usage or parse error."""
 
     def test_audit_exit_0_when_all_have_timeout(self, tmp_path, capsys):
@@ -469,7 +469,7 @@ class TestExitCodes:
         assert main(["fix"]) == 0
         assert "timeout-minutes: 120" in _read(tmp_path / ".github/workflows/ci.yml")
 
-class TestAuditListing:
+class test_audit_listing:
     """``audit`` must list every job's ``runs-on`` and its timeout state."""
 
     WORKFLOW = "jobs:\n" "  check:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - run: cargo test\n" "  e2e:\n" "    runs-on: [self-hosted, linux]\n" "    timeout-minutes: 60\n" "  windows:\n" "    runs-on: windows-latest\n" "  caller:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n"
@@ -511,7 +511,7 @@ class TestAuditListing:
         records = json.loads(capsys.readouterr().out)
         assert {record["job"] for record in records} == {"check", "e2e", "windows", "caller"}
 
-class TestJoblessWorkflowIsWarned:
+class test_jobless_workflow_is_warned:
     """A workflow that scans to 0 jobs warns but is not an error (the org really has one collapsed onto a single line)."""
 
     def test_warning_on_stderr_without_error(self, tmp_path, capsys):
@@ -531,7 +531,7 @@ class TestJoblessWorkflowIsWarned:
         assert main(["audit", str(tmp_path)]) == 0
         assert "0/0 jobs missing timeout-minutes" in capsys.readouterr().out
 
-class TestRunsOnExpression:
+class test_runs_on_expression:
     """A ``runs-on`` that is a GitHub expression cannot be classified, so it is treated as not self-hosted."""
 
     def test_matrix_expression_job_is_out_of_scope(self, tmp_path, capsys):
@@ -544,7 +544,7 @@ class TestRunsOnExpression:
         assert main(["fix", str(tmp_path), "--include-hosted"]) == 0
         assert "    timeout-minutes: 120\n" in _read(path)
 
-class TestInlineComments:
+class test_inline_comments:
     """A trailing comment on a key line does not affect parsing; a ``#`` without preceding whitespace belongs to the value."""
 
     def test_trailing_comment_on_runs_on(self, tmp_path):
@@ -600,7 +600,7 @@ class TestInlineComments:
         main(["audit", str(tmp_path)])
         assert f"uses: {target}" in capsys.readouterr().out
 
-class TestBomBeforeJobsKey:
+class test_bom_before_jobs_key:
     """D7 regression: a UTF-8 BOM before ``jobs:`` must still be recognised."""
 
     def test_bom_before_jobs_key(self, tmp_path):
@@ -615,7 +615,7 @@ class TestBomBeforeJobsKey:
         assert main(["fix", str(tmp_path)]) == 0
         assert "    timeout-minutes: 120\n" in _read(path)
 
-class TestCrlfWriteIsByteExact:
+class test_crlf_write_is_byte_exact:
     """M18 coverage hole: writing back must preserve CRLF byte-exactly, not rely on the platform happening to use LF."""
 
     def test_written_bytes_keep_crlf(self, tmp_path):
@@ -626,7 +626,7 @@ class TestCrlfWriteIsByteExact:
         assert b"\n" not in raw.replace(b"\r\n", b"")  # 没有任何裸 LF
         assert yaml.safe_load(raw.decode("utf-8"))["jobs"]["test"]["timeout-minutes"] == 120
 
-class TestMultilineFlowCollection:
+class test_multiline_flow_collection:
     """D1 regression: with a flow collection spanning lines the insertion must follow the whole collection.
 
     Independent verification measured that an earlier revision inserted ``timeout-minutes``
@@ -667,7 +667,7 @@ class TestMultilineFlowCollection:
         assert document["jobs"]["win"]["runs-on"] == ["windows-latest", "x64"]
         assert document["jobs"]["win"]["timeout-minutes"] == 120
 
-class TestBlockScalarValue:
+class test_block_scalar_value:
     """D2 regression: block-scalar forms such as ``runs-on: >`` / ``|-``."""
 
     def test_folded_scalar_runs_on(self, tmp_path):
@@ -691,7 +691,7 @@ class TestBlockScalarValue:
             "timeout-minutes"
         )
 
-class TestSymlinkEscape:
+class test_symlink_escape:
     """D3 regression: a symlink escaping ``.github/workflows`` must be refused, not written through."""
 
     def test_symlink_escaping_workflows_is_refused(self, tmp_path, capsys):
@@ -717,7 +717,7 @@ class TestSymlinkEscape:
         assert "inserted 1 line(s) in 1 file(s)" in capsys.readouterr().out
         assert real.read_text(encoding = "utf-8").count("timeout-minutes") == 1
 
-class TestSymlinkedWorkflowsDirectory:
+class test_symlinked_workflows_directory:
     """F1 regression: the ``.github/workflows`` directory itself must not escape the root."""
 
     def _fixture(self, tmp_path):
@@ -764,7 +764,7 @@ class TestSymlinkedWorkflowsDirectory:
         assert main(["fix", str(repo)]) == 0
         assert "timeout-minutes: 120" in (real_dir / "ci.yml").read_text(encoding = "utf-8")
 
-class TestTabInsideBlockScalar:
+class test_tab_inside_block_scalar:
     """D4 regression: a tab inside a block-scalar body is content, not indentation, and must not stall the batch."""
 
     WORKFLOW = "jobs:\n" "  test:\n" "    runs-on: [self-hosted, linux]\n" "    steps:\n" "      - run: |\n" "          if true; then\n" "          \techo hi\n" "          fi\n"
@@ -798,7 +798,7 @@ class TestTabInsideBlockScalar:
         assert text.count("timeout-minutes") == 2  # 原有 echo 文本 + 新插入的一行
         assert "    timeout-minutes: 120\n" in text
 
-class TestQuotedJobNameIdentity:
+class test_quoted_job_name_identity:
     """M22 coverage hole: quotes must be stripped from the job name (affects ``--policy-override`` and ``--json``)."""
 
     def test_quoted_name_is_stripped_in_json(self, tmp_path, capsys):
@@ -815,7 +815,7 @@ class TestQuotedJobNameIdentity:
         assert main(["fix", str(tmp_path), "--policy-override", "test=42"]) == 0
         assert "    timeout-minutes: 42\n" in _read(path)
 
-class TestEntryPointRegistered:
+class test_entry_point_registered:
     """M23 coverage hole: the entry point must really be registered in ``pyproject.toml``."""
 
     def test_console_script_declared(self):
@@ -834,7 +834,7 @@ class TestEntryPointRegistered:
 
         assert callable(entry)
 
-class TestNonWorkflowFilesUntouched:
+class test_non_workflow_files_untouched:
     """No file outside ``.github/workflows`` is modified."""
 
     def test_other_files_untouched(self, tmp_path):
@@ -853,7 +853,7 @@ class TestNonWorkflowFilesUntouched:
         main(["fix", str(tmp_path)])
         assert os.stat(untouched).st_mtime_ns == before
 
-class TestOnKeyNotMisparsed:
+class test_on_key_not_misparsed:
     """A top-level ``on:`` must not affect the ``jobs`` detection."""
 
     def test_on_with_nested_jobs_like_keys(self, tmp_path):

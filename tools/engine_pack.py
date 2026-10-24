@@ -67,29 +67,29 @@ EXIT_USAGE = 2
 # a direct-reachable domestic host: use a no-proxy opener for both.
 _DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-class EnginePackError(Exception):
+class engine_pack_error(Exception):
     """Base class for actionable engine-pack errors."""
 
-class MetaError(EnginePackError):
+class meta_error(engine_pack_error):
     """engine.meta is missing, unparsable or invalid."""
 
-class CommandError(EnginePackError):
+class command_error(engine_pack_error):
     """A subprocess exited non-zero (or could not be started)."""
 
-class HealthCheckError(EnginePackError):
+class health_check_error(engine_pack_error):
     """The service did not answer HTTP 200 within the timeout."""
 
 # ── Pack manifest ─────────────────────────────────────────────────────────────
 
 @dataclass(frozen = True)
-class EnvSpec:
+class env_spec:
     """``[env]`` section: conda-isolated python environment."""
 
     python: str
     packages: tuple[str, ...]
 
 @dataclass(frozen = True)
-class ServiceSpec:
+class service_spec:
     """``[service]`` section: what to run and how to health-check it."""
 
     unit: str
@@ -98,7 +98,7 @@ class ServiceSpec:
     health_path: str
 
 @dataclass(frozen = True)
-class SystemdSpec:
+class systemd_spec:
     """``[systemd]`` section (all fields have defaults)."""
 
     user: str
@@ -106,15 +106,15 @@ class SystemdSpec:
     description: str
 
 @dataclass(frozen = True)
-class PackSpec:
+class pack_spec:
     """Validated view of one engine.meta manifest."""
 
     name: str
     engine: str
     version: str
-    env: EnvSpec | None
-    service: ServiceSpec
-    systemd: SystemdSpec
+    env: env_spec | None
+    service: service_spec
+    systemd: systemd_spec
 
     @property
     def unit_name(self) -> str:
@@ -141,21 +141,21 @@ def load_meta(pack_dir: Path) -> dict:
     """Read and parse ``<pack-dir>/engine.meta`` into a plain dict."""
 
     if tomllib is None:
-        raise EnginePackError("engine-pack requires Python 3.11+ (stdlib tomllib); " f"running under {sys.version.split()[0]}. Re-run with a newer python3.")
+        raise engine_pack_error("engine-pack requires Python 3.11+ (stdlib tomllib); " f"running under {sys.version.split()[0]}. Re-run with a newer python3.")
 
     if not pack_dir.is_dir():
-        raise MetaError(f"pack directory not found: {pack_dir}")
+        raise meta_error(f"pack directory not found: {pack_dir}")
 
     meta_path = pack_dir / "engine.meta"
 
     if not meta_path.is_file():
-        raise MetaError(f"engine.meta not found: {meta_path}\n" "  every pack directory needs an engine.meta TOML manifest (see tools/README.md)")
+        raise meta_error(f"engine.meta not found: {meta_path}\n" "  every pack directory needs an engine.meta TOML manifest (see tools/README.md)")
 
     try:
         with meta_path.open("rb") as fh:
             return tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
-        raise MetaError(f"invalid TOML in {meta_path}:\n  {exc}") from exc
+        raise meta_error(f"invalid TOML in {meta_path}:\n  {exc}") from exc
 
 def _require_str(table: dict, key: str, where: str, errors: list[str]) -> str | None:
     value = table.get(key)
@@ -193,7 +193,7 @@ def _section(meta: dict, key: str, *, required: bool, errors: list[str]) -> dict
 
     return value
 
-def parse_spec(meta: dict, *, source: Path | str = "engine.meta") -> PackSpec:
+def parse_spec(meta: dict, *, source: Path | str = "engine.meta") -> pack_spec:
     """Validate a parsed manifest; raise :class:`MetaError` listing all problems."""
     errors: list[str] = []
 
@@ -223,7 +223,7 @@ def parse_spec(meta: dict, *, source: Path | str = "engine.meta") -> PackSpec:
         command = None
 
     has_env = "env" in meta
-    env: EnvSpec | None = None
+    env: env_spec | None = None
 
     if has_env:
         env_table = _section(meta, "env", required = True, errors = errors)
@@ -235,7 +235,7 @@ def parse_spec(meta: dict, *, source: Path | str = "engine.meta") -> PackSpec:
             packages = None
 
         if (python_version is not None) and (packages is not None):
-            env = EnvSpec(python = python_version, packages = tuple(packages))
+            env = env_spec(python = python_version, packages = tuple(packages))
 
     # First ExecStart token: "python" (bound to the env python) or an absolute path.
     if command is not None:
@@ -254,14 +254,14 @@ def parse_spec(meta: dict, *, source: Path | str = "engine.meta") -> PackSpec:
     description = _optional_str(systemd_table, "description", "systemd", errors) or default_description
 
     if errors:
-        raise MetaError(f"invalid engine.meta ({source}):\n  - " + "\n  - ".join(errors))
+        raise meta_error(f"invalid engine.meta ({source}):\n  - " + "\n  - ".join(errors))
 
     assert name and engine and version and unit and port and health_path and command
-    return PackSpec(name = name, engine = engine, version = version, env = env, service = ServiceSpec(unit = unit, command = tuple(command), port = port, health_path = health_path), systemd = SystemdSpec(user = user, after = after, description = description))
+    return pack_spec(name = name, engine = engine, version = version, env = env, service = service_spec(unit = unit, command = tuple(command), port = port, health_path = health_path), systemd = systemd_spec(user = user, after = after, description = description))
 
 # ── Unit rendering (pure; no filesystem, no subprocess, no tomllib) ──────────
 
-def render_unit(spec: PackSpec, *, pack_dir: Path, env_prefix: Path | None) -> str:
+def render_unit(spec: pack_spec, *, pack_dir: Path, env_prefix: Path | None) -> str:
     """Render the systemd unit for ``spec`` as text."""
     argv = shlex.join(spec.resolved_command(env_prefix))
     lines = ["# Generated by tools/engine_pack.py -- do not edit by hand;", "# edit engine.meta and re-run `engine_pack.py install <pack-dir>` instead.", "", "[Unit]", f"Description={spec.systemd.description}", f"After={spec.systemd.after}", "", "[Service]", "Type=simple", f"User={spec.systemd.user}", f"WorkingDirectory={pack_dir}", f"ExecStart={argv}", "Restart=always", "RestartSec=5", "", "[Install]", "WantedBy=multi-user.target"]
@@ -277,12 +277,12 @@ def run_cmd(cmd: Sequence[str], *, cwd: Path | None = None) -> subprocess.Comple
     try:
         proc = subprocess.run(list(cmd), cwd = str(cwd)if cwd is not None else None, text = True, capture_output = True)
     except FileNotFoundError as exc:
-        raise CommandError(f"command not found: {cmd[0]} (while running: {printable})") from exc
+        raise command_error(f"command not found: {cmd[0]} (while running: {printable})") from exc
 
     if proc.returncode != 0:
         tail = [line for line in (proc.stderr or proc.stdout or "").strip().splitlines()][-5:]
         detail = "\n    ".join(tail)
-        raise CommandError(f"command failed (exit {proc.returncode}): {printable}" + (f"\n    {detail}" if detail else ""))
+        raise command_error(f"command failed (exit {proc.returncode}): {printable}" + (f"\n    {detail}" if detail else ""))
 
     return proc
 
@@ -291,7 +291,7 @@ def miniforge_installer_name() -> str:
     arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "arm64"}.get(machine)
 
     if arch is None:
-        raise EnginePackError(f"unsupported architecture for miniforge bootstrap: {machine!r}")
+        raise engine_pack_error(f"unsupported architecture for miniforge bootstrap: {machine!r}")
 
     return f"Miniforge3-Linux-{arch}.sh"
 
@@ -309,7 +309,7 @@ def download_file(url: str, dest: Path) -> Path:
 
                 fh.write(chunk)
     except (urllib.error.URLError, OSError) as exc:
-        raise EnginePackError(f"download failed: {url}\n  {exc}\n  check connectivity or pass --mirror-base") from exc
+        raise engine_pack_error(f"download failed: {url}\n  {exc}\n  check connectivity or pass --mirror-base") from exc
 
     dest.chmod(0o755)
     return dest
@@ -328,7 +328,7 @@ def ensure_miniforge(root: Path, mirror_base: str) -> bool:
         run_cmd(["bash", str(installer), "-b", "-p", str(root)])
 
     if not mamba.is_file():
-        raise EnginePackError(f"miniforge bootstrap finished but {mamba} is missing")
+        raise engine_pack_error(f"miniforge bootstrap finished but {mamba} is missing")
 
     return True
 
@@ -347,7 +347,7 @@ def ensure_env(mamba: Path, prefix: Path, python_version: str, *, force: bool) -
     run_cmd([str(mamba), "create", "-y", "-p", str(prefix), f"python={python_version}"])
 
     if not env_exists(prefix):
-        raise EnginePackError(f"mamba create finished but {prefix / 'bin' / 'python'} is missing")
+        raise engine_pack_error(f"mamba create finished but {prefix / 'bin' / 'python'} is missing")
 
     return True
 
@@ -372,11 +372,11 @@ def read_installed_packages(prefix: Path) -> list[str] | None:
 
     return None
 
-def write_installed_record(prefix: Path, pack_name: str, env: EnvSpec) -> None:
+def write_installed_record(prefix: Path, pack_name: str, env: env_spec) -> None:
     record = {"pack": pack_name, "python": env.python, "packages": sorted(env.packages)}
     record_path(prefix).write_text(json.dumps(record, indent = 2, sort_keys = True) + "\n", encoding = "utf-8")
 
-def ensure_pip_packages(prefix: Path, env: EnvSpec, pack_name: str) -> bool:
+def ensure_pip_packages(prefix: Path, env: env_spec, pack_name: str) -> bool:
     """Install pinned pip packages unless the recorded set matches exactly."""
     wanted = sorted(env.packages)
 
@@ -389,7 +389,7 @@ def ensure_pip_packages(prefix: Path, env: EnvSpec, pack_name: str) -> bool:
     write_installed_record(prefix, pack_name, env)
     return True
 
-def write_unit(spec: PackSpec, unit_dir: Path, text: str) -> Path:
+def write_unit(spec: pack_spec, unit_dir: Path, text: str) -> Path:
     unit_dir.mkdir(parents = True, exist_ok = True)
     unit_path = unit_dir / spec.unit_name
     unit_path.write_text(text, encoding = "utf-8")
@@ -427,13 +427,13 @@ def wait_for_health(url: str, timeout: float, poll_interval: float = POLL_INTERV
         remaining = deadline - time.monotonic()
 
         if remaining <= 0:
-            raise HealthCheckError(f"{url} did not answer HTTP 200 within {timeout:.0f}s (last: {last})")
+            raise health_check_error(f"{url} did not answer HTTP 200 within {timeout:.0f}s (last: {last})")
 
         time.sleep(min(poll_interval, remaining))
 
 # ── CLI commands ──────────────────────────────────────────────────────────────
 
-def plan_actions(spec: PackSpec, args: argparse.Namespace) -> list[str]:
+def plan_actions(spec: pack_spec, args: argparse.Namespace) -> list[str]:
     if spec.env is None:
         head = ["skip conda entirely (native-binary pack; ExecStart used verbatim)"]
     else:
@@ -523,7 +523,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     for index, (name, action) in enumerate(actions):
         try:
             action()
-        except EnginePackError as exc:
+        except engine_pack_error as exc:
             step("FAIL", name, str(exc))
 
             for pending, _ in actions[index + 1 :]:
@@ -542,7 +542,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     try:
         elapsed = wait_for_health(spec.health_url, args.timeout)
-    except HealthCheckError as exc:
+    except health_check_error as exc:
         print(f"[FAIL] health {exc}")
         return EXIT_FAILURE
 
@@ -587,10 +587,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return args.func(args)
-    except MetaError as exc:
+    except meta_error as exc:
         print(f"error: {exc}", file = sys.stderr)
         return EXIT_USAGE
-    except EnginePackError as exc:
+    except engine_pack_error as exc:
         print(f"error: {exc}", file = sys.stderr)
         return EXIT_FAILURE
     except KeyboardInterrupt:

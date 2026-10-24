@@ -13,10 +13,10 @@ what cpp-style list-rules prints.
 from __future__ import annotations
 import re
 from typing import Iterator, List, Optional, Sequence, Tuple
-from celestia_devtools.lint.cpp.config import Config, matches_globs, path_variants
+from celestia_devtools.lint.cpp.config import config_record, matches_globs, path_variants
 from celestia_devtools.lint.cpp.rules import RULES
-from celestia_devtools.lint.cpp.structure import AnalyzedFile, Finding
-from celestia_devtools.lint.cpp.tokenizer import COMMENT, IDENT, NEWLINE, OP, PREPROC, Token
+from celestia_devtools.lint.cpp.structure import analyzed_file, finding_record
+from celestia_devtools.lint.cpp.tokenizer import COMMENT, IDENT, NEWLINE, OP, PREPROC, token_record
 
 _CONTROL_BLOCK = frozenset({"if", "for", "while", "switch", "catch"})
 _HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hh", ".hxx"})
@@ -29,7 +29,7 @@ _LICENSE_MARKER = re.compile(r"license|spdx|copyright", re.IGNORECASE)
 _INCLUDE_DIRECTIVE = re.compile(r"^\s*#\s*include\b", re.IGNORECASE)
 _INCLUDE_TARGET = re.compile(r'^\s*#\s*include\s*(?:<([^>\n]*)>|"([^"\n]*)")', re.IGNORECASE)
 
-def iter_includes(af: AnalyzedFile) -> Iterator[Tuple[Token, Optional[str]]]:
+def iter_includes(af: analyzed_file) -> Iterator[Tuple[token_record, Optional[str]]]:
     """Yield each #include directive token and its header name (None for macro includes)."""
 
     for token in af.tokens:
@@ -47,7 +47,7 @@ def iter_includes(af: AnalyzedFile) -> Iterator[Tuple[Token, Optional[str]]]:
 
         yield token, header
 
-def _paren_after(af: AnalyzedFile, position: int) -> Optional[int]:
+def _paren_after(af: analyzed_file, position: int) -> Optional[int]:
     following = af.next_code(position)
 
     if following is None:
@@ -60,7 +60,7 @@ def _paren_after(af: AnalyzedFile, position: int) -> Optional[int]:
 
     return None
 
-def _body_findings(af: AnalyzedFile, after_position: int, anchor: Token, rule: str, description: str) -> List[Finding]:
+def _body_findings(af: analyzed_file, after_position: int, anchor: token_record, rule: str, description: str) -> List[finding_record]:
     """Classify the token after an anchor as braced, missing or undecidable."""
     following = af.next_code(after_position)
 
@@ -73,11 +73,11 @@ def _body_findings(af: AnalyzedFile, after_position: int, anchor: Token, rule: s
         return []
 
     if af.trivia_between(after_position, index):
-        return [Finding(af.path, anchor.line, anchor.col, rule, "cannot decide whether %s has a braced body: a comment or preprocessor" " directive sits between the statement and its body; check skipped" % description, severity = "warning")]
+        return [finding_record(af.path, anchor.line, anchor.col, rule, "cannot decide whether %s has a braced body: a comment or preprocessor" " directive sits between the statement and its body; check skipped" % description, severity = "warning")]
 
-    return [Finding(af.path, anchor.line, anchor.col, rule, "expected '{' after %s; single-statement bodies are not allowed" % description)]
+    return [finding_record(af.path, anchor.line, anchor.col, rule, "expected '{' after %s; single-statement bodies are not allowed" % description)]
 
-def _do_while_conditions(af: AnalyzedFile) -> set:
+def _do_while_conditions(af: analyzed_file) -> set:
     """Code positions of the while tokens that close a do-while statement.
 
     The body may be a braced block (the next token after the matching closing
@@ -128,7 +128,7 @@ def _do_while_conditions(af: AnalyzedFile) -> set:
 
     return positions
 
-def _semicolon_adjacency(af: AnalyzedFile, position: int) -> Optional[bool]:
+def _semicolon_adjacency(af: analyzed_file, position: int) -> Optional[bool]:
     """True when a for-header semicolon touches both neighbours; None if undecidable."""
     semicolon = af.code[position]
     previous = af.prev_code(position)
@@ -147,9 +147,9 @@ def _semicolon_adjacency(af: AnalyzedFile, position: int) -> Optional[bool]:
     right = (next_token.line == semicolon.line) and (next_token.col == semicolon.end_col)
     return left and right
 
-def check_no_space_before_paren(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_no_space_before_paren(af: analyzed_file, config: config_record) -> List[finding_record]:
     """Identifiers and control keywords must be followed directly by an opening parenthesis."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
     allowed = set(config.effective_allow_space_before_paren)
 
     for position, token in enumerate(af.code):
@@ -178,16 +178,16 @@ def check_no_space_before_paren(af: AnalyzedFile, config: Config) -> List[Findin
             if config.macro_style == "ignore":
                 continue
 
-            findings.append(Finding(af.path, token.line, token.col, "no-space-before-paren", "space before '(' after %r, which looks like a macro; macro" " invocations are written as NAME(...) by this convention" " (macro_style = 'ignore' silences such findings)" % token.text, severity = "warning"))
+            findings.append(finding_record(af.path, token.line, token.col, "no-space-before-paren", "space before '(' after %r, which looks like a macro; macro" " invocations are written as NAME(...) by this convention" " (macro_style = 'ignore' silences such findings)" % token.text, severity = "warning"))
             continue
 
-        findings.append(Finding(af.path, token.line, token.col, "no-space-before-paren", "expected no whitespace between %r and its '('" % token.text))
+        findings.append(finding_record(af.path, token.line, token.col, "no-space-before-paren", "expected no whitespace between %r and its '('" % token.text))
 
     return findings
 
-def check_for_semicolon_spacing(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_for_semicolon_spacing(af: analyzed_file, config: config_record) -> List[finding_record]:
     """for headers must have exactly two semicolons, each touching both neighbours."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for position, token in enumerate(af.code):
         if (token.kind != IDENT) or (token.text != "for"):
@@ -216,13 +216,13 @@ def check_for_semicolon_spacing(af: AnalyzedFile, config: Config) -> List[Findin
                 continue
 
             semicolon = af.code[index]
-            findings.append(Finding(af.path, semicolon.line, semicolon.col, "for-semicolon-spacing", "for-header ';' must have no whitespace on either side:" " for(init;condition;step)"))
+            findings.append(finding_record(af.path, semicolon.line, semicolon.col, "for-semicolon-spacing", "for-header ';' must have no whitespace on either side:" " for(init;condition;step)"))
 
     return findings
 
-def check_control_braces(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_control_braces(af: analyzed_file, config: config_record) -> List[finding_record]:
     """if/for/while/switch/catch/do/else bodies must be braced blocks."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
     do_while_conditions = _do_while_conditions(af)
 
     for position, token in enumerate(af.code):
@@ -264,7 +264,7 @@ def check_control_braces(af: AnalyzedFile, config: Config) -> List[Finding]:
 
     return findings
 
-def check_one_statement_per_line(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_one_statement_per_line(af: analyzed_file, config: config_record) -> List[finding_record]:
     """At most one statement terminator per physical line and brace depth."""
     groups: dict = {}
 
@@ -278,20 +278,20 @@ def check_one_statement_per_line(af: AnalyzedFile, config: Config) -> List[Findi
         key = (token.line, af.brace_depth[position])
         groups.setdefault(key, []).append(position)
 
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for positions in groups.values():
         if len(positions) < 2:
             continue
 
         second = af.code[positions[1]]
-        findings.append(Finding(af.path, second.line, second.col, "one-statement-per-line", "multiple statements on one physical line (%d statement terminators);" " put each statement on its own line" % len(positions), severity = "warning"))
+        findings.append(finding_record(af.path, second.line, second.col, "one-statement-per-line", "multiple statements on one physical line (%d statement terminators);" " put each statement on its own line" % len(positions), severity = "warning"))
 
     return findings
 
-def _leading_comment_group(af: AnalyzedFile) -> List[Token]:
+def _leading_comment_group(af: analyzed_file) -> List[token_record]:
     """The first contiguous run of comments at the very top of the file."""
-    group: List[Token] = []
+    group: List[token_record] = []
 
     for token in af.tokens:
         if token.kind == NEWLINE:
@@ -308,9 +308,9 @@ def _leading_comment_group(af: AnalyzedFile) -> List[Token]:
 def _is_doxygen_block(text: str) -> bool:
     return (text.startswith("/**") and (text != "/**/")) or text.startswith("/*!")
 
-def check_line_comments_only(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_line_comments_only(af: analyzed_file, config: config_record) -> List[finding_record]:
     """Block comments are only allowed in the leading license/SPDX/copyright group."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
     leading = _leading_comment_group(af)
     license_header = bool(leading) and (_LICENSE_MARKER.search("\n".join(token.text for token in leading)) is not None)
     leading_ids = {id(token) for token in leading}
@@ -337,13 +337,13 @@ def check_line_comments_only(af: AnalyzedFile, config: Config) -> List[Finding]:
         else:
             message = "block comments are not allowed outside the leading license/SPDX" " header; use line comments"
 
-        findings.append(Finding(af.path, token.line, token.col, "line-comments-only", message))
+        findings.append(finding_record(af.path, token.line, token.col, "line-comments-only", message))
 
     return findings
 
-def check_include_block(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_include_block(af: analyzed_file, config: config_record) -> List[finding_record]:
     """Includes at the head of the file, one blank line before the following code."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
     includes = list(iter_includes(af))
 
     if not includes:
@@ -354,7 +354,7 @@ def check_include_block(af: AnalyzedFile, config: Config) -> List[Finding]:
 
     for token, _header in includes:
         if (first_code_line is not None) and (token.line > first_code_line):
-            findings.append(Finding(af.path, token.line, token.col, "include-block", "#include after the first code line (%d); keep every #include at" " the head of the file" % first_code_line))
+            findings.append(finding_record(af.path, token.line, token.col, "include-block", "#include after the first code line (%d); keep every #include at" " the head of the file" % first_code_line))
 
     head_includes = [token for token, _header in includes if (first_code_line is None) or (token.line < first_code_line)]
 
@@ -371,18 +371,18 @@ def check_include_block(af: AnalyzedFile, config: Config) -> List[Finding]:
 
     if blank_lines != 1:
         anchor = max(head_includes, key = lambda token: token.end_line)
-        findings.append(Finding(af.path, anchor.line, anchor.col, "include-block", "expected exactly one blank line between the last #include and the" " following code (found %d)" % blank_lines))
+        findings.append(finding_record(af.path, anchor.line, anchor.col, "include-block", "expected exactly one blank line between the last #include and the" " following code (found %d)" % blank_lines))
 
     return findings
 
-def check_platform_header_allowlist(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_platform_header_allowlist(af: analyzed_file, config: config_record) -> List[finding_record]:
     """Platform headers may only be included from allowlisted source paths."""
 
     if config.platform_paths and matches_globs(path_variants(af.path, config), config.platform_paths):
         return []
 
     restricted = {name.strip().lower() for name in config.platform_headers}
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for token, header in iter_includes(af):
         if header is None:
@@ -393,11 +393,11 @@ def check_platform_header_allowlist(af: AnalyzedFile, config: Config) -> List[Fi
         if normalised.lower() not in restricted:
             continue
 
-        findings.append(Finding(af.path, token.line, token.col, "platform-header-allowlist", "platform header %r may only be included from allowlisted platform" " sources; configure platform_paths" % normalised))
+        findings.append(finding_record(af.path, token.line, token.col, "platform-header-allowlist", "platform header %r may only be included from allowlisted platform" " sources; configure platform_paths" % normalised))
 
     return findings
 
-def check_platform_type_leak(af: AnalyzedFile, config: Config) -> List[Finding]:
+def check_platform_type_leak(af: analyzed_file, config: config_record) -> List[finding_record]:
     """Headers must not expose platform types or COM interfaces."""
 
     if af.path.suffix.lower() not in _HEADER_SUFFIXES:
@@ -405,26 +405,26 @@ def check_platform_type_leak(af: AnalyzedFile, config: Config) -> List[Finding]:
 
     platform_types = set(config.platform_types)
     prefixes = config.com_interface_prefixes
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for token in af.code:
         if token.kind != IDENT:
             continue
 
         if token.text in platform_types:
-            findings.append(Finding(af.path, token.line, token.col, "platform-type-leak", "%r is a platform type and must not be exposed by a header; keep" " it behind the platform implementation" % token.text))
+            findings.append(finding_record(af.path, token.line, token.col, "platform-type-leak", "%r is a platform type and must not be exposed by a header; keep" " it behind the platform implementation" % token.text))
             continue
 
         if prefixes and token.text.startswith(prefixes):
-            findings.append(Finding(af.path, token.line, token.col, "platform-type-leak", "%r looks like a COM interface and must not be exposed by a" " header; keep it behind the platform implementation" % token.text))
+            findings.append(finding_record(af.path, token.line, token.col, "platform-type-leak", "%r looks like a COM interface and must not be exposed by a" " header; keep it behind the platform implementation" % token.text))
 
     return findings
 
 RULE_FUNCTIONS = {"no-space-before-paren": check_no_space_before_paren, "for-semicolon-spacing": check_for_semicolon_spacing, "control-braces": check_control_braces, "one-statement-per-line": check_one_statement_per_line, "line-comments-only": check_line_comments_only, "include-block": check_include_block, "platform-header-allowlist": check_platform_header_allowlist, "platform-type-leak": check_platform_type_leak}
 
-def run_checks(af: AnalyzedFile, config: Config, selected: Sequence[str]) -> List[Finding]:
+def run_checks(af: analyzed_file, config: config_record, selected: Sequence[str]) -> List[finding_record]:
     """Run the selected rules over one analyzed file in catalogue order."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for rule in RULES:
         if rule.id not in selected:

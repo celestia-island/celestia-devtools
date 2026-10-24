@@ -77,7 +77,7 @@ def _job(filename: str, job_id: str) -> dict:
     return doc["jobs"][job_id]
 
 @pytest.mark.parametrize("filename,job_id", sorted(FORK_SERVED.items()))
-class TestForkPullRequestsAreServed:
+class test_fork_pull_requests_are_served:
     def test_job_is_not_skipped_for_forks(self, filename: str, job_id: str) -> None:
         """A fork PR must reach the job, or the required check never reports."""
         condition = _job(filename, job_id).get("if")

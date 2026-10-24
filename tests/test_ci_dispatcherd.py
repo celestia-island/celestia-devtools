@@ -191,7 +191,7 @@ def test_log_choke_point_redacts_everything(monkeypatch, capsys):
     assert FETCH_TOKEN not in out
     assert "langyo:***@github.com" in out
 
-class _FakeCompleted:
+class _fake_completed:
     def __init__(self, stdout = ""):
         self.returncode = 0
         self.stdout = stdout
@@ -218,15 +218,15 @@ def test_spill_push_uses_force_with_lease(monkeypatch, tmp_path):
         calls.append(list(argv))
 
         if "ls-remote" in argv:
-            return _FakeCompleted(f"{stale}\t{spill_ref}\n")
+            return _fake_completed(f"{stale}\t{spill_ref}\n")
 
         if "merge-tree" in argv:
-            return _FakeCompleted(("a" * 40) + "\n")
+            return _fake_completed(("a" * 40) + "\n")
 
         if "commit-tree" in argv:
-            return _FakeCompleted(("c" * 40) + "\n")
+            return _fake_completed(("c" * 40) + "\n")
 
-        return _FakeCompleted("")
+        return _fake_completed("")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     msha = dsp.ensure_sha_on_mirror("shittim-chest", sha)
@@ -255,15 +255,15 @@ def test_spill_push_lease_empty_expect_for_new_ref(monkeypatch, tmp_path):
         calls.append(list(argv))
 
         if "ls-remote" in argv:
-            return _FakeCompleted("")  # ref absent on the remote
+            return _fake_completed("")  # ref absent on the remote
 
         if "merge-tree" in argv:
-            return _FakeCompleted(("a" * 40) + "\n")
+            return _fake_completed(("a" * 40) + "\n")
 
         if "commit-tree" in argv:
-            return _FakeCompleted(("c" * 40) + "\n")
+            return _fake_completed(("c" * 40) + "\n")
 
-        return _FakeCompleted("")
+        return _fake_completed("")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     dsp.ensure_sha_on_mirror("shittim-chest", sha)
@@ -514,7 +514,7 @@ def test_spill_batch_is_capped_per_loop(monkeypatch):
     """resolve() (cancel-green) runs after the spill loop; an unbounded batch would
     delay those cancellations behind up to ~180 s of ws retry each."""
 
-    class _Stop(BaseException):
+    class _stop(BaseException):
         pass
 
     entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in range(1, 11)]
@@ -531,11 +531,11 @@ def test_spill_batch_is_capped_per_loop(monkeypatch):
     monkeypatch.setattr(dsp, "spill", lambda entry, state: spilled.append(entry["run_id"]))
 
     def boom(_):
-        raise _Stop()
+        raise _stop()
 
     monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(boom), "time": staticmethod(lambda: 0.0)}))
 
-    with pytest.raises(_Stop):
+    with pytest.raises(_stop):
         dsp.main()
 
     assert spilled == [1, 2, 3]
@@ -574,7 +574,7 @@ def test_grace_release_remembers_the_sha(monkeypatch):
     assert state["_recent"]["a" * 40] == now
 
 def _loop_fixture(monkeypatch, entries, state, threshold = 1):
-    class _Stop(BaseException):
+    class _stop(BaseException):
         pass
 
     monkeypatch.setattr(dsp, "THRESHOLD", threshold)
@@ -592,10 +592,10 @@ def _loop_fixture(monkeypatch, entries, state, threshold = 1):
     monkeypatch.setattr(dsp, "spill", lambda entry, st: spilled.append(entry["run_id"]))
 
     def boom(_):
-        raise _Stop()
+        raise _stop()
 
     monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(boom), "time": staticmethod(lambda: 0.0)}))
-    return spilled, _Stop
+    return spilled, _stop
 
 def test_tracked_entries_do_not_eat_the_spill_budget(monkeypatch):
     """The cap counts started spills: runs already tracked at the head of the queue must
@@ -678,7 +678,7 @@ def test_publish_lane_ref_pushes_the_spill_branch_into_the_host(monkeypatch, tmp
     with an explicit force-with-lease (a bare lease is a no-op without tracking refs)."""
     calls = []
 
-    class _Done:
+    class _done:
         def __init__(self, out = "", rc = 0):
             self.stdout, self.returncode = out, rc
 
@@ -686,9 +686,9 @@ def test_publish_lane_ref_pushes_the_spill_branch_into_the_host(monkeypatch, tmp
         calls.append(argv)
 
         if "cat-file" in argv:
-            return _Done(rc = 0)
+            return _done(rc = 0)
 
-        return _Done()
+        return _done()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
@@ -701,15 +701,15 @@ def test_publish_lane_ref_pushes_the_spill_branch_into_the_host(monkeypatch, tmp
     assert any("ci-infra-hikari.git" in a for a in push)
 
 def test_publish_lane_ref_reports_a_host_without_the_pipeline(monkeypatch, tmp_path):
-    class _P:
+    class _p:
         def __init__(self, rc = 0, out = ""):
             self.returncode, self.stdout = rc, out
 
     def fake_run(argv, **kw):
         if "cat-file" in argv:
-            return _P(rc = 1)
+            return _p(rc = 1)
 
-        return _P()
+        return _p()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
@@ -738,7 +738,7 @@ def test_publish_lane_ref_propagates_git_failures(monkeypatch, tmp_path):
     with pytest.raises(subprocess.CalledProcessError):
         dsp.publish_lane_ref("hikari", "a" * 40)
 
-class _P:
+class _p:
     def __init__(self, rc = 0, out = ""):
         self.returncode, self.stdout = rc, out
 
@@ -753,12 +753,12 @@ def _lane_probe(monkeypatch, tmp_path, ls_out = "", cat_rc = 0, fail_on = None, 
             raise subprocess.CalledProcessError(128, argv)
 
         if "cat-file" in argv:
-            return _P(rc = cat_rc)
+            return _p(rc = cat_rc)
 
         if "ls-remote" in argv:
-            return _P(out = ls_out)
+            return _p(out = ls_out)
 
-        return _P()
+        return _p()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(dsp, "GITCACHE", str(tmp_path))
@@ -820,7 +820,7 @@ def test_deferral_does_not_spend_the_batch_budget(monkeypatch):
     """Deferrals used to count as started spills, so a queue head full of already-has-workspace
     repos could burn the whole per-loop budget and starve every other repo."""
 
-    class _Stop(BaseException):
+    class _stop(BaseException):
         pass
 
     entries = [{"repo": "hikari", "run_id": i, "sha": f"{i:040d}"} for i in (1, 2, 3)]
@@ -846,9 +846,9 @@ def test_deferral_does_not_spend_the_batch_budget(monkeypatch):
         return True
 
     monkeypatch.setattr(dsp, "spill", fake_spill)
-    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: (_ for _ in ()).throw(_Stop())), "time": staticmethod(lambda: 0.0)}))
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: (_ for _ in ()).throw(_stop())), "time": staticmethod(lambda: 0.0)}))
 
-    with pytest.raises(_Stop):
+    with pytest.raises(_stop):
         dsp.main()
 
     # 3 hikari deferrals (spill() -> None) must not consume the budget of 3: arona + evernight land
@@ -1088,7 +1088,7 @@ def test_build_lane_dispatch_failure_blacklists_and_defers(monkeypatch):
 def _blacklist_loop(monkeypatch, entries, state):
     """main() one-poll harness with log capture; sleep raises to stop the loop."""
 
-    class _Stop(BaseException):
+    class _stop(BaseException):
         pass
 
     monkeypatch.setattr(dsp, "THRESHOLD", 0)
@@ -1103,8 +1103,8 @@ def _blacklist_loop(monkeypatch, entries, state):
     logs, spilled = [], []
     monkeypatch.setattr(dsp, "log", logs.append)
     monkeypatch.setattr(dsp, "spill", lambda entry, st: spilled.append(entry["run_id"]))
-    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: (_ for _ in ()).throw(_Stop())), "time": staticmethod(lambda: 0.0)}))
-    return logs, spilled, _Stop
+    monkeypatch.setattr(dsp, "time", type("T", (), {"sleep": staticmethod(lambda s: (_ for _ in ()).throw(_stop())), "time": staticmethod(lambda: 0.0)}))
+    return logs, spilled, _stop
 
 def test_blacklisted_run_is_skipped_with_one_line_and_no_spill(monkeypatch):
     """The consult sits in the batch loop BEFORE spill() — hence before

@@ -83,7 +83,7 @@ def _stream_tagged(tag: str, proc: subprocess.Popen, stop: threading.Event, read
 # Type alias for the per-line log function override.
 _LogFn = Callable[[str, str], None]
 
-class ProcessManager:
+class process_manager:
     """Manages multiple child processes with tagged output and graceful shutdown.
 
     Shared across shittim-chest / entelecheia / evernight dev scripts so they

@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 @dataclass(frozen = True)
-class Platform:
+class platform:
     """One publishable target triple and its npm packaging metadata."""
 
     #: Rust target triple (``rustup target add <this>``).
@@ -53,20 +53,20 @@ class Platform:
 #: - **darwin-arm64** — Apple Silicon Macs (M1–M4).
 #: - **darwin-x64** — Intel Macs (Rosetta cannot run arm64 binaries on x64).
 #: - **win32-x64** — Windows on Intel/AMD.
-PLATFORMS: tuple[Platform, ...] = (
-    Platform(
+PLATFORMS: tuple[platform, ...] = (
+    platform(
         rust_target = "x86_64-unknown-linux-gnu",
         npm_suffix = "-linux-x64",
         node_os = "linux",
         node_cpu = "x64"
     ),
-    Platform(
+    platform(
         rust_target = "aarch64-unknown-linux-gnu",
         npm_suffix = "-linux-arm64",
         node_os = "linux",
         node_cpu = "arm64"
     ),
-    Platform(
+    platform(
         rust_target = "x86_64-unknown-linux-musl",
         npm_suffix = "-linux-x64-musl",
         node_os = "linux",
@@ -76,7 +76,7 @@ PLATFORMS: tuple[Platform, ...] = (
         # on musl can opt in explicitly, while glibc users get the default.
         musl = True
     ),
-    Platform(
+    platform(
         rust_target = "aarch64-unknown-linux-musl",
         npm_suffix = "-linux-arm64-musl",
         node_os = "linux",
@@ -85,19 +85,19 @@ PLATFORMS: tuple[Platform, ...] = (
         # glibc is older than the ubuntu-latest build host.
         musl = True
     ),
-    Platform(
+    platform(
         rust_target = "aarch64-apple-darwin",
         npm_suffix = "-darwin-arm64",
         node_os = "darwin",
         node_cpu = "arm64"
     ),
-    Platform(
+    platform(
         rust_target = "x86_64-apple-darwin",
         npm_suffix = "-darwin-x64",
         node_os = "darwin",
         node_cpu = "x64"
     ),
-    Platform(
+    platform(
         rust_target = "x86_64-pc-windows-msvc",
         npm_suffix = "-win32-x64",
         node_os = "win32",
@@ -105,7 +105,7 @@ PLATFORMS: tuple[Platform, ...] = (
     )
 )
 
-def find_platform(rust_target: str) -> Platform | None:
+def find_platform(rust_target: str) -> platform | None:
     """Look up a :class:`Platform` by its Rust target triple, or ``None``."""
 
     for p in PLATFORMS:

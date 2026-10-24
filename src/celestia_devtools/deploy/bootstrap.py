@@ -25,7 +25,7 @@ import stat
 import subprocess
 from dataclasses import dataclass, field
 from typing import Callable
-from celestia_devtools.deploy.profile import DeployProfile
+from celestia_devtools.deploy.profile import deploy_profile
 
 OK = "ok"
 SKIPPED = "skipped"
@@ -43,7 +43,7 @@ STAGE_ORDER: tuple[str, ...] = tuple(STAGE_SLICES)
 ENV_KEYS = ("JWT_SECRET", "SHITTIM_CHEST_ENCRYPTION_KEY")
 
 @dataclass
-class StageResult:
+class stage_result:
     name: str
     status: str
     detail: str = ""
@@ -54,8 +54,8 @@ class StageResult:
         return "[{:>2}] {:<12} {} {}{}".format(STAGE_ORDER.index(self.name) + 1 if self.name in STAGE_ORDER else 0, self.name, mark, self.detail, "  (slice {})".format(STAGE_SLICES[self.name])if self.status == PENDING else "")
 
 @dataclass
-class StageContext:
-    profile: DeployProfile
+class stage_context:
+    profile: deploy_profile
     executor: Callable[..., subprocess.CompletedProcess] = subprocess.run
     assume_root: bool = False   # tests: precheck skips the euid gate
     dry_run: bool = False
@@ -71,7 +71,7 @@ class StageContext:
 
 # ── D2 stages ──────────────────────────────────────────────────────────
 
-def stage_precheck(ctx: StageContext) -> StageResult:
+def stage_precheck(ctx: stage_context) -> stage_result:
     problems = []
     errors = ctx.profile.validate()
 
@@ -89,11 +89,11 @@ def stage_precheck(ctx: StageContext) -> StageResult:
         problems.append("front.enabled but front.domain empty")
 
     if problems:
-        return StageResult("precheck", FAILED, "; ".join(problems))
+        return stage_result("precheck", FAILED, "; ".join(problems))
 
-    return StageResult("precheck", OK, "profile valid; root={}".format(is_root))
+    return stage_result("precheck", OK, "profile valid; root={}".format(is_root))
 
-def stage_account(ctx: StageContext) -> StageResult:
+def stage_account(ctx: stage_context) -> stage_result:
     user = ctx.profile.host.admin_user
     root = ctx.profile.host.deploy_root()
     changed = False
@@ -105,7 +105,7 @@ def stage_account(ctx: StageContext) -> StageResult:
         proc = ctx.run(["useradd", "--system", "--home-dir", str(root), "--shell", "/usr/sbin/nologin", user])
 
         if getattr(proc, "returncode", 0) != 0:
-            return StageResult("account", FAILED, "useradd {} failed (rc={}): {}".format(user, proc.returncode, (getattr(proc, "stderr", "") or "").strip()[: 120]))
+            return stage_result("account", FAILED, "useradd {} failed (rc={}): {}".format(user, proc.returncode, (getattr(proc, "stderr", "") or "").strip()[: 120]))
 
         changed = True
 
@@ -120,7 +120,7 @@ def stage_account(ctx: StageContext) -> StageResult:
             if not d.exists():
                 ctx.actions.append("would mkdir+chown {}".format(d))
 
-        return StageResult("account", OK, "dry-run: user {} + dirs under {} planned".format(user, root))
+        return stage_result("account", OK, "dry-run: user {} + dirs under {} planned".format(user, root))
 
     pw = getpwnam(user)
 
@@ -135,9 +135,9 @@ def stage_account(ctx: StageContext) -> StageResult:
         os.chmod(d, 0o755)
 
     _ = _pwd
-    return StageResult("account", OK, "user {} ready; dirs under {}".format(user, root), changed)
+    return stage_result("account", OK, "user {} ready; dirs under {}".format(user, root), changed)
 
-def stage_secrets(ctx: StageContext) -> StageResult:
+def stage_secrets(ctx: stage_context) -> stage_result:
     """Generate the env file exactly once; never overwrite, never print."""
     env_path = ctx.profile.host.etc_env()
 
@@ -145,14 +145,14 @@ def stage_secrets(ctx: StageContext) -> StageResult:
         mode = stat.S_IMODE(os.stat(env_path).st_mode)
 
         if mode & 0o077:
-            return StageResult("secrets", FAILED, "{} is group/other readable ({:o}); refusing".format(env_path, mode))
+            return stage_result("secrets", FAILED, "{} is group/other readable ({:o}); refusing".format(env_path, mode))
 
-        return StageResult("secrets", SKIPPED, "{} already present (never overwritten)".format(env_path))
+        return stage_result("secrets", SKIPPED, "{} already present (never overwritten)".format(env_path))
 
     values = {key: pysecrets.token_urlsafe(32) for key in ENV_KEYS}
 
     if ctx.dry_run:
-        return StageResult("secrets", OK, "would generate {}".format(env_path))
+        return stage_result("secrets", OK, "would generate {}".format(env_path))
 
     env_path.parent.mkdir(parents = True, exist_ok = True)
     # write via 0600 temp + rename so a half-written file is never readable
@@ -167,9 +167,9 @@ def stage_secrets(ctx: StageContext) -> StageResult:
 
     os.chmod(tmp, 0o600)
     os.replace(tmp, env_path)
-    return StageResult("secrets", OK, "generated {} (0600, contents never printed)".format(env_path), True)
+    return stage_result("secrets", OK, "generated {} (0600, contents never printed)".format(env_path), True)
 
-def stage_summary(ctx: StageContext, results: list[StageResult]) -> StageResult:
+def stage_summary(ctx: stage_context, results: list[stage_result]) -> stage_result:
     done = [r for r in results if r.status in (OK, SKIPPED)]
     pending = [r for r in results if r.status == PENDING]
     print("── 部署进度 ────────────────────────────────")
@@ -185,7 +185,7 @@ def stage_summary(ctx: StageContext, results: list[StageResult]) -> StageResult:
         print("  访问      https://{}    (health/epoch 校验属 verify 段)".format(ctx.profile.front.domain or host.face))
 
     print("────────────────────────────────────────────")
-    return StageResult("summary", OK, "{} done, {} pending".format(len(done), len(pending)))
+    return stage_result("summary", OK, "{} done, {} pending".format(len(done), len(pending)))
 
 # stages implemented by later slices; None = not yet landed
 STAGES: dict[str, Callable | None] = {
@@ -202,10 +202,10 @@ STAGES: dict[str, Callable | None] = {
     "summary": stage_summary
 }
 
-def run_stages(ctx: StageContext) -> tuple[int, list[StageResult]]:
+def run_stages(ctx: stage_context) -> tuple[int, list[stage_result]]:
     """Execute in order; stop at the first not-yet-landed stage (marking the
     rest pending). Exit codes: 0 all ok; 1 a stage failed; 2 pending slices."""
-    results: list[StageResult] = []
+    results: list[stage_result] = []
     pending_from: str | None = None
 
     for name in STAGE_ORDER:
@@ -216,14 +216,14 @@ def run_stages(ctx: StageContext) -> tuple[int, list[StageResult]]:
             continue
 
         if pending_from is not None:
-            results.append(StageResult(name, PENDING, "blocked by pending {}".format(pending_from)))
+            results.append(stage_result(name, PENDING, "blocked by pending {}".format(pending_from)))
             continue
 
         fn = STAGES.get(name)
 
         if fn is None:
             pending_from = name
-            results.append(StageResult(name, PENDING, "waiting for its slice"))
+            results.append(stage_result(name, PENDING, "waiting for its slice"))
             continue
 
         result = fn(ctx)

@@ -28,7 +28,7 @@ ref = importlib.util.module_from_spec(spec)
 sys.modules["ci_farm_heartbeat_referee"] = ref
 spec.loader.exec_module(ref)
 
-class FakeEsxi:
+class fake_esxi:
     """Records issued command keys; snapshot/probe outcomes are scripted."""
 
     def __init__(self) -> None:
@@ -72,7 +72,7 @@ def farm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
 
     calls: list[str] = []
 
-    class FakeEsxi:
+    class fake_esxi:
         probe_ok = True
 
         def __init__(self) -> None:
@@ -96,7 +96,7 @@ def farm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
 
             return False, ""
 
-    fake = FakeEsxi()
+    fake = fake_esxi()
     monkeypatch.setattr(ref, "run_esxi", fake)
 
     rearm_calls: list[str] = []

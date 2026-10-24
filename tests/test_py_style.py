@@ -22,8 +22,8 @@ sys.path.insert(0, str(HERE.parent / "src"))
 
 from celestia_devtools.lint import py_style, py_style_rules  # noqa: E402
 from celestia_devtools.lint.py_style_config import (  # noqa: E402
-    ConfigError,
-    StyleConfig,
+    config_error,
+    style_config,
     load_config
 )
 
@@ -36,9 +36,9 @@ def write(tmp_path: Path, body: str, name: str = "sample.py") -> Path:
     target.write_text(body, encoding = "utf-8")
     return target
 
-def issues_for(tmp_path: Path, body: str, *, name: str = "sample.py", select = None, cfg: StyleConfig | None = None, directory: bool = False):
+def issues_for(tmp_path: Path, body: str, *, name: str = "sample.py", select = None, cfg: style_config | None = None, directory: bool = False):
     target = write(tmp_path, body, name)
-    style = cfg if cfg is not None else StyleConfig(root = tmp_path)
+    style = cfg if cfg is not None else style_config(root = tmp_path)
     paths = [str(tmp_path)] if directory else [str(target)]
     discovery = py_style.discover_files(paths, style)
     active = py_style.active_rule_ids(style, select or (), ())
@@ -98,11 +98,11 @@ def test_final_newline_good(tmp_path):
     assert rule_hits(tmp_path, "x = 1\n", "final-newline") == []
 
 def test_final_newline_none_mode_bad(tmp_path):
-    cfg = StyleConfig(root = tmp_path, final_newline = "none")
+    cfg = style_config(root = tmp_path, final_newline = "none")
     assert rule_hits(tmp_path, "x = 1\n", "final-newline", cfg = cfg) == ["final-newline"]
 
 def test_final_newline_none_mode_good(tmp_path):
-    cfg = StyleConfig(root = tmp_path, final_newline = "none")
+    cfg = style_config(root = tmp_path, final_newline = "none")
     assert rule_hits(tmp_path, "x = 1", "final-newline", cfg = cfg) == []
 
 # ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ def test_single_line_statement_multiline_decorator_bad(tmp_path):
     assert rule_hits(tmp_path, body, "single-line-statement") == ["single-line-statement"]
 
 def test_single_line_statement_multiline_decorator_allowed(tmp_path):
-    cfg = StyleConfig(root = tmp_path, allow_multiline_decorators = True)
+    cfg = style_config(root = tmp_path, allow_multiline_decorators = True)
     body = "@decorator(\n    option\n)\ndef f():\n    return 1\n"
     assert rule_hits(tmp_path, body, "single-line-statement", cfg = cfg) == []
 
@@ -227,7 +227,7 @@ def test_no_block_imports_good(tmp_path):
     assert rule_hits(tmp_path, body, "no-block-imports") == []
 
 def test_no_block_imports_exemptions_can_be_disabled(tmp_path):
-    cfg = StyleConfig(root = tmp_path, allow_type_checking_imports = False, allow_optional_imports = False)
+    cfg = style_config(root = tmp_path, allow_type_checking_imports = False, allow_optional_imports = False)
     body = "from typing import TYPE_CHECKING\n" "\n" "if TYPE_CHECKING:\n" "    from pathlib import Path\n" "\n" "try:\n" "    import json\n" "except ImportError:\n" "    json = None\n"
     assert rule_hits(tmp_path, body, "no-block-imports", cfg = cfg) == ["no-block-imports", "no-block-imports"]
 
@@ -268,7 +268,7 @@ def _package(tmp_path: Path, files: dict[str, str], name: str = "pkg") -> Path:
 
 def test_acyclic_imports_cycle_detected(tmp_path):
     package = _package(tmp_path, {"__init__.py": "", "a.py": "from pkg import b\n", "b.py": "from pkg import a\n"})
-    style = StyleConfig(root = tmp_path)
+    style = style_config(root = tmp_path)
     discovery = py_style.discover_files([str(package)], style)
     active = py_style.active_rule_ids(style, ["acyclic-imports"], ())
     result = py_style.run_checks(discovery, active, style)
@@ -279,7 +279,7 @@ def test_acyclic_imports_cycle_detected(tmp_path):
 
 def test_acyclic_imports_linear_graph_clean(tmp_path):
     package = _package(tmp_path, {"__init__.py": "", "a.py": "import os\n", "b.py": "from pkg import a\n"})
-    style = StyleConfig(root = tmp_path)
+    style = style_config(root = tmp_path)
     discovery = py_style.discover_files([str(package)], style)
     active = py_style.active_rule_ids(style, ["acyclic-imports"], ())
     result = py_style.run_checks(discovery, active, style)
@@ -287,7 +287,7 @@ def test_acyclic_imports_linear_graph_clean(tmp_path):
 
 def test_acyclic_imports_relative_cycle_detected(tmp_path):
     package = _package(tmp_path, {"__init__.py": "", "a.py": "from . import b\n", "b.py": "from . import a\n"})
-    style = StyleConfig(root = tmp_path)
+    style = style_config(root = tmp_path)
     discovery = py_style.discover_files([str(package)], style)
     active = py_style.active_rule_ids(style, ["acyclic-imports"], ())
     result = py_style.run_checks(discovery, active, style)
@@ -361,7 +361,7 @@ def test_colon_spacing_slice_pep8_default_clean(tmp_path):
     assert rule_hits(tmp_path, "part = items[1:2]\n", "colon-spacing") == []
 
 def test_colon_spacing_spaced_slice_mode(tmp_path):
-    cfg = StyleConfig(root = tmp_path, slice_colons = "spaced")
+    cfg = style_config(root = tmp_path, slice_colons = "spaced")
     body = "part = items[1:2]\nother = items[1: 2]\n"
     assert rule_hits(tmp_path, body, "colon-spacing", cfg = cfg) == ["colon-spacing"]
 
@@ -440,7 +440,7 @@ def test_blank_lines_around_blocks_good(tmp_path):
     assert rule_hits(tmp_path, body, "blank-lines-around-blocks") == []
 
 def test_blank_lines_around_blocks_nested_scope_skips_module(tmp_path):
-    cfg = StyleConfig(root = tmp_path, blank_line_scope = "nested")
+    cfg = style_config(root = tmp_path, blank_line_scope = "nested")
     body = "def f():\n    return 1\n\n\nx = 2\n"
     assert rule_hits(tmp_path, body, "blank-lines-around-blocks", cfg = cfg) == []
 
@@ -533,12 +533,12 @@ def test_naming_helper_defined_once():
     assert inspect.getsource(py_style_rules).count("def _naming_issues") == 1
 
 def test_compound_word_bad(tmp_path):
-    cfg = StyleConfig(root = tmp_path, compound_words = ("textbox",))
+    cfg = style_config(root = tmp_path, compound_words = ("textbox",))
     hits = rule_hits(tmp_path, "text_box = 1\n", "compound-word", cfg = cfg)
     assert hits == ["compound-word"]
 
 def test_compound_word_good(tmp_path):
-    cfg = StyleConfig(root = tmp_path, compound_words = ("textbox",))
+    cfg = style_config(root = tmp_path, compound_words = ("textbox",))
     body = "textbox_value = 1\nunrelated_name = 2\n"
     assert rule_hits(tmp_path, body, "compound-word", cfg = cfg) == []
 
@@ -558,7 +558,7 @@ def test_docstring_comment_good(tmp_path):
     assert rule_hits(tmp_path, body, "docstring-comment") == []
 
 def test_docstring_comment_ban_mode_flags_docstrings(tmp_path):
-    cfg = StyleConfig(root = tmp_path, docstrings = "ban")
+    cfg = style_config(root = tmp_path, docstrings = "ban")
     body = '"""Module docstring."""\n\nx = 1\n'
     assert rule_hits(tmp_path, body, "docstring-comment", cfg = cfg) == ["docstring-comment"]
 
@@ -587,12 +587,12 @@ def test_comment_blank_line_block_tail_exempt(tmp_path):
     assert rule_hits(tmp_path, body, "comment-blank-line") == []
 
 def test_comment_blank_line_all_mode_flags_sections(tmp_path):
-    cfg = StyleConfig(root = tmp_path, comment_blank_line = "all")
+    cfg = style_config(root = tmp_path, comment_blank_line = "all")
     body = "x = 1\n\n# ------ section ------\n\ny = 2\n"
     assert rule_hits(tmp_path, body, "comment-blank-line", cfg = cfg) == ["comment-blank-line"]
 
 def test_comment_blank_line_off_mode_silent(tmp_path):
-    cfg = StyleConfig(root = tmp_path, comment_blank_line = "off")
+    cfg = style_config(root = tmp_path, comment_blank_line = "off")
     body = "x = 1\n\n# note\n\ny = 2\n"
     assert rule_hits(tmp_path, body, "comment-blank-line", cfg = cfg) == []
 
@@ -805,7 +805,7 @@ def test_empty_file_is_clean(tmp_path, monkeypatch, capsys):
 def test_crlf_source_is_clean(tmp_path):
     target = tmp_path / "crlf.py"
     target.write_bytes(b"x = 1\r\n\r\nif x:\r\n    y = 2\r\n")
-    style = StyleConfig(root = tmp_path)
+    style = style_config(root = tmp_path)
     discovery = py_style.discover_files([str(target)], style)
     active = py_style.active_rule_ids(style, (), ())
     result = py_style.run_checks(discovery, active, style)
@@ -928,7 +928,7 @@ def test_config_exempt_table_suppresses_and_counts(tmp_path, monkeypatch, capsys
 def test_config_exempt_requires_reason(tmp_path):
     write(tmp_path, '[[exempt]]\npath = "generated.py"\nrules = ["trailing-whitespace"]\n', "py-style.toml")
 
-    with pytest.raises(ConfigError):
+    with pytest.raises(config_error):
         load_config(paths = [str(tmp_path)])
 
 def test_config_exclude_glob_counts_skipped(tmp_path, monkeypatch, capsys):
@@ -995,7 +995,7 @@ def test_config_severity_override_promotes_warning(tmp_path, monkeypatch, capsys
     assert payload["issues"][0]["severity"] == "error"
 
 def test_config_missing_file_fails(tmp_path):
-    with pytest.raises(ConfigError):
+    with pytest.raises(config_error):
         load_config(paths = [str(tmp_path)], explicit = str(tmp_path / "missing.toml"))
 
 # ---------------------------------------------------------------------------

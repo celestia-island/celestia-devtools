@@ -18,7 +18,7 @@ from celestia_devtools.env import devenv
 
 # ── Profile resolution ───────────────────────────────────────────────────────
 
-class TestProfiles:
+class test_profiles:
     def test_builtin_profiles_present(self):
         assert set(devenv.PROFILE_PORTS) >= {"native", "daemon", "mock"}
 
@@ -79,7 +79,7 @@ class TestProfiles:
 
 # ── Variable set ──────────────────────────────────────────────────────────────
 
-class TestVariableSet:
+class test_variable_set:
     def test_debug_contract_names(self):
         env = devenv.build_env({"chest": ("127.0.0.1", 3000), "scepter": ("127.0.0.1", 8424), "arona": ("127.0.0.1", 8420), "evernight": ("127.0.0.1", 8443)})
         assert env["DEBUG_CHEST_URL"] == "http://127.0.0.1:3000"
@@ -108,7 +108,7 @@ class TestVariableSet:
 
 # ── Injection ────────────────────────────────────────────────────────────────
 
-class TestInjection:
+class test_injection:
     """`devenv run -- <cmd>` spawns the command with the set applied."""
 
     def _child_env_dump(self, tmp_path, monkeypatch, *run_args, extra_env = None):
@@ -143,7 +143,7 @@ class TestInjection:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-class TestCli:
+class test_cli:
     def test_print_export(self, capsys, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert devenv.main(["print"]) == 0

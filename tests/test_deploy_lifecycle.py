@@ -14,12 +14,12 @@ from pathlib import Path
 import pytest
 from celestia_devtools.deploy import backup as backup_mod, lifecycle
 from celestia_devtools.deploy.artifact import build as artifact_build
-from celestia_devtools.deploy.profile import (DeployProfile, FrontSection, HostSection)
+from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
 
-def _profile(tmp_path: Path) -> DeployProfile:
-    return DeployProfile(host = HostSection(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = FrontSection(enabled = True, domain = "acme.example"))
+def _profile(tmp_path: Path) -> deploy_profile:
+    return deploy_profile(host = host_section(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = front_section(enabled = True, domain = "acme.example"))
 
-def _seed_face(prof: DeployProfile, payload: bytes = b"chest-v1") -> Path:
+def _seed_face(prof: deploy_profile, payload: bytes = b"chest-v1") -> Path:
     root = prof.host.deploy_root()
     (root / "data" / "uploads").mkdir(parents = True, exist_ok = True)
     (root / "data" / "uploads" / "x.bin").write_bytes(b"upload")
@@ -36,7 +36,7 @@ def _seed_face(prof: DeployProfile, payload: bytes = b"chest-v1") -> Path:
 def _ok_executor(cmd, **kw):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
-class TestBackup:
+class test_backup:
     def test_backup_captures_data_env_and_warns(self, tmp_path, capsys):
         prof = _profile(tmp_path)
         _seed_face(prof)
@@ -93,7 +93,7 @@ class TestBackup:
         with pytest.raises(IOError, match = "integrity"):
             backup_mod.restore(prof, result.path, executor = _ok_executor)
 
-class TestLedger:
+class test_ledger:
     def test_history_append_read(self, tmp_path):
         prof = _profile(tmp_path)
         assert lifecycle.history_read(prof) == []
@@ -103,7 +103,7 @@ class TestLedger:
         assert [r["action"] for r in rows] == ["upgrade", "rollback"]
         assert all({"ts", "action"} <= set(r) for r in rows)
 
-class TestUpgradeRollback:
+class test_upgrade_rollback:
     def _channel(self, tmp_path, version: str) -> Path:
         out = tmp_path / "artifacts"
         fake = tmp_path / "fakebin"

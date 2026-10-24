@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.deploy import bootstrap, ops, stages_more
 from celestia_devtools.deploy.artifact import build as artifact_build
-from celestia_devtools.deploy.profile import (DeployProfile, FrontSection, HostSection)
+from celestia_devtools.deploy.profile import (deploy_profile, front_section, host_section)
 
 _STAGES_SNAPSHOT = dict(bootstrap.STAGES)
 
@@ -25,25 +25,25 @@ def _register_and_restore_stages():
 def _ok(cmd, **kw):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
-def _profile(tmp_path: Path, front = False) -> DeployProfile:
-    return DeployProfile(host = HostSection(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = FrontSection(enabled = front, domain = "acme.example" if front else ""))
+def _profile(tmp_path: Path, front = False) -> deploy_profile:
+    return deploy_profile(host = host_section(face = "chest", srv_base = str(tmp_path / "srv"), etc_base = str(tmp_path / "etc")), front = front_section(enabled = front, domain = "acme.example" if front else ""))
 
 def _ctx(prof, executor = _ok, **kw):
-    ctx = bootstrap.StageContext(profile = prof, executor = executor, **kw)
-    ctx.getpwnam = lambda u: _FakePw()
+    ctx = bootstrap.stage_context(profile = prof, executor = executor, **kw)
+    ctx.getpwnam = lambda u: _fake_pw()
     return ctx
 
-class _FakeCheck:
+class _fake_check:
     def __init__(self, name):
         self.name = name
         self.ok = True
         self.detail = "fake ok"
 
-class _FakePw:
+class _fake_pw:
     pw_uid = 1000
     pw_gid = 1000
 
-class TestFullMachine:
+class test_full_machine:
     def test_all_eleven_stages_now_land(self, tmp_path, monkeypatch):
         """The wiring promise: no stage stays PENDING — exit 0, not 2."""
         prof = _profile(tmp_path)
@@ -51,7 +51,7 @@ class TestFullMachine:
         _seed_artifact(tmp_path, prof)
         monkeypatch.setenv("CHEST_DATABASE_URL", "postgresql://u:p@198.51.100.9:5432/db")
         monkeypatch.setattr(stages_more, "_http_post", _fake_http_ok)
-        monkeypatch.setattr("celestia_devtools.deploy.ops.verify", lambda p: [_FakeCheck("health"), _FakeCheck("epoch"), _FakeCheck("ledger"), _FakeCheck("backup-freshness")])
+        monkeypatch.setattr("celestia_devtools.deploy.ops.verify", lambda p: [_fake_check("health"), _fake_check("epoch"), _fake_check("ledger"), _fake_check("backup-freshness")])
         ctx = _ctx(prof, assume_root = True)
         ctx.state = {}
         code, results = bootstrap.run_stages(ctx)
@@ -73,7 +73,7 @@ def _seed_artifact(tmp_path, prof):
     prof.artifact.source = str(out)
     assert (tmp_path / "channel" / "index.toml").exists(), "seed index missing"
 
-class _FakeResp:
+class _fake_resp:
     def __init__(self, status, body):
         self.status = status
         self._body = body
@@ -91,11 +91,11 @@ class _FakeResp:
 
 def _fake_http_ok(url, payload, headers = None, timeout = 30):
     if url.endswith("/api/auth/nonce"):
-        return _Http(200, json.dumps({"nonce": "n-1"}))
+        return _http(200, json.dumps({"nonce": "n-1"}))
 
-    return _Http(201, json.dumps({"ok": True}))
+    return _http(201, json.dumps({"ok": True}))
 
-class _Http:
+class _http:
     """Matches stages_more.HttpResult's surface: .status, .body, .read()."""
 
     def __init__(self, status, text):
@@ -105,11 +105,11 @@ class _Http:
     def read(self, n = -1):
         return self.body.encode()[:n] if n > 0 else self.body.encode()
 
-class TestFirstAdmin:
+class test_first_admin:
     def test_register_failure_fails_stage_not_silently(self, tmp_path, monkeypatch, capsys):
         prof = _profile(tmp_path)
         prof.admin.email = "ops@acme.example"
-        monkeypatch.setattr(stages_more, "_http_post", lambda *a, **k: _Http(403, '{"error":"denied"}'))
+        monkeypatch.setattr(stages_more, "_http_post", lambda *a, **k: _http(403, '{"error":"denied"}'))
         ctx = _ctx(prof)
         result = stages_more.stage_first_admin(ctx)
         assert result.status == bootstrap.FAILED
@@ -127,7 +127,7 @@ class TestFirstAdmin:
         assert out.count("pw-xxxxxxxxxxxxxxxxxx") == 1
         assert "pw-" not in result.detail  # never in stage results (logs)
 
-class TestRotationGate:
+class test_rotation_gate:
     def _rpc(self, needs_setup):
         def rpc(base, method, params = None):
             return 200, {"result": {"needs_setup": needs_setup}}
@@ -153,7 +153,7 @@ class TestRotationGate:
         allowed, why = ops.assert_rotation_allowed(prof, rpc = dead)
         assert not allowed and ("refusing" in why)
 
-class TestVerifyAndUninstall:
+class test_verify_and_uninstall:
     def test_verify_reports_health_epoch_ledger(self, tmp_path):
         prof = _profile(tmp_path)
 

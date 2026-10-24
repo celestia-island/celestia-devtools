@@ -15,7 +15,7 @@ def tmp_git_repo():
         hooks_dir.mkdir(parents = True)
         yield Path(tmp)
 
-class TestInstallHook:
+class test_install_hook:
     def test_installs_and_writes_sentinel(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
@@ -52,7 +52,7 @@ class TestInstallHook:
         with pytest.raises(SystemExit):
             hook.install_hook(hook_path, force = False)
 
-class TestUninstallHook:
+class test_uninstall_hook:
     def test_uninstalls_managed_hook(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
@@ -73,7 +73,7 @@ class TestUninstallHook:
         hook.uninstall_hook(hook_path, force = True)
         assert not hook_path.exists()
 
-class TestCheckHook:
+class test_check_hook:
     def test_up_to_date_passes(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
@@ -93,13 +93,13 @@ class TestCheckHook:
         rc = hook.check_hook(hook_path)
         assert rc == 1
 
-class TestShowTemplate:
+class test_show_template:
     def test_contains_sentinel(self):
         template = hook.show_template()
         assert hook.HOOK_SENTINEL in template
         assert "@DEVTOOLS_BIN@" not in template  # substituted
 
-class TestResolveDevtoolsBin:
+class test_resolve_devtools_bin:
     def test_explicit_bin(self):
         bin_val = hook._resolve_devtools_bin("celestia-devtools")
         assert bin_val == "celestia-devtools"

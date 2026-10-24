@@ -3,7 +3,7 @@
 from celestia_devtools.doc.linter.i18n import (KNOWN_LANG_CODES, check_duplicate_paragraphs, extract_paragraphs)
 from celestia_devtools.doc.linter.tabs import check_tabs
 
-class TestExtractParagraphs:
+class test_extract_paragraphs:
     def test_simple_paragraph(self):
         text = "This is a long enough paragraph to exceed the minimum length threshold for detection."
         paras = extract_paragraphs(text)
@@ -25,7 +25,7 @@ class TestExtractParagraphs:
         paras = extract_paragraphs(text)
         assert len(paras) == 2
 
-class TestCheckDuplicateParagraphs:
+class test_check_duplicate_paragraphs:
     def test_identical_across_langs_warns(self, tmp_path):
         """Two language dirs with an identical long paragraph should warn."""
         long_text = "This is a sufficiently long paragraph that is identical across two language directories for testing."
@@ -57,7 +57,7 @@ class TestCheckDuplicateParagraphs:
         warnings = check_duplicate_paragraphs(list((tmp_path / "docs").rglob("*.md")), tmp_path / "docs")
         assert warnings == []
 
-class TestCheckTabs:
+class test_check_tabs:
     def test_tab_found_warns(self, tmp_path):
         f = tmp_path / "doc.md"
         f.write_text("line one\n\tindented with tab\nline three", encoding = "utf-8")
@@ -70,7 +70,7 @@ class TestCheckTabs:
         f.write_text("line one\nline two\nline three", encoding = "utf-8")
         assert check_tabs([f]) == []
 
-class TestKnownLangCodes:
+class test_known_lang_codes:
     def test_common_codes_present(self):
         for code in ("en", "zhs", "zht", "ja", "ko", "fr", "es", "ru", "ar"):
             assert code in KNOWN_LANG_CODES

@@ -27,7 +27,7 @@ log = get_logger(__name__)
 QEMU_ARCHS = ["aarch64", "x86_64", "riscv64"]
 
 @dataclass
-class QemuProbe:
+class qemu_probe:
     """Result of probing for a QEMU system emulator."""
     arch: str
     path: str | None
@@ -66,14 +66,14 @@ def _get_version(path: str) -> str | None:
 
     return None
 
-def check_qemu() -> list[QemuProbe]:
+def check_qemu() -> list[qemu_probe]:
     """Check which QEMU system emulators are available."""
     results = []
 
     for arch in QEMU_ARCHS:
         path = _which_qemu(arch)
         version = _get_version(path) if path else None
-        results.append(QemuProbe(arch = arch, path = path, version = version))
+        results.append(qemu_probe(arch = arch, path = path, version = version))
 
     return results
 

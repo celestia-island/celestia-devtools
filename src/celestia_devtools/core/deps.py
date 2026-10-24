@@ -40,7 +40,7 @@ _TRIES = 2
 _TIMEOUT = 90  # seconds, total, across attempts
 
 @dataclass
-class EnsureResult:
+class ensure_result:
     name: str
     ok: bool
     action: str  # present | installed | failed | skipped
@@ -79,7 +79,7 @@ def pip_env(proxy_url: str | None, base: dict[str, str] | None = None) -> dict[s
 
     return env
 
-def ensure(requirements: tuple[str, ...] | list[str] = DEFAULT_REQUIRED, *, install: bool = True, index: str | None = None, proxy_url: str | None = None, tries: int = _TRIES, timeout: int = _TIMEOUT, runner = subprocess.run) -> list[EnsureResult]:
+def ensure(requirements: tuple[str, ...] | list[str] = DEFAULT_REQUIRED, *, install: bool = True, index: str | None = None, proxy_url: str | None = None, tries: int = _TRIES, timeout: int = _TIMEOUT, runner = subprocess.run) -> list[ensure_result]:
     """Check each distribution; install within budget when allowed.
 
     ``runner`` is injectable for tests. Never raises — failures come back as
@@ -89,18 +89,18 @@ def ensure(requirements: tuple[str, ...] | list[str] = DEFAULT_REQUIRED, *, inst
     "budget exhausted" with zero attempts — pass one dist per call when you
     want independent budgets.
     """
-    results: list[EnsureResult] = []
+    results: list[ensure_result] = []
     budget = timeout
 
     for dist in requirements:
         ver = _installed(dist)
 
         if ver:
-            results.append(EnsureResult(dist, True, "present", ver))
+            results.append(ensure_result(dist, True, "present", ver))
             continue
 
         if not install:
-            results.append(EnsureResult(dist, False, "skipped", "missing; install disabled (report-only)"))
+            results.append(ensure_result(dist, False, "skipped", "missing; install disabled (report-only)"))
             continue
 
         attempt = 0
@@ -115,21 +115,21 @@ def ensure(requirements: tuple[str, ...] | list[str] = DEFAULT_REQUIRED, *, inst
             try:
                 r = runner(_pip_argv(dist, index, proxy_url), capture_output = True, text = True, timeout = spend, env = pip_env(proxy_url))
             except (OSError, subprocess.SubprocessError) as exc:
-                results.append(EnsureResult(dist, False, "failed", "pip error: {}".format(exc)))
+                results.append(ensure_result(dist, False, "failed", "pip error: {}".format(exc)))
                 break
 
             budget -= spend
 
             if r.returncode == 0:
-                results.append(EnsureResult(dist, True, "installed", importlib.metadata.version(dist)if _installed(dist)else "installed"))
+                results.append(ensure_result(dist, True, "installed", importlib.metadata.version(dist)if _installed(dist)else "installed"))
                 break
 
             if (attempt >= max(tries, 1)) or (budget <= 0):
                 tail = (r.stderr or r.stdout or "").strip().splitlines()
                 last = tail[-1] if tail else "rc={}".format(r.returncode)
-                results.append(EnsureResult(dist, False, "failed", "install failed ({} attempt{}): {}".format(attempt, "s" if attempt > 1 else "", last)))
+                results.append(ensure_result(dist, False, "failed", "install failed ({} attempt{}): {}".format(attempt, "s" if attempt > 1 else "", last)))
                 break
         else:  # pragma: no cover - budget exhausted before first attempt
-            results.append(EnsureResult(dist, False, "failed", "budget exhausted"))
+            results.append(ensure_result(dist, False, "failed", "budget exhausted"))
 
     return results

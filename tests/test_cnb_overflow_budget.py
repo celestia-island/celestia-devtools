@@ -56,7 +56,7 @@ def _guard_script() -> str:
     assert m, "guard step no longer contains a PYEOF heredoc"
     return m.group(1)
 
-class _Ledger(http.server.BaseHTTPRequestHandler):
+class _ledger(http.server.BaseHTTPRequestHandler):
     """Stub `/-/charge/volume`: serves `payload` or fails with `status`."""
 
     payload: dict = {}
@@ -89,9 +89,9 @@ class _Ledger(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def ledger():
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Ledger)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ledger)
     threading.Thread(target = srv.serve_forever, daemon = True).start()
-    _Ledger.payload, _Ledger.status, _Ledger.seen_auth, _Ledger.raw = {}, 200, [], None
+    _ledger.payload, _ledger.status, _ledger.seen_auth, _ledger.raw = {}, 200, [], None
     yield f"http://127.0.0.1:{srv.server_address[1]}/charge"
     srv.shutdown()
 
@@ -109,7 +109,7 @@ def run_guard(tmp_path, ledger_url, *, used_core_h = None, pct = "70", auth_toke
         env["FORCE_CNB"] = force
 
     if used_core_h is not None:
-        _Ledger.payload = {"ci_in_sec": int(used_core_h * 3600), "dev_in_sec": 0}
+        _ledger.payload = {"ci_in_sec": int(used_core_h * 3600), "dev_in_sec": 0}
 
     out_file = tmp_path / "gh_output"
     out_file.write_text("")
@@ -126,7 +126,7 @@ def run_guard(tmp_path, ledger_url, *, used_core_h = None, pct = "70", auth_toke
     got = {}if out_file.is_dir()else dict(line.split("=", 1)for line in out_file.read_text().splitlines()if "=" in line)
     return r.stdout + r.stderr, got, r.returncode
 
-class TestShippedShape:
+class test_shipped_shape:
     def test_guard_runs_before_the_two_non_budget_gates(self):
         ids = [s.get("id") for s in _steps("route")]
         assert ids.index("decide") < ids.index(GUARD_STEP_ID)
@@ -185,7 +185,7 @@ class TestShippedShape:
     def test_threshold_input_still_governs_the_farm_queue(self):
         assert _doc()[True]["workflow_call"]["inputs"]["queue_threshold"]["default"] == 3
 
-class TestAllowPath:
+class test_allow_path:
     def test_fresh_pool_allows_dispatch(self, tmp_path, ledger):
         out, got, rc = run_guard(tmp_path, ledger, used_core_h = 1.0)
         assert (rc, got["budget"]) == (0, "allow")
@@ -205,7 +205,7 @@ class TestAllowPath:
         assert got["budget"] == "allow"
         assert "force_cnb" in out
 
-class TestSkipPath:
+class test_skip_path:
     def test_a_fresh_month_reads_as_zero_used_and_allows(self, tmp_path, ledger):
         """`if not led.get(...)` would mistake a zero balance for an unreadable ledger (M2)."""
         out, got, _ = run_guard(tmp_path, ledger, used_core_h = 0.0, pct = "70")
@@ -214,7 +214,7 @@ class TestSkipPath:
 
     def test_inflight_prefreeze_counts_towards_the_budget(self, tmp_path, ledger):
         """A month whose quota is already pre-frozen for in-flight pipelines is not a fresh pool."""
-        _Ledger.payload = {"ci_in_sec": 0, "freeze_ci_in_sec": int(0.9 * CAP_H * 3600)}
+        _ledger.payload = {"ci_in_sec": 0, "freeze_ci_in_sec": int(0.9 * CAP_H * 3600)}
         _, got, _ = run_guard(tmp_path, ledger, pct = "70")
         assert got["budget"] == "skip"
 
@@ -237,9 +237,9 @@ class TestSkipPath:
         _, got, _ = run_guard(tmp_path, ledger, used_core_h = 20.0, pct = "10")
         assert got["budget"] == "skip"
 
-class TestFailsClosed:
+class test_fails_closed:
     def test_ledger_500_skips(self, tmp_path, ledger):
-        _Ledger.status = 500
+        _ledger.status = 500
         out, got, _ = run_guard(tmp_path, ledger, pct = "70")
         assert got["budget"] == "skip"
         assert "failing closed" in out
@@ -250,7 +250,7 @@ class TestFailsClosed:
         assert "failing closed" in out
 
     def test_non_json_body_skips(self, tmp_path, ledger):
-        _Ledger.payload = {"ci_in_sec": "not-a-number"}
+        _ledger.payload = {"ci_in_sec": "not-a-number"}
         _, got, _ = run_guard(tmp_path, ledger, pct = "70")
         assert got["budget"] == "skip"
 
@@ -269,20 +269,20 @@ class TestFailsClosed:
     ], ids = ["negative", "very-negative", "-inf", "true", "false", "null",
             "negative-freeze", "freeze-dict", "freeze-list", "freeze-empty", "freeze-text"])
     def test_parseable_but_nonsensical_counters_fail_closed(self, tmp_path, ledger, payload):
-        _Ledger.payload = payload
+        _ledger.payload = payload
         out, got, rc = run_guard(tmp_path, ledger, pct = "70")
         assert (rc, got["budget"]) == (0, "skip"), f"{payload} must not read as a fresh pool"
         assert "failing closed" in out
 
     def test_renamed_ledger_field_must_not_read_as_zero_used(self, tmp_path, ledger):
         """A shape change in the charge API is the one way this guard could silently fail open."""
-        _Ledger.payload = {"build_in_sec": 10}
+        _ledger.payload = {"build_in_sec": 10}
         out, got, _ = run_guard(tmp_path, ledger, pct = "70")
         assert got["budget"] == "skip"
         assert "no ci_in_sec" in out
 
     def test_absent_field_is_not_treated_as_a_fresh_pool(self, tmp_path, ledger):
-        _Ledger.payload = {}
+        _ledger.payload = {}
         _, got, _ = run_guard(tmp_path, ledger, pct = "70")
         assert got["budget"] == "skip"
 
@@ -290,7 +290,7 @@ class TestFailsClosed:
         out, got, _ = run_guard(tmp_path, ledger, auth_token = None, used_core_h = 1.0)
         assert got["budget"] == "skip"
         assert "CNB_TOKEN missing" in out
-        assert _Ledger.seen_auth == [], "must not call the ledger without a token"
+        assert _ledger.seen_auth == [], "must not call the ledger without a token"
 
     def test_unusable_pct_skips(self, tmp_path, ledger):
         _, got, _ = run_guard(tmp_path, ledger, pct = "not-a-number")
@@ -308,13 +308,13 @@ class TestFailsClosed:
         assert got["budget"] == "allow"
 
     def test_guard_always_exits_zero_so_it_cannot_fail_the_route_job(self, tmp_path, ledger):
-        _Ledger.status = 503
+        _ledger.status = 503
         _, got, rc = run_guard(tmp_path, ledger, pct = "70")
         assert rc == 0
         assert got["budget"] == "skip"          # ...and it still produced a verdict
-        assert _Ledger.seen_auth                 # ...after really asking the ledger
+        assert _ledger.seen_auth                 # ...after really asking the ledger
 
-class TestHygiene:
+class test_hygiene:
     def test_token_is_never_echoed(self, tmp_path, ledger):
         for used in (1.0, 140.0):
             out, got, _ = run_guard(tmp_path, ledger, used_core_h = used, auth_token = "tok-secret-value")
@@ -322,11 +322,11 @@ class TestHygiene:
             # ...and the guard really ran: an absence assertion alone also passes if it did not.
             assert got.get("budget") in ("allow", "skip")
 
-        assert set(_Ledger.seen_auth) == {"Bearer tok-secret-value"}
+        assert set(_ledger.seen_auth) == {"Bearer tok-secret-value"}
 
     def test_token_is_sent_as_a_bearer_header(self, tmp_path, ledger):
         run_guard(tmp_path, ledger, used_core_h = 1.0, auth_token = "tok-secret-value")
-        assert _Ledger.seen_auth == ["Bearer tok-secret-value"]
+        assert _ledger.seen_auth == ["Bearer tok-secret-value"]
 
     def test_guard_does_not_post_any_status(self):
         """The skip path must not reach for the statuses API: no green we did not earn."""
@@ -362,7 +362,7 @@ class TestHygiene:
 
     def test_a_non_ascii_reason_cannot_redden_the_step(self, tmp_path, ledger):
         """UnicodeEncodeError is a ValueError, so `except OSError` alone would let it escape."""
-        _Ledger.payload = {"ci_in_sec": "日本語"}
+        _ledger.payload = {"ci_in_sec": "日本語"}
         out, got, rc = run_guard(tmp_path, ledger, pct = "70", extra_env = {"PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C", "LANG": "C"})
         assert (rc, got["budget"]) == (0, "skip")
         assert ("failing closed" in got["budget_reason"]) or ("failing closed" in out)
@@ -374,7 +374,7 @@ class TestHygiene:
         assertion would hold trivially.  A raw status line carrying a latin-1 byte does make
         `HTTPError.str()` non-ASCII, and `print()` of it on an ASCII stdout raises.
         """
-        _Ledger.raw = b"HTTP/1.0 503 caf\xe9\r\nContent-Length: 0\r\n\r\n"
+        _ledger.raw = b"HTTP/1.0 503 caf\xe9\r\nContent-Length: 0\r\n\r\n"
         out, got, rc = run_guard(tmp_path, ledger, pct = "70", extra_env = {"PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "LC_ALL": "C", "LANG": "C"})
         assert (rc, got["budget"]) == (0, "skip"), out[-300:]
         assert "caf" in got["budget_reason"], got["budget_reason"]

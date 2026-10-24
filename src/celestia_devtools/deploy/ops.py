@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 from celestia_devtools.deploy import lifecycle
-from celestia_devtools.deploy.profile import DeployProfile
+from celestia_devtools.deploy.profile import deploy_profile
 
 Executor = Callable[..., subprocess.CompletedProcess]
 
@@ -59,16 +59,16 @@ def _rpc(base: str, method: str, params: dict | None = None) -> tuple[int, dict]
         return 0, {"error": str(exc)}
 
 @dataclass
-class Check:
+class check:
     name: str
     ok: bool
     detail: str = ""
 
-def verify(prof: DeployProfile, http_get = _http_get) -> list[Check]:
+def verify(prof: deploy_profile, http_get = _http_get) -> list[check]:
     base = "http://127.0.0.1:{}".format(prof.host.listen)
-    checks: list[Check] = []
+    checks: list[check] = []
     status, body = http_get(base + "/api/health")
-    checks.append(Check("health", status == 200, "HTTP {}".format(status if status else body[: 60])))
+    checks.append(check("health", status == 200, "HTTP {}".format(status if status else body[: 60])))
     status, body = http_get(base + "/")
     epoch = ""
 
@@ -77,21 +77,21 @@ def verify(prof: DeployProfile, http_get = _http_get) -> list[Check]:
         m = re.search(r"main-[A-Za-z0-9_-]+\.js", body)
         epoch = m.group(0) if m else ""
 
-    checks.append(Check("epoch", bool(epoch), epoch or "no main-*.js in index"))
+    checks.append(check("epoch", bool(epoch), epoch or "no main-*.js in index"))
     rows = lifecycle.history_read(prof)
-    checks.append(Check("ledger", True, "{} entries; last: {}".format(len(rows), rows[-1]["action"]if rows else "none")))
+    checks.append(check("ledger", True, "{} entries; last: {}".format(len(rows), rows[-1]["action"]if rows else "none")))
     backups = prof.host.deploy_root() / "backups"
 
     if backups.exists():
         ages = sorted(backups.iterdir(), reverse = True)
-        checks.append(Check("backup-freshness", bool(ages), str(ages[0].name)if ages else "no backups"))
+        checks.append(check("backup-freshness", bool(ages), str(ages[0].name)if ages else "no backups"))
     else:
-        checks.append(Check("backup-freshness", False, "no backup dir"))
+        checks.append(check("backup-freshness", False, "no backup dir"))
 
     return checks
 
 @dataclass
-class FaceStatus:
+class face_status:
     needs_setup: bool | None = None
     reachable: bool = False
     history: list[dict] = field(default_factory = list)
@@ -100,8 +100,8 @@ class FaceStatus:
     def registered(self) -> bool:
         return self.reachable and (self.needs_setup is False)
 
-def status(prof: DeployProfile, rpc = _rpc) -> FaceStatus:
-    out = FaceStatus()
+def status(prof: deploy_profile, rpc = _rpc) -> face_status:
+    out = face_status()
     base = "http://127.0.0.1:{}".format(prof.host.listen)
     code, body = rpc(base, "auth.checkSetup")
 
@@ -112,7 +112,7 @@ def status(prof: DeployProfile, rpc = _rpc) -> FaceStatus:
     out.history = lifecycle.history_read(prof)
     return out
 
-def uninstall(prof: DeployProfile, purge_data: bool = False, executor: Executor = _ok) -> list[str]:
+def uninstall(prof: deploy_profile, purge_data: bool = False, executor: Executor = _ok) -> list[str]:
     """Stop the unit, remove config/binary; data survives unless --purge-data
     (rotate ≠ destroy). Returns the applied steps."""
     steps: list[str] = []
@@ -145,7 +145,7 @@ def uninstall(prof: DeployProfile, purge_data: bool = False, executor: Executor 
 
     return steps
 
-def assert_rotation_allowed(prof: DeployProfile, rpc = _rpc) -> tuple[bool, str]:
+def assert_rotation_allowed(prof: deploy_profile, rpc = _rpc) -> tuple[bool, str]:
     """The §1.8 gate: rotate-secrets may only run while needs_setup is true
     (no real users yet). Fail closed when the answer is unknown."""
     st = status(prof, rpc = rpc)

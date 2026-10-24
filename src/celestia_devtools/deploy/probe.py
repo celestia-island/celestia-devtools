@@ -14,59 +14,59 @@ import shutil
 import subprocess
 import sys
 from typing import Callable, List, Sequence
-from celestia_devtools.env.preflight import Probe, _run_version
+from celestia_devtools.env.preflight import probe_record, _run_version
 
 PY_FLOOR = (3, 11)
 
-def check_python_floor() -> Probe:
+def check_python_floor() -> probe_record:
     ok = sys.version_info >= PY_FLOOR
-    return Probe("python", ok, platform.python_version(), detail = "" if ok else "celestia-devtools needs >= 3.11", hint = "re-run via pyshim (it installs a current Python), or upgrade the system Python")
+    return probe_record("python", ok, platform.python_version(), detail = "" if ok else "celestia-devtools needs >= 3.11", hint = "re-run via pyshim (it installs a current Python), or upgrade the system Python")
 
-def check_systemd() -> Probe:
+def check_systemd() -> probe_record:
     ok, ver = _run_version(["systemctl", "--version"])
-    return Probe("systemd", ok, ver, hint = "production installs are systemd units; a container target may run without it")
+    return probe_record("systemd", ok, ver, hint = "production installs are systemd units; a container target may run without it")
 
-def check_psql() -> Probe:
+def check_psql() -> probe_record:
     ok, ver = _run_version(["psql", "--version"])
-    return Probe("psql", ok, ver, hint = "postgresql-client (apt/dnf)")
+    return probe_record("psql", ok, ver, hint = "postgresql-client (apt/dnf)")
 
-def check_pg_isready() -> Probe:
+def check_pg_isready() -> probe_record:
     ok, ver = _run_version(["pg_isready", "--version"])
-    return Probe("pg_isready", ok, ver, hint = "postgresql-client (apt/dnf)")
+    return probe_record("pg_isready", ok, ver, hint = "postgresql-client (apt/dnf)")
 
-def check_nginx() -> Probe:
+def check_nginx() -> probe_record:
     # nginx -v writes to stderr; _run_version takes the first line of either.
     ok, ver = _run_version(["nginx", "-v"])
-    return Probe("nginx", ok, ver, hint = "nginx (apt/dnf) — the front/TLS stage skips gracefully when missing")
+    return probe_record("nginx", ok, ver, hint = "nginx (apt/dnf) — the front/TLS stage skips gracefully when missing")
 
-def check_openssl() -> Probe:
+def check_openssl() -> probe_record:
     ok, ver = _run_version(["openssl", "version"])
-    return Probe("openssl", ok, ver, hint = "openssl (apt/dnf)")
+    return probe_record("openssl", ok, ver, hint = "openssl (apt/dnf)")
 
-def check_curl() -> Probe:
+def check_curl() -> probe_record:
     ok, ver = _run_version(["curl", "--version"])
-    return Probe("curl", ok, ver, hint = "curl (apt/dnf)")
+    return probe_record("curl", ok, ver, hint = "curl (apt/dnf)")
 
-def check_tar() -> Probe:
+def check_tar() -> probe_record:
     ok, ver = _run_version(["tar", "--version"])
-    return Probe("tar", ok, ver, hint = "tar (apt/dnf)")
+    return probe_record("tar", ok, ver, hint = "tar (apt/dnf)")
 
-def check_sudo() -> Probe:
+def check_sudo() -> probe_record:
     ok, ver = _run_version(["sudo", "--version"])
-    return Probe("sudo", ok, ver, hint = "sudo — privileged stages run through a narrow sudoers helper")
+    return probe_record("sudo", ok, ver, hint = "sudo — privileged stages run through a narrow sudoers helper")
 
-def check_useradd() -> Probe:
+def check_useradd() -> probe_record:
     if os.name != "posix":
-        return Probe("useradd", False, "", hint = "posix-only stage")
+        return probe_record("useradd", False, "", hint = "posix-only stage")
 
     ok, ver = _run_version(["useradd", "--version"])
-    return Probe("useradd", ok, ver, hint = "passwd package (apt/dnf)")
+    return probe_record("useradd", ok, ver, hint = "passwd package (apt/dnf)")
 
-def check_install_cmd() -> Probe:
+def check_install_cmd() -> probe_record:
     ok, _ = _run_version(["install", "--version"])
-    return Probe("install", ok, "coreutils", hint = "coreutils")
+    return probe_record("install", ok, "coreutils", hint = "coreutils")
 
-def check_acme_sh() -> Probe:
+def check_acme_sh() -> probe_record:
     """acme.sh is a user-level script, not usually on PATH — check both."""
     candidates = [shutil.which("acme.sh"), os.path.expanduser("~/.acme.sh/acme.sh")]
 
@@ -75,18 +75,18 @@ def check_acme_sh() -> Probe:
             try:
                 r = subprocess.run([path, "--version"], capture_output = True, text = True, timeout = 10)
                 out = (r.stdout or r.stderr).strip().splitlines()
-                return Probe("acme.sh", True, out[0] if out else path)
+                return probe_record("acme.sh", True, out[0] if out else path)
             except (OSError, subprocess.SubprocessError):
                 continue
 
-    return Probe("acme.sh", False, "", hint = "curl https://get.acme.sh | sh -s email=<you> — HTTP-01 only; front stage skips when missing")
+    return probe_record("acme.sh", False, "", hint = "curl https://get.acme.sh | sh -s email=<you> — HTTP-01 only; front stage skips when missing")
 
-def check_git() -> Probe:
+def check_git() -> probe_record:
     ok, ver = _run_version(["git", "--version"])
-    return Probe("git", ok, ver, hint = "git — artifact fallback channel")
+    return probe_record("git", ok, ver, hint = "git — artifact fallback channel")
 
 # Registry: req id → checker (same convention as env.preflight).
-CHECKERS: dict[str, Callable[[], Probe]] = {
+CHECKERS: dict[str, Callable[[], probe_record]] = {
     "python": check_python_floor,
     "systemd": check_systemd,
     "psql": check_psql,
@@ -105,22 +105,22 @@ CHECKERS: dict[str, Callable[[], Probe]] = {
 # Probes whose absence must not fail `doctor` (stages degrade, documented).
 SOFT = {"acme.sh", "nginx", "psql", "pg_isready", "sudo"}
 
-def check(reqs: Sequence[str]) -> List[Probe]:
-    out: List[Probe] = []
+def check(reqs: Sequence[str]) -> List[probe_record]:
+    out: List[probe_record] = []
 
     for req in reqs:
         fn = CHECKERS.get(req)
-        out.append(fn() if fn else Probe(req, False, "", hint = "unknown probe id"))
+        out.append(fn() if fn else probe_record(req, False, "", hint = "unknown probe id"))
 
     return out
 
-def all_probes() -> List[Probe]:
+def all_probes() -> List[probe_record]:
     return check(list(CHECKERS))
 
-def report() -> List[Probe]:
+def report() -> List[probe_record]:
     """Print the one-line-per-tool table; return the unmet hard probes."""
     probes = all_probes()
-    unmet: List[Probe] = []
+    unmet: List[probe_record] = []
 
     for p in probes:
         if p.ok:

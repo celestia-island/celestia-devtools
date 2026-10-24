@@ -39,7 +39,7 @@ from celestia_devtools.pyshim import safe_extract
 BIN_NAME = "chest"
 NAME_RE = re.compile(r"^(?P<name>[a-z0-9-]+)-(?P<version>\d+\.\d+\.\d+)" r"-(?P<target>[a-z0-9_-]+)\.tar\.gz$")
 
-class ArtifactError(Exception):
+class artifact_error(Exception):
     """Channel failures: unresolvable channel/target, sha mismatch, bad tar."""
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -55,7 +55,7 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 @dataclass
-class Entry:
+class entry_record:
     file: str
     version: str
     target: str
@@ -69,11 +69,11 @@ class Entry:
 # ── build ──────────────────────────────────────────────────────────────
 
 def build(bin_path: Path, version: str, target: str, out_dir: Path,
-          name: str = BIN_NAME) -> Entry:
+          name: str = BIN_NAME) -> entry_record:
     bin_path = Path(bin_path)
 
     if not bin_path.is_file():
-        raise ArtifactError("no such binary: {}".format(bin_path))
+        raise artifact_error("no such binary: {}".format(bin_path))
 
     out_dir.mkdir(parents = True, exist_ok = True)
     fname = "{}-{}-{}.tar.gz".format(name, version, target)
@@ -95,12 +95,12 @@ def build(bin_path: Path, version: str, target: str, out_dir: Path,
 
     digest = sha256_file(dest)
     (out_dir / (fname + ".sha256")).write_text("{}  {}\n".format(digest, fname), encoding = "utf-8")
-    return Entry(file = fname, version = version, target = target, sha256 = digest, size = dest.stat().st_size, date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d"))
+    return entry_record(file = fname, version = version, target = target, sha256 = digest, size = dest.stat().st_size, date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d"))
 
 # ── index ──────────────────────────────────────────────────────────────
 
-def scan_dir(dir_path: Path) -> list[Entry]:
-    entries: list[Entry] = []
+def scan_dir(dir_path: Path) -> list[entry_record]:
+    entries: list[entry_record] = []
 
     for path in sorted(Path(dir_path).glob("*.tar.gz")):
         m = NAME_RE.match(path.name)
@@ -121,36 +121,36 @@ def scan_dir(dir_path: Path) -> list[Entry]:
         if not digest:
             digest = sha256_file(path)
 
-        entries.append(Entry(file = path.name, version = m.group("version"), target = m.group("target"), sha256 = digest, size = path.stat().st_size, date = _dt.datetime.fromtimestamp(path.stat().st_mtime, _dt.timezone.utc).strftime("%Y-%m-%d")))
+        entries.append(entry_record(file = path.name, version = m.group("version"), target = m.group("target"), sha256 = digest, size = path.stat().st_size, date = _dt.datetime.fromtimestamp(path.stat().st_mtime, _dt.timezone.utc).strftime("%Y-%m-%d")))
 
     return entries
 
-def write_index(dir_path: Path, channels: dict[str, list[Entry]]) -> Path:
+def write_index(dir_path: Path, channels: dict[str, list[entry_record]]) -> Path:
     doc = {"channels": {name: {"entries": [e.to_row()for e in entries]}for name, entries in channels.items()}}
     path = Path(dir_path) / "index.toml"
     path.write_text(tomli_w.dumps(doc), encoding = "utf-8")
     return path
 
-def read_index(source: str | Path) -> dict[str, list[Entry]]:
+def read_index(source: str | Path) -> dict[str, list[entry_record]]:
     """Load an index from a path, file:// URL, or https:// URL."""
     raw = _load_bytes(source)
 
     if tomllib is None:  # pragma: no cover
-        raise ArtifactError("tomllib unavailable")
+        raise artifact_error("tomllib unavailable")
 
     doc = tomllib.loads(raw.decode("utf-8"))
-    out: dict[str, list[Entry]] = {}
+    out: dict[str, list[entry_record]] = {}
 
     for channel, body in doc.get("channels", {}).items():
-        out[channel] = [Entry(** {k: row[k]for k in ("file", "version", "target", "sha256", "size", "date")})for row in body.get("entries", [])]
+        out[channel] = [entry_record(** {k: row[k]for k in ("file", "version", "target", "sha256", "size", "date")})for row in body.get("entries", [])]
 
     return out
 
-def resolve(index: dict[str, list[Entry]], channel: str, target: str) -> Entry:
+def resolve(index: dict[str, list[entry_record]], channel: str, target: str) -> entry_record:
     candidates = [e for e in index.get(channel, [])if e.target == target]
 
     if not candidates:
-        raise ArtifactError("channel {!r} has no artifact for target {!r}".format(channel, target))
+        raise artifact_error("channel {!r} has no artifact for target {!r}".format(channel, target))
 
     return max(candidates, key = lambda e: _version_tuple(e.version))
 
@@ -177,7 +177,7 @@ def _load_bytes(source: str | Path) -> bytes:
 
     return Path(text).read_bytes()
 
-def fetch(entry: Entry, source_base: str, dest_dir: Path, name: str = BIN_NAME) -> Path:
+def fetch(entry: entry_record, source_base: str, dest_dir: Path, name: str = BIN_NAME) -> Path:
     """Download/verify/extract; returns the binary path inside dest_dir."""
     dest_dir.mkdir(parents = True, exist_ok = True)
     archive = dest_dir / entry.file
@@ -189,7 +189,7 @@ def fetch(entry: Entry, source_base: str, dest_dir: Path, name: str = BIN_NAME) 
 
     if digest != entry.sha256:
         archive.unlink(missing_ok = True)
-        raise ArtifactError("sha256 mismatch for {}: index says {}, got {}".format(entry.file, entry.sha256[: 12], digest[: 12]))
+        raise artifact_error("sha256 mismatch for {}: index says {}, got {}".format(entry.file, entry.sha256[: 12], digest[: 12]))
 
     with tarfile.open(archive, "r:gz") as tf:
         safe_extract(tf, str(dest_dir))
@@ -197,7 +197,7 @@ def fetch(entry: Entry, source_base: str, dest_dir: Path, name: str = BIN_NAME) 
     bin_path = dest_dir / name
 
     if not bin_path.exists():
-        raise ArtifactError("archive {} has no {} member".format(entry.file, name))
+        raise artifact_error("archive {} has no {} member".format(entry.file, name))
 
     os.chmod(bin_path, 0o755)
     return bin_path
@@ -231,7 +231,7 @@ def main() -> int:
 
         if args.cmd == "index":
             entries = scan_dir(Path(args.dir))
-            channels: dict[str, list[Entry]] = {}
+            channels: dict[str, list[entry_record]] = {}
 
             for channel in args.channel:
                 channels[channel] = entries
@@ -245,7 +245,7 @@ def main() -> int:
         bin_path = fetch(entry, str(args.source), Path(args.dest))
         print("{}\n{} -> {}".format(entry.file, entry.version, bin_path))
         return 0
-    except ArtifactError as exc:
+    except artifact_error as exc:
         print("error: {}".format(exc), file = sys.stderr)
         return 1
 

@@ -199,7 +199,7 @@ EXCERPT_LIMIT = 100
 # ---------------------------------------------------------------------------
 
 @dataclass
-class Finding:
+class finding_record:
     """One audit finding.
 
     ``excerpt`` is the offending source line and belongs to the **human** output only:
@@ -226,7 +226,7 @@ class Finding:
         """The frozen JSON shape CI consumers read (no ``excerpt``, no extras)."""
         return {"path": self.path, "line": self.line, "rule": self.rule, "severity": self.severity, "message": self.message}
 
-def has_failure(findings: Sequence[Finding], strict: bool = False) -> bool:
+def has_failure(findings: Sequence[finding_record], strict: bool = False) -> bool:
     """Whether the run must exit non-zero: any error, or (with *strict*) any warning.
 
     ``self-hosted-pr-without-fork-guard`` is a warning so the fleet can grow the guard one
@@ -392,7 +392,7 @@ def _line_of(node: Node) -> int:
     """1-based line of a node (PyYAML marks are 0-based)."""
     return node.start_mark.line + 1
 
-def _parse_error_finding(exc: yaml.YAMLError, text: str, path: str) -> Finding:
+def _parse_error_finding(exc: yaml.YAMLError, text: str, path: str) -> finding_record:
     """Rule 4: report the file itself, with the composer's own words and its first line."""
     problem = getattr(exc, "problem", None) or "unparsable YAML"
     mark = getattr(exc, "problem_mark", None)
@@ -406,11 +406,11 @@ def _parse_error_finding(exc: yaml.YAMLError, text: str, path: str) -> Finding:
 
     summary = _first_line_summary(text)
     message = f"file is not valid YAML ({problem}{where}); first line: {summary!r}; " "a file that cannot be parsed is reported here rather than skipped - " "GitHub refuses such a workflow outright, so it creates no job that could fail"
-    return Finding(path = path, line = line, rule = RULE_YAML_PARSE_ERROR, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(text.split("\n"), line))
+    return finding_record(path = path, line = line, rule = RULE_YAML_PARSE_ERROR, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(text.split("\n"), line))
 
-def _caller_findings(job_id: str, entries: Dict[str, Tuple[Node, Node]], path: str, lines: Sequence[str]) -> List[Finding]:
+def _caller_findings(job_id: str, entries: Dict[str, Tuple[Node, Node]], path: str, lines: Sequence[str]) -> List[finding_record]:
     """Rule 1: a caller job may only carry the nine legal keys; name every offender."""
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for key, (key_node, _value_node) in entries.items():
         if key in CALLER_LEGAL_KEYS:
@@ -418,11 +418,11 @@ def _caller_findings(job_id: str, entries: Dict[str, Tuple[Node, Node]], path: s
 
         line = _line_of(key_node)
         message = f"job {job_id!r} calls a reusable workflow (uses:) and also sets {key!r}, " f"which is not one of the nine caller keys ({_CALLER_KEY_LIST}); GitHub then " "rejects the whole workflow - no job is created and the run degenerates to " "0 jobs without failing"
-        findings.append(Finding(path = path, line = line, rule = RULE_INVALID_CALLER_KEY, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(lines, line)))
+        findings.append(finding_record(path = path, line = line, rule = RULE_INVALID_CALLER_KEY, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(lines, line)))
 
     return findings
 
-def _missing_timeout_finding(job_id: str, runs_on_key: Node, runs_on_value: Node, is_callee: bool, path: str, lines: Sequence[str]) -> Finding:
+def _missing_timeout_finding(job_id: str, runs_on_key: Node, runs_on_value: Node, is_callee: bool, path: str, lines: Sequence[str]) -> finding_record:
     """Rules 2 and 3: a self-hosted job without ``timeout-minutes``."""
     labels = ", ".join(_scalar_labels(runs_on_value))
 
@@ -434,14 +434,14 @@ def _missing_timeout_finding(job_id: str, runs_on_key: Node, runs_on_value: Node
         message = f"job {job_id!r} is self-hosted (runs-on: {labels}) and has no timeout-minutes; " "GitHub's 360-minute default cannot stop a process stuck in the kernel D state, " "so a wedged job holds one of the four runners until a human intervenes"
 
     line = _line_of(runs_on_key)
-    return Finding(path = path, line = line, rule = rule, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(lines, line))
+    return finding_record(path = path, line = line, rule = rule, severity = SEVERITY_ERROR, message = message, excerpt = _line_excerpt(lines, line))
 
-def _fork_guard_finding(job_id: str, runs_on_key: Node, runs_on_value: Node, path: str, lines: Sequence[str]) -> Finding:
+def _fork_guard_finding(job_id: str, runs_on_key: Node, runs_on_value: Node, path: str, lines: Sequence[str]) -> finding_record:
     """Rule 7: a self-hosted job reachable by ``pull_request`` without the fork guard."""
     labels = ", ".join(_scalar_labels(runs_on_value)) or "an expression"
     message = f"job {job_id!r} has no fork guard: it runs directly on a self-hosted runner " f"(runs-on: {labels}) in a workflow triggered by pull_request, so a pull request " f"whose head branch lives in a fork would execute untrusted code inside the org " f"network and spend the shared runner capacity same-repo PRs need. Add the org's " f"canonical guard to the job — same-repo PRs, pushes and workflow_dispatch keep " f"running: if: {FORK_GUARD} (github.event.pull_request.head.repo.fork == false is " f"accepted as the equivalent form). A repository that must stay unguarded records " f"it with --allow self-hosted-pr-without-fork-guard=<glob>"
     line = _line_of(runs_on_key)
-    return Finding(path = path, line = line, rule = RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, severity = SEVERITY_WARNING, message = message, excerpt = _line_excerpt(lines, line))
+    return finding_record(path = path, line = line, rule = RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, severity = SEVERITY_WARNING, message = message, excerpt = _line_excerpt(lines, line))
 
 def _calls_shared_commit_lint(jobs: MappingNode) -> bool:
     """True when any job is a caller of the shared commit-lint reusable workflow."""
@@ -507,7 +507,7 @@ def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
 
     return False, "differs outside triggers/permissions/jobs"
 
-def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
+def _canonical_caller_findings(text: str, path: str) -> List[finding_record]:
     """Byte-compare the caller against the template the generator ships.
 
     Three outcomes (2026-09-26, the lane-carrying canonical migration):
@@ -530,10 +530,10 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
         return []
 
     if text == WORKFLOW_COMMIT_LINT_NO_PERMS:
-        return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller carries the lane passthrough but not the " f"`permissions` grant the reusable lint declares " f"({len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode())} bytes). The org default " f"token permissions were tightened on 2026-10-02; without an explicit " f"`pull-requests: read` the callee fails as `startup_failure` with zero " f"jobs, so the required check never reports and a protected repository " f"cannot be merged at all. Regenerate it with " f"`celestia-devtools init --with-workflows --force`", excerpt = "")]
+        return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller carries the lane passthrough but not the " f"`permissions` grant the reusable lint declares " f"({len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode())} bytes). The org default " f"token permissions were tightened on 2026-10-02; without an explicit " f"`pull-requests: read` the callee fails as `startup_failure` with zero " f"jobs, so the required check never reports and a protected repository " f"cannot be merged at all. Regenerate it with " f"`celestia-devtools init --with-workflows --force`", excerpt = "")]
 
     if text == WORKFLOW_COMMIT_LINT_LEGACY:
-        return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller is the legacy pre-lane template " f"({len(WORKFLOW_COMMIT_LINT_LEGACY.encode())} bytes); regenerate it with " f"`celestia-devtools init --with-workflows --force` to gain the " f"`vars.LINT_RUNNER`/`vars.LINT_LANE` passthrough, so the required check " f"can be served from the self-hosted farm by setting repository " f"variables instead of editing this tree", excerpt = "")]
+        return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller is the legacy pre-lane template " f"({len(WORKFLOW_COMMIT_LINT_LEGACY.encode())} bytes); regenerate it with " f"`celestia-devtools init --with-workflows --force` to gain the " f"`vars.LINT_RUNNER`/`vars.LINT_LANE` passthrough, so the required check " f"can be served from the self-hosted farm by setting repository " f"variables instead of editing this tree", excerpt = "")]
 
     semantically_same, why = _same_caller_semantics(text, WORKFLOW_COMMIT_LINT)
 
@@ -546,7 +546,7 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
         # i.e. to make the tree worse to satisfy the tool. Comments are where a
         # caller records why it grants what it grants, so they stay a warning.
         return [
-            Finding(
+            finding_record(
                 path = path,
                 line = 1,
                 rule = RULE_CALLER_NOT_CANONICAL,
@@ -564,9 +564,9 @@ def _canonical_caller_findings(text: str, path: str) -> List[Finding]:
             )
         ]
 
-    return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must be byte-identical to the canonical " f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is " f"{len(text.encode())} bytes and {why}. Regenerate it with " f"`celestia-devtools init --with-workflows --force` instead of editing it by " f"hand — a variant that drops `ready_for_review` or `synchronize` stops " f"re-running the required check, and the PR then cannot be merged", excerpt = "")]
+    return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must be byte-identical to the canonical " f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is " f"{len(text.encode())} bytes and {why}. Regenerate it with " f"`celestia-devtools init --with-workflows --force` instead of editing it by " f"hand — a variant that drops `ready_for_review` or `synchronize` stops " f"re-running the required check, and the PR then cannot be merged", excerpt = "")]
 
-def _mislocated_caller_findings(path: str) -> List[Finding]:
+def _mislocated_caller_findings(path: str) -> List[finding_record]:
     """Flag a shared caller that lives in a file other than :data:`CANONICAL_CALLER_NAME`.
 
     The byte comparison keys off the file name, so a copy under ``checks.yml`` is never
@@ -574,9 +574,9 @@ def _mislocated_caller_findings(path: str) -> List[Finding]:
     is exactly how the fleet ended up with two shapes — the check name depends only on the
     job id, so the copy works well enough to survive, and the drift is invisible.
     """
-    return [Finding(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must live in `.github/workflows/" f"{CANONICAL_CALLER_NAME}`; this copy is under another name, which puts it " f"outside the byte comparison against the canonical template — it will drift " f"silently and stop re-running the required check. Move it to " f"`.github/workflows/{CANONICAL_CALLER_NAME}` (or regenerate that file with " f"`celestia-devtools init --with-workflows --force`) and delete this one", excerpt = "")]
+    return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must live in `.github/workflows/" f"{CANONICAL_CALLER_NAME}`; this copy is under another name, which puts it " f"outside the byte comparison against the canonical template — it will drift " f"silently and stop re-running the required check. Move it to " f"`.github/workflows/{CANONICAL_CALLER_NAME}` (or regenerate that file with " f"`celestia-devtools init --with-workflows --force`) and delete this one", excerpt = "")]
 
-def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List[Finding]:
+def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List[finding_record]:
     """Flag a mapping that defines the same key twice, anywhere in the document.
 
     PyYAML's ``safe_load`` silently keeps the *last* value, so every "parse it and look"
@@ -585,7 +585,7 @@ def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List
     ``if:`` keys produced fourteen zero-job pseudo-runs). The composed tree keeps every
     key, duplicates included, so the check is a plain walk.
     """
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     def walk(node: Node, seen: Set[int]) -> None:
         if id(node) in seen:  # recursive aliases must not recurse forever
@@ -602,7 +602,7 @@ def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List
 
                 if key is not None:
                     if key in first_line:
-                        findings.append(Finding(path = path, line = line, rule = RULE_YAML_DUPLICATE_KEY, severity = SEVERITY_ERROR, message = f"the same mapping key {key!r} is defined twice " f"(this occurrence at line {line}, the first at line " f"{first_line[key]}); PyYAML silently keeps the last " f"value but GitHub's parser rejects the whole file and " f"runs zero jobs — deduplicate, keeping one value", excerpt = _line_excerpt(lines, line)))
+                        findings.append(finding_record(path = path, line = line, rule = RULE_YAML_DUPLICATE_KEY, severity = SEVERITY_ERROR, message = f"the same mapping key {key!r} is defined twice " f"(this occurrence at line {line}, the first at line " f"{first_line[key]}); PyYAML silently keeps the last " f"value but GitHub's parser rejects the whole file and " f"runs zero jobs — deduplicate, keeping one value", excerpt = _line_excerpt(lines, line)))
                     else:
                         first_line[key] = line
 
@@ -617,7 +617,7 @@ def _duplicate_key_findings(root: Node, path: str, lines: Sequence[str]) -> List
 
     return findings
 
-def audit_text(text: str, path: str) -> List[Finding]:
+def audit_text(text: str, path: str) -> List[finding_record]:
     """Audit one workflow's text; *path* is the already-resolved display path."""
 
     try:
@@ -629,7 +629,7 @@ def audit_text(text: str, path: str) -> List[Finding]:
     lines = text.split("\n")
     # 规则 6 在整棵树上走：重复键可以出现在任何层级（作业里、step 的 env 里），而且
     # 就算没有 jobs 可查（其他规则都会早退），这个文件对 GitHub 仍然是非法的。
-    findings: List[Finding] = list(_duplicate_key_findings(root, path, lines))
+    findings: List[finding_record] = list(_duplicate_key_findings(root, path, lines))
 
     if not isinstance(root, MappingNode):
         # 空文档（compose 返回 None）或非映射根：没有 jobs 可查，也没有解析错误。
@@ -690,14 +690,14 @@ def audit_text(text: str, path: str) -> List[Finding]:
 
     return findings
 
-def audit_file(path: Path, display: str) -> List[Finding]:
+def audit_file(path: Path, display: str) -> List[finding_record]:
     """Audit one file; a read failure is either a finding (bad encoding) or an ``OSError``."""
 
     try:
         text = path.read_text(encoding = "utf-8")
     except UnicodeDecodeError as exc:
         message = f"file is not valid UTF-8 ({exc}); it is reported here rather than skipped, " "because a workflow GitHub cannot read creates no job that could fail"
-        return [Finding(path = display, line = 1, rule = RULE_YAML_PARSE_ERROR, severity = SEVERITY_ERROR, message = message, excerpt = "")]
+        return [finding_record(path = display, line = 1, rule = RULE_YAML_PARSE_ERROR, severity = SEVERITY_ERROR, message = message, excerpt = "")]
 
     return audit_text(text, display)
 
@@ -821,11 +821,11 @@ def parse_allow(raw: str) -> Tuple[str, str]:
 
     return rule, pattern
 
-def _is_allowed(finding: Finding, rules: Sequence[Tuple[str, str]]) -> bool:
+def _is_allowed(finding: finding_record, rules: Sequence[Tuple[str, str]]) -> bool:
     """Whether any ``--allow`` entry covers this finding (``*`` matches every rule)."""
     return any(((rule == "*") or (rule == finding.rule)) and fnmatch.fnmatchcase(finding.path, pattern)for rule, pattern in rules)
 
-def apply_allow(findings: Sequence[Finding], rules: Sequence[Tuple[str, str]]) -> Tuple[List[Finding], int]:
+def apply_allow(findings: Sequence[finding_record], rules: Sequence[Tuple[str, str]]) -> Tuple[List[finding_record], int]:
     """Split findings into ``(reported, suppressed_count)``."""
     reported = [finding for finding in findings if not _is_allowed(finding, rules)]
     return reported, len(findings) - len(reported)
@@ -835,7 +835,7 @@ def apply_allow(findings: Sequence[Finding], rules: Sequence[Tuple[str, str]]) -
 # ---------------------------------------------------------------------------
 
 def build_report(
-    findings: Sequence[Finding],
+    findings: Sequence[finding_record],
     files: int,
     suppressed: int,
     strict: bool
@@ -855,7 +855,7 @@ def build_report(
 
     return {"findings": [finding.to_json()for finding in findings], "summary": {"files": files, "findings": len(findings), "errors": errors, "warnings": warnings, "suppressed": suppressed, "failed": has_failure(findings, strict), "rules": rules}}
 
-def _summary_line(files: int, findings: Sequence[Finding], suppressed: int) -> str:
+def _summary_line(files: int, findings: Sequence[finding_record], suppressed: int) -> str:
     """Human summary line (stderr under ``--json``)."""
 
     if not findings:
@@ -874,7 +874,7 @@ def _summary_line(files: int, findings: Sequence[Finding], suppressed: int) -> s
 # CLI
 # ---------------------------------------------------------------------------
 
-class _WholeWordHelpFormatter(argparse.HelpFormatter):
+class _whole_word_help_formatter(argparse.HelpFormatter):
     """Wrap option help without breaking words on hyphens.
 
     argparse wraps with ``break_on_hyphens=True``, so the ``--allow`` rule list renders as
@@ -894,7 +894,7 @@ class _WholeWordHelpFormatter(argparse.HelpFormatter):
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser."""
-    parser = argparse.ArgumentParser(prog = "celestia-ci-audit", formatter_class = _WholeWordHelpFormatter, description = "Fail GitHub Actions workflows that GitHub would silently refuse to run: " "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted " "jobs without timeout-minutes, and files that are not valid YAML. The caller " "side cannot express a timeout upper bound; it belongs on the callee. " "Self-hosted jobs reachable by pull_request also have to keep fork PRs out " "(warning).")
+    parser = argparse.ArgumentParser(prog = "celestia-ci-audit", formatter_class = _whole_word_help_formatter, description = "Fail GitHub Actions workflows that GitHub would silently refuse to run: " "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted " "jobs without timeout-minutes, and files that are not valid YAML. The caller " "side cannot express a timeout upper bound; it belongs on the callee. " "Self-hosted jobs reachable by pull_request also have to keep fork PRs out " "(warning).")
     parser.add_argument("paths", nargs = "*", help = "workflow files or directories (default: .github/workflows)")
     parser.add_argument("--json", action = "store_true", dest = "as_json", help = "emit the fixed machine-readable report on stdout")
     parser.add_argument("--strict", action = "store_true", help = "treat warning-severity findings as failures too " "(self-hosted-pr-without-fork-guard is the warning-severity rule)")
@@ -911,7 +911,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if failure is not None:
         return failure
 
-    findings: List[Finding] = []
+    findings: List[finding_record] = []
 
     for path, display in files:
         try:

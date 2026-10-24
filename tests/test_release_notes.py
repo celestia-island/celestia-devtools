@@ -179,7 +179,7 @@ def test_collect_entries_raises_when_base_never_reached():
 
         return [_commit("c1", "✨ Add. (#1)")]
 
-    with pytest.raises(rn.GitHubError, match = "never reached"):
+    with pytest.raises(rn.git_hub_error, match = "never reached"):
         rn.collect_entries("o/r", "v0.2.0", "v0.1.0", fetch)
 
 def test_collect_entries_full_history_when_no_base():
@@ -224,7 +224,7 @@ def test_upsert_release_patches_existing(monkeypatch):
             if "/releases?" in url:
                 return 200, []
 
-            raise rn.NotFoundError("missing")
+            raise rn.not_found_error("missing")
 
         return 200, {}
 
@@ -245,7 +245,7 @@ def test_upsert_release_creates_draft_when_missing(monkeypatch):
             if "/releases?" in url:
                 return 200, []  # listing fallback: no existing release
 
-            raise rn.NotFoundError("missing")
+            raise rn.not_found_error("missing")
 
         return 201, {}
 
@@ -262,7 +262,7 @@ def test_upsert_release_publish_flag(monkeypatch):
             if "/releases?" in url:
                 return 200, []
 
-            raise rn.NotFoundError("missing")
+            raise rn.not_found_error("missing")
 
         return 201, {}
 
@@ -328,7 +328,7 @@ def test_cli_apply_posts_release(monkeypatch):
             return 200, []  # no existing release (draft-safe listing fallback)
 
         if method == "GET":
-            raise rn.NotFoundError("missing")
+            raise rn.not_found_error("missing")
 
         return 201, {}
 

@@ -14,13 +14,13 @@ records where it came from. (No environment-variable seeding today.)
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
-from celestia_devtools.deploy.profile import (AdminSection, ArtifactSection, DatabaseSection, DeployProfile, FrontSection, HostSection)
+from celestia_devtools.deploy.profile import (admin_section, artifact_section, database_section, deploy_profile, front_section, host_section)
 
-class WizardAbort(Exception):
+class wizard_abort(Exception):
     """User declined / non-interactive with missing answers."""
 
 @dataclass
-class Question:
+class question:
     key: str                      # "host.face" — section.attr
     prompt: str
     default: str = ""
@@ -52,7 +52,7 @@ def _email_ok(value: str) -> str | None:
 
     return None if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", value) else "invalid email address"
 
-QUESTION_TABLE: tuple[Question, ...] = (Question("host.face", "实例名（systemd unit 与目录都由它派生）", default = "chest", validate = _slug_ok), Question("host.level", "档位（hosted=自家机器 / selfhosted=客户自持）", choices = ("hosted", "selfhosted"), default = "hosted"), Question("host.listen", "应用监听端口（前门反代 443，别用 80）", default = "3000", validate = _port_ok), Question("front.domain", "对外域名（TLS 只走 HTTP-01；留空 = 关闭前门段）", default = "", required = False), Question("admin.email", "初始管理员邮箱（首用户自动提权；事后可改）", validate = _email_ok), Question("admin.password_to_file", "初始口令输出（y=写 0600 文件 / n=仅打印一次）", boolean = True, default = "n"), Question("artifact.channel", "制品通道", choices = ("stable", "internal"), default = "stable"))
+QUESTION_TABLE: tuple[question, ...] = (question("host.face", "实例名（systemd unit 与目录都由它派生）", default = "chest", validate = _slug_ok), question("host.level", "档位（hosted=自家机器 / selfhosted=客户自持）", choices = ("hosted", "selfhosted"), default = "hosted"), question("host.listen", "应用监听端口（前门反代 443，别用 80）", default = "3000", validate = _port_ok), question("front.domain", "对外域名（TLS 只走 HTTP-01；留空 = 关闭前门段）", default = "", required = False), question("admin.email", "初始管理员邮箱（首用户自动提权；事后可改）", validate = _email_ok), question("admin.password_to_file", "初始口令输出（y=写 0600 文件 / n=仅打印一次）", boolean = True, default = "n"), question("artifact.channel", "制品通道", choices = ("stable", "internal"), default = "stable"))
 
 # ── renderers ─────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ def _questionary_available() -> bool:
     except ImportError:
         return False
 
-def ask_questionary(q: Question, seeded: str | None) -> tuple[str, str]:
+def ask_questionary(q: question, seeded: str | None) -> tuple[str, str]:
     """Ask one question via questionary; returns (answer, provenance)."""
     import questionary
 
@@ -74,7 +74,7 @@ def ask_questionary(q: Question, seeded: str | None) -> tuple[str, str]:
         ans = questionary.confirm(q.prompt, default = q.default == "y").ask()
 
         if ans is None:
-            raise WizardAbort("cancelled at {!r}".format(q.key))
+            raise wizard_abort("cancelled at {!r}".format(q.key))
 
         return ("y" if ans else "n"), "(asked)"
     elif q.choices:
@@ -88,11 +88,11 @@ def ask_questionary(q: Question, seeded: str | None) -> tuple[str, str]:
         ans = questionary.text(q.prompt, default = q.default).ask()
 
     if ans is None:  # Ctrl-C / Esc
-        raise WizardAbort("cancelled at {!r}".format(q.key))
+        raise wizard_abort("cancelled at {!r}".format(q.key))
 
     return str(ans), "(asked)"
 
-def ask_plain(q: Question, seeded: str | None, input_fn = input, print_fn = print) -> tuple[str, str]:
+def ask_plain(q: question, seeded: str | None, input_fn = input, print_fn = print) -> tuple[str, str]:
     """The degraded renderer: numbered choices and plain prompts on stdin."""
 
     if seeded is not None:
@@ -156,31 +156,31 @@ def collect(seed: dict[str, str], *, interactive: bool, input_fn = input, print_
             ans, src = ask_plain(q, seeded, input_fn = input_fn, print_fn = print_fn)
         else:
             if q.required and not q.default:
-                raise WizardAbort("non-interactive and no answer for required {!r} " "(pass --admin-email / --profile)".format(q.key))
+                raise wizard_abort("non-interactive and no answer for required {!r} " "(pass --admin-email / --profile)".format(q.key))
 
             ans, src = q.default, "(default)"
 
         if q.required and not ans:
-            raise WizardAbort("empty answer for required {!r}".format(q.key))
+            raise wizard_abort("empty answer for required {!r}".format(q.key))
 
         error = q.validate(ans)
 
         if error:
-            raise WizardAbort("{}: {}".format(q.key, error))
+            raise wizard_abort("{}: {}".format(q.key, error))
 
         answers[q.key] = ans
         provenance[q.key] = src
 
     return answers, provenance
 
-def build_profile(answers: dict[str, str], base: DeployProfile | None = None) -> DeployProfile:
+def build_profile(answers: dict[str, str], base: deploy_profile | None = None) -> deploy_profile:
     """Apply the table's answers onto `base` when given (a --profile carries
     every field, including ones the table never asks about — srv_base,
     etc_base, database.*, front.email — and those must ride through
     untouched), else construct a fresh profile from the answers alone."""
 
     if base is None:
-        profile = DeployProfile(host = HostSection(face = answers["host.face"], level = answers["host.level"], listen = int(answers["host.listen"])), artifact = ArtifactSection(channel = answers["artifact.channel"]), database = DatabaseSection(mode = "external"), front = FrontSection(enabled = bool(answers.get("front.domain")), domain = answers.get("front.domain", ""), email = answers.get("front.email", "")), admin = AdminSection(email = answers["admin.email"], password_to_file = answers["admin.password_to_file"] == "y"))
+        profile = deploy_profile(host = host_section(face = answers["host.face"], level = answers["host.level"], listen = int(answers["host.listen"])), artifact = artifact_section(channel = answers["artifact.channel"]), database = database_section(mode = "external"), front = front_section(enabled = bool(answers.get("front.domain")), domain = answers.get("front.domain", ""), email = answers.get("front.email", "")), admin = admin_section(email = answers["admin.email"], password_to_file = answers["admin.password_to_file"] == "y"))
     else:
         profile = base
         profile.host.face = answers["host.face"]
@@ -199,6 +199,6 @@ def build_profile(answers: dict[str, str], base: DeployProfile | None = None) ->
     errors = profile.validate()
 
     if errors:
-        raise WizardAbort("; ".join(errors))
+        raise wizard_abort("; ".join(errors))
 
     return profile

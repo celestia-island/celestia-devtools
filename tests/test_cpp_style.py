@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from celestia_devtools.lint import cpp_style
 from celestia_devtools.lint.cpp import tokenizer as cpp_tokenizer
-from celestia_devtools.lint.cpp.config import (DEFAULT_ALLOW_SPACE_BEFORE_PAREN, ConfigError, load_config)
+from celestia_devtools.lint.cpp.config import (DEFAULT_ALLOW_SPACE_BEFORE_PAREN, config_error, load_config)
 from celestia_devtools.lint.cpp.rules import RULE_IDS, RULES
 from celestia_devtools.lint.cpp.structure import analyze_bytes
 from celestia_devtools.lint.cpp.tokenizer import (CHAR, COMMENT, IDENT, NEWLINE, NUMBER, OP, PREPROC, STRING)
@@ -76,7 +76,7 @@ def check_style(workspace, capsys):
 
 # --------------------------------------------------------------------------- tokenizer
 
-class TestTokenizer:
+class test_tokenizer:
     def test_basic_tokens_and_positions(self):
         result = cpp_tokenizer.tokenize("int value = 1;\n")
         assert [(token.kind, token.text)for token in result.code] == [(IDENT, "int"), (IDENT, "value"), (OP, "="), (NUMBER, "1"), (OP, ";")]
@@ -260,7 +260,7 @@ class TestTokenizer:
 
 # --------------------------------------------------------------------------- structure
 
-class TestStructure:
+class test_structure:
     def test_delimiter_matching_and_depth(self):
         source = "void f()\n{\n    if(x)\n    {\n        g();\n    }\n}\n"
         analyzed = analyze_bytes(Path("sample.cpp"), source.encode("utf-8"))
@@ -298,7 +298,7 @@ class TestStructure:
 
 # --------------------------------------------------------------------------- rules: A
 
-class TestNoSpaceBeforeParen:
+class test_no_space_before_paren:
     RULE = "no-space-before-paren"
 
     def test_bad_function_signature(self, check_style):
@@ -376,7 +376,7 @@ class TestNoSpaceBeforeParen:
         assert code == 1
         assert rule_ids(payload) == [self.RULE]
 
-class TestForSemicolonSpacing:
+class test_for_semicolon_spacing:
     RULE = "for-semicolon-spacing"
 
     def test_bad_classic_for_header(self, check_style):
@@ -421,7 +421,7 @@ class TestForSemicolonSpacing:
         assert code == 0
         assert payload["issues"] == []
 
-class TestControlBraces:
+class test_control_braces:
     RULE = "control-braces"
 
     def test_bad_unbraced_if(self, check_style):
@@ -511,7 +511,7 @@ class TestControlBraces:
         assert code == 1
         assert len(issues_for(payload, self.RULE)) == 2
 
-class TestOneStatementPerLine:
+class test_one_statement_per_line:
     RULE = "one-statement-per-line"
 
     def test_bad_two_calls(self, check_style):
@@ -564,7 +564,7 @@ class TestOneStatementPerLine:
         assert code == 0
         assert payload["issues"] == []
 
-class TestLineCommentsOnly:
+class test_line_comments_only:
     RULE = "line-comments-only"
 
     def test_license_block_comment_is_allowed(self, check_style):
@@ -611,7 +611,7 @@ class TestLineCommentsOnly:
         assert code == 0
         assert payload["issues"] == []
 
-class TestIncludeBlock:
+class test_include_block:
     RULE = "include-block"
 
     def test_good_header(self, check_style):
@@ -675,7 +675,7 @@ class TestIncludeBlock:
         assert code == 1
         assert len(issues_for(payload, self.RULE)) == 1
 
-class TestPlatformHeaderAllowlist:
+class test_platform_header_allowlist:
     RULE = "platform-header-allowlist"
 
     def test_default_rejects_platform_header(self, check_style):
@@ -725,7 +725,7 @@ class TestPlatformHeaderAllowlist:
         assert code == 1
         assert len(issues_for(payload, self.RULE)) == 1
 
-class TestPlatformTypeLeak:
+class test_platform_type_leak:
     RULE = "platform-type-leak"
 
     def test_header_exposes_handle(self, check_style):
@@ -778,7 +778,7 @@ class TestPlatformTypeLeak:
 
 # --------------------------------------------------------------------------- exemptions
 
-class TestExemptions:
+class test_exemptions:
     RULE = "no-space-before-paren"
 
     def test_inline_same_line(self, check_style):
@@ -835,7 +835,7 @@ class TestExemptions:
 
 # --------------------------------------------------------------------------- config
 
-class TestConfig:
+class test_config:
     def test_cpp_style_toml_is_discovered(self, workspace, capsys):
         make_repo_root(workspace)
         write_files(workspace, {"cpp-style.toml": 'select = ["no-space-before-paren"]\n', "sample.cpp": "void f()\n{\n    if (x)\n    {\n    }\n}\n"})
@@ -946,12 +946,12 @@ class TestConfig:
         path = workspace / "bad.toml"
         path.write_text("unknown_key = 1\n", encoding = "utf-8")
 
-        with pytest.raises(ConfigError):
+        with pytest.raises(config_error):
             load_config(explicit = str(path), no_config = False, cwd = workspace)
 
 # --------------------------------------------------------------------------- scanning
 
-class TestScanning:
+class test_scanning:
     def test_default_skip_directories(self, check_style):
         skipped_dirs = ["third_party", "vendor", "external", "generated", "build", "dist", "target", "node_modules"]
         files = {"main.cpp": "int main();\n"}
@@ -998,7 +998,7 @@ class TestScanning:
 
 # --------------------------------------------------------------------------- CLI
 
-class TestCli:
+class test_cli:
     def test_no_subcommand_exits_two(self, capsys):
         code, out, err = run_cli(capsys, [])
         assert code == 2
@@ -1171,7 +1171,7 @@ class TestCli:
 
 # --------------------------------------------------------------------------- fixtures
 
-class TestFixtures:
+class test_fixtures:
     def test_good_fixtures_are_clean(self, capsys):
         code, payload, _ = run_json(capsys, ["check", str(FIXTURES / "good"), "--no-config", "--json"])
         assert code == 0
@@ -1201,7 +1201,7 @@ class TestFixtures:
 
 # --------------------------------------------------------------------------- performance
 
-class TestPerformance:
+class test_performance:
     def test_two_hundred_synthetic_files_under_three_seconds(self, workspace, capsys):
         source = "// Copyright (c) 2026 Celestia Island.\n" "\n" "int compute(int value)\n" "{\n" "    if(value > 0)\n" "    {\n" "        return value;\n" "    }\n" "\n" "    for(int i = 0;i < 3;i++)\n" "    {\n" "        value = value + i;\n" "    }\n" "\n" "    return value;\n" "}\n"
 

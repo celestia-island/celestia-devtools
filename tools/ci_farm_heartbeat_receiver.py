@@ -49,7 +49,7 @@ def record_beat(beat_dir: str, name: str) -> None:
 def run_receiver(bind: str, beat_dir: str) -> None:
     """可测入口：在 bind 上起 HTTP 服务，beat 文件落 beat_dir。"""
 
-    class Handler(BaseHTTPRequestHandler):
+    class handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
 
@@ -100,7 +100,7 @@ def run_receiver(bind: str, beat_dir: str) -> None:
     host, _, port = bind.rpartition(":")
     os.makedirs(beat_dir, exist_ok = True)
     print(f"ci-farm-heartbeat receiver listening on {bind}, beats -> {beat_dir}", flush = True)
-    ThreadingHTTPServer((host or "0.0.0.0", int(port)), Handler).serve_forever()
+    ThreadingHTTPServer((host or "0.0.0.0", int(port)), handler).serve_forever()
 
 if __name__ == "__main__":
     run_receiver(f"0.0.0.0:{PORT}", BEAT_DIR)

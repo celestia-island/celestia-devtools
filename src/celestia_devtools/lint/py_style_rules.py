@@ -33,14 +33,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterator, Sequence
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, runtime import is unused
-    from celestia_devtools.lint.py_style_config import StyleConfig
+    from celestia_devtools.lint.py_style_config import style_config
 
 # ---------------------------------------------------------------------------
 # Rule catalog
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen = True)
-class Rule:
+class rule:
     """Machine-readable metadata for one check rule."""
 
     id: str
@@ -51,7 +51,7 @@ class Rule:
     description: str
 
 @dataclass(frozen = True)
-class ManualRule:
+class manual_rule:
     """A convention that cannot be machine-checked and needs human review."""
 
     id: str
@@ -59,14 +59,14 @@ class ManualRule:
     p_refs: tuple[str, ...]
     description: str
 
-def _rule(rule_id: str, title: str, p_refs: tuple[str, ...], fixable: bool, description: str, severity: str = "error") -> Rule:
-    return Rule(rule_id, title, p_refs, severity, fixable, description)
+def _rule(rule_id: str, title: str, p_refs: tuple[str, ...], fixable: bool, description: str, severity: str = "error") -> rule:
+    return rule(rule_id, title, p_refs, severity, fixable, description)
 
-CHECK_RULES: tuple[Rule, ...] = (_rule("trailing-whitespace", "No trailing whitespace", ("P10", "P09"), True, "Reports physical lines that end in spaces or tabs. Trailing whitespace " "inside a multi-line string literal is runtime data and is exempt (P09/P43). " "Fix strips the trailing run."), _rule("final-blank-lines", "No blank lines at end of file", ("P11", "P44"), True, "Reports blank lines after the last non-blank line of the file. A file that " "ends with exactly one newline has no trailing blank line. Fix removes them."), _rule("final-newline", "Exactly one final newline (configurable)", ("P45",), True, 'The file must end with exactly one newline when final_newline = "one" ' '(the default); with no newline at all when final_newline = "none". Empty ' "files are not checked. Fix rewrites the file tail."), _rule("indent-four-spaces", "Indentation is a multiple of four columns", ("P18",), True, "Block indentation must be a multiple of four columns; one tab counts as " "one column (no-tabs reports the tab itself). Only the first physical row " "of a logical line is checked, so bracket continuation lines may align " "anywhere; leading whitespace inside a multi-line string literal is data " "and is exempt. Fix rounds offending block indents down to the nearest " "multiple of four."), _rule("no-tabs", "No tab characters in code", ("P18",), True, "Reports tab characters outside string literals (code and comments). Tabs " "inside strings are data and are exempt. Fix expands leading tabs to four " "spaces and other tabs to one space."), _rule("no-consecutive-blank-lines", "At most one blank line in a row", ("P19",), True, "Two or more consecutive blank lines are not allowed. Blank-looking lines " "inside a multi-line string literal are string content and are exempt. Fix " "collapses each run to a single blank line."), _rule("one-statement-per-line", "One statement per line", ("P04", "P24"), False, "Reports semicolon-separated statements and block headers whose body starts " "on the header line (if ready: start()). Fix is not offered because " "splitting statements is not a layout-only rewrite."), _rule("single-line-statement", "One statement per physical line", ("P05", "P39"), True, "A logical line must not span multiple physical lines. A line is exempt when " "the only reason it spans physical lines is a multi-line string literal. " "Multi-line decorator expressions are reported unless " "allow_multiline_decorators = true. Fix joins the physical lines when the " "statement has no comment and no multi-line string; otherwise it is skipped. Multi-line f-string literals count as multi-line strings, so they are exempt."), _rule("imports-at-top", "Imports are grouped at the top of the module", ("P12",), False, "Module-level imports must all precede the first module-level statement other " "than the module docstring. Comments and blank lines between imports are " "allowed. Fix is not offered because moving imports can change runtime " "behaviour."), _rule("imports-contiguous", "No blank lines between imports", ("P13",), True, "Two consecutive module-level import statements must not have blank lines " "between them. Fix removes the blank lines."), _rule("no-block-imports", "No imports inside blocks", ("P14",), False, "Imports are only allowed at module level. if TYPE_CHECKING blocks " "(allow_type_checking_imports, default true) and try/except ImportError " "optional-dependency blocks (allow_optional_imports, default true) are " "exempt."), _rule("no-dynamic-imports", "No dynamic imports", ("P15", "P16"), False, "No __import__(...) call and no importlib.import_module(...) call, including " "aliases imported from importlib tracked one level deep " "(import importlib as il; from importlib import import_module as load). " 'getattr(importlib, "import_module") is not flagged because static analysis ' "cannot prove what the resulting call does."), _rule("acyclic-imports", "Module dependency graph is acyclic", ("P17",), False, "The module dependency graph built from module-level Import/ImportFrom " "statements of the scanned tree must be acyclic; each import cycle is " "reported once. Absolute imports are matched against scanned module names, " "relative imports are resolved against the package. Package __init__ " "modules are excluded (re-export imports are an accepted exception), as " "are imports nested in try/except or if blocks (not module-level edges). " "Enabled only when at least two modules are found while scanning " "directories."), _rule("binary-operator-spacing", "Binary operators are spaced on both sides", ("P06", "P25", "P26", "P27"), True, "Arithmetic (+ - * / // % @ **), comparison (== != < <= > >=), boolean " "(and or), identity/membership (is, is not, in, not in), bitwise/shift " "(& | ^ << >>) and the walrus operator (:=) need exactly one space on each " "side. Exempt: unary +/-/~, unpacking */** markers (f(*args), a, *b), the " "decorator @, keyword/default = (see equal-spacing) and the annotation arrow " "->." + " Nothing inside an f-string token span is reported (the span is " "opaque on 3.11 and 3.12+)."), _rule("equal-spacing", "Keyword and default '=' are spaced", ("P28", "P29"), True, "The '=' of a function or lambda default and of a keyword argument needs " "exactly one space on each side: def f(a = 1), f(a = 1). PEP8 and ruff E251 " "require the opposite, which is why this checker owns the rule. Nothing inside " "an f-string token span is reported (the span is opaque on 3.11 and 3.12+)."), _rule("colon-spacing", "Colon spacing in dicts, annotations and lambdas", ("P33", "P34", "P35", "P36"), True, "Colons in dict displays, annotations and lambda headers take no space before " "and exactly one space after when content follows. Slice colons are checked " 'only when slice_colons = "spaced" (the default "pep8" leaves a[1:2] ' "alone). Nothing inside an f-string token span is reported (the span is opaque " "on 3.11 and 3.12+), so f-string format specifiers are covered as well."), _rule("no-trailing-comma", "No trailing comma in argument lists or containers", ("P37", "P38"), True, "No comma immediately before a closing bracket of a call, parameter list, " "container or parenthesized import list. A single-element tuple keeps its " "grammar-required comma: (a,), return (a,), a[1,]. Fix deletes the comma."), _rule("redundant-parens", "No redundant outer parentheses", ("P08",), True, "An assignment right-hand side, annotated-assignment value, return value, " "call argument or keyword value must not be wrapped in a redundant outer " "pair of parentheses: x = (a). Only reported when removing the pair keeps " "ast.dump identical; tuples, generator expressions, yield, walrus, starred " "and multi-line expressions are exempt. Fix deletes the pair; nested pairs " "converge over repeated fix passes. Nothing inside an f-string token span is " "reported (the span is opaque on 3.11 and 3.12+)."), _rule("explicit-precedence", "Mixed operators use explicit parentheses", ("P07", "P30", "P32"), True, "A nested expression whose operator precedence differs from its parent needs " "explicit parentheses, e.g. (a + b) * c, target and (not ready). Exempt: " "same-precedence chains (a + b + c), chained comparisons (a < b < c), " "unary not operands and right-associative ** chains. Fix inserts the missing " "parentheses around the lower-precedence operand. Reported as a warning " "by default; use the config severity table to raise it to error. Nothing " "inside an f-string token span is reported (the span is opaque on 3.11 and " "3.12+).", severity = "warning"), _rule("blank-lines-around-blocks", "One blank line around complete blocks", ("P20", "P21"), True, "Two adjacent statements in the same body need exactly one blank line when at " "least one of them is a compound statement (def/class/if/for/while/with/try/" "match). A block header and its first body statement are adjacent with no " "blank line. The module top level is included unless blank_line_scope = " '"nested". else/elif/except/finally branch gaps belong to branch-adjacency. ' "Fix deletes extra blank lines and inserts a missing blank line between " "adjacent statements (never between a block header and its first body " "statement); a missing blank line before a comment block goes before the " "comment so it stays attached to the following statement."), _rule("branch-adjacency", "Branches are adjacent to the previous branch", ("P22",), True, "No blank line before elif/else/except/except*/finally, and none between the " "branch and the previous branch body. A comment block directly above the " "branch is allowed. Fix removes the blank lines."), _rule("decorator-adjacency", "Decorators are adjacent to the definition", ("P23",), True, "No blank line between decorators, nor between the last decorator and the " "def/class it decorates. Fix removes the blank lines."), _rule("snake-case-definition", "Definitions and variables are lower_snake_case", ("P01",), False, "Class names, function names, parameters, assignment targets and attribute " "definitions must match [a-z_][a-z0-9_]*. Exempt: dunder names, '_', " "ALL_CAPS constants including the leading-underscore form " "(_FOO, _MAX_SIZE; variables/attributes), naming_allow patterns, framework " "callbacks (setUp, tearDown, ... plus framework_callbacks), " "NamedTuple/TypedDict classes, assignments whose value is a TypeVar/NewType/" "ParamSpec/TypeVarTuple/NamedTuple/TypedDict, and re-export aliases in " "__init__.py."), _rule("snake-case-file", "File names are lower_snake_case", ("P01",), False, "Python file names (stem) must be lower_snake_case. Dunder file names such as " "__init__.py and __main__.py are exempt. Checked only when scanning " "directories."), _rule("compound-word", "Compound words are not split by underscores", ("P03",), False, "Names must not split a configured compound word with an underscore " '(text_box when "textbox" is in compound_words). The lexicon is empty by ' "default, so the rule is inactive until compound_words is configured. " "Dictionary keys and strings are not checked."), _rule("docstring-comment", "No triple-quoted strings as comments", ("P41",), False, "Standalone string expression statements are allowed only as docstrings. With " 'docstrings = "allow" (the default) real docstrings are permitted and other ' 'standalone strings are reported; with "ban" docstrings are reported too. ' "Fix is not offered because deleting a string expression can change runtime " "data."), _rule("comment-blank-line", "No blank line inserted after a comment", ("P42",), True, "A full-line comment must not be followed by a blank line. Exemptions in the " "default inline-only mode: decorative section headers, the file-header " "comment block before the first statement, and comments that end a block. " 'Config comment_blank_line: "inline-only" (default), "all" (no ' 'exemptions), "off". Reported as a warning; fix deletes the blank lines.', severity = "warning"))
+CHECK_RULES: tuple[rule, ...] = (_rule("trailing-whitespace", "No trailing whitespace", ("P10", "P09"), True, "Reports physical lines that end in spaces or tabs. Trailing whitespace " "inside a multi-line string literal is runtime data and is exempt (P09/P43). " "Fix strips the trailing run."), _rule("final-blank-lines", "No blank lines at end of file", ("P11", "P44"), True, "Reports blank lines after the last non-blank line of the file. A file that " "ends with exactly one newline has no trailing blank line. Fix removes them."), _rule("final-newline", "Exactly one final newline (configurable)", ("P45",), True, 'The file must end with exactly one newline when final_newline = "one" ' '(the default); with no newline at all when final_newline = "none". Empty ' "files are not checked. Fix rewrites the file tail."), _rule("indent-four-spaces", "Indentation is a multiple of four columns", ("P18",), True, "Block indentation must be a multiple of four columns; one tab counts as " "one column (no-tabs reports the tab itself). Only the first physical row " "of a logical line is checked, so bracket continuation lines may align " "anywhere; leading whitespace inside a multi-line string literal is data " "and is exempt. Fix rounds offending block indents down to the nearest " "multiple of four."), _rule("no-tabs", "No tab characters in code", ("P18",), True, "Reports tab characters outside string literals (code and comments). Tabs " "inside strings are data and are exempt. Fix expands leading tabs to four " "spaces and other tabs to one space."), _rule("no-consecutive-blank-lines", "At most one blank line in a row", ("P19",), True, "Two or more consecutive blank lines are not allowed. Blank-looking lines " "inside a multi-line string literal are string content and are exempt. Fix " "collapses each run to a single blank line."), _rule("one-statement-per-line", "One statement per line", ("P04", "P24"), False, "Reports semicolon-separated statements and block headers whose body starts " "on the header line (if ready: start()). Fix is not offered because " "splitting statements is not a layout-only rewrite."), _rule("single-line-statement", "One statement per physical line", ("P05", "P39"), True, "A logical line must not span multiple physical lines. A line is exempt when " "the only reason it spans physical lines is a multi-line string literal. " "Multi-line decorator expressions are reported unless " "allow_multiline_decorators = true. Fix joins the physical lines when the " "statement has no comment and no multi-line string; otherwise it is skipped. Multi-line f-string literals count as multi-line strings, so they are exempt."), _rule("imports-at-top", "Imports are grouped at the top of the module", ("P12",), False, "Module-level imports must all precede the first module-level statement other " "than the module docstring. Comments and blank lines between imports are " "allowed. Fix is not offered because moving imports can change runtime " "behaviour."), _rule("imports-contiguous", "No blank lines between imports", ("P13",), True, "Two consecutive module-level import statements must not have blank lines " "between them. Fix removes the blank lines."), _rule("no-block-imports", "No imports inside blocks", ("P14",), False, "Imports are only allowed at module level. if TYPE_CHECKING blocks " "(allow_type_checking_imports, default true) and try/except ImportError " "optional-dependency blocks (allow_optional_imports, default true) are " "exempt."), _rule("no-dynamic-imports", "No dynamic imports", ("P15", "P16"), False, "No __import__(...) call and no importlib.import_module(...) call, including " "aliases imported from importlib tracked one level deep " "(import importlib as il; from importlib import import_module as load). " 'getattr(importlib, "import_module") is not flagged because static analysis ' "cannot prove what the resulting call does."), _rule("acyclic-imports", "Module dependency graph is acyclic", ("P17",), False, "The module dependency graph built from module-level Import/ImportFrom " "statements of the scanned tree must be acyclic; each import cycle is " "reported once. Absolute imports are matched against scanned module names, " "relative imports are resolved against the package. Package __init__ " "modules are excluded (re-export imports are an accepted exception), as " "are imports nested in try/except or if blocks (not module-level edges). " "Enabled only when at least two modules are found while scanning " "directories."), _rule("binary-operator-spacing", "Binary operators are spaced on both sides", ("P06", "P25", "P26", "P27"), True, "Arithmetic (+ - * / // % @ **), comparison (== != < <= > >=), boolean " "(and or), identity/membership (is, is not, in, not in), bitwise/shift " "(& | ^ << >>) and the walrus operator (:=) need exactly one space on each " "side. Exempt: unary +/-/~, unpacking */** markers (f(*args), a, *b), the " "decorator @, keyword/default = (see equal-spacing) and the annotation arrow " "->." + " Nothing inside an f-string token span is reported (the span is " "opaque on 3.11 and 3.12+)."), _rule("equal-spacing", "Keyword and default '=' are spaced", ("P28", "P29"), True, "The '=' of a function or lambda default and of a keyword argument needs " "exactly one space on each side: def f(a = 1), f(a = 1). PEP8 and ruff E251 " "require the opposite, which is why this checker owns the rule. Nothing inside " "an f-string token span is reported (the span is opaque on 3.11 and 3.12+)."), _rule("colon-spacing", "Colon spacing in dicts, annotations and lambdas", ("P33", "P34", "P35", "P36"), True, "Colons in dict displays, annotations and lambda headers take no space before " "and exactly one space after when content follows. Slice colons are checked " 'only when slice_colons = "spaced" (the default "pep8" leaves a[1:2] ' "alone). Nothing inside an f-string token span is reported (the span is opaque " "on 3.11 and 3.12+), so f-string format specifiers are covered as well."), _rule("no-trailing-comma", "No trailing comma in argument lists or containers", ("P37", "P38"), True, "No comma immediately before a closing bracket of a call, parameter list, " "container or parenthesized import list. A single-element tuple keeps its " "grammar-required comma: (a,), return (a,), a[1,]. Fix deletes the comma."), _rule("redundant-parens", "No redundant outer parentheses", ("P08",), True, "An assignment right-hand side, annotated-assignment value, return value, " "call argument or keyword value must not be wrapped in a redundant outer " "pair of parentheses: x = (a). Only reported when removing the pair keeps " "ast.dump identical; tuples, generator expressions, yield, walrus, starred " "and multi-line expressions are exempt. Fix deletes the pair; nested pairs " "converge over repeated fix passes. Nothing inside an f-string token span is " "reported (the span is opaque on 3.11 and 3.12+)."), _rule("explicit-precedence", "Mixed operators use explicit parentheses", ("P07", "P30", "P32"), True, "A nested expression whose operator precedence differs from its parent needs " "explicit parentheses, e.g. (a + b) * c, target and (not ready). Exempt: " "same-precedence chains (a + b + c), chained comparisons (a < b < c), " "unary not operands and right-associative ** chains. Fix inserts the missing " "parentheses around the lower-precedence operand. Reported as a warning " "by default; use the config severity table to raise it to error. Nothing " "inside an f-string token span is reported (the span is opaque on 3.11 and " "3.12+).", severity = "warning"), _rule("blank-lines-around-blocks", "One blank line around complete blocks", ("P20", "P21"), True, "Two adjacent statements in the same body need exactly one blank line when at " "least one of them is a compound statement (def/class/if/for/while/with/try/" "match). A block header and its first body statement are adjacent with no " "blank line. The module top level is included unless blank_line_scope = " '"nested". else/elif/except/finally branch gaps belong to branch-adjacency. ' "Fix deletes extra blank lines and inserts a missing blank line between " "adjacent statements (never between a block header and its first body " "statement); a missing blank line before a comment block goes before the " "comment so it stays attached to the following statement."), _rule("branch-adjacency", "Branches are adjacent to the previous branch", ("P22",), True, "No blank line before elif/else/except/except*/finally, and none between the " "branch and the previous branch body. A comment block directly above the " "branch is allowed. Fix removes the blank lines."), _rule("decorator-adjacency", "Decorators are adjacent to the definition", ("P23",), True, "No blank line between decorators, nor between the last decorator and the " "def/class it decorates. Fix removes the blank lines."), _rule("snake-case-definition", "Definitions and variables are lower_snake_case", ("P01",), False, "Class names, function names, parameters, assignment targets and attribute " "definitions must match [a-z_][a-z0-9_]*. Exempt: dunder names, '_', " "ALL_CAPS constants including the leading-underscore form " "(_FOO, _MAX_SIZE; variables/attributes), naming_allow patterns, framework " "callbacks (setUp, tearDown, ... plus framework_callbacks), " "NamedTuple/TypedDict classes, assignments whose value is a TypeVar/NewType/" "ParamSpec/TypeVarTuple/NamedTuple/TypedDict, and re-export aliases in " "__init__.py."), _rule("snake-case-file", "File names are lower_snake_case", ("P01",), False, "Python file names (stem) must be lower_snake_case. Dunder file names such as " "__init__.py and __main__.py are exempt. Checked only when scanning " "directories."), _rule("compound-word", "Compound words are not split by underscores", ("P03",), False, "Names must not split a configured compound word with an underscore " '(text_box when "textbox" is in compound_words). The lexicon is empty by ' "default, so the rule is inactive until compound_words is configured. " "Dictionary keys and strings are not checked."), _rule("docstring-comment", "No triple-quoted strings as comments", ("P41",), False, "Standalone string expression statements are allowed only as docstrings. With " 'docstrings = "allow" (the default) real docstrings are permitted and other ' 'standalone strings are reported; with "ban" docstrings are reported too. ' "Fix is not offered because deleting a string expression can change runtime " "data."), _rule("comment-blank-line", "No blank line inserted after a comment", ("P42",), True, "A full-line comment must not be followed by a blank line. Exemptions in the " "default inline-only mode: decorative section headers, the file-header " "comment block before the first statement, and comments that end a block. " 'Config comment_blank_line: "inline-only" (default), "all" (no ' 'exemptions), "off". Reported as a warning; fix deletes the blank lines.', severity = "warning"))
 
-MANUAL_RULES: tuple[ManualRule, ...] = (ManualRule("P02", "Names describe their purpose", ("P02",), "Names must describe their purpose (label_caption, textbox_text, " "button_dialog). There is no machine criterion; review it manually. The " "checker only enforces the lower_snake_case shape (snake-case-definition) and " "compound-word spelling (compound-word)."), ManualRule("P09/P43", "Strings are runtime data and are never rewritten", ("P09", "P43"), "Never change the spaces, punctuation or line breaks inside a string to fit " "the layout rules. This is mechanical in the fixer: every rewrite must keep " "the STRING/FSTRING token multiset unchanged (and the whole-file ast.dump " "identical), otherwise the file is not written. Review any fix that touches " "string-adjacent code."), ManualRule("P31", "Chained comparisons and short-circuit semantics are preserved", ("P31",), "Keep chained comparisons (a < b < c) and the short-circuit behaviour of " "and/or as written; splitting a chain into two comparisons changes " "evaluation. This cannot be checked statically; the fixer never rewrites " "comparison or boolean operators, and the AST-equality invariant plus tests " "guard the behaviour."), ManualRule("P46", "No generic formatter over custom-layout code", ("P46",), "These conventions replace a generic formatter: do not run ruff format or " "Black over code that follows them, because those tools collapse keyword '=' " "spacing, split long lines, add trailing commas and require two blank lines. " "Keep ruff's stable semantic checks (F, E4, E7, W1, ...); the adoption " "policy removes the ruff-format gate for adopting repositories."))
+MANUAL_RULES: tuple[manual_rule, ...] = (manual_rule("P02", "Names describe their purpose", ("P02",), "Names must describe their purpose (label_caption, textbox_text, " "button_dialog). There is no machine criterion; review it manually. The " "checker only enforces the lower_snake_case shape (snake-case-definition) and " "compound-word spelling (compound-word)."), manual_rule("P09/P43", "Strings are runtime data and are never rewritten", ("P09", "P43"), "Never change the spaces, punctuation or line breaks inside a string to fit " "the layout rules. This is mechanical in the fixer: every rewrite must keep " "the STRING/FSTRING token multiset unchanged (and the whole-file ast.dump " "identical), otherwise the file is not written. Review any fix that touches " "string-adjacent code."), manual_rule("P31", "Chained comparisons and short-circuit semantics are preserved", ("P31",), "Keep chained comparisons (a < b < c) and the short-circuit behaviour of " "and/or as written; splitting a chain into two comparisons changes " "evaluation. This cannot be checked statically; the fixer never rewrites " "comparison or boolean operators, and the AST-equality invariant plus tests " "guard the behaviour."), manual_rule("P46", "No generic formatter over custom-layout code", ("P46",), "These conventions replace a generic formatter: do not run ruff format or " "Black over code that follows them, because those tools collapse keyword '=' " "spacing, split long lines, add trailing commas and require two blank lines. " "Keep ruff's stable semantic checks (F, E4, E7, W1, ...); the adoption " "policy removes the ruff-format gate for adopting repositories."))
 
-BUILTIN_RULES: tuple[Rule, ...] = (Rule("parse-error", "Source could not be tokenized or parsed", (), "error", False, "The file could not be tokenized or parsed as Python 3.11 source; other " "rules cannot run for it. Reported by the engine, not by a check function."),)
+BUILTIN_RULES: tuple[rule, ...] = (rule("parse-error", "Source could not be tokenized or parsed", (), "error", False, "The file could not be tokenized or parsed as Python 3.11 source; other " "rules cannot run for it. Reported by the engine, not by a check function."),)
 
 CHECK_RULE_IDS: frozenset[str] = frozenset(rule.id for rule in CHECK_RULES)
 BUILTIN_RULE_IDS: frozenset[str] = frozenset(rule.id for rule in BUILTIN_RULES)
@@ -92,7 +92,7 @@ def rule_fixable(rule_id: str) -> bool:
 # Source model
 # ---------------------------------------------------------------------------
 
-class ParseFailure(Exception):
+class parse_failure(Exception):
     """Raised when a file cannot be tokenized or parsed."""
 
     def __init__(self, message: str, line: int = 1, column: int = 1) -> None:
@@ -102,7 +102,7 @@ class ParseFailure(Exception):
         self.column = max(1, column)
 
 @dataclass(frozen = True)
-class Issue:
+class issue_record:
     """One rule violation inside one file."""
 
     rule: str
@@ -111,7 +111,7 @@ class Issue:
     message: str
 
 @dataclass
-class LogicalLine:
+class logical_line:
     """One logical line, i.e. the tokens consumed before a NEWLINE token."""
 
     token_ids: list[int]
@@ -161,7 +161,7 @@ def _tokenize_failure(exc: BaseException) -> tuple[str, int, int]:
     return str(exc) or exc.__class__.__name__, 1, 1
 
 @dataclass
-class FileContext:
+class file_context:
     """Token, AST and physical-line view of one source file.
 
     The derived structures (literal-position indexes, blank-line index, parent
@@ -184,7 +184,7 @@ class FileContext:
     sig: list[tokenize.TokenInfo]
     sig_starts: list[tuple[int, int]]
     bracket: dict[tuple[int, int], tuple[int, int]]
-    logical: list[LogicalLine]
+    logical: list[logical_line]
     literals: list[tuple[int, int, int, int]]
     comment_rows: dict[int, int]
     first_sig_row: int | None
@@ -198,25 +198,25 @@ class FileContext:
     parent_map: dict[int, ast.AST] = field(default_factory = dict)
     node_list: tuple[ast.AST, ...] = ()
     line_bytes: dict[int, bytes] = field(default_factory = dict)
-    definitions_cache: list[Definition] | None = None
+    definitions_cache: list[definition] | None = None
 
     # -- construction ------------------------------------------------------
     @classmethod
-    def build(cls, path: str, text: str) -> "FileContext":
+    def build(cls, path: str, text: str) -> "file_context":
         """Tokenize and parse *text*; raise ParseFailure on failure."""
 
         try:
             tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
         except (tokenize.TokenError, IndentationError, SyntaxError) as exc:
             message, line, column = _tokenize_failure(exc)
-            raise ParseFailure(message, line, column) from exc
+            raise parse_failure(message, line, column) from exc
 
         try:
             tree = ast.parse(text, filename = path)
         except SyntaxError as exc:
-            raise ParseFailure(str(exc.msg or exc), exc.lineno or 1, exc.offset or 1) from exc
+            raise parse_failure(str(exc.msg or exc), exc.lineno or 1, exc.offset or 1) from exc
         except (ValueError, RecursionError) as exc:
-            raise ParseFailure(str(exc) or exc.__class__.__name__, 1, 1) from exc
+            raise parse_failure(str(exc) or exc.__class__.__name__, 1, 1) from exc
 
         lines = text.split("\n")
         line_count = len(lines) - (1 if text.endswith("\n") else 0)
@@ -246,7 +246,7 @@ class FileContext:
                 bracket[opener] = tok.start
                 bracket[tok.start] = opener
 
-        logical: list[LogicalLine] = []
+        logical: list[logical_line] = []
         current: list[int] = []
 
         for index, tok in enumerate(tokens):
@@ -254,14 +254,14 @@ class FileContext:
 
             if tok.type == tokenize.NEWLINE:
                 sig_in = [i for i in current if tokens[i].type not in _SKIP_TOKEN_TYPES]
-                logical.append(LogicalLine(current, sig_in))
+                logical.append(logical_line(current, sig_in))
                 current = []
 
         if current:
             sig_in = [i for i in current if tokens[i].type not in _SKIP_TOKEN_TYPES]
 
             if sig_in:
-                logical.append(LogicalLine(current, sig_in))
+                logical.append(logical_line(current, sig_in))
 
         literals = [(tok.start[0], tok.start[1], tok.end[0], tok.end[1])for tok in tokens if tok.type in _LITERAL_TYPES]
         literal_starts = [(start_row, start_column)for start_row, start_column, _e_row, _e_column in literals]
@@ -486,7 +486,7 @@ class FileContext:
             yield current
             current = self.parent_map.get(id(current))
 
-    def definitions(self) -> list["Definition"]:
+    def definitions(self) -> list["definition"]:
         """Return the cached definition-name collection (see _definitions)."""
 
         if self.definitions_cache is None:
@@ -616,7 +616,7 @@ def operator_precedence(node: ast.AST) -> int | None:
 
     return None
 
-def is_parenthesized(context: FileContext, node: ast.AST) -> bool:
+def is_parenthesized(context: file_context, node: ast.AST) -> bool:
     """Return whether *node* is directly wrapped in one matching pair of parentheses."""
 
     start = context.ast_start(node)
@@ -635,7 +635,7 @@ def is_parenthesized(context: FileContext, node: ast.AST) -> bool:
 
     return context.bracket.get(previous.start) == following.start
 
-def source_line_prefix_is_blank(context: FileContext, row: int, column: int) -> bool:
+def source_line_prefix_is_blank(context: file_context, row: int, column: int) -> bool:
     """Return whether the characters before *column* on *row* are whitespace."""
 
     return not context.line(row)[:column].strip()
@@ -644,8 +644,8 @@ def source_line_prefix_is_blank(context: FileContext, row: int, column: int) -> 
 # Small helpers shared by checks and fixers
 # ---------------------------------------------------------------------------
 
-def _issue(rule_id: str, row: int, column: int, message: str) -> Issue:
-    return Issue(rule_id, max(1, row), max(1, column), message)
+def _issue(rule_id: str, row: int, column: int, message: str) -> issue_record:
+    return issue_record(rule_id, max(1, row), max(1, column), message)
 
 def _is_string_token(tok: tokenize.TokenInfo) -> bool:
     return tok.type in _LITERAL_TYPES
@@ -656,12 +656,12 @@ def _is_op(tok: tokenize.TokenInfo | None, value: str) -> bool:
 def _is_name(tok: tokenize.TokenInfo | None, value: str) -> bool:
     return (tok is not None) and (tok.type == tokenize.NAME) and (tok.string == value)
 
-def _string_token_texts(context: FileContext) -> list[str]:
+def _string_token_texts(context: file_context) -> list[str]:
     """Return the text of every string/f-string literal token, in source order."""
 
     return [tok.string for tok in context.tokens if tok.type in _LITERAL_TYPES]
 
-def _comma_token_positions_of_single_element_tuples(context: FileContext) -> set[tuple[int, int]]:
+def _comma_token_positions_of_single_element_tuples(context: file_context) -> set[tuple[int, int]]:
     """Return the comma positions that are grammar-required by one-element tuples."""
 
     positions: set[tuple[int, int]] = set()
@@ -732,10 +732,10 @@ def _camel_to_snake(name: str) -> str:
 # Checks
 # ---------------------------------------------------------------------------
 
-def check_trailing_whitespace(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_trailing_whitespace(context: file_context, config: "style_config") -> list[issue_record]:
     """Report trailing spaces/tabs outside multi-line string literals."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for row in range(1, context.line_count + 1):
         line = context.line(row)
@@ -751,7 +751,7 @@ def check_trailing_whitespace(context: FileContext, config: "StyleConfig") -> li
 
     return issues
 
-def check_final_blank_lines(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_final_blank_lines(context: file_context, config: "style_config") -> list[issue_record]:
     """Report blank lines after the last non-blank line."""
 
     last_content: int | None = None
@@ -767,7 +767,7 @@ def check_final_blank_lines(context: FileContext, config: "StyleConfig") -> list
     blank_count = context.line_count - last_content
     return [_issue("final-blank-lines", last_content + 1, 1, f"File ends with {blank_count} blank line(s); remove them.")]
 
-def check_final_newline(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_final_newline(context: file_context, config: "style_config") -> list[issue_record]:
     """Report a missing or extra final newline."""
 
     if not context.text:
@@ -787,14 +787,14 @@ def check_final_newline(context: FileContext, config: "StyleConfig") -> list[Iss
 
     return []
 
-def check_indent_four_spaces(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_indent_four_spaces(context: file_context, config: "style_config") -> list[issue_record]:
     """Report block indentation widths that are not a multiple of four.
 
     Only the first physical row of a logical line is checked: continuation
     lines inside brackets are aligned freely and are not block indentation.
     """
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for row in sorted(context.statement_start_rows()):
         if context.line_starts_in_literal(row):
@@ -810,10 +810,10 @@ def check_indent_four_spaces(context: FileContext, config: "StyleConfig") -> lis
 
     return issues
 
-def check_no_tabs(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_no_tabs(context: file_context, config: "style_config") -> list[issue_record]:
     """Report tab characters outside string literals."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for row in range(1, context.line_count + 1):
         line = context.line(row)
@@ -830,10 +830,10 @@ def check_no_tabs(context: FileContext, config: "StyleConfig") -> list[Issue]:
 
     return issues
 
-def check_no_consecutive_blank_lines(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_no_consecutive_blank_lines(context: file_context, config: "style_config") -> list[issue_record]:
     """Report runs of two or more blank lines."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
     row = 1
 
     while row <= context.line_count:
@@ -855,10 +855,10 @@ def check_no_consecutive_blank_lines(context: FileContext, config: "StyleConfig"
 
 _BLOCK_HEADER_KEYWORDS = frozenset({"if", "elif", "else", "for", "while", "with", "try", "except", "finally", "def", "class", "match", "case"})
 
-def check_one_statement_per_line(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_one_statement_per_line(context: file_context, config: "style_config") -> list[issue_record]:
     """Report semicolon-joined statements and single-line block bodies."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for tok in context.sig:
         if (tok.type == tokenize.OP) and (tok.string == ";"):
@@ -905,10 +905,10 @@ def check_one_statement_per_line(context: FileContext, config: "StyleConfig") ->
 
     return issues
 
-def check_single_line_statement(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_single_line_statement(context: file_context, config: "style_config") -> list[issue_record]:
     """Report logical lines that span several physical lines."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for logical in context.logical:
         sig_ids = logical.sig_ids
@@ -960,10 +960,10 @@ def check_single_line_statement(context: FileContext, config: "StyleConfig") -> 
 
     return issues
 
-def check_imports_at_top(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_imports_at_top(context: file_context, config: "style_config") -> list[issue_record]:
     """Report module-level imports that follow a non-import statement."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
     body = list(context.tree.body)
 
     if body and is_docstring_statement(body[0]):
@@ -980,10 +980,10 @@ def check_imports_at_top(context: FileContext, config: "StyleConfig") -> list[Is
 
     return issues
 
-def check_imports_contiguous(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_imports_contiguous(context: file_context, config: "style_config") -> list[issue_record]:
     """Report blank lines between consecutive module-level imports."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
     body = context.tree.body
 
     for previous, current in zip(body, body[1:], strict = False):
@@ -1028,10 +1028,10 @@ def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
 
     return False
 
-def check_no_block_imports(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_no_block_imports(context: file_context, config: "style_config") -> list[issue_record]:
     """Report imports that are not at module level."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for node in context.nodes():
         if not isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -1060,10 +1060,10 @@ def check_no_block_imports(context: FileContext, config: "StyleConfig") -> list[
 
     return issues
 
-def check_no_dynamic_imports(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_no_dynamic_imports(context: file_context, config: "style_config") -> list[issue_record]:
     """Report __import__ and importlib.import_module calls."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
     importlib_aliases: set[str] = {"importlib"}
     import_module_aliases: set[str] = set()
 
@@ -1109,7 +1109,7 @@ _UNARY_CAPABLE_OPERATORS = frozenset({"+", "-", "*", "**", "/", "@"})
 _UNARY_PREVIOUS_OPERATORS = frozenset({"(", "[", "{", ",", ":", ";", ".", "+", "-", "*", "**", "/", "//", "%", "@", "~", "=", "==", "!=", "<", "<=", ">", ">=", "&", "|", "^", "<<", ">>", "->", ":="})
 _UNARY_PREVIOUS_KEYWORDS = frozenset({"return", "yield", "if", "elif", "while", "assert", "lambda", "else", "not", "and", "or", "in", "is", "for", "del", "from", "import", "with", "as", "raise", "await", "global", "nonlocal", "case"})
 
-def _is_unary_operator(context: FileContext, index: int) -> bool:
+def _is_unary_operator(context: file_context, index: int) -> bool:
     tok = context.sig[index]
     previous = context.prev_token(index)
 
@@ -1127,7 +1127,7 @@ def _is_unary_operator(context: FileContext, index: int) -> bool:
 
     return False
 
-def _keyword_operator_is_binary(context: FileContext, index: int) -> bool:
+def _keyword_operator_is_binary(context: file_context, index: int) -> bool:
     tok = context.sig[index]
 
     if tok.string in {"and", "or", "in", "is"}:
@@ -1141,10 +1141,10 @@ def _keyword_operator_is_binary(context: FileContext, index: int) -> bool:
 
     return (following is not None) and (following.string == "in")
 
-def check_binary_operator_spacing(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_binary_operator_spacing(context: file_context, config: "style_config") -> list[issue_record]:
     """Report binary operators without exactly one space on each side."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for index, tok in enumerate(context.sig):
         is_binary_token = False
@@ -1183,7 +1183,7 @@ def check_binary_operator_spacing(context: FileContext, config: "StyleConfig") -
 
     return issues
 
-def _find_equal_index(context: FileContext, start: tuple[int, int], end: tuple[int, int]) -> int | None:
+def _find_equal_index(context: file_context, start: tuple[int, int], end: tuple[int, int]) -> int | None:
     for index in context.token_indices_in_range(start, end):
         tok = context.sig[index]
 
@@ -1192,7 +1192,7 @@ def _find_equal_index(context: FileContext, start: tuple[int, int], end: tuple[i
 
     return None
 
-def _default_equals_indices(context: FileContext) -> list[int]:
+def _default_equals_indices(context: file_context) -> list[int]:
     """Return the token indices of '=' in defaults and keyword arguments."""
 
     found: list[int] = []
@@ -1232,7 +1232,7 @@ def _default_equals_indices(context: FileContext) -> list[int]:
 
     return sorted(set(found))
 
-def _spacing_problems(context: FileContext, index: int, *, check_right: bool = True) -> list[str]:
+def _spacing_problems(context: file_context, index: int, *, check_right: bool = True) -> list[str]:
     """Return human-readable spacing problems around token *index*."""
 
     tok = context.sig[index]
@@ -1252,10 +1252,10 @@ def _spacing_problems(context: FileContext, index: int, *, check_right: bool = T
 
     return problems
 
-def check_equal_spacing(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_equal_spacing(context: file_context, config: "style_config") -> list[issue_record]:
     """Report '=' in defaults and keyword arguments without exactly one space."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for index in _default_equals_indices(context):
         problems = _spacing_problems(context, index)
@@ -1268,7 +1268,7 @@ def check_equal_spacing(context: FileContext, config: "StyleConfig") -> list[Iss
 
     return issues
 
-def _find_colon_index(context: FileContext, start: tuple[int, int], end: tuple[int, int]) -> int | None:
+def _find_colon_index(context: file_context, start: tuple[int, int], end: tuple[int, int]) -> int | None:
     for index in context.token_indices_in_range(start, end):
         tok = context.sig[index]
 
@@ -1277,7 +1277,7 @@ def _find_colon_index(context: FileContext, start: tuple[int, int], end: tuple[i
 
     return None
 
-def _lambda_colon_index(context: FileContext, node: ast.Lambda) -> int | None:
+def _lambda_colon_index(context: file_context, node: ast.Lambda) -> int | None:
     start = context.ast_start(node)
     end = context.ast_start(node.body)
     depth = 0
@@ -1298,7 +1298,7 @@ def _lambda_colon_index(context: FileContext, node: ast.Lambda) -> int | None:
 
     return candidate
 
-def _slice_colon_indices(context: FileContext) -> list[int]:
+def _slice_colon_indices(context: file_context) -> list[int]:
     """Return token indices of slice colons for the spaced slice mode."""
 
     found: list[int] = []
@@ -1337,7 +1337,7 @@ def _slice_colon_indices(context: FileContext) -> list[int]:
 
     return found
 
-def _colon_indices(context: FileContext, config: "StyleConfig") -> list[int]:
+def _colon_indices(context: file_context, config: "style_config") -> list[int]:
     """Return the token indices of colons whose spacing the rule governs."""
 
     found: set[int] = set()
@@ -1378,10 +1378,10 @@ def _colon_indices(context: FileContext, config: "StyleConfig") -> list[int]:
 
     return sorted(found)
 
-def check_colon_spacing(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_colon_spacing(context: file_context, config: "style_config") -> list[issue_record]:
     """Report dict/annotation/lambda colon spacing problems."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for index in _colon_indices(context, config):
         tok = context.sig[index]
@@ -1411,10 +1411,10 @@ def check_colon_spacing(context: FileContext, config: "StyleConfig") -> list[Iss
 
     return issues
 
-def check_no_trailing_comma(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_no_trailing_comma(context: file_context, config: "style_config") -> list[issue_record]:
     """Report commas directly before a closing bracket, minus tuple exemptions."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
     position_to_index = {tok.start: index for index, tok in enumerate(context.sig)}
     tuple_commas = _comma_token_positions_of_single_element_tuples(context)
 
@@ -1444,7 +1444,7 @@ def check_no_trailing_comma(context: FileContext, config: "StyleConfig") -> list
 
     return issues
 
-def _absolute_offset(context: FileContext, position: tuple[int, int]) -> int:
+def _absolute_offset(context: file_context, position: tuple[int, int]) -> int:
     row, column = position
     offset = 0
 
@@ -1453,7 +1453,7 @@ def _absolute_offset(context: FileContext, position: tuple[int, int]) -> int:
 
     return offset + column
 
-def _removing_pair_keeps_ast(context: FileContext, open_position: tuple[int, int], close_position: tuple[int, int]) -> bool:
+def _removing_pair_keeps_ast(context: file_context, open_position: tuple[int, int], close_position: tuple[int, int]) -> bool:
     open_offset = _absolute_offset(context, open_position)
     close_offset = _absolute_offset(context, close_position)
 
@@ -1469,7 +1469,7 @@ def _removing_pair_keeps_ast(context: FileContext, open_position: tuple[int, int
 
     return ast.dump(rewritten, include_attributes = False) == ast.dump(context.tree, include_attributes = False)
 
-def _call_parenthesis_pair(context: FileContext, call: ast.Call) -> tuple[tuple[int, int], tuple[int, int]] | None:
+def _call_parenthesis_pair(context: file_context, call: ast.Call) -> tuple[tuple[int, int], tuple[int, int]] | None:
     end = context.ast_end(call)
     close_position = (end[0], end[1] - 1)
 
@@ -1495,7 +1495,7 @@ def _call_parenthesis_pair(context: FileContext, call: ast.Call) -> tuple[tuple[
 
 _SKIPPED_REDUNDANT_TYPES: tuple[type[ast.AST], ...] = (ast.Tuple, ast.GeneratorExp, ast.Yield, ast.YieldFrom, ast.NamedExpr, ast.Starred)
 
-def _redundant_paren_candidate(context: FileContext, node: ast.AST, call_pair: tuple[tuple[int, int], tuple[int, int]] | None) -> tuple[int, int] | None:
+def _redundant_paren_candidate(context: file_context, node: ast.AST, call_pair: tuple[tuple[int, int], tuple[int, int]] | None) -> tuple[int, int] | None:
     if isinstance(node, _SKIPPED_REDUNDANT_TYPES):
         return None
 
@@ -1530,7 +1530,7 @@ def _redundant_paren_candidate(context: FileContext, node: ast.AST, call_pair: t
 
     return pair
 
-def _redundant_paren_issues(context: FileContext) -> list[tuple[int, int]]:
+def _redundant_paren_issues(context: file_context) -> list[tuple[int, int]]:
     """Return (open, close) positions of reportable redundant parenthesis pairs."""
 
     positions: list[tuple[int, int]] = []
@@ -1564,10 +1564,10 @@ def _redundant_paren_issues(context: FileContext) -> list[tuple[int, int]]:
 
     return positions
 
-def check_redundant_parens(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_redundant_parens(context: file_context, config: "style_config") -> list[issue_record]:
     """Report redundant outer parentheses around expressions."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for open_position, _close_position in _redundant_paren_issues(context):
         issues.append(_issue("redundant-parens", open_position[0], open_position[1] + 1, "Redundant outer parentheses around this expression."))
@@ -1586,7 +1586,7 @@ def _operator_operands(node: ast.AST) -> list[ast.AST]:
 
     return []
 
-def _explicit_precedence_children(context: FileContext) -> list[ast.AST]:
+def _explicit_precedence_children(context: file_context) -> list[ast.AST]:
     """Return the operands that need explicit parentheses (shared by check/fix)."""
 
     children: list[ast.AST] = []
@@ -1622,10 +1622,10 @@ def _explicit_precedence_children(context: FileContext) -> list[ast.AST]:
 
     return children
 
-def check_explicit_precedence(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_explicit_precedence(context: file_context, config: "style_config") -> list[issue_record]:
     """Report nested operators of different precedence without parentheses."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for child in _explicit_precedence_children(context):
         child_start = context.ast_start(child)
@@ -1633,16 +1633,16 @@ def check_explicit_precedence(context: FileContext, config: "StyleConfig") -> li
 
     return issues
 
-def fix_explicit_precedence(context: FileContext, config: "StyleConfig") -> str:
+def fix_explicit_precedence(context: file_context, config: "style_config") -> str:
     """Wrap mixed-precedence operands in parentheses."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for child in _explicit_precedence_children(context):
         start = context.ast_start(child)
         end = context.ast_end(child)
-        edits.append(LineEdit(start[0], start[1], start[1], "("))
-        edits.append(LineEdit(end[0], end[1], end[1], ")"))
+        edits.append(line_edit(start[0], start[1], start[1], "("))
+        edits.append(line_edit(end[0], end[1], end[1], ")"))
 
     if not edits:
         return context.text
@@ -1660,7 +1660,7 @@ def _blank_runs(rows: list[int]) -> list[list[int]]:
 
     return runs
 
-def _body_entries(context: FileContext) -> list[tuple[ast.AST, list[ast.stmt], bool]]:
+def _body_entries(context: file_context) -> list[tuple[ast.AST, list[ast.stmt], bool]]:
     """Return (container, statements, header_followed_by_body) entries."""
 
     entries: list[tuple[ast.AST, list[ast.stmt], bool]] = [(context.tree, list(context.tree.body), False)]
@@ -1690,10 +1690,10 @@ def _body_entries(context: FileContext) -> list[tuple[ast.AST, list[ast.stmt], b
 
     return entries
 
-def check_blank_lines_around_blocks(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_blank_lines_around_blocks(context: file_context, config: "style_config") -> list[issue_record]:
     """Report block headers or complete blocks without exactly one blank line."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for container, statements, header_check in _body_entries(context):
         if not statements:
@@ -1739,10 +1739,10 @@ def check_blank_lines_around_blocks(context: FileContext, config: "StyleConfig")
 
 _BRANCH_KEYWORDS = frozenset({"elif", "else", "except", "finally"})
 
-def check_branch_adjacency(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_branch_adjacency(context: file_context, config: "style_config") -> list[issue_record]:
     """Report blank lines before elif/else/except/except*/finally."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for row in range(2, context.line_count + 1):
         line = context.line(row)
@@ -1769,10 +1769,10 @@ def check_branch_adjacency(context: FileContext, config: "StyleConfig") -> list[
 
     return issues
 
-def check_decorator_adjacency(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_decorator_adjacency(context: file_context, config: "style_config") -> list[issue_record]:
     """Report blank lines between decorators and the decorated definition."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for node in context.nodes():
         decorators = getattr(node, "decorator_list", None)
@@ -1837,7 +1837,7 @@ def _class_has_exempt_base(node: ast.ClassDef) -> bool:
     return False
 
 @dataclass(frozen = True)
-class Definition:
+class definition:
     """One definition-like name collected for the naming rules."""
 
     name: str
@@ -1849,15 +1849,15 @@ class Definition:
     annotation: ast.AST | None = None
     module_level: bool = False
 
-def _definitions(context: FileContext) -> list[Definition]:
+def _definitions(context: file_context) -> list[definition]:
     """Collect class, function, parameter and assignment names with context."""
 
-    result: list[Definition] = []
+    result: list[definition] = []
 
     def add(name: str, node: ast.AST, kind: str, value: ast.AST | None = None, annotation: ast.AST | None = None, module_level: bool = False) -> None:
         row = getattr(node, "lineno", 1)
         column = context.char_col(row, getattr(node, "col_offset", 0))
-        result.append(Definition(name, row, column + 1, kind, node, value, annotation, module_level))
+        result.append(definition(name, row, column + 1, kind, node, value, annotation, module_level))
 
     def add_target(target: ast.AST, value: ast.AST | None, annotation: ast.AST | None, module_level: bool) -> None:
         if isinstance(target, ast.Name):
@@ -1905,7 +1905,7 @@ def _definitions(context: FileContext) -> list[Definition]:
 
     return result
 
-def _definition_is_exempt(context: FileContext, definition: Definition, config: "StyleConfig") -> bool:
+def _definition_is_exempt(context: file_context, definition: definition, config: "style_config") -> bool:
     """Return whether the naming rules ignore this definition."""
 
     name = definition.name
@@ -1944,10 +1944,10 @@ def _definition_is_exempt(context: FileContext, definition: Definition, config: 
 
     return False
 
-def _naming_issues(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def _naming_issues(context: file_context, config: "style_config") -> list[issue_record]:
     """Return lower_snake_case violations for every collected definition."""
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for definition in context.definitions():
         if _definition_is_exempt(context, definition, config):
@@ -1961,16 +1961,16 @@ def _naming_issues(context: FileContext, config: "StyleConfig") -> list[Issue]:
     issues.sort(key = lambda issue: (issue.line, issue.column))
     return issues
 
-def _naming_issue(name: str, row: int, column: int) -> Issue:
+def _naming_issue(name: str, row: int, column: int) -> issue_record:
     suggestion = _camel_to_snake(name)
     return _issue("snake-case-definition", row, column, f"'{name}' is not lower_snake_case; use '{suggestion}'.")
 
-def check_snake_case_definition(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_snake_case_definition(context: file_context, config: "style_config") -> list[issue_record]:
     """Report definition names that are not lower_snake_case."""
 
     return _naming_issues(context, config)
 
-def check_compound_word(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_compound_word(context: file_context, config: "style_config") -> list[issue_record]:
     """Report names that split a configured compound word."""
 
     lexicon = {word.lower() for word in config.compound_words if word}
@@ -1978,7 +1978,7 @@ def check_compound_word(context: FileContext, config: "StyleConfig") -> list[Iss
     if not lexicon:
         return []
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for definition in _definitions(context):
         if _definition_is_exempt(context, definition, config):
@@ -2011,11 +2011,11 @@ def check_compound_word(context: FileContext, config: "StyleConfig") -> list[Iss
 
     return issues
 
-def check_docstring_comment(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_docstring_comment(context: file_context, config: "style_config") -> list[issue_record]:
     """Report standalone string expressions used as comments."""
 
     allow_docstrings = config.docstrings != "ban"
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for node in context.nodes():
         if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)):
@@ -2046,7 +2046,7 @@ _DECORATIVE_COMMENT_DASH_RE = re.compile("^#\\s*\u2500\u2500")
 def _is_section_comment(line: str) -> bool:
     return bool(_DECORATIVE_COMMENT_RE.match(line) or _DECORATIVE_COMMENT_DASH_RE.match(line))
 
-def check_comment_blank_line(context: FileContext, config: "StyleConfig") -> list[Issue]:
+def check_comment_blank_line(context: file_context, config: "style_config") -> list[issue_record]:
     """Report a full-line comment followed by a blank line."""
 
     mode = config.comment_blank_line
@@ -2054,7 +2054,7 @@ def check_comment_blank_line(context: FileContext, config: "StyleConfig") -> lis
     if mode == "off":
         return []
 
-    issues: list[Issue] = []
+    issues: list[issue_record] = []
 
     for row in sorted(context.comment_rows):
         if row >= context.line_count:
@@ -2085,7 +2085,7 @@ def check_comment_blank_line(context: FileContext, config: "StyleConfig") -> lis
 
     return issues
 
-def check_snake_case_file(path: Path) -> list[Issue]:
+def check_snake_case_file(path: Path) -> list[issue_record]:
     """Report a Python file whose stem is not lower_snake_case."""
 
     stem = path.stem
@@ -2109,7 +2109,7 @@ def check_snake_case_file(path: Path) -> list[Issue]:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen = True)
-class LineEdit:
+class line_edit:
     """Replace characters [start, end) of one physical line with text."""
 
     row: int
@@ -2117,10 +2117,10 @@ class LineEdit:
     end: int
     text: str
 
-def _apply_line_edits(context: FileContext, edits: Sequence[LineEdit]) -> str:
+def _apply_line_edits(context: file_context, edits: Sequence[line_edit]) -> str:
     """Apply non-overlapping line edits and return the rewritten file text."""
 
-    grouped: dict[int, list[LineEdit]] = {}
+    grouped: dict[int, list[line_edit]] = {}
 
     for edit in edits:
         if not 1 <= edit.row <= context.line_count:
@@ -2139,7 +2139,7 @@ def _apply_line_edits(context: FileContext, edits: Sequence[LineEdit]) -> str:
     rewritten = list(context.lines[: context.line_count])
 
     for row, row_edits in grouped.items():
-        accepted: list[LineEdit] = []
+        accepted: list[line_edit] = []
 
         for edit in sorted(row_edits, key = lambda item: (item.start, item.end)):
             if accepted and (edit.start < accepted[-1].end):
@@ -2161,7 +2161,7 @@ def _apply_line_edits(context: FileContext, edits: Sequence[LineEdit]) -> str:
 
     return "\n".join(rewritten)
 
-def _delete_rows(context: FileContext, rows: set[int]) -> str:
+def _delete_rows(context: file_context, rows: set[int]) -> str:
     """Return the file text with the given physical rows removed."""
 
     rewritten = [context.lines[row - 1]for row in range(1, context.line_count + 1)if row not in rows]
@@ -2171,10 +2171,10 @@ def _delete_rows(context: FileContext, rows: set[int]) -> str:
 
     return "\n".join(rewritten)
 
-def fix_trailing_whitespace(context: FileContext, config: "StyleConfig") -> str:
+def fix_trailing_whitespace(context: file_context, config: "style_config") -> str:
     """Strip trailing spaces and tabs outside multi-line strings."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for row in range(1, context.line_count + 1):
         line = context.line(row)
@@ -2183,17 +2183,17 @@ def fix_trailing_whitespace(context: FileContext, config: "StyleConfig") -> str:
         if (stripped == line) or context.in_literal(row, len(stripped)):
             continue
 
-        edits.append(LineEdit(row, len(stripped), len(line), ""))
+        edits.append(line_edit(row, len(stripped), len(line), ""))
 
     if not edits:
         return context.text
 
     return _apply_line_edits(context, edits)
 
-def fix_no_tabs(context: FileContext, config: "StyleConfig") -> str:
+def fix_no_tabs(context: file_context, config: "style_config") -> str:
     """Expand tabs outside string literals to spaces."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for row in range(1, context.line_count + 1):
         line = context.line(row)
@@ -2207,17 +2207,17 @@ def fix_no_tabs(context: FileContext, config: "StyleConfig") -> str:
                 continue
 
             replacement = "    " if column < indent else " "
-            edits.append(LineEdit(row, column, column + 1, replacement))
+            edits.append(line_edit(row, column, column + 1, replacement))
 
     if not edits:
         return context.text
 
     return _apply_line_edits(context, edits)
 
-def fix_indent_four_spaces(context: FileContext, config: "StyleConfig") -> str:
+def fix_indent_four_spaces(context: file_context, config: "style_config") -> str:
     """Round offending block indentation down to the nearest multiple of four."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for row in sorted(context.statement_start_rows()):
         if context.line_starts_in_literal(row):
@@ -2231,14 +2231,14 @@ def fix_indent_four_spaces(context: FileContext, config: "StyleConfig") -> str:
         if (width % 4) == 0:
             continue
 
-        edits.append(LineEdit(row, 0, width, " " * (width - (width % 4))))
+        edits.append(line_edit(row, 0, width, " " * (width - (width % 4))))
 
     if not edits:
         return context.text
 
     return _apply_line_edits(context, edits)
 
-def fix_no_consecutive_blank_lines(context: FileContext, config: "StyleConfig") -> str:
+def fix_no_consecutive_blank_lines(context: file_context, config: "style_config") -> str:
     """Collapse runs of blank lines to one blank line."""
 
     delete: set[int] = set()
@@ -2262,14 +2262,14 @@ def fix_no_consecutive_blank_lines(context: FileContext, config: "StyleConfig") 
 
     return _delete_rows(context, delete)
 
-def _last_content_row(context: FileContext) -> int | None:
+def _last_content_row(context: file_context) -> int | None:
     for row in range(context.line_count, 0, -1):
         if not context.is_blank_line(row):
             return row
 
     return None
 
-def fix_final_blank_lines(context: FileContext, config: "StyleConfig") -> str:
+def fix_final_blank_lines(context: file_context, config: "style_config") -> str:
     """Remove blank lines after the last non-blank line."""
 
     if not context.text:
@@ -2290,7 +2290,7 @@ def fix_final_blank_lines(context: FileContext, config: "StyleConfig") -> str:
 
     return body
 
-def fix_final_newline(context: FileContext, config: "StyleConfig") -> str:
+def fix_final_newline(context: file_context, config: "style_config") -> str:
     """Rewrite the file tail to one newline (or none)."""
 
     if not context.text:
@@ -2303,7 +2303,7 @@ def fix_final_newline(context: FileContext, config: "StyleConfig") -> str:
 
     return stripped + "\n"
 
-def fix_imports_contiguous(context: FileContext, config: "StyleConfig") -> str:
+def fix_imports_contiguous(context: file_context, config: "style_config") -> str:
     """Remove blank lines between consecutive module-level imports."""
 
     delete: set[int] = set()
@@ -2327,7 +2327,7 @@ def fix_imports_contiguous(context: FileContext, config: "StyleConfig") -> str:
 
     return _delete_rows(context, delete)
 
-def _branch_body_blank_rows(context: FileContext) -> set[int]:
+def _branch_body_blank_rows(context: file_context) -> set[int]:
     """Return blank rows that sit before elif/else/except/finally branches."""
 
     delete: set[int] = set()
@@ -2354,7 +2354,7 @@ def _branch_body_blank_rows(context: FileContext) -> set[int]:
 
     return delete
 
-def fix_branch_adjacency(context: FileContext, config: "StyleConfig") -> str:
+def fix_branch_adjacency(context: file_context, config: "style_config") -> str:
     """Remove blank lines in front of elif/else/except/finally branches."""
 
     delete = _branch_body_blank_rows(context)
@@ -2364,7 +2364,7 @@ def fix_branch_adjacency(context: FileContext, config: "StyleConfig") -> str:
 
     return _delete_rows(context, delete)
 
-def fix_decorator_adjacency(context: FileContext, config: "StyleConfig") -> str:
+def fix_decorator_adjacency(context: file_context, config: "style_config") -> str:
     """Remove blank lines between decorators and the decorated definition."""
 
     delete: set[int] = set()
@@ -2392,7 +2392,7 @@ def fix_decorator_adjacency(context: FileContext, config: "StyleConfig") -> str:
 
     return _delete_rows(context, delete)
 
-def _blank_line_edits(context: FileContext, config: "StyleConfig") -> tuple[set[int], set[int]]:
+def _blank_line_edits(context: file_context, config: "style_config") -> tuple[set[int], set[int]]:
     """Return (blank rows to delete, rows that need a blank line inserted before)."""
 
     delete: set[int] = set()
@@ -2438,7 +2438,7 @@ def _blank_line_edits(context: FileContext, config: "StyleConfig") -> tuple[set[
 
     return delete, insert
 
-def _apply_blank_row_edits(context: FileContext, delete: set[int], insert: set[int]) -> str:
+def _apply_blank_row_edits(context: file_context, delete: set[int], insert: set[int]) -> str:
     """Return the text with the given rows deleted and blank rows inserted.
 
     An inserted blank line goes before the row recorded in *insert*.
@@ -2463,13 +2463,13 @@ def _apply_blank_row_edits(context: FileContext, delete: set[int], insert: set[i
 
     return "\n".join(rewritten)
 
-def fix_blank_lines_around_blocks(context: FileContext, config: "StyleConfig") -> str:
+def fix_blank_lines_around_blocks(context: file_context, config: "style_config") -> str:
     """Delete extra blank lines and insert the missing lines around blocks."""
 
     delete, insert = _blank_line_edits(context, config)
     return _apply_blank_row_edits(context, delete, insert)
 
-def _comment_blank_rows(context: FileContext, config: "StyleConfig") -> set[int]:
+def _comment_blank_rows(context: file_context, config: "style_config") -> set[int]:
     """Return blank rows that follow a reportable full-line comment."""
 
     mode = config.comment_blank_line
@@ -2512,7 +2512,7 @@ def _comment_blank_rows(context: FileContext, config: "StyleConfig") -> set[int]
 
     return delete
 
-def fix_comment_blank_line(context: FileContext, config: "StyleConfig") -> str:
+def fix_comment_blank_line(context: file_context, config: "style_config") -> str:
     """Delete blank lines inserted after a comment."""
 
     delete = _comment_blank_rows(context, config)
@@ -2698,7 +2698,7 @@ def _char_needs_space(previous: str, current: str) -> bool:
 
     return False
 
-def _group_has_multiline_fstring(context: FileContext, start_row: int, end_row: int) -> bool:
+def _group_has_multiline_fstring(context: file_context, start_row: int, end_row: int) -> bool:
     """Return whether a single f-string inside the logical line spans rows."""
 
     for span_start_row, _start_column, span_end_row, _end_column in context.fstring_spans:
@@ -2707,7 +2707,7 @@ def _group_has_multiline_fstring(context: FileContext, start_row: int, end_row: 
 
     return False
 
-def _merge_source_fragments(context: FileContext, start_row: int, end_row: int, tokens: list[tokenize.TokenInfo]) -> str | None:
+def _merge_source_fragments(context: file_context, start_row: int, end_row: int, tokens: list[tokenize.TokenInfo]) -> str | None:
     """Join the source fragments of a logical line whose tokens include f-strings.
 
     The token text inside an f-string is runtime data, so this path never
@@ -2766,7 +2766,7 @@ def _merge_source_fragments(context: FileContext, start_row: int, end_row: int, 
 
     return merged
 
-def _mergeable_logical_lines(context: FileContext, config: "StyleConfig") -> list[tuple[int, int, str]]:
+def _mergeable_logical_lines(context: file_context, config: "style_config") -> list[tuple[int, int, str]]:
     """Return (first_row, last_row, merged_text) for mergeable statements."""
 
     merges: list[tuple[int, int, str]] = []
@@ -2825,7 +2825,7 @@ def _mergeable_logical_lines(context: FileContext, config: "StyleConfig") -> lis
 
     return merges
 
-def fix_single_line_statement(context: FileContext, config: "StyleConfig") -> str:
+def fix_single_line_statement(context: file_context, config: "style_config") -> str:
     """Join multi-line statements that have no comments or multi-line strings."""
 
     merges = _mergeable_logical_lines(context, config)
@@ -2854,7 +2854,7 @@ def fix_single_line_statement(context: FileContext, config: "StyleConfig") -> st
 
     return "\n".join(rewritten)
 
-def _trailing_comma_positions(context: FileContext) -> list[tuple[int, tokenize.TokenInfo]]:
+def _trailing_comma_positions(context: file_context) -> list[tuple[int, tokenize.TokenInfo]]:
     """Return comma tokens that violate the no-trailing-comma rule."""
 
     positions: list[tuple[int, tokenize.TokenInfo]] = []
@@ -2884,26 +2884,26 @@ def _trailing_comma_positions(context: FileContext) -> list[tuple[int, tokenize.
 
     return positions
 
-def fix_no_trailing_comma(context: FileContext, config: "StyleConfig") -> str:
+def fix_no_trailing_comma(context: file_context, config: "style_config") -> str:
     """Delete trailing commas before closing brackets."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for index, comma in _trailing_comma_positions(context):
         following = context.sig[index]
 
         if following.start[0] == comma.end[0]:
-            edits.append(LineEdit(comma.start[0], comma.start[1], following.start[1], ""))
+            edits.append(line_edit(comma.start[0], comma.start[1], following.start[1], ""))
         else:
-            edits.append(LineEdit(comma.start[0], comma.start[1], comma.end[1], ""))
+            edits.append(line_edit(comma.start[0], comma.start[1], comma.end[1], ""))
 
     if not edits:
         return context.text
 
     return _apply_line_edits(context, edits)
 
-def _operator_spacing_edits(context: FileContext) -> list[LineEdit]:
-    edits: list[LineEdit] = []
+def _operator_spacing_edits(context: file_context) -> list[line_edit]:
+    edits: list[line_edit] = []
 
     for index, tok in enumerate(context.sig):
         is_binary_token = False
@@ -2927,15 +2927,15 @@ def _operator_spacing_edits(context: FileContext) -> list[LineEdit]:
 
         if (previous is not None) and (previous.end[0] == tok.start[0]):
             if context.line(tok.start[0])[previous.end[1] : tok.start[1]] != " ":
-                edits.append(LineEdit(tok.start[0], previous.end[1], tok.start[1], " "))
+                edits.append(line_edit(tok.start[0], previous.end[1], tok.start[1], " "))
 
         if (following is not None) and (following.start[0] == tok.start[0]):
             if context.line(tok.start[0])[tok.end[1] : following.start[1]] != " ":
-                edits.append(LineEdit(tok.start[0], tok.end[1], following.start[1], " "))
+                edits.append(line_edit(tok.start[0], tok.end[1], following.start[1], " "))
 
     return edits
 
-def fix_binary_operator_spacing(context: FileContext, config: "StyleConfig") -> str:
+def fix_binary_operator_spacing(context: file_context, config: "style_config") -> str:
     """Normalise spaces around binary operators."""
 
     edits = _operator_spacing_edits(context)
@@ -2945,10 +2945,10 @@ def fix_binary_operator_spacing(context: FileContext, config: "StyleConfig") -> 
 
     return _apply_line_edits(context, edits)
 
-def fix_equal_spacing(context: FileContext, config: "StyleConfig") -> str:
+def fix_equal_spacing(context: file_context, config: "style_config") -> str:
     """Normalise spaces around default and keyword '='."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for index in _default_equals_indices(context):
         tok = context.sig[index]
@@ -2957,21 +2957,21 @@ def fix_equal_spacing(context: FileContext, config: "StyleConfig") -> str:
 
         if (previous is not None) and (previous.end[0] == tok.start[0]):
             if context.line(tok.start[0])[previous.end[1] : tok.start[1]] != " ":
-                edits.append(LineEdit(tok.start[0], previous.end[1], tok.start[1], " "))
+                edits.append(line_edit(tok.start[0], previous.end[1], tok.start[1], " "))
 
         if (following is not None) and (following.start[0] == tok.start[0]):
             if context.line(tok.start[0])[tok.end[1] : following.start[1]] != " ":
-                edits.append(LineEdit(tok.start[0], tok.end[1], following.start[1], " "))
+                edits.append(line_edit(tok.start[0], tok.end[1], following.start[1], " "))
 
     if not edits:
         return context.text
 
     return _apply_line_edits(context, edits)
 
-def fix_colon_spacing(context: FileContext, config: "StyleConfig") -> str:
+def fix_colon_spacing(context: file_context, config: "style_config") -> str:
     """Normalise spaces around governed colons."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for index in _colon_indices(context, config):
         tok = context.sig[index]
@@ -2980,26 +2980,26 @@ def fix_colon_spacing(context: FileContext, config: "StyleConfig") -> str:
 
         if (previous is not None) and (previous.end[0] == tok.start[0]):
             if context.line(tok.start[0])[previous.end[1] : tok.start[1]] != "":
-                edits.append(LineEdit(tok.start[0], previous.end[1], tok.start[1], ""))
+                edits.append(line_edit(tok.start[0], previous.end[1], tok.start[1], ""))
 
         if (following is not None) and (following.start[0] == tok.start[0]):
             if not ((following.type == tokenize.OP) and (following.string in _CLOSE_BRACKETS)):
                 if context.line(tok.start[0])[tok.end[1] : following.start[1]] != " ":
-                    edits.append(LineEdit(tok.start[0], tok.end[1], following.start[1], " "))
+                    edits.append(line_edit(tok.start[0], tok.end[1], following.start[1], " "))
 
     if not edits:
         return context.text
 
     return _apply_line_edits(context, edits)
 
-def fix_redundant_parens(context: FileContext, config: "StyleConfig") -> str:
+def fix_redundant_parens(context: file_context, config: "style_config") -> str:
     """Delete one redundant outer parenthesis pair per expression."""
 
-    edits: list[LineEdit] = []
+    edits: list[line_edit] = []
 
     for open_position, close_position in _redundant_paren_issues(context):
-        edits.append(LineEdit(open_position[0], open_position[1], open_position[1] + 1, ""))
-        edits.append(LineEdit(close_position[0], close_position[1], close_position[1] + 1, ""))
+        edits.append(line_edit(open_position[0], open_position[1], open_position[1] + 1, ""))
+        edits.append(line_edit(close_position[0], close_position[1], close_position[1] + 1, ""))
 
     if not edits:
         return context.text
@@ -3010,7 +3010,7 @@ def fix_redundant_parens(context: FileContext, config: "StyleConfig") -> str:
 # Registries
 # ---------------------------------------------------------------------------
 
-CHECK_FUNCS: dict[str, Callable[[FileContext, "StyleConfig"], list[Issue]]] = {
+CHECK_FUNCS: dict[str, Callable[[file_context, "style_config"], list[issue_record]]] = {
     "trailing-whitespace": check_trailing_whitespace,
     "final-blank-lines": check_final_blank_lines,
     "final-newline": check_final_newline,
@@ -3040,7 +3040,7 @@ CHECK_FUNCS: dict[str, Callable[[FileContext, "StyleConfig"], list[Issue]]] = {
 
 ENGINE_RULE_IDS: frozenset[str] = frozenset({"acyclic-imports", "snake-case-file"})
 
-FIX_FUNCS: dict[str, Callable[[FileContext, "StyleConfig"], str]] = {"trailing-whitespace": fix_trailing_whitespace, "no-tabs": fix_no_tabs, "indent-four-spaces": fix_indent_four_spaces, "no-consecutive-blank-lines": fix_no_consecutive_blank_lines, "final-blank-lines": fix_final_blank_lines, "final-newline": fix_final_newline, "imports-contiguous": fix_imports_contiguous, "branch-adjacency": fix_branch_adjacency, "decorator-adjacency": fix_decorator_adjacency, "blank-lines-around-blocks": fix_blank_lines_around_blocks, "comment-blank-line": fix_comment_blank_line, "single-line-statement": fix_single_line_statement, "no-trailing-comma": fix_no_trailing_comma, "binary-operator-spacing": fix_binary_operator_spacing, "equal-spacing": fix_equal_spacing, "colon-spacing": fix_colon_spacing, "explicit-precedence": fix_explicit_precedence, "redundant-parens": fix_redundant_parens}
+FIX_FUNCS: dict[str, Callable[[file_context, "style_config"], str]] = {"trailing-whitespace": fix_trailing_whitespace, "no-tabs": fix_no_tabs, "indent-four-spaces": fix_indent_four_spaces, "no-consecutive-blank-lines": fix_no_consecutive_blank_lines, "final-blank-lines": fix_final_blank_lines, "final-newline": fix_final_newline, "imports-contiguous": fix_imports_contiguous, "branch-adjacency": fix_branch_adjacency, "decorator-adjacency": fix_decorator_adjacency, "blank-lines-around-blocks": fix_blank_lines_around_blocks, "comment-blank-line": fix_comment_blank_line, "single-line-statement": fix_single_line_statement, "no-trailing-comma": fix_no_trailing_comma, "binary-operator-spacing": fix_binary_operator_spacing, "equal-spacing": fix_equal_spacing, "colon-spacing": fix_colon_spacing, "explicit-precedence": fix_explicit_precedence, "redundant-parens": fix_redundant_parens}
 
 FIX_ORDER: tuple[str, ...] = ("trailing-whitespace", "no-tabs", "indent-four-spaces", "no-consecutive-blank-lines", "final-blank-lines", "final-newline", "imports-contiguous", "branch-adjacency", "decorator-adjacency", "blank-lines-around-blocks", "comment-blank-line", "single-line-statement", "no-trailing-comma", "binary-operator-spacing", "equal-spacing", "colon-spacing", "explicit-precedence", "redundant-parens")
 
@@ -3063,7 +3063,7 @@ def string_token_texts(tree_text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen = True)
-class ImportEdge:
+class import_edge:
     """One module-level import statement with its resolved candidate targets."""
 
     targets: tuple[str, ...]
@@ -3071,16 +3071,16 @@ class ImportEdge:
     line: int
 
 @dataclass(frozen = True)
-class ModuleInfo:
+class module_info:
     """Import-graph node for one scanned module."""
 
     name: str
     path: Path
     is_package: bool
-    edges: tuple[ImportEdge, ...]
+    edges: tuple[import_edge, ...]
 
 @dataclass(frozen = True)
-class GraphIssue:
+class graph_issue:
     """One import-graph violation anchored at a file position."""
 
     path: Path
@@ -3124,10 +3124,10 @@ def _relative_target_candidates(module_name: str, is_package: bool, level: int, 
 
     return _absolute_target_candidates(base)
 
-def module_import_edges(path: Path, tree: ast.Module, module_name: str, is_package: bool) -> list[ImportEdge]:
+def module_import_edges(path: Path, tree: ast.Module, module_name: str, is_package: bool) -> list[import_edge]:
     """Collect module-level import statements of *tree* as graph edges."""
 
-    edges: list[ImportEdge] = []
+    edges: list[import_edge] = []
 
     for statement in tree.body:
         if isinstance(statement, ast.Import):
@@ -3135,7 +3135,7 @@ def module_import_edges(path: Path, tree: ast.Module, module_name: str, is_packa
                 targets = _absolute_target_candidates(alias.name)
 
                 if targets:
-                    edges.append(ImportEdge(targets, path, statement.lineno))
+                    edges.append(import_edge(targets, path, statement.lineno))
         elif isinstance(statement, ast.ImportFrom):
             if statement.level:
                 targets = _relative_target_candidates(module_name, is_package, statement.level, statement.module)
@@ -3165,7 +3165,7 @@ def module_import_edges(path: Path, tree: ast.Module, module_name: str, is_packa
                 targets = tuple(dict.fromkeys(targets))
 
             if targets:
-                edges.append(ImportEdge(targets, path, statement.lineno))
+                edges.append(import_edge(targets, path, statement.lineno))
 
     return edges
 
@@ -3174,14 +3174,14 @@ def _canonical_cycle(cycle: Sequence[str]) -> tuple[str, ...]:
     rotated = list(cycle[smallest:]) + list(cycle[:smallest])
     return tuple(rotated)
 
-def check_import_cycles(modules: Sequence[ModuleInfo]) -> list[GraphIssue]:
+def check_import_cycles(modules: Sequence[module_info]) -> list[graph_issue]:
     """Return one issue per import cycle found in the scanned module graph."""
 
     if len(modules) < 2:
         return []
 
     known = {module.name for module in modules}
-    adjacency: dict[str, list[tuple[str, ImportEdge]]] = {name: [] for name in known}
+    adjacency: dict[str, list[tuple[str, import_edge]]] = {name: [] for name in known}
 
     for module in modules:
         for edge in module.edges:
@@ -3192,7 +3192,7 @@ def check_import_cycles(modules: Sequence[ModuleInfo]) -> list[GraphIssue]:
     state: dict[str, int] = {name: 0 for name in known}
     path_stack: list[str] = []
     reported: set[tuple[str, ...]] = set()
-    issues: list[GraphIssue] = []
+    issues: list[graph_issue] = []
 
     def visit(name: str) -> None:
         state[name] = 1
@@ -3207,7 +3207,7 @@ def check_import_cycles(modules: Sequence[ModuleInfo]) -> list[GraphIssue]:
                 if key not in reported:
                     reported.add(key)
                     rendered = " -> ".join([*cycle, target])
-                    issues.append(GraphIssue(edge.path, edge.line, 1, f"Import cycle detected: {rendered}."))
+                    issues.append(graph_issue(edge.path, edge.line, 1, f"Import cycle detected: {rendered}."))
             elif state.get(target, 0) == 0:
                 visit(target)
 
@@ -3220,4 +3220,4 @@ def check_import_cycles(modules: Sequence[ModuleInfo]) -> list[GraphIssue]:
 
     return issues
 
-__all__ = ["BUILTIN_RULES", "CHECK_FUNCS", "CHECK_RULES", "CHECK_RULE_IDS", "ENGINE_RULE_IDS", "FIX_FUNCS", "FIX_ORDER", "FileContext", "GraphIssue", "ImportEdge", "Issue", "KNOWN_RULE_IDS", "LineEdit", "LogicalLine", "MANUAL_RULES", "ManualRule", "ModuleInfo", "ParseFailure", "Rule", "check_import_cycles", "check_snake_case_file", "is_compound_statement", "is_docstring_statement", "is_parenthesized", "module_docstring", "module_import_edges", "module_name_for_path", "operator_precedence", "rule_fixable", "rule_severity", "source_line_prefix_is_blank", "string_token_texts", "walk_with_parents"]
+__all__ = ["BUILTIN_RULES", "CHECK_FUNCS", "CHECK_RULES", "CHECK_RULE_IDS", "ENGINE_RULE_IDS", "FIX_FUNCS", "FIX_ORDER", "file_context", "graph_issue", "import_edge", "issue_record", "KNOWN_RULE_IDS", "line_edit", "logical_line", "MANUAL_RULES", "manual_rule", "module_info", "parse_failure", "rule", "check_import_cycles", "check_snake_case_file", "is_compound_statement", "is_docstring_statement", "is_parenthesized", "module_docstring", "module_import_edges", "module_name_for_path", "operator_precedence", "rule_fixable", "rule_severity", "source_line_prefix_is_blank", "string_token_texts", "walk_with_parents"]

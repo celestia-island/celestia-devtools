@@ -17,7 +17,7 @@ platform subpackage ``dist/``. It is deliberately free of network calls so it is
 unit-testable; actual ``npm publish`` happens in CI.
 """
 
-from celestia_devtools.npm.platforms import Platform, PLATFORMS
+from celestia_devtools.npm.platforms import platform, PLATFORMS
 from celestia_devtools.npm.packager import (generate_root_package, generate_subpackage)
 
-__all__ = ["Platform", "PLATFORMS", "generate_root_package", "generate_subpackage"]
+__all__ = ["platform", "PLATFORMS", "generate_root_package", "generate_subpackage"]

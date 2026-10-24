@@ -23,7 +23,7 @@ def _dunder_version() -> str:
     assert match, "__version__ literal not found in __init__.py"
     return match.group(1)
 
-class TestVersionSingleSource:
+class test_version_single_source:
     def test_pyproject_derives_the_version_from_the_package(self):
         data = tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))
         assert "version" in data["project"].get("dynamic", []), ("pyproject.toml must not declare a static [project] version — it " "drifts from __init__.__version__; keep dynamic = [\"version\"] " "with tool.hatch.version.path instead")

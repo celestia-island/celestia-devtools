@@ -25,10 +25,10 @@ from typing import Callable
 from celestia_devtools.deploy import bootstrap
 from celestia_devtools.deploy.artifact import fetch as artifact_fetch
 from celestia_devtools.deploy.artifact import read_index, resolve
-from celestia_devtools.deploy.profile import DeployProfile
+from celestia_devtools.deploy.profile import deploy_profile
 
 OK, SKIPPED, PENDING, FAILED = (bootstrap.OK, bootstrap.SKIPPED, bootstrap.PENDING, bootstrap.FAILED)
-StageResult = bootstrap.StageResult
+stage_result = bootstrap.stage_result
 Executor = Callable[..., subprocess.CompletedProcess]
 
 def _ok(cmd, **kw):
@@ -36,7 +36,7 @@ def _ok(cmd, **kw):
 
 # ── stage: database (D3) ───────────────────────────────────────────────
 
-def stage_database(ctx: "bootstrap.StageContext") -> StageResult:
+def stage_database(ctx: "bootstrap.stage_context") -> stage_result:
     """External mode only for the wiring slice: create the DB when the URL
     names a local file-backed admin connection is out of scope; we verify
     reachability via pg_isready and record the URL file the other stages
@@ -46,17 +46,17 @@ def stage_database(ctx: "bootstrap.StageContext") -> StageResult:
     url_file = Path(prof.database.url_file)if prof.database.url_file else prof.host.etc_env().with_name(prof.host.face + "-db.url")
 
     if prof.database.mode != "external":
-        return StageResult("database", FAILED, "database.mode=local lands with the C cutover; " "use external for now")
+        return stage_result("database", FAILED, "database.mode=local lands with the C cutover; " "use external for now")
 
     if not url:
         if url_file.exists():
-            return StageResult("database", SKIPPED, "{} already set".format(url_file))
+            return stage_result("database", SKIPPED, "{} already set".format(url_file))
 
-        return StageResult("database", FAILED, "no database URL: set CHEST_DATABASE_URL or " "pre-create {}".format(url_file))
+        return stage_result("database", FAILED, "no database URL: set CHEST_DATABASE_URL or " "pre-create {}".format(url_file))
 
     if ctx.dry_run:
         ctx.actions.append("would write {}".format(url_file))
-        return StageResult("database", OK, "dry-run: url file planned")
+        return stage_result("database", OK, "dry-run: url file planned")
 
     url_file.parent.mkdir(parents = True, exist_ok = True)
     url_file.write_text(url + "\n", encoding = "utf-8")
@@ -77,13 +77,13 @@ def stage_database(ctx: "bootstrap.StageContext") -> StageResult:
                    timeout = 30, env = pg_env)
 
     if getattr(proc, "returncode", 0) != 0:
-        return StageResult("database", FAILED, "pg_isready failed for the provided URL " "(continuable if the DB comes up later)")
+        return stage_result("database", FAILED, "pg_isready failed for the provided URL " "(continuable if the DB comes up later)")
 
-    return StageResult("database", OK, "url file at {} (0600)".format(url_file))
+    return stage_result("database", OK, "url file at {} (0600)".format(url_file))
 
 # ── stages: artifact + install + migrate (D3) ──────────────────────────
 
-def stage_artifact(ctx: "bootstrap.StageContext") -> StageResult:
+def stage_artifact(ctx: "bootstrap.stage_context") -> stage_result:
     prof = ctx.profile
     src = prof.artifact.source.rstrip("/")
 
@@ -91,59 +91,59 @@ def stage_artifact(ctx: "bootstrap.StageContext") -> StageResult:
         index = read_index(src if src.endswith("index.toml")else src + "/index.toml")
         entry = resolve(index, prof.artifact.channel, _target())
     except Exception as exc:  # noqa: BLE001 - stage boundary
-        return StageResult("artifact", FAILED, "resolve failed: {}".format(exc))
+        return stage_result("artifact", FAILED, "resolve failed: {}".format(exc))
 
     incoming = prof.host.deploy_root() / "incoming"
 
     if ctx.dry_run:
         ctx.actions.append("would fetch {} -> {}".format(entry.file, incoming))
-        return StageResult("artifact", OK, "dry-run: {} @ {}".format(entry.version, entry.file))
+        return stage_result("artifact", OK, "dry-run: {} @ {}".format(entry.version, entry.file))
 
     try:
         bin_path = artifact_fetch(entry, src, incoming)
     except Exception as exc:  # noqa: BLE001
-        return StageResult("artifact", FAILED, "fetch failed: {}".format(exc))
+        return stage_result("artifact", FAILED, "fetch failed: {}".format(exc))
 
     ctx.state = getattr(ctx, "state", {})
     ctx.state["incoming_bin"] = str(bin_path)
     ctx.state["artifact_entry"] = entry
-    return StageResult("artifact", OK, "{} @ {}".format(entry.version, entry.file), changed = True)
+    return stage_result("artifact", OK, "{} @ {}".format(entry.version, entry.file), changed = True)
 
 def _target() -> str:
     import platform
     machine = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(platform.machine(), platform.machine())
     return "{}-unknown-linux-gnu".format(machine)
 
-def stage_install(ctx: "bootstrap.StageContext") -> StageResult:
+def stage_install(ctx: "bootstrap.stage_context") -> stage_result:
     prof = ctx.profile
     state = getattr(ctx, "state", {})
     incoming = state.get("incoming_bin")
 
     if not incoming:
-        return StageResult("install", FAILED, "artifact stage did not run")
+        return stage_result("install", FAILED, "artifact stage did not run")
 
     dest = prof.host.deploy_root() / "bin" / prof.host.face
 
     if ctx.dry_run:
         ctx.actions.append("would install {} -> {}".format(incoming, dest))
-        return StageResult("install", OK, "dry-run: install planned")
+        return stage_result("install", OK, "dry-run: install planned")
 
     from celestia_devtools.deploy.lifecycle import _install
     _install(Path(incoming), dest)
-    return StageResult("install", OK, "binary at {}".format(dest), changed = True)
+    return stage_result("install", OK, "binary at {}".format(dest), changed = True)
 
 # ── stage: migrate (D3) ────────────────────────────────────────────────
 
-def stage_migrate(ctx: "bootstrap.StageContext") -> StageResult:
+def stage_migrate(ctx: "bootstrap.stage_context") -> stage_result:
     prof = ctx.profile
     binary = prof.host.deploy_root() / "bin" / prof.host.face
 
     if not binary.exists() and not ctx.dry_run:
-        return StageResult("migrate", FAILED, "binary missing: {}".format(binary))
+        return stage_result("migrate", FAILED, "binary missing: {}".format(binary))
 
     if ctx.dry_run:
         ctx.actions.append("{} db-migrate".format(binary))
-        return StageResult("migrate", OK, "dry-run: migrate planned")
+        return stage_result("migrate", OK, "dry-run: migrate planned")
 
     env = dict(os.environ)
     env_file = prof.host.etc_env()
@@ -157,18 +157,18 @@ def stage_migrate(ctx: "bootstrap.StageContext") -> StageResult:
     proc = ctx.run([str(binary), "db-migrate"], timeout = 600, env = env)
 
     if getattr(proc, "returncode", 0) != 0:
-        return StageResult("migrate", FAILED, "db-migrate rc={}: {}".format(proc.returncode, (getattr(proc, "stderr", "") or "")[: 120]))
+        return stage_result("migrate", FAILED, "db-migrate rc={}: {}".format(proc.returncode, (getattr(proc, "stderr", "") or "")[: 120]))
 
-    return StageResult("migrate", OK, "schema current (idempotent)")
+    return stage_result("migrate", OK, "schema current (idempotent)")
 
 # ── stage: first-admin (D3) ────────────────────────────────────────────
 
 @dataclass
-class HttpResult:
+class http_result:
     status: int
     body: str
 
-def _http_post(url: str, payload: dict, headers: dict | None = None, timeout: int = 30) -> HttpResult:
+def _http_post(url: str, payload: dict, headers: dict | None = None, timeout: int = 30) -> http_result:
     # loopback calls: env proxies must not intercept (R2 P3-3)
     import urllib.request
     _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -181,11 +181,11 @@ def _http_post(url: str, payload: dict, headers: dict | None = None, timeout: in
 
     try:
         with urllib.request.urlopen(req, timeout = timeout) as resp:
-            return HttpResult(resp.status, resp.read().decode("utf-8", "replace"))
+            return http_result(resp.status, resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:  # 4xx/5xx still carry a body
-        return HttpResult(exc.code, exc.read().decode("utf-8", "replace"))
+        return http_result(exc.code, exc.read().decode("utf-8", "replace"))
 
-def stage_first_admin(ctx: "bootstrap.StageContext", http = None, password_gen = pysecrets.token_urlsafe) -> StageResult:
+def stage_first_admin(ctx: "bootstrap.stage_context", http = None, password_gen = pysecrets.token_urlsafe) -> stage_result:
     """http defaults to the module binding (not a def-time capture) so
     tests can monkeypatch stages_more._http_post and the stage sees it."""
 
@@ -195,26 +195,26 @@ def stage_first_admin(ctx: "bootstrap.StageContext", http = None, password_gen =
     prof = ctx.profile
 
     if not prof.admin.email:
-        return StageResult("first-admin", SKIPPED, "admin.email empty — first-admin is manual")
+        return stage_result("first-admin", SKIPPED, "admin.email empty — first-admin is manual")
 
     base = "http://127.0.0.1:{}".format(prof.host.listen)
     password = password_gen(18)
 
     if ctx.dry_run:
         ctx.actions.append("would POST /api/auth/nonce + /api/auth/register " "for {}".format(prof.admin.email))
-        return StageResult("first-admin", OK, "dry-run: registration planned")
+        return stage_result("first-admin", OK, "dry-run: registration planned")
 
     # the service must be up; the wiring keeps the naive order (install ->
     # migrate -> first-admin) and relies on `chest serve` booting fast
     nonce = http(base + "/api/auth/nonce", {})
 
     if nonce.status != 200:
-        return StageResult("first-admin", FAILED, "nonce endpoint {} — is the unit running?".format(nonce.status))
+        return stage_result("first-admin", FAILED, "nonce endpoint {} — is the unit running?".format(nonce.status))
 
     reg = http(base + "/api/auth/register", {"username": prof.admin.email, "password": password, "email": prof.admin.email}, headers = {"x-nonce": _nonce_from(nonce.body)})
 
     if reg.status not in (200, 201):
-        return StageResult("first-admin", FAILED, "register returned {}: {}".format(reg.status, reg.body[: 120]))
+        return stage_result("first-admin", FAILED, "register returned {}: {}".format(reg.status, reg.body[: 120]))
 
     # print-once contract: stdout only; --password-to-file writes 0600
     if prof.admin.password_to_file:
@@ -225,7 +225,7 @@ def stage_first_admin(ctx: "bootstrap.StageContext", http = None, password_gen =
     else:
         print("初始管理员 {} 的口令（仅此一次显示）：{}".format(prof.admin.email, password))
 
-    return StageResult("first-admin", OK, "registered {}".format(prof.admin.email), changed = True)
+    return stage_result("first-admin", OK, "registered {}".format(prof.admin.email), changed = True)
 
 def _nonce_from(body: str) -> str:
     try:
@@ -235,20 +235,20 @@ def _nonce_from(body: str) -> str:
 
 # ── stage: front (D4) ──────────────────────────────────────────────────
 
-def stage_front(ctx: "bootstrap.StageContext") -> StageResult:
+def stage_front(ctx: "bootstrap.stage_context") -> stage_result:
     prof = ctx.profile
 
     if not prof.front.enabled or not prof.front.domain:
-        return StageResult("front", SKIPPED, "front disabled")
+        return stage_result("front", SKIPPED, "front disabled")
 
     if not ctx.dry_run and not os.path.exists(os.path.expanduser("~/.acme.sh/acme.sh")) and not _which("acme.sh", ctx):
-        return StageResult("front", SKIPPED, "acme.sh missing — front stage skips (documented); " "run doctor for the hint")
+        return stage_result("front", SKIPPED, "acme.sh missing — front stage skips (documented); " "run doctor for the hint")
 
     conf = _render_nginx(prof)
 
     if ctx.dry_run:
         ctx.actions.append("would write nginx conf + issue HTTP-01 cert")
-        return StageResult("front", OK, "dry-run: front planned")
+        return stage_result("front", OK, "dry-run: front planned")
 
     conf_path = Path("/etc/nginx/conf.d") / "{}.conf".format(prof.host.face)
     conf_path.parent.mkdir(parents = True, exist_ok = True)
@@ -256,15 +256,15 @@ def stage_front(ctx: "bootstrap.StageContext") -> StageResult:
     reload = ctx.run(["nginx", "-s", "reload"], timeout = 60)
 
     if getattr(reload, "returncode", 0) != 0:
-        return StageResult("front", FAILED, "nginx reload failed")
+        return stage_result("front", FAILED, "nginx reload failed")
 
-    return StageResult("front", OK, "nginx conf at {}".format(conf_path), changed = True)
+    return stage_result("front", OK, "nginx conf at {}".format(conf_path), changed = True)
 
 def _which(name: str, ctx) -> bool:
     import shutil
     return shutil.which(name) is not None
 
-def _render_nginx(prof: DeployProfile) -> str:
+def _render_nginx(prof: deploy_profile) -> str:
     server_block = "server {\n"
     server_block += "  listen 443 ssl;\n"
     server_block += "  server_name " + prof.front.domain + ";\n"
@@ -276,21 +276,21 @@ def _render_nginx(prof: DeployProfile) -> str:
     server_block += "}\n"
     return server_block
 
-def stage_verify(ctx: "bootstrap.StageContext") -> StageResult:
+def stage_verify(ctx: "bootstrap.stage_context") -> stage_result:
     """The final gate: health + epoch + ledger via ops.verify."""
     from celestia_devtools.deploy import ops
 
     if ctx.dry_run:
         ctx.actions.append("would verify health/epoch/ledger")
-        return StageResult("verify", OK, "dry-run: verification planned")
+        return stage_result("verify", OK, "dry-run: verification planned")
 
     checks = ops.verify(ctx.profile)
     failures = [c for c in checks if not c.ok]
 
     if failures:
-        return StageResult("verify", FAILED, "; ".join("{}: {}".format(c.name, c.detail)for c in failures))
+        return stage_result("verify", FAILED, "; ".join("{}: {}".format(c.name, c.detail)for c in failures))
 
-    return StageResult("verify", OK, "; ".join("{} ok".format(c.name)for c in checks))
+    return stage_result("verify", OK, "; ".join("{} ok".format(c.name)for c in checks))
 
 # ── registration: the stage machine becomes complete ───────────────────
 

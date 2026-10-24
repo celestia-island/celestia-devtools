@@ -63,7 +63,7 @@ def spill(repo = "hikari", run_id = 91):
     result = dsp.spill({"repo": repo, "run_id": run_id, "sha": "b" * 40}, state)
     return result, state
 
-class TestMonitor:
+class test_monitor:
     def test_logs_the_trend_line_with_the_number_the_gate_acts_on(self, monkeypatch):
         seen = []
         monkeypatch.setattr(dsp, "log", seen.append)
@@ -151,7 +151,7 @@ class TestMonitor:
         crawls at ~13 KB/s and the guard would time out instead of protecting anything."""
         captured = {}
 
-        class FakeResp:
+        class fake_resp:
             def read(self):
                 return b'{"dev_in_sec": 0}'
 
@@ -161,14 +161,14 @@ class TestMonitor:
             def __exit__(self, *a):
                 return False
 
-        class FakeOpener:
+        class fake_opener:
             def open(self, req, timeout = None):
                 captured["url"] = req.full_url
-                return FakeResp()
+                return fake_resp()
 
         def fake_build_opener(*handlers):
             captured["handlers"] = handlers
-            return FakeOpener()
+            return fake_opener()
 
         # A proxy in the environment is what makes ProxyHandler() and ProxyHandler({}) differ;
         # without it this test passes either way (found by mutation).
@@ -180,7 +180,7 @@ class TestMonitor:
         assert isinstance(captured["handlers"][0], urllib.request.ProxyHandler)
         assert captured["handlers"][0].proxies == {}, "the proxy handler must be emptied"
 
-class TestGate:
+class test_gate:
     def test_a_healthy_pool_spills(self, monkeypatch, ws_env):
         monkeypatch.setattr(dsp, "charge_volume", lambda: ledger(dev_hours = 1.0))
         result, state = spill()
@@ -252,7 +252,7 @@ class TestGate:
         result, state = spill(repo = "some-other-repo", run_id = 55)
         assert (result is None) and (state["55"]["mode"] == "build") and started
 
-class TestPolicyAndWiring:
+class test_policy_and_wiring:
     def test_the_shipped_defaults_are_the_agreed_policy_numbers(self):
         """These are policy: dev 1600 core-hours/month with a line at 80%, build 160 with the
         same 70% ceiling the caller-lane router uses, and a 5-minute reading cadence."""
@@ -300,22 +300,22 @@ class TestPolicyAndWiring:
         monkeypatch.setattr(dsp, "save_state", lambda st: None)
         monkeypatch.setattr(dsp, "resolve", lambda st: None)
 
-        class Stop(Exception):
+        class stop(Exception):
             pass
 
         def one_iteration(_sec):
-            raise Stop
+            raise stop
 
         monkeypatch.setattr(dsp.time, "sleep", one_iteration)
 
-        with pytest.raises(Stop):
+        with pytest.raises(stop):
             dsp.main()
 
         trend = [line for line in seen if line.startswith("pools dev ")]
         assert trend, f"the loop must log the pools line with an empty queue; got {seen}"
         assert ("dev 42.0/1600" in trend[0]) and ("build 99.0/160" in trend[0])
 
-class TestBusyHosts:
+class test_busy_hosts:
     def test_only_tracked_dev_quota_workspaces_block_a_host(self):
         """P3 (round-A verifier): without the mode/host filter, a build or legacy record keyed
         by repo could shadow a host name and make free_host defer on an idle pool."""
@@ -332,7 +332,7 @@ class TestBusyHosts:
         }
         assert dsp.busy_hosts(state) == {"ci-infra-hikari", "ci-infra-plana"}
 
-class TestPublishLaneRef:
+class test_publish_lane_ref:
     def test_the_ref_lands_on_the_selected_host(self, monkeypatch, tmp_path):
         """`publish-ignores-the-selected-host`: the host parameter is the whole point."""
         recorded = []
@@ -353,7 +353,7 @@ class TestPublishLaneRef:
         assert any("ci-infra-hikari-2" in p for p in pushes), pushes
         assert not any("celestia-island/hikari.git" in p for p in pushes), "the spill ref must not be published to the target repo"
 
-class TestLedgerParsing:
+class test_ledger_parsing:
     @pytest.mark.parametrize("led,key,required", [({}, "dev_in_sec", True), ({"dev_in_sec": "12"}, "dev_in_sec", True), ({"dev_in_sec": True}, "dev_in_sec", True), ({"dev_in_sec": -1}, "dev_in_sec", True), ({"dev_in_sec": float("inf")}, "dev_in_sec", True), ({"dev_in_sec": 1, "freeze_dev_in_sec": -1}, "freeze_dev_in_sec", False), ({"dev_in_sec": 1, "freeze_dev_in_sec": {}}, "freeze_dev_in_sec", False), ({"dev_in_sec": 1, "freeze_dev_in_sec": "x"}, "freeze_dev_in_sec", False)], ids = ["missing-required", "string", "bool", "negative", "inf", "negative-freeze", "freeze-dict", "freeze-string"])
     def test_nonsense_counters_are_refused(self, led, key, required):
         with pytest.raises(ValueError):
@@ -368,7 +368,7 @@ class TestLedgerParsing:
         monkeypatch.setattr(dsp, "charge_volume", lambda: {"dev_usage": 999, "ci_in_sec": 0, "freeze_ci_in_sec": 0})
         assert spill()[0] is False, "a renamed field must defer, not spill at 0%"
 
-class TestBuildPoolFallbackGate:
+class test_build_pool_fallback_gate:
     """The fallback path spends the scarce pool, so it is held to the caller-lane router's line."""
 
     def test_the_fallback_is_refused_above_the_build_line(self, monkeypatch, ws_env):

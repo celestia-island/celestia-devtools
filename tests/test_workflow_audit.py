@@ -27,7 +27,7 @@ import json
 import pytest
 from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY
 from celestia_devtools.ci import workflow_audit
-from celestia_devtools.ci.workflow_audit import (CALLER_LEGAL_KEYS, CANONICAL_CALLER_NAME, FORK_GUARD, RULE_CALLEE_MISSING_TIMEOUT, RULE_INVALID_CALLER_KEY, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_YAML_PARSE_ERROR, RULE_NAMES, Finding, _build_parser, audit_text, has_failure, main)
+from celestia_devtools.ci.workflow_audit import (CALLER_LEGAL_KEYS, CANONICAL_CALLER_NAME, FORK_GUARD, RULE_CALLEE_MISSING_TIMEOUT, RULE_INVALID_CALLER_KEY, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_YAML_PARSE_ERROR, RULE_NAMES, finding_record, _build_parser, audit_text, has_failure, main)
 
 # ── fixture 辅助 ─────────────────────────────────────────────────────────────
 
@@ -152,7 +152,7 @@ ONE_LINE_INVALID = (
 
 # ── ① 真实事故形态：caller 作业带非法键 ──────────────────────────────────────
 
-class TestInvalidCallerKey:
+class test_invalid_caller_key:
     """Rule 1: ``uses:`` plus any key outside the nine caller keys."""
 
     def test_accident_shape_is_reported(self, tmp_path, monkeypatch, capsys):
@@ -217,7 +217,7 @@ def _human(tmp_path, monkeypatch, capsys):
 
 # ── ② 合法 caller 键不得命中（防假阳） ──────────────────────────────────────
 
-class TestLegalCallerIsClean:
+class test_legal_caller_is_clean:
     """Rule 1 must not fire on the legal caller key set — the whole org is full of these."""
 
     def test_all_nine_legal_keys_are_clean(self, tmp_path, monkeypatch, capsys):
@@ -257,7 +257,7 @@ class TestLegalCallerIsClean:
 
 # ── ③ callee 缺 timeout 命中、有 timeout 不命中 ────────────────────────────
 
-class TestCalleeMissingTimeout:
+class test_callee_missing_timeout:
     """Rule 2: a ``workflow_call`` callee's self-hosted job must carry the upper bound."""
 
     def test_missing_timeout_is_reported(self, tmp_path, monkeypatch, capsys):
@@ -291,7 +291,7 @@ class TestCalleeMissingTimeout:
 
 # ── ④ 普通自托管作业缺 timeout ──────────────────────────────────────────────
 
-class TestSelfHostedMissingTimeout:
+class test_self_hosted_missing_timeout:
     """Rule 3: the same check for workflows that are not ``workflow_call`` callees."""
 
     def test_plain_self_hosted_job_is_reported(self, tmp_path, monkeypatch, capsys):
@@ -356,7 +356,7 @@ class TestSelfHostedMissingTimeout:
 
 # ── ⑤ 单行非法 YAML 必须出现在 findings 里（禁止静默跳过） ──────────────────
 
-class TestYamlParseError:
+class test_yaml_parse_error:
     """Rule 4: a file that cannot be parsed is reported, never skipped."""
 
     def test_single_line_file_is_reported_not_skipped(self, tmp_path, monkeypatch, capsys):
@@ -426,7 +426,7 @@ class TestYamlParseError:
         monkeypatch.chdir(tmp_path)
         assert main([]) == 0
 
-class TestYamlDuplicateKey:
+class test_yaml_duplicate_key:
     """Rule 6: a mapping that defines the same key twice is reported, never deduped away.
 
     PyYAML's ``safe_load`` silently keeps the last value, so every load-then-look auditor is
@@ -538,7 +538,7 @@ class TestYamlDuplicateKey:
 
 # ── ⑥ --json 结构与退出码 ───────────────────────────────────────────────────
 
-class TestJsonContractAndExitCodes:
+class test_json_contract_and_exit_codes:
     """The frozen document CI consumes, and the 0/1/2 exit codes."""
 
     def test_json_shape_is_exactly_the_contract(self, tmp_path, monkeypatch, capsys):
@@ -605,8 +605,8 @@ class TestJsonContractAndExitCodes:
         assert "no workflow file found" in capsys.readouterr().err
 
     def test_strict_promotes_warnings_only(self):
-        warning = Finding("a.yml", 1, RULE_SELF_HOSTED_MISSING_TIMEOUT, "warning", "w")
-        error = Finding("a.yml", 1, RULE_INVALID_CALLER_KEY, "error", "e")
+        warning = finding_record("a.yml", 1, RULE_SELF_HOSTED_MISSING_TIMEOUT, "warning", "w")
+        error = finding_record("a.yml", 1, RULE_INVALID_CALLER_KEY, "error", "e")
         assert has_failure([warning]) is False
         assert has_failure([warning], strict = True) is True
         assert has_failure([error]) is True
@@ -634,7 +634,7 @@ class TestJsonContractAndExitCodes:
 
 # ── ⑦ 变异：把修复改坏必须变红 ──────────────────────────────────────────────
 
-class TestMutationTurnsTheGateRed:
+class test_mutation_turns_the_gate_red:
     """Start from a green tree, break the fix, and require the gate to notice."""
 
     def test_dropping_the_callee_timeout_turns_it_red(self, tmp_path, monkeypatch, capsys):
@@ -861,7 +861,7 @@ class TestForkGuard:
 
 # ── --allow 允许列表 ────────────────────────────────────────────────────────
 
-class TestAllowList:
+class test_allow_list:
     """``--allow RULE=GLOB``: loud, rule-checked, counted — never a silent pass."""
 
     def test_allow_suppresses_and_exits_0(self, tmp_path, monkeypatch, capsys):
@@ -979,7 +979,7 @@ class TestAllowList:
 
 # ── 路径解析与 CLI 约定 ─────────────────────────────────────────────────────
 
-class TestPathsAndCli:
+class test_paths_and_cli:
     """PATHS handling: files, directories, repository roots, dedupe, relative reporting."""
 
     def test_default_path_is_github_workflows(self, tmp_path, monkeypatch, capsys):
@@ -1078,7 +1078,7 @@ class TestPathsAndCli:
         assert findings[0].path == "ci.yml"
         assert findings[0].to_json().keys() == {"path", "line", "rule", "severity", "message"}
 
-class TestCanonicalCaller:
+class test_canonical_caller:
     """Rule 5: the shared commit-lint caller must equal the generator's template bytes.
 
     2026-09-15: the fleet was unified to one 273-byte caller. Nothing compared a repository
@@ -1243,7 +1243,7 @@ class TestCanonicalCaller:
         assert report["findings"] == []
         assert report["summary"]["suppressed"] == 1
 
-class TestEntryPointRegistered:
+class test_entry_point_registered:
     """The console script must really be declared in ``pyproject.toml`` (and the version bumped)."""
 
     def test_console_script_declared(self):

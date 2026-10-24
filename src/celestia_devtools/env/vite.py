@@ -66,7 +66,7 @@ def _port_of(args: list[str]) -> str:
 
     return DEFAULT_PORT
 
-class _SpaFallbackHandler(http.server.SimpleHTTPRequestHandler):
+class _spa_fallback_handler(http.server.SimpleHTTPRequestHandler):
     """Static handler with history-API fallback (see the module docstring).
 
     Only navigation-shaped GETs fall back: no file extension in the last
@@ -102,7 +102,7 @@ class _SpaFallbackHandler(http.server.SimpleHTTPRequestHandler):
         print("[vite-serve] " + (fmt % args), file = sys.stderr)
 
 def _serve(dist: Path, port: str, spa: bool = True) -> int:
-    handler = _SpaFallbackHandler if spa else http.server.SimpleHTTPRequestHandler
+    handler = _spa_fallback_handler if spa else http.server.SimpleHTTPRequestHandler
     # directory= is NOT optional: without it SimpleHTTPRequestHandler
     # resolves paths against the PROCESS cwd, and vite project roots carry
     # their own source index.html — the server then happily serves the

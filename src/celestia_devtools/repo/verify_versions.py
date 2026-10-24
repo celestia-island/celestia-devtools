@@ -130,7 +130,7 @@ _PY_HELPER_SEGMENTS = frozenset(
 )
 
 @dataclass
-class Drift:
+class drift:
     """A single package whose version diverged from its track baseline."""
 
     track: str
@@ -140,14 +140,14 @@ class Drift:
     suggestion: str
 
 @dataclass
-class VerifyResult:
+class verify_result:
     """Detection outcome for one repo (rendering is a separate concern)."""
 
     repo: str
     cargo_base: Optional[str] = None
     npm_base: Optional[str] = None
     python_base: Optional[str] = None
-    drifts: List[Drift] = field(default_factory = list)
+    drifts: List[drift] = field(default_factory = list)
     # Non-drift failures: a present track whose baseline could not be resolved.
     # These fail the gate exactly like drifts do (fail-closed, S1-1).
     errors: List[str] = field(default_factory = list)
@@ -192,7 +192,7 @@ def _load_toml(path: Path) -> tuple[Optional[dict], Optional[str]]:
     except Exception as exc:  # tomllib raises TOMLDecodeError on dup keys
         return None, f"{type(exc).__name__}: {exc}"
 
-class _JsonDuplicateKey(ValueError):
+class _json_duplicate_key(ValueError):
     """Raised by the object_pairs hook — json.loads would silently
     last-win a duplicate key, hiding exactly the corruption this gate
     exists to catch."""
@@ -202,7 +202,7 @@ def _no_duplicate_keys(pairs):
 
     for key, _ in pairs:
         if key in seen:
-            raise _JsonDuplicateKey(f"duplicate key {key!r}")
+            raise _json_duplicate_key(f"duplicate key {key!r}")
 
         seen.add(key)
 
@@ -218,7 +218,7 @@ def _load_json(path: Path) -> tuple[Optional[dict], Optional[str]]:
 
     try:
         data = json.loads(path.read_text(encoding = "utf-8"), object_pairs_hook = _no_duplicate_keys)
-    except _JsonDuplicateKey as exc:
+    except _json_duplicate_key as exc:
         return None, f"invalid JSON: {exc}"
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
@@ -428,11 +428,11 @@ def detect_cargo_base(
 
     return None
 
-def collect_cargo_drifts(repo: Path, base: Optional[str], exempt: set[str], errors: Optional[List[str]] = None) -> List[Drift]:
+def collect_cargo_drifts(repo: Path, base: Optional[str], exempt: set[str], errors: Optional[List[str]] = None) -> List[drift]:
     if base is None:
         return []
 
-    drifts: List[Drift] = []
+    drifts: List[drift] = []
     root_manifest = repo / "Cargo.toml"
 
     for manifest in _iter_manifests(repo, "Cargo.toml"):
@@ -467,7 +467,7 @@ def collect_cargo_drifts(repo: Path, base: Optional[str], exempt: set[str], erro
             actual = _norm_version(version)
 
             if actual != base:
-                drifts.append(Drift(track = "cargo", package = _package_id(repo, manifest), actual = actual, expected = base, suggestion = "set version.workspace = true"))
+                drifts.append(drift(track = "cargo", package = _package_id(repo, manifest), actual = actual, expected = base, suggestion = "set version.workspace = true"))
 
     return drifts
 
@@ -527,11 +527,11 @@ def npm_baseline_source(repo: Path, override: Optional[str]) -> str:
 
     return "majority"
 
-def collect_npm_drifts(repo: Path, base: Optional[str], exempt: set[str], errors: Optional[List[str]] = None, publishable_only: bool = False) -> List[Drift]:
+def collect_npm_drifts(repo: Path, base: Optional[str], exempt: set[str], errors: Optional[List[str]] = None, publishable_only: bool = False) -> List[drift]:
     if base is None:
         return []
 
-    drifts: List[Drift] = []
+    drifts: List[drift] = []
 
     for manifest in _iter_manifests(repo, "package.json"):
         if _is_exempt(_package_id(repo, manifest), exempt):
@@ -556,7 +556,7 @@ def collect_npm_drifts(repo: Path, base: Optional[str], exempt: set[str], errors
         actual = _norm_version(pkg["version"])
 
         if actual != base:
-            drifts.append(Drift(track = "npm", package = _package_id(repo, manifest), actual = actual, expected = base, suggestion = f"set version to {base}"))
+            drifts.append(drift(track = "npm", package = _package_id(repo, manifest), actual = actual, expected = base, suggestion = f"set version to {base}"))
 
     return drifts
 
@@ -646,11 +646,11 @@ def python_track_present(repo: Path) -> bool:
     source, _raw = _python_version_field(data)
     return (source is not None) and (source != "dynamic")
 
-def collect_python_drifts(repo: Path, base: Optional[str], exempt: set, errors: Optional[List[str]] = None) -> List[Drift]:
+def collect_python_drifts(repo: Path, base: Optional[str], exempt: set, errors: Optional[List[str]] = None) -> List[drift]:
     if base is None:
         return []
 
-    drifts: List[Drift] = []
+    drifts: List[drift] = []
     root_manifest = repo / "pyproject.toml"
 
     for manifest in _iter_manifests(repo, "pyproject.toml"):
@@ -681,11 +681,11 @@ def collect_python_drifts(repo: Path, base: Optional[str], exempt: set, errors: 
             continue
 
         if (actual is not None) and (actual != base):
-            drifts.append(Drift(track = "python", package = _package_id(repo, manifest), actual = actual, expected = base, suggestion = f"set version to {base}"))
+            drifts.append(drift(track = "python", package = _package_id(repo, manifest), actual = actual, expected = base, suggestion = f"set version to {base}"))
 
     return drifts
 
-def _python_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = None) -> List[Drift]:
+def _python_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = None) -> List[drift]:
     """Compare the root pyproject against a ``[track] python`` pin.
 
     The parse failure is reported here because :func:`detect_python_base`
@@ -715,13 +715,13 @@ def _python_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = Non
     if (declared is None) or (declared == base):
         return []
 
-    return [Drift(track = "python", package = ".", actual = declared, expected = base, suggestion = "root pyproject.toml version diverged from the [track] python pin — " "bump the pin in .versions.toml in the same release commit")]
+    return [drift(track = "python", package = ".", actual = declared, expected = base, suggestion = "root pyproject.toml version diverged from the [track] python pin — " "bump the pin in .versions.toml in the same release commit")]
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 def _cargo_root_drifts(
     repo: Path, base: str, errors: Optional[List[str]] = None
-) -> List[Drift]:
+) -> List[drift]:
     """Compare the root manifest's own declared version against a pinned base.
 
     Only meaningful when the baseline came from a ``[track]`` override: with
@@ -760,9 +760,9 @@ def _cargo_root_drifts(
     if (declared is None) or (declared == base):
         return []
 
-    return [Drift(track = "cargo", package = ".", actual = declared, expected = base, suggestion = "root manifest version diverged from the [track] cargo pin — " "bump the pin in .versions.toml in the same release commit")]
+    return [drift(track = "cargo", package = ".", actual = declared, expected = base, suggestion = "root manifest version diverged from the [track] cargo pin — " "bump the pin in .versions.toml in the same release commit")]
 
-def verify(repo: Path) -> VerifyResult:
+def verify(repo: Path) -> verify_result:
     """Run the whole detection and return a :class:`VerifyResult`."""
     repo = repo.resolve()
     # The parse-error sink comes FIRST so every detection stage can append
@@ -791,7 +791,7 @@ def verify(repo: Path) -> VerifyResult:
         if not any("pyproject.toml" in err for err in errors):
             errors.append("python track is present (the root pyproject.toml declares a " "version, or [track] python is pinned) but no baseline could be " "resolved. Fix the declaration, or pin [track] python in " ".versions.toml.")
 
-    drifts: List[Drift] = []
+    drifts: List[drift] = []
     drifts.extend(collect_cargo_drifts(repo, cargo_base, exempt.get("cargo", set()), errors))
 
     # F9 (R2, 2026-09-27): collect_cargo_drifts skips the root manifest as the
@@ -811,11 +811,11 @@ def verify(repo: Path) -> VerifyResult:
 
     drifts.sort(key = lambda d: (d.track, d.package))
 
-    return VerifyResult(repo = str(repo), cargo_base = cargo_base, npm_base = npm_base, python_base = python_base, drifts = drifts, errors = errors)
+    return verify_result(repo = str(repo), cargo_base = cargo_base, npm_base = npm_base, python_base = python_base, drifts = drifts, errors = errors)
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 
-def _render_text(result: VerifyResult) -> str:
+def _render_text(result: verify_result) -> str:
     lines: List[str] = []
 
     if result.errors:
@@ -855,7 +855,7 @@ def _render_text(result: VerifyResult) -> str:
 
     return "\n".join(lines)
 
-def _render_json(result: VerifyResult, ok: bool) -> str:
+def _render_json(result: verify_result, ok: bool) -> str:
     payload = result.to_dict()
     payload["ok"] = ok
     return json.dumps(payload, indent = 2, sort_keys = True)

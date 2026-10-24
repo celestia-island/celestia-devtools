@@ -43,7 +43,7 @@ def spec_violations(requirement: str) -> list:
     problems.append("spec {!r} must be `<name>>=<version>` (floor-only); markers after `;` are fine".format(requirement.strip()))
     return problems
 
-class TestCheckerHasTeeth:
+class test_checker_has_teeth:
     """Self-proof: the checker accepts known-good and rejects known-bad."""
 
     @pytest.mark.parametrize("good", [
@@ -70,7 +70,7 @@ class TestCheckerHasTeeth:
     def test_rejects_non_floor(self, bad):
         assert spec_violations(bad), "checker must reject " + bad
 
-class TestPolicyOnRealFile:
+class test_policy_on_real_file:
     def test_all_dependency_declarations_floor_only(self):
         if tomllib is None:  # pragma: no cover
             pytest.skip("tomllib unavailable below 3.11")

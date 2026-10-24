@@ -7,7 +7,7 @@ from celestia_devtools.core import deps
 def _boom_runner(*_a, **_k):
     raise AssertionError("runner must not be called when install=False")
 
-class TestPresent:
+class test_present:
     def test_installed_dist_reports_version(self):
         results = deps.ensure(("PyYAML",), install = False)
         assert len(results) == 1
@@ -19,14 +19,14 @@ class TestPresent:
         r = deps.ensure(("PyYAML",), install = False)[0]
         assert r.line().startswith("✓ PyYAML — ")
 
-class TestReportOnly:
+class test_report_only:
     def test_missing_without_install_never_invokes_pip(self):
         results = deps.ensure(("definitely-not-a-real-dist-xyz",), install = False, runner = _boom_runner)
         r = results[0]
         assert not r.ok and (r.action == "skipped")
         assert "report-only" in r.detail
 
-class TestPipInvocation:
+class test_pip_invocation:
     def test_proxy_rides_env_never_argv(self):
         """R1' P3-1: argv is world-readable in /proc; the proxy must ride env."""
         argv = deps._pip_argv("foo", "https://mirror.simple", "http://user:pass@198.51.100.7:7890")
@@ -43,7 +43,7 @@ class TestPipInvocation:
         env = deps.pip_env(None, base = {"PATH": "/bin"})
         assert "HTTPS_PROXY" not in env
 
-class TestBudget:
+class test_budget:
     def test_retry_cap_and_failure_detail(self):
         calls = []
 

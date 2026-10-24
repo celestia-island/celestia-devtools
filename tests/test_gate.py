@@ -8,12 +8,12 @@ import threading
 import time
 from pathlib import Path
 import pytest
-from celestia_devtools.build.gate import (UsageError, build_python_graph, build_rust_graph, build_web_graph, classify_credential_line, credential_sweep, detect_modes, discover_langyo_repos, git_config_paths, is_credential_key, is_langyo_repo, iter_sweep_files, looks_like_literal, main as gate_main, precheck_mounts, resolve_modes, scan_file_credentials, scan_large_downloads, _checkout_staleness)
+from celestia_devtools.build.gate import (usage_error, build_python_graph, build_rust_graph, build_web_graph, classify_credential_line, credential_sweep, detect_modes, discover_langyo_repos, git_config_paths, is_credential_key, is_langyo_repo, iter_sweep_files, looks_like_literal, main as gate_main, precheck_mounts, resolve_modes, scan_file_credentials, scan_large_downloads, _checkout_staleness)
 from celestia_devtools.core.scheduler import (FAIL, PASS, SKIP, SKIP_DEP, Step, run_dag)
 
 # ── Scheduler: dependency ordering ────────────────────────────────────────────
 
-class TestSchedulerOrdering:
+class test_scheduler_ordering:
     def test_steps_run_after_dependencies(self):
         order = []
         lock = threading.Lock()
@@ -41,7 +41,7 @@ class TestSchedulerOrdering:
         ]
         assert run_dag(steps, runner, jobs = 1) == {"deny": SKIP, "lint": PASS}
 
-class TestSchedulerBudget:
+class test_scheduler_budget:
     def test_worker_cap_respected(self):
         current = 0
         peak = 0
@@ -88,7 +88,7 @@ class TestSchedulerBudget:
         run_dag(steps, runner, jobs = 1)
         assert peak == 1
 
-class TestSchedulerFailFast:
+class test_scheduler_fail_fast:
     def test_failed_step_skips_dependents_only(self):
         calls = []
 
@@ -101,7 +101,7 @@ class TestSchedulerFailFast:
         assert statuses == {"a": FAIL, "b": SKIP_DEP, "c": PASS, "d": SKIP_DEP}
         assert ("b" not in calls) and ("d" not in calls)
 
-class TestSchedulerValidation:
+class test_scheduler_validation:
     def test_cycle_detected(self):
         steps = [Step("a", ["x"], ("b",)), Step("b", ["x"], ("a",))]
 
@@ -122,7 +122,7 @@ class TestSchedulerValidation:
 
 # ── Mode detection ────────────────────────────────────────────────────────────
 
-class TestDetectModes:
+class test_detect_modes:
     def test_rust(self, tmp_path):
         (tmp_path / "Cargo.toml").write_text("")
         assert detect_modes(tmp_path) == ["rust"]
@@ -147,7 +147,7 @@ class TestDetectModes:
     def test_none(self, tmp_path):
         assert detect_modes(tmp_path) == []
 
-class TestResolveModes:
+class test_resolve_modes:
     def test_explicit_mode(self, tmp_path):
         assert resolve_modes(tmp_path, "rust") == ["rust"]
         assert resolve_modes(tmp_path, "web") == ["web"]
@@ -163,10 +163,10 @@ class TestResolveModes:
         assert resolve_modes(tmp_path, None) == ["python"]
 
     def test_nothing_detected_raises(self, tmp_path):
-        with pytest.raises(UsageError):
+        with pytest.raises(usage_error):
             resolve_modes(tmp_path, None)
 
-class TestGraphBuilders:
+class test_graph_builders:
     def test_rust_order(self, tmp_path):
         assert [s.name for s in build_rust_graph(tmp_path)] == ["credential-scan", "fmt", "clippy", "check", "deny", "lint-commits"]
 
@@ -203,7 +203,7 @@ class TestGraphBuilders:
 
 # ── Credential scan heuristics ────────────────────────────────────────────────
 
-class TestCredentialScan:
+class test_credential_scan:
     def test_clean_line(self):
         assert classify_credential_line("let answer = 42") == "clean"
 
@@ -238,7 +238,7 @@ class TestCredentialScan:
 
 # ── precheck: mount points + large downloads ──────────────────────────────────
 
-class TestPrecheckMounts:
+class test_precheck_mounts:
     def test_worktree_mountpoint_warns(self, tmp_path):
         mounts = [("/mnt/codespace/_worktree/hikari/hikari", "nfs4")]
         warnings = precheck_mounts(mounts, tmp_path)
@@ -257,17 +257,17 @@ class TestPrecheckMounts:
         mounts = [("/mnt/codespace/_worktree/foo", "ext4")]
         assert precheck_mounts(mounts, tmp_path) == []
 
-class TestFindmntMounts:
+class test_findmnt_mounts:
     def test_parses_output(self, monkeypatch):
         import celestia_devtools.build.gate as gate_mod
 
-        class FakeProc:
+        class fake_proc:
             returncode = 0
             stdout = "/mnt/codespace nfs4\n/tmp/foo ext4\n"
 
         def fake_run(cmd, **kwargs):
             assert cmd == ["findmnt", "-rn", "-o", "TARGET,FSTYPE"]
-            return FakeProc()
+            return fake_proc()
 
         monkeypatch.setattr(gate_mod.subprocess, "run", fake_run)
         assert gate_mod.findmnt_mounts() == [("/mnt/codespace", "nfs4"), ("/tmp/foo", "ext4")]
@@ -281,7 +281,7 @@ class TestFindmntMounts:
         monkeypatch.setattr(gate_mod.subprocess, "run", fake_run)
         assert gate_mod.findmnt_mounts() == []
 
-class TestLargeDownloadScan:
+class test_large_download_scan:
     def test_warns_without_hint(self, tmp_path):
         (tmp_path / "dl.py").write_text("from huggingface_hub import hf_hub_download\nhf_hub_download('x')\n")
         warnings = scan_large_downloads(tmp_path)
@@ -317,7 +317,7 @@ def make_checkout(root, name = "leaky", remote_url = None, extra = "", files = N
 
     return repo
 
-class TestEmbeddedCredentialUrls:
+class test_embedded_credential_urls:
     def test_git_config_remote_with_token_is_violation(self):
         line = "url = https://oauth2:%s@github.com/celestia-island/arona.git" % FAKE_TOKEN
         assert classify_credential_line(line) == "violation"
@@ -374,7 +374,7 @@ class TestEmbeddedCredentialUrls:
         assert classify_credential_line("proxy = http://user:pass@example.internal:3128") == "report"
         assert classify_credential_line("url = https://oauth2:<your-token>@github.com/o/r.git") == "report"
 
-class TestGitConfigSweep:
+class test_git_config_sweep:
     def test_git_config_paths_for_plain_checkout(self, tmp_path):
         repo = make_checkout(tmp_path, remote_url = "https://github.com/x/y.git")
         assert git_config_paths(repo) == [repo / ".git" / "config"]
@@ -416,7 +416,7 @@ class TestGitConfigSweep:
         assert credential_sweep([repo], include_sources = False) == []
         assert [f for f in credential_sweep([repo]) if f.verdict == "violation"]
 
-class TestLangyoRepoCoverage:
+class test_langyo_repo_coverage:
     def test_langyo_remote_detected(self, tmp_path):
         repo = make_checkout(tmp_path, name = "easy-hydro-erp", remote_url = "https://github.com/langyo/easy-hydro-erp.git")
         assert is_langyo_repo(repo)
@@ -442,7 +442,7 @@ class TestLangyoRepoCoverage:
     def test_discover_ignores_missing_scan_root(self, tmp_path):
         assert discover_langyo_repos(tmp_path / "nope") == []
 
-class TestCredentialScanCli:
+class test_credential_scan_cli:
     def test_flags_langyo_checkout_and_exits_one(self, tmp_path, capsys):
         scan_root = tmp_path / "ws"
         scan_root.mkdir()
@@ -526,7 +526,7 @@ class TestCredentialScanCli:
         finally:
             os.chmod(blocked, 0o755)
 
-class TestSweepCrashSafety:
+class test_sweep_crash_safety:
     """A scanner that dies mid-sweep reports nothing — every loss must be loud."""
 
     def test_discover_langyo_repos_survives_unreadable_sibling(self, tmp_path):
@@ -722,7 +722,7 @@ REPORT_SAMPLES = [
 
 CLEAN_SAMPLES = ["let answer = 42", "url = git@github.com:celestia-island/arona.git", "url = https://github.com/celestia-island/arona.git", '[remote "origin"]', 'MONKEY = "value"', 'const total = items.length']
 
-class TestCredentialPrecision:
+class test_credential_precision:
     """Known-fake vs real-shaped samples: a pass/fail matrix, not a vibe."""
 
     @pytest.mark.parametrize("line", VIOLATION_SAMPLES)
@@ -874,7 +874,7 @@ class TestCredentialPrecision:
         assert [entry.path.name for entry in skipped] == ["linked"]
         assert "symlinked directory" in skipped[0].reason
 
-class TestCheckoutStaleness:
+class test_checkout_staleness:
     """The sweep must say when the tree it scanned is not its remote's HEAD.
 
     2026-09-13: every hit a real sweep reported came from two checkouts that were
@@ -903,8 +903,8 @@ class TestCheckoutStaleness:
             subprocess.run(["git", "-C", str(path), "config", key, value], check = True)
 
         (path / "f.txt").write_text("x", encoding = "utf-8")
-        TestCheckoutStaleness._git("git", "-C", str(path), "add", "f.txt")
-        TestCheckoutStaleness._git("git", "-C", str(path), "commit", "-qm", "init")
+        test_checkout_staleness._git("git", "-C", str(path), "add", "f.txt")
+        test_checkout_staleness._git("git", "-C", str(path), "commit", "-qm", "init")
         return path
 
     @staticmethod

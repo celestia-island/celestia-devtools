@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
-from celestia_devtools.lint.cpp.tokenizer import (NEWLINE, OP, PREPROC, TRIVIA, Directive, Token, Tokenized, split_lines, tokenize_bytes)
+from celestia_devtools.lint.cpp.tokenizer import (NEWLINE, OP, PREPROC, TRIVIA, directive, token_record, tokenized, split_lines, tokenize_bytes)
 
 _OPENERS = {"(": "(", "[": "[", "{": "{"}
 _CLOSERS = {")": "(", "]": "[", "}": "{"}
@@ -38,7 +38,7 @@ _PAIRS = {"(": ")", "[": "]", "{": "}"}
 _MACRO_DEFINE = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)")
 
 @dataclass
-class Finding:
+class finding_record:
     """One reported violation (or a warning from an undecidable check)."""
 
     path: Path
@@ -49,17 +49,17 @@ class Finding:
     severity: str = "error"
 
 @dataclass
-class AnalyzedFile:
+class analyzed_file:
     """Everything the rule functions need to know about one source file."""
 
     path: Path
     text: str
     lines: List[str]
-    tokens: List[Token]
-    significant: List[Token]
-    code: List[Token]
+    tokens: List[token_record]
+    significant: List[token_record]
+    code: List[token_record]
     code_token_indices: List[int]
-    directives: List[Directive]
+    directives: List[directive]
     warnings: List[str]
     defined_macros: frozenset
     paren_match: Dict[int, int] = field(default_factory = dict)
@@ -69,7 +69,7 @@ class AnalyzedFile:
     brace_depth: List[int] = field(default_factory = list)
 
     # -- token navigation -------------------------------------------------
-    def next_code(self, position: int) -> Optional[Tuple[int, Token]]:
+    def next_code(self, position: int) -> Optional[Tuple[int, token_record]]:
         """The code token after *position*, as (position, token)."""
         following = position + 1
 
@@ -78,7 +78,7 @@ class AnalyzedFile:
 
         return following, self.code[following]
 
-    def prev_code(self, position: int) -> Optional[Tuple[int, Token]]:
+    def prev_code(self, position: int) -> Optional[Tuple[int, token_record]]:
         """The code token before *position*, as (position, token)."""
         previous = position - 1
 
@@ -120,7 +120,7 @@ class AnalyzedFile:
         """Number of blank physical lines strictly between the two 1-based lines."""
         return sum(1 for line in range(first_line + 1, second_line) if self.is_blank_line(line))
 
-def _match_delimiters(code: Sequence[Token]) -> Tuple[Dict[int, int], Dict[int, int], Dict[int, int], List[int], List[int], List[str]]:
+def _match_delimiters(code: Sequence[token_record]) -> Tuple[Dict[int, int], Dict[int, int], Dict[int, int], List[int], List[int], List[str]]:
     """Match ()/[]/{} pairs and compute paren/brace depth before each code token."""
     paren_match: Dict[int, int] = {}
     bracket_match: Dict[int, int] = {}
@@ -161,7 +161,7 @@ def _match_delimiters(code: Sequence[Token]) -> Tuple[Dict[int, int], Dict[int, 
 
     return paren_match, bracket_match, brace_match, paren_depth, brace_depth, warnings
 
-def _defined_macros(tokenized: Tokenized) -> frozenset:
+def _defined_macros(tokenized: tokenized) -> frozenset:
     names = set()
 
     for token in tokenized.tokens:
@@ -175,13 +175,13 @@ def _defined_macros(tokenized: Tokenized) -> frozenset:
 
     return frozenset(names)
 
-def analyze_bytes(path: Path, data: bytes) -> AnalyzedFile:
+def analyze_bytes(path: Path, data: bytes) -> analyzed_file:
     """Analyze raw file bytes (decoded as UTF-8 with replacement)."""
     tokenized = tokenize_bytes(data)
     (paren_match, bracket_match, brace_match, paren_depth, brace_depth, structural_warnings) = _match_delimiters(tokenized.code)
     code_token_indices = [index for index, token in enumerate(tokenized.tokens)if (token.kind not in TRIVIA) and (token.kind != NEWLINE)]
-    return AnalyzedFile(path = path, text = tokenized.text, lines = split_lines(tokenized.text), tokens = tokenized.tokens, significant = tokenized.significant, code = tokenized.code, code_token_indices = code_token_indices, directives = list(tokenized.directives), warnings = list(tokenized.warnings) + structural_warnings, defined_macros = _defined_macros(tokenized), paren_match = paren_match, bracket_match = bracket_match, brace_match = brace_match, paren_depth = paren_depth, brace_depth = brace_depth)
+    return analyzed_file(path = path, text = tokenized.text, lines = split_lines(tokenized.text), tokens = tokenized.tokens, significant = tokenized.significant, code = tokenized.code, code_token_indices = code_token_indices, directives = list(tokenized.directives), warnings = list(tokenized.warnings) + structural_warnings, defined_macros = _defined_macros(tokenized), paren_match = paren_match, bracket_match = bracket_match, brace_match = brace_match, paren_depth = paren_depth, brace_depth = brace_depth)
 
-def analyze(path: Path) -> AnalyzedFile:
+def analyze(path: Path) -> analyzed_file:
     """Read and analyze one source file."""
     return analyze_bytes(path, path.read_bytes())

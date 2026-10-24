@@ -5,7 +5,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 import pytest
-from celestia_devtools.lint.p0_gate import (ACK_ENV, LEDGER_PATH_ENV, PR_BODY_ENV, LedgerError, bundled_ledger_path, collect_acks, detect_repo_name, entries_for_repo, load_ledger, main, normalize_repo_name, open_entries_for_repo, parse_ack_markers, parse_ledger_text, render_list, repo_name_from_url, resolve_ledger_path)
+from celestia_devtools.lint.p0_gate import (ACK_ENV, LEDGER_PATH_ENV, PR_BODY_ENV, ledger_error, bundled_ledger_path, collect_acks, detect_repo_name, entries_for_repo, load_ledger, main, normalize_repo_name, open_entries_for_repo, parse_ack_markers, parse_ledger_text, render_list, repo_name_from_url, resolve_ledger_path)
 
 LEDGER = """\
 version = 1
@@ -39,7 +39,7 @@ def write_ledger(tmp_path, text = LEDGER):
 
 # ── Ledger parsing / validation ───────────────────────────────────────────────
 
-class TestLedgerParsing:
+class test_ledger_parsing:
     def test_parses_entries(self, tmp_path):
         entries = load_ledger(write_ledger(tmp_path))
         assert [entry.id for entry in entries] == ["P0-A", "P0-Z"]
@@ -79,66 +79,66 @@ class TestLedgerParsing:
         assert by_id["P0-E"].covers("evernight") and not by_id["P0-E"].covers("entelecheia")
 
     def test_missing_file_fails_closed(self, tmp_path):
-        with pytest.raises(LedgerError, match = "not found"):
+        with pytest.raises(ledger_error, match = "not found"):
             load_ledger(tmp_path / "nope.toml")
 
     def test_invalid_toml_fails_closed(self, tmp_path):
-        with pytest.raises(LedgerError, match = "not valid TOML"):
+        with pytest.raises(ledger_error, match = "not valid TOML"):
             load_ledger(write_ledger(tmp_path, "version = = 1\n[[p0]\n"))
 
     def test_missing_entries_fails_closed(self, tmp_path):
-        with pytest.raises(LedgerError, match = "no \\[\\[p0\\]\\] entries"):
+        with pytest.raises(ledger_error, match = "no \\[\\[p0\\]\\] entries"):
             load_ledger(write_ledger(tmp_path, 'version = 1\n'))
 
     def test_empty_entries_fails_closed(self, tmp_path):
-        with pytest.raises(LedgerError, match = "no \\[\\[p0\\]\\] entries"):
+        with pytest.raises(ledger_error, match = "no \\[\\[p0\\]\\] entries"):
             parse_ledger_text("version = 1\np0 = []\n")
 
     def test_unsupported_version_fails_closed(self, tmp_path):
-        with pytest.raises(LedgerError, match = "version"):
+        with pytest.raises(ledger_error, match = "version"):
             parse_ledger_text(LEDGER.replace("version = 1", "version = 2"))
 
     def test_unknown_top_level_key_fails_closed(self):
-        with pytest.raises(LedgerError, match = "unknown top-level key"):
+        with pytest.raises(ledger_error, match = "unknown top-level key"):
             parse_ledger_text(LEDGER + "\n[typo]\nx = 1\n")
 
     def test_missing_field_fails_closed(self):
         broken = LEDGER.replace('severity = "p0"\n', "")
 
-        with pytest.raises(LedgerError, match = "missing required key"):
+        with pytest.raises(ledger_error, match = "missing required key"):
             parse_ledger_text(broken)
 
     def test_unknown_entry_key_fails_closed(self):
-        with pytest.raises(LedgerError, match = "unknown key"):
+        with pytest.raises(ledger_error, match = "unknown key"):
             parse_ledger_text(LEDGER.replace('severity = "p0"', 'severity = "p0"\nstatuss = "open"'))
 
     def test_bad_status_fails_closed(self):
-        with pytest.raises(LedgerError, match = "status"):
+        with pytest.raises(ledger_error, match = "status"):
             parse_ledger_text(LEDGER.replace('status = "open"', 'status = "maybe"'))
 
     def test_empty_scope_fails_closed(self):
-        with pytest.raises(LedgerError, match = "scope"):
+        with pytest.raises(ledger_error, match = "scope"):
             parse_ledger_text(LEDGER.replace('scope = ["entelecheia"]', "scope = []"))
 
     def test_bad_date_fails_closed(self):
-        with pytest.raises(LedgerError, match = "opened_at"):
+        with pytest.raises(ledger_error, match = "opened_at"):
             parse_ledger_text(LEDGER.replace('opened_at = "2026-09-10"', 'opened_at = "yesterday"'))
 
     def test_duplicate_ids_fail_closed(self):
         first_entry = LEDGER.split("[[p0]]")[1]
 
-        with pytest.raises(LedgerError, match = "duplicate id"):
+        with pytest.raises(ledger_error, match = "duplicate id"):
             parse_ledger_text(LEDGER + "\n[[p0]]" + first_entry)
 
     def test_closed_entry_without_pr_fails_closed(self):
-        with pytest.raises(LedgerError, match = "closed_by"):
+        with pytest.raises(ledger_error, match = "closed_by"):
             parse_ledger_text(LEDGER.replace('closed_by = "#123"', 'closed_by = ""'))
 
     def test_open_entry_with_closed_by_fails_closed(self):
-        with pytest.raises(LedgerError, match = "closed_by"):
+        with pytest.raises(ledger_error, match = "closed_by"):
             parse_ledger_text(LEDGER.replace('closed_by = ""', 'closed_by = "#9"'))
 
-class TestScopeMatching:
+class test_scope_matching:
     def test_scope_patterns_match_repo_family(self):
         entries = parse_ledger_text(LEDGER.replace('["entelecheia"]', '["easy-hydro-*"]'))
         assert entries_for_repo(entries, "easy-hydro-erp")
@@ -189,7 +189,7 @@ class TestScopeMatching:
     def test_detect_repo_name_without_remote(self, tmp_path):
         assert detect_repo_name(tmp_path) is None
 
-class TestAcknowledgmentParsing:
+class test_acknowledgment_parsing:
     def test_pr_body_marker(self):
         acks = parse_ack_markers("Body\n\nP0-ACK: P0-A P0-B because the demo runs on RTU\n", "pr")
         assert [ack.id for ack in acks] == ["P0-A", "P0-B"]
@@ -210,7 +210,7 @@ class TestAcknowledgmentParsing:
         acks = collect_acks(["P0-A"], [("P0-ACK: P0-B\n", "--pr-body")])
         assert sorted(ack.id for ack in acks) == ["P0-A", "P0-B", "P0-C", "P0-D"]
 
-class TestLedgerResolution:
+class test_ledger_resolution:
     def test_explicit_wins(self, tmp_path, monkeypatch):
         monkeypatch.setenv(LEDGER_PATH_ENV, str(tmp_path / "env.toml"))
         assert resolve_ledger_path("/x/y.toml") == Path("/x/y.toml")
@@ -231,7 +231,7 @@ class TestLedgerResolution:
 
 # ── CLI semantics ─────────────────────────────────────────────────────────────
 
-class TestCliPassAndBlock:
+class test_cli_pass_and_block:
     def test_repo_without_open_p0_passes(self, tmp_path, capsys, monkeypatch):
         monkeypatch.delenv(ACK_ENV, raising = False)
         monkeypatch.delenv(PR_BODY_ENV, raising = False)
@@ -282,7 +282,7 @@ class TestCliPassAndBlock:
         assert "covered by 1 unresolved P0 finding(s)" in err
         assert err.count("P0-A:") == 1
 
-class TestCliAcknowledgment:
+class test_cli_acknowledgment:
     def test_ack_flag_passes_and_echoes(self, tmp_path, capsys, monkeypatch):
         monkeypatch.delenv(ACK_ENV, raising = False)
         ledger = write_ledger(tmp_path)
@@ -342,7 +342,7 @@ class TestCliAcknowledgment:
         assert rc == 0
         assert "did not cover an open P0" in capsys.readouterr().err
 
-class TestCliFailClosed:
+class test_cli_fail_closed:
     def test_missing_ledger_exits_two(self, tmp_path, capsys):
         rc = main(["--repo", "entelecheia", "--ledger", str(tmp_path / "nope.toml")])
         err = capsys.readouterr().err
@@ -384,7 +384,7 @@ class TestCliFailClosed:
         assert rc == 2
         assert "pr-body-file unreadable" in capsys.readouterr().err
 
-class TestCliList:
+class test_cli_list:
     def test_list_groups_by_status(self, tmp_path, capsys, monkeypatch):
         monkeypatch.delenv(ACK_ENV, raising = False)
         ledger = write_ledger(tmp_path)

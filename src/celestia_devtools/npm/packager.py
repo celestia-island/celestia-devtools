@@ -21,7 +21,7 @@ Three artifacts are produced:
 
 from __future__ import annotations
 from typing import Any
-from celestia_devtools.npm.platforms import Platform
+from celestia_devtools.npm.platforms import platform
 
 #: The published node/shim. Kept low to stay installable on old Node.
 _MIN_NODE = ">=18"
@@ -59,7 +59,7 @@ def generate_root_package(*, scope: str, name: str, version: str, platforms, bin
     pkg["publishConfig"] = {"access": "public"}
     return pkg
 
-def generate_subpackage(*, scope: str, name: str, version: str, platform: Platform, binary: str, description: str = "", license: str = _DEFAULT_LICENSE, repository: str | None = None) -> dict[str, Any]:
+def generate_subpackage(*, scope: str, name: str, version: str, platform: platform, binary: str, description: str = "", license: str = _DEFAULT_LICENSE, repository: str | None = None) -> dict[str, Any]:
     """Build a single platform subpackage ``package.json`` as a dict.
 
     The subpackage carries only the native binary for its platform and is

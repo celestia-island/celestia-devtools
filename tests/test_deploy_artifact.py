@@ -13,7 +13,7 @@ def _fake_bin(tmp_path, payload = b"#!/bin/sh\necho chest-ok\n"):
     os.chmod(p, 0o755)
     return p
 
-class TestBuildIndexFetch:
+class test_build_index_fetch:
     def test_round_trip_verifies_and_extracts(self, tmp_path):
         out = tmp_path / "out"
         entry = artifact.build(_fake_bin(tmp_path), "0.1.5", "x86_64-unknown-linux-gnu", out)
@@ -45,10 +45,10 @@ class TestBuildIndexFetch:
         artifact.build(_fake_bin(tmp_path), "0.1.5", "t1", out)
         index = artifact.read_index(artifact.write_index(out, {"internal": artifact.scan_dir(out)}))
 
-        with pytest.raises(artifact.ArtifactError, match = "stable"):
+        with pytest.raises(artifact.artifact_error, match = "stable"):
             artifact.resolve(index, "stable", "t1")
 
-        with pytest.raises(artifact.ArtifactError, match = "target"):
+        with pytest.raises(artifact.artifact_error, match = "target"):
             artifact.resolve(index, "internal", "other-target")
 
     def test_sha_mismatch_refuses_and_cleans_up(self, tmp_path):
@@ -60,7 +60,7 @@ class TestBuildIndexFetch:
         archive.write_bytes(bytes(raw))
         dest = tmp_path / "dest"
 
-        with pytest.raises(artifact.ArtifactError, match = "sha256 mismatch"):
+        with pytest.raises(artifact.artifact_error, match = "sha256 mismatch"):
             artifact.fetch(entry, str(out), dest)
 
         assert not (dest / entry.file).exists(), "a failed fetch leaves nothing behind"
@@ -80,7 +80,7 @@ class TestBuildIndexFetch:
             info.size = 2
             dst.addfile(info, io.BytesIO(b"hi"))
 
-        evil_entry = artifact.Entry(file = evil.name, version = "0.1.5", target = "t1", sha256 = artifact.sha256_file(evil), size = evil.stat().st_size, date = "2026-09-20")
+        evil_entry = artifact.entry_record(file = evil.name, version = "0.1.5", target = "t1", sha256 = artifact.sha256_file(evil), size = evil.stat().st_size, date = "2026-09-20")
         dest = tmp_path / "dest2"
 
         with pytest.raises(IOError, match = "traversal"):
@@ -94,7 +94,7 @@ class TestBuildIndexFetch:
         names = [e.file for e in artifact.scan_dir(out)]
         assert names == ["chest-0.1.5-t1.tar.gz"]
 
-class TestFileUrl:
+class test_file_url:
     def test_file_scheme_loads_like_plain_path(self, tmp_path):
         out = tmp_path / "out"
         artifact.build(_fake_bin(tmp_path), "0.1.5", "t1", out)
@@ -103,7 +103,7 @@ class TestFileUrl:
         via_plain = artifact.read_index(path)
         assert via_file["stable"][0].sha256 == via_plain["stable"][0].sha256
 
-class TestCli:
+class test_cli:
     def test_registry_and_dispatch(self, monkeypatch, capsys):
         from celestia_devtools.core import cli as core_cli
         assert core_cli.COMMANDS["deploy"] == "celestia_devtools.deploy.cli"

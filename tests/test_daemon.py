@@ -24,7 +24,7 @@ EXPECTED_PORT_ENV: dict[str, tuple[str, str]] = {
     "arona": ("ARONA_PORT", "8405")
 }
 
-class TestServiceDefs:
+class test_service_defs:
     def test_no_ghost_cargo_features(self):
         """Both features removed on 2026-10-16 do not exist in the target
         Cargo.tomls — any feature flag here must be re-verified by hand."""
@@ -42,7 +42,7 @@ class TestServiceDefs:
     def test_expected_services_present(self):
         assert set(daemon.SERVICE_DEFS) >= {"shittim-chest", "entelecheia", "arona"}
 
-class TestGenerateConfig:
+class test_generate_config:
     def _fake_layout(self, tmp_path: Path) -> Path:
         """Sibling checkouts with fake release binaries; returns the cwd to
         run from (a directory whose parent holds the fakes). _find_sibling_dir

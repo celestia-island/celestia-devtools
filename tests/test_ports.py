@@ -19,7 +19,7 @@ def registry(tmp_path, monkeypatch):
     monkeypatch.setenv("CELESTIA_PORTS_REGISTRY", str(path))
     yield path
 
-class TestAcquire:
+class test_acquire:
     def test_two_apps_never_share_a_kind_port(self, registry):
         a = ports.acquire("shittim-chest", "vite")
         b = ports.acquire("wowsp", "vite")
@@ -61,7 +61,7 @@ class TestAcquire:
         assert data["app:vite"]["port"] == got
         assert data["app:vite"]["pid"] != stale_pid
 
-class TestReleaseAndList:
+class test_release_and_list:
     def test_release_one_kind_keeps_the_other(self, registry):
         ports.acquire("app", "vite")
         ports.acquire("app", "cdp")
@@ -76,7 +76,7 @@ class TestReleaseAndList:
         ports.release("app", None)
         assert ports.list_entries() == {}
 
-class TestEnvContract:
+class test_env_contract:
     def test_env_carries_both_kinds_and_webview2_line(self, registry):
         exports = ports.env_exports("shittim-chest")
         assert exports["CELESTIA_VITE_PORT"].isdigit()
@@ -88,7 +88,7 @@ class TestEnvContract:
     def test_env_is_stable_per_app(self, registry):
         assert ports.env_exports("app") == ports.env_exports("app")
 
-class TestCli:
+class test_cli:
     def test_acquire_prints_bare_port(self, registry, capsys):
         assert ports.main(["acquire", "--app", "app", "--kind", "vite"]) == 0
         out = capsys.readouterr().out.strip()

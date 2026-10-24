@@ -46,7 +46,7 @@ def _on(doc):
     """``on`` parses as the boolean ``True`` under YAML 1.1 loaders."""
     return doc.get("on") or doc.get(True)
 
-class TestCanonicalBytes:
+class test_canonical_bytes:
     def test_template_hashes_to_the_canonical_file(self):
         assert hashlib.sha256(WORKFLOW_COMMIT_LINT.encode()).hexdigest() == CANONICAL_SHA256
 
@@ -57,7 +57,7 @@ class TestCanonicalBytes:
         assert WORKFLOW_COMMIT_LINT.endswith("pr: ${{ inputs.pr }}\n")
         assert not WORKFLOW_COMMIT_LINT.endswith("\n\n")
 
-class TestLegacyBytes:
+class test_legacy_bytes:
     """The pre-lane template: the audit's migration marker, frozen on purpose.
 
     ``_canonical_caller_findings`` reports exactly these bytes as a warning, so a
@@ -81,7 +81,7 @@ class TestLegacyBytes:
         assert "vars.LINT_LANE" in WORKFLOW_COMMIT_LINT
         assert "vars.LINT_RUNNER" not in WORKFLOW_COMMIT_LINT_LEGACY
 
-class TestNoPermsBytes:
+class test_no_perms_bytes:
     """The lane-carrying template that predates the permission grant.
 
     ``_canonical_caller_findings`` reports exactly these bytes as a warning, so a
@@ -104,7 +104,7 @@ class TestNoPermsBytes:
     def test_distinct_from_both_other_forms(self):
         assert WORKFLOW_COMMIT_LINT_NO_PERMS not in (WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY)
 
-class TestPermissionGrant:
+class test_permission_grant:
     """The grant is the fix for the 2026-10-02 regression: without it the called
     workflow cannot start, the required check never reports, and a repository with
     `enforce_admins` on cannot be merged by anyone."""
@@ -118,7 +118,7 @@ class TestPermissionGrant:
         doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
         assert "permissions" not in doc["jobs"]["lint-commits"]
 
-class TestTriggerShape:
+class test_trigger_shape:
     def test_every_lifecycle_event_is_covered(self):
         doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
         assert _on(doc)["pull_request"]["types"] == ["opened", "edited", "reopened", "ready_for_review", "synchronize"]
@@ -144,7 +144,7 @@ class TestTriggerShape:
     def test_no_workflow_level_concurrency(self):
         assert "concurrency" not in yaml.safe_load(WORKFLOW_COMMIT_LINT)
 
-class TestCallerJobShape:
+class test_caller_job_shape:
     def test_job_carries_only_uses_and_with(self):
         """A caller job accepts nine legal keys; this one uses ``uses`` + ``with``.
 
@@ -163,7 +163,7 @@ class TestCallerJobShape:
         job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
         assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master")
 
-class TestLanePassthrough:
+class test_lane_passthrough:
     """The 2026-09-26 canonical additions: dispatch fallback + lane variables.
 
     Without these, moving the single required check off the (broken) hosted lane
@@ -186,7 +186,7 @@ class TestLanePassthrough:
         job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
         assert job["with"]["pr"] == "${{ inputs.pr }}"
 
-class TestGeneratedFile:
+class test_generated_file:
     def test_writer_emits_the_canonical_bytes(self, tmp_path):
         _ensure_workflows(tmp_path)
         written = (tmp_path / ".github" / "workflows" / "commit-msg-lint.yml").read_bytes()
@@ -215,7 +215,7 @@ CALLEE_PATH = REPO_ROOT / ".github" / "workflows" / "commit-msg-lint.yml"
 def _callee():
     return yaml.safe_load(CALLEE_PATH.read_text(encoding = "utf-8"))
 
-class TestCalleeMatchesTheTemplate:
+class test_callee_matches_the_template:
     """Two files must agree on the trigger: the caller (copied into 42 repositories) and the
     callee this repository hosts.
 
@@ -239,7 +239,7 @@ class TestCalleeMatchesTheTemplate:
         caller_events = set(_on(yaml.safe_load(WORKFLOW_COMMIT_LINT)))
         assert caller_events <= set(_on(_callee()))
 
-class TestCachePolicyCallerTemplate:
+class test_cache_policy_caller_template:
     """The second generated caller: same discipline as the commit-lint one.
 
     It is written from the same generator (`init --with-workflows`), so it carries the same
@@ -290,7 +290,7 @@ class TestCachePolicyCallerTemplate:
         _ensure_workflows(tmp_path)
         assert (workflows / "ci-cache.yml").read_text(encoding = "utf-8") == "hand-edited\n"
 
-class TestPrTitleCallerTemplate:
+class test_pr_title_caller_template:
     """The third generated caller, added 2026-09-20.
 
     It had no template before that, which is why 21 repositories carried a hand-written copy

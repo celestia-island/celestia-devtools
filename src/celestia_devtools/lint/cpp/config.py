@@ -76,11 +76,11 @@ KNOWN_KEYS = frozenset({"select", "ignore", "exempt", "exclude", "platform_heade
 
 _MACRO_STYLES = frozenset({"warn", "ignore"})
 
-class ConfigError(Exception):
+class config_error(Exception):
     """Configuration is unreadable, unknown or malformed (CLI exit code 2)."""
 
 @dataclass(frozen = True)
-class Exemption:
+class exemption:
     """A path glob plus the rules it exempts, with a required reason."""
 
     pattern: str
@@ -88,14 +88,14 @@ class Exemption:
     reason: str
 
 @dataclass
-class Config:
+class config_record:
     """Fully validated configuration with built-in defaults filled in."""
 
     origin: str = "built-in defaults"
     base_dir: Optional[Path] = None
     select: Optional[Tuple[str, ...]] = None
     ignore: Tuple[str, ...] = ()
-    exempt: Tuple[Exemption, ...] = ()
+    exempt: Tuple[exemption, ...] = ()
     exclude: Tuple[str, ...] = ()
     platform_headers: Tuple[str, ...] = DEFAULT_PLATFORM_HEADERS
     platform_paths: Tuple[str, ...] = ()
@@ -118,7 +118,7 @@ def find_repo_root(cwd: Path) -> Optional[Path]:
 
     return None
 
-def load_config(*, explicit: Optional[str], no_config: bool, cwd: Path) -> Config:
+def load_config(*, explicit: Optional[str], no_config: bool, cwd: Path) -> config_record:
     """Load and validate the effective configuration for a check run."""
     cwd = Path(cwd).resolve()
 
@@ -129,12 +129,12 @@ def load_config(*, explicit: Optional[str], no_config: bool, cwd: Path) -> Confi
             path = cwd / path
 
         if not path.is_file():
-            raise ConfigError("config file not found: %s" % explicit)
+            raise config_error("config file not found: %s" % explicit)
 
         return _config_from_file(path.resolve())
 
     if no_config:
-        return Config(base_dir = cwd)
+        return config_record(base_dir = cwd)
 
     root = find_repo_root(cwd)
 
@@ -153,11 +153,11 @@ def load_config(*, explicit: Optional[str], no_config: bool, cwd: Path) -> Confi
 
             if table is not None:
                 if not isinstance(table, dict):
-                    raise ConfigError("%s: [tool.cpp_style] must be a TOML table" % pyproject)
+                    raise config_error("%s: [tool.cpp_style] must be a TOML table" % pyproject)
 
                 return _config_from_table(table, "%s [tool.cpp_style]" % pyproject, pyproject.parent)
 
-    return Config(base_dir = cwd)
+    return config_record(base_dir = cwd)
 
 def matches_globs(variants: Sequence[str], globs: Sequence[str]) -> bool:
     """Case-insensitive glob match of path variants against configured globs.
@@ -192,7 +192,7 @@ def matches_globs(variants: Sequence[str], globs: Sequence[str]) -> bool:
 
     return False
 
-def path_variants(path: Path, config: Config) -> Tuple[str, ...]:
+def path_variants(path: Path, config: config_record) -> Tuple[str, ...]:
     """Path spellings a glob can be matched against.
 
     A configured glob is almost always written relative to the repository root
@@ -234,21 +234,21 @@ def _read_toml(path: Path) -> dict:
     try:
         text = path.read_text(encoding = "utf-8")
     except OSError as exc:
-        raise ConfigError("cannot read %s: %s" % (path, exc)) from exc
+        raise config_error("cannot read %s: %s" % (path, exc)) from exc
     except UnicodeDecodeError as exc:
-        raise ConfigError("%s is not valid UTF-8: %s" % (path, exc)) from exc
+        raise config_error("%s is not valid UTF-8: %s" % (path, exc)) from exc
 
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError("cannot parse %s: %s" % (path, exc)) from exc
+        raise config_error("cannot parse %s: %s" % (path, exc)) from exc
 
     if not isinstance(data, dict):
-        raise ConfigError("%s: expected a TOML table at the top level" % path)
+        raise config_error("%s: expected a TOML table at the top level" % path)
 
     return data
 
-def _config_from_file(path: Path) -> Config:
+def _config_from_file(path: Path) -> config_record:
     data = _read_toml(path)
     table = data
     tool = data.get("tool")
@@ -260,19 +260,19 @@ def _config_from_file(path: Path) -> Config:
 
     return _config_from_table(table, str(path), path.parent)
 
-def _config_from_table(table: dict, origin: str, base_dir: Path) -> Config:
+def _config_from_table(table: dict, origin: str, base_dir: Path) -> config_record:
     unknown = sorted(str(key) for key in table if key not in KNOWN_KEYS)
 
     if unknown:
-        raise ConfigError("%s: unknown configuration key(s) %s (known: %s)" % (origin, ", ".join(repr(key)for key in unknown), ", ".join(sorted(KNOWN_KEYS))))
+        raise config_error("%s: unknown configuration key(s) %s (known: %s)" % (origin, ", ".join(repr(key)for key in unknown), ", ".join(sorted(KNOWN_KEYS))))
 
-    config = Config(origin = origin, base_dir = base_dir)
+    config = config_record(origin = origin, base_dir = base_dir)
 
     if "select" in table:
         config.select = _rule_list(table["select"], "select", origin)
 
         if not config.select:
-            raise ConfigError("%s: select names no rule; remove it or use ignore to disable rules" % origin)
+            raise config_error("%s: select names no rule; remove it or use ignore to disable rules" % origin)
 
     if "ignore" in table:
         config.ignore = _rule_list(table["ignore"], "ignore", origin)
@@ -302,7 +302,7 @@ def _config_from_table(table: dict, origin: str, base_dir: Path) -> Config:
         macro_style = table["macro_style"]
 
         if not isinstance(macro_style, str) or (macro_style not in _MACRO_STYLES):
-            raise ConfigError("%s: macro_style must be one of %s" % (origin, ", ".join(sorted(_MACRO_STYLES))))
+            raise config_error("%s: macro_style must be one of %s" % (origin, ", ".join(sorted(_MACRO_STYLES))))
 
         config.macro_style = macro_style
 
@@ -310,7 +310,7 @@ def _config_from_table(table: dict, origin: str, base_dir: Path) -> Config:
         allow_doxygen = table["allow_doxygen"]
 
         if not isinstance(allow_doxygen, bool):
-            raise ConfigError("%s: allow_doxygen must be a boolean" % origin)
+            raise config_error("%s: allow_doxygen must be a boolean" % origin)
 
         config.allow_doxygen = allow_doxygen
 
@@ -324,17 +324,17 @@ def _string_list(value: object, key: str, origin: str) -> Tuple[str, ...]:
 
         for item in value:
             if not isinstance(item, str):
-                raise ConfigError("%s: %s must contain strings only" % (origin, key))
+                raise config_error("%s: %s must contain strings only" % (origin, key))
 
             items.append(item)
     else:
-        raise ConfigError("%s: %s must be a string or a list of strings" % (origin, key))
+        raise config_error("%s: %s must be a string or a list of strings" % (origin, key))
 
     result = []
 
     for item in items:
         if not item.strip():
-            raise ConfigError("%s: %s contains an empty string" % (origin, key))
+            raise config_error("%s: %s contains an empty string" % (origin, key))
 
         result.append(item.strip())
 
@@ -345,13 +345,13 @@ def _rule_list(value: object, key: str, origin: str) -> Tuple[str, ...]:
 
     for rule in rules:
         if (rule != "*") and (rule not in RULE_BY_ID):
-            raise ConfigError("%s: unknown rule id %r in %s (run 'cpp-style list-rules' for the catalogue)" % (origin, rule, key))
+            raise config_error("%s: unknown rule id %r in %s (run 'cpp-style list-rules' for the catalogue)" % (origin, rule, key))
 
     return rules
 
-def _exemptions(value: object, origin: str) -> Tuple[Exemption, ...]:
+def _exemptions(value: object, origin: str) -> Tuple[exemption, ...]:
     if not isinstance(value, list):
-        raise ConfigError("%s: exempt must be a list of tables" % origin)
+        raise config_error("%s: exempt must be a list of tables" % origin)
 
     entries = []
 
@@ -359,29 +359,29 @@ def _exemptions(value: object, origin: str) -> Tuple[Exemption, ...]:
         where = "exempt[%d]" % index
 
         if not isinstance(item, dict):
-            raise ConfigError("%s: %s must be a table" % (origin, where))
+            raise config_error("%s: %s must be a table" % (origin, where))
 
         unknown = sorted(str(key) for key in item if key not in {"path", "rules", "reason"})
 
         if unknown:
-            raise ConfigError("%s: %s has unknown field(s) %s (known: path, rules, reason)" % (origin, where, ", ".join(repr(key)for key in unknown)))
+            raise config_error("%s: %s has unknown field(s) %s (known: path, rules, reason)" % (origin, where, ", ".join(repr(key)for key in unknown)))
 
         pattern = item.get("path")
 
         if not isinstance(pattern, str) or not pattern.strip():
-            raise ConfigError("%s: %s.path must be a non-empty glob" % (origin, where))
+            raise config_error("%s: %s.path must be a non-empty glob" % (origin, where))
 
         rules = _string_list(item.get("rules", ["*"]), where + ".rules", origin)
 
         for rule in rules:
             if (rule != "*") and (rule not in RULE_BY_ID):
-                raise ConfigError("%s: unknown rule id %r in %s.rules" % (origin, rule, where))
+                raise config_error("%s: unknown rule id %r in %s.rules" % (origin, rule, where))
 
         reason = item.get("reason")
 
         if not isinstance(reason, str) or not reason.strip():
-            raise ConfigError("%s: %s.reason is required; an exemption without a reason is not allowed" % (origin, where))
+            raise config_error("%s: %s.reason is required; an exemption without a reason is not allowed" % (origin, where))
 
-        entries.append(Exemption(pattern.strip(), rules, reason.strip()))
+        entries.append(exemption(pattern.strip(), rules, reason.strip()))
 
     return tuple(entries)

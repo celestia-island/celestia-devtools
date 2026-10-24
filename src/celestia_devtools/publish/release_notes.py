@@ -158,10 +158,10 @@ def classify(subject: str) -> str:
 
 Fetch = Callable[[str], Any]
 
-class GitHubError(RuntimeError):
+class git_hub_error(RuntimeError):
     """A non-404 GitHub API failure."""
 
-class NotFoundError(GitHubError):
+class not_found_error(git_hub_error):
     """The requested resource does not exist (HTTP 404)."""
 
 def resolve_token() -> Optional[str]:
@@ -204,10 +204,10 @@ def _request(method: str, url: str, token: Optional[str], payload: Optional[Dict
             return resp.status, json.loads(body) if body else None
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise NotFoundError(f"not found: {url}") from exc
+            raise not_found_error(f"not found: {url}") from exc
 
         detail = exc.read().decode("utf-8", "replace")[:500]
-        raise GitHubError(f"{method} {url} failed: HTTP {exc.code}: {detail}") from exc
+        raise git_hub_error(f"{method} {url} failed: HTTP {exc.code}: {detail}") from exc
 
 def make_fetch(token: Optional[str]) -> Fetch:
     """Build a GET-and-parse-JSON function with all rate-limit handling inline."""
@@ -288,7 +288,7 @@ def find_release(repo: str, tag: str, fetch: Fetch, max_pages: int = 10) -> Opti
 
     try:
         return fetch(f"{API_ROOT}/repos/{repo}/releases/tags/{urllib.parse.quote(tag)}")
-    except NotFoundError:
+    except not_found_error:
         for page in range(1, max_pages + 1):
             batch = fetch(f"{API_ROOT}/repos/{repo}/releases?per_page=100&page={page}")
 
@@ -315,12 +315,12 @@ def walk_head(repo: str, tag: str, fetch: Fetch, on: str) -> str:
 
     try:
         return tag_commit_sha(repo, tag, fetch)
-    except NotFoundError:
+    except not_found_error:
         release = find_release(repo, tag, fetch)
         target = (release or {}).get("target_commitish", "").strip()
 
         if not target:
-            raise GitHubError(f"tag {tag!r} has no git ref and no release object with a " "target_commitish — cannot walk history") from None
+            raise git_hub_error(f"tag {tag!r} has no git ref and no release object with a " "target_commitish — cannot walk history") from None
 
         print(f"note: git ref for {tag!r} missing; walking {target!r} " f"({on})", file = sys.stderr)
         return target
@@ -346,7 +346,7 @@ def collect_entries(
     if previous_tag:
         try:
             prev_sha = tag_commit_sha(repo, previous_tag, fetch)
-        except NotFoundError:
+        except not_found_error:
             print(f"warning: no git ref for previous tag {previous_tag!r} — " "walking full history from the release tag instead", file = sys.stderr)
 
     # An unresolvable base degenerates to a full walk rather than a hard fail.
@@ -386,7 +386,7 @@ def collect_entries(
             break
 
     if not base_found:
-        raise GitHubError(f"previous tag {previous_tag!r} was never reached walking history " f"from {tag!r} — it is probably not an ancestor; " "pass --previous-tag explicitly")
+        raise git_hub_error(f"previous tag {previous_tag!r} was never reached walking history " f"from {tag!r} — it is probably not an ancestor; " "pass --previous-tag explicitly")
 
     sections = [(heading, grouped[heading])for heading, _ in _SECTIONS if heading in grouped]
 

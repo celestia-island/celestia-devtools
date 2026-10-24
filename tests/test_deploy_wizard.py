@@ -6,7 +6,7 @@ from celestia_devtools.deploy import wizard
 
 FULL_SEED = {"host.face": "chest", "host.level": "selfhosted", "host.listen": "3000", "front.domain": "acme.example", "admin.email": "ops@acme.example", "admin.password_to_file": "n", "artifact.channel": "stable"}
 
-class TestSeeded:
+class test_seeded:
     def test_full_seed_never_touches_stdin(self):
         answers, prov = wizard.collect(FULL_SEED, interactive = False, input_fn = _boom_input)
         assert answers == FULL_SEED
@@ -20,9 +20,9 @@ class TestSeeded:
         assert prof.admin.email == "ops@acme.example"
         assert prof.admin.password_to_file is False
 
-class TestNonInteractive:
+class test_non_interactive:
     def test_missing_required_aborts_with_pointer(self):
-        with pytest.raises(wizard.WizardAbort, match = "admin.email"):
+        with pytest.raises(wizard.wizard_abort, match = "admin.email"):
             wizard.collect({}, interactive = False, input_fn = _boom_input)
 
     def test_partial_seed_aborts_on_the_gap(self):
@@ -32,18 +32,18 @@ class TestNonInteractive:
         answers, _ = wizard.collect(seed, interactive = False, input_fn = _boom_input)
         assert answers["front.domain"] == ""
 
-class TestPlainRenderer:
+class test_plain_renderer:
     def _feed(self, *lines):
         it = iter(lines)
         return lambda _prompt = "": next(it)
 
     def test_choice_by_number_and_validation_loop(self):
-        q = wizard.Question("host.listen", "端口", default = "3000", validate = wizard._port_ok)
+        q = wizard.question("host.listen", "端口", default = "3000", validate = wizard._port_ok)
         ans, src = wizard.ask_plain(q, None, input_fn = self._feed("99999", "3001"), print_fn = lambda *a, **k: None)
         assert (ans == "3001") and (src == "(asked)")
 
     def test_choice_selects_by_number_and_bad_input_retries(self):
-        q = wizard.Question("host.level", "档位", choices = ("hosted", "selfhosted"), default = "hosted")
+        q = wizard.question("host.level", "档位", choices = ("hosted", "selfhosted"), default = "hosted")
         ans, _ = wizard.ask_plain(q, None, input_fn = self._feed("bogus", "2"), print_fn = lambda *a, **k: None)
         assert ans == "selfhosted"
 
@@ -54,7 +54,7 @@ class TestPlainRenderer:
         ans, _ = wizard.ask_plain(q, None, input_fn = self._feed("y"), print_fn = lambda *a, **k: None)
         assert ans == "y"
 
-class TestDegradation:
+class test_degradation:
     def test_interactive_without_questionary_falls_back_to_plain(self, monkeypatch):
         """The CI-tested guarantee: TTY or not, if questionary cannot import,
         the same table renders as plain prompts — nothing hangs."""
@@ -64,7 +64,7 @@ class TestDegradation:
         assert answers == FULL_SEED
         assert set(prov.values()) == {"(seeded)"}  # fully seeded: still no asks
 
-class TestBuildProfile:
+class test_build_profile:
     def test_empty_domain_disables_front(self):
         seed = dict(FULL_SEED, **{"front.domain": ""})
         prof = wizard.build_profile(seed)
@@ -74,7 +74,7 @@ class TestBuildProfile:
     def test_invalid_email_raises_abort(self):
         seed = dict(FULL_SEED, **{"admin.email": "not-an-email"})
 
-        with pytest.raises(wizard.WizardAbort, match = "admin.email"):
+        with pytest.raises(wizard.wizard_abort, match = "admin.email"):
             wizard.build_profile(seed)
 
 def _boom_input(_prompt = ""):

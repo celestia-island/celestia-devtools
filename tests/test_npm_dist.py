@@ -19,7 +19,7 @@ _HAS_NODE = pytest.mark.skipif(
 
 # ── platforms ────────────────────────────────────────────────────────────────
 
-class TestPlatforms:
+class test_platforms:
     def test_canonical_matrix_has_seven_targets(self):
         targets = {p.rust_target for p in PLATFORMS}
         assert targets == {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"}
@@ -41,7 +41,7 @@ class TestPlatforms:
 
 # ── packager (pure functions) ────────────────────────────────────────────────
 
-class TestRootPackage:
+class test_root_package:
     def test_has_scope_name_and_version(self):
         pkg = generate_root_package(scope = "celestia-island", name = "shirabe", version = "1.2.3", platforms = PLATFORMS, binary = "shirabe")
         assert pkg["name"] == "@celestia-island/shirabe"
@@ -62,7 +62,7 @@ class TestRootPackage:
         pkg = generate_root_package(scope = "@celestia-island", name = "x", version = "0.0.1", platforms = PLATFORMS, binary = "x")
         assert pkg["name"] == "@celestia-island/x"
 
-class TestSubpackage:
+class test_subpackage:
     def test_windows_leaf_gets_exe(self):
         win = find_platform("x86_64-pc-windows-msvc")
         pkg = generate_subpackage(scope = "celestia-island", name = "shirabe", version = "1.0.0", platform = win, binary = "shirabe")
@@ -81,7 +81,7 @@ class TestSubpackage:
         pkg = generate_subpackage(scope = "celestia-island", name = "shirabe", version = "1.0.0", platform = mac, binary = "shirabe")
         assert pkg["name"] == "@celestia-island/shirabe-darwin-arm64"
 
-class TestShim:
+class test_shim:
     def test_shim_embeds_scope_name_binary(self):
         js = generate_postinstall_shim(scope = "celestia-island", name = "kou", binary = "kou", platforms = PLATFORMS)
         assert 'SCOPE = "@celestia-island"' in js
@@ -113,7 +113,7 @@ def fake_binary(tmp_path):
     bin_path.write_bytes(b"#!/bin/sh\necho hi\n")
     return bin_path
 
-class TestStaging:
+class test_staging:
     def test_stages_one_subpackage_then_root(self, tmp_path, fake_binary, monkeypatch):
         out = tmp_path / "dist"
         monkeypatch.setattr(sys, "argv", ["npm-dist", "--name", "demo", "--version", "0.4.2", "--binary", str(fake_binary), "--rust-target", "x86_64-unknown-linux-gnu", "--out-dir", str(out)])

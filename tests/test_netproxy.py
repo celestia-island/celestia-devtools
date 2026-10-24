@@ -11,7 +11,7 @@ import io
 import socket as socket_mod
 from celestia_devtools.core import netproxy
 
-class TestRedact:
+class test_redact:
     def test_strips_userinfo(self):
         assert netproxy.redact("http://user:pass@192.0.2.10:7890") == "192.0.2.10:7890"
 
@@ -21,7 +21,7 @@ class TestRedact:
     def test_no_host_returns_input(self):
         assert netproxy.redact("not a url") == "not a url"
 
-class TestEnvLevel:
+class test_env_level:
     def test_https_wins_and_credentials_redacted(self):
         cfg = netproxy.detect(env = {"HTTPS_PROXY": "http://user:pass@192.0.2.11:7890", "HTTP_PROXY": "http://198.51.100.9:1"}, dns_suffixes = (), listener_hosts = (), gateway_hosts = ())
         assert cfg.proxy_url == "http://user:pass@192.0.2.11:7890"
@@ -33,7 +33,7 @@ class TestEnvLevel:
         assert cfg.display == "198.51.100.4:8080"
         assert cfg.source == "env:UV_HTTP_PROXY"
 
-class TestOverrides:
+class test_overrides:
     def test_no_proxy_flag_forces_direct(self):
         cfg = netproxy.detect(env = {"HTTPS_PROXY": "http://203.0.113.1:7890"}, no_proxy_flag = True)
         assert cfg.direct and (cfg.source == "flag:none")
@@ -50,7 +50,7 @@ class TestOverrides:
         cfg = netproxy.detect(env = {"HTTPS_PROXY": "http://203.0.113.1:7890", "CELESTIA_NO_PROXY_DETECT": "1"})
         assert cfg.direct and (cfg.source == "disabled")
 
-class TestNetworkLevels:
+class test_network_levels:
     def _free_port(self):
         with socket_mod.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -91,7 +91,7 @@ class TestNetworkLevels:
         assert cfg.direct and (cfg.source == "direct")
         assert "直连" in cfg.summary()
 
-class TestNoProxyComposition:
+class test_no_proxy_composition:
     def test_contains_loopback_private_and_caller_entries(self):
         cfg = netproxy.detect(env = {"HTTPS_PROXY": "http://203.0.113.3:7890", "NO_PROXY": "internal.corp.example"}, dns_suffixes = ("node.test",), listener_hosts = (), gateway_hosts = ())
         joined = ",".join(cfg.no_proxy)
@@ -103,7 +103,7 @@ class TestNoProxyComposition:
                          ".node.test", "internal.corp.example"):
             assert expected in cfg.no_proxy, joined
 
-class TestMalformedInput:
+class test_malformed_input:
     """R1-F2: a broken proxy value must degrade, never crash detect()."""
 
     def test_bad_ipv6_bracket_env_falls_through(self):
@@ -119,7 +119,7 @@ class TestMalformedInput:
             out = netproxy.redact(junk)
             assert "@" not in out, out  # creds cannot survive even a failed parse
 
-class TestGitConfigOrder:
+class test_git_config_order:
     """R1-F3: a git http.proxy the user set themselves outranks all guessing."""
 
     def test_git_outranks_live_listeners_and_wpad(self, monkeypatch):
@@ -130,7 +130,7 @@ class TestGitConfigOrder:
         assert cfg.source == "git:http.proxy"
         assert cfg.display == "gitproxy.example.test:8080"
 
-class TestNoProxyDedup:
+class test_no_proxy_dedup:
     def test_duplicate_sources_collapse_keeping_first(self):
         """R2 mutation-a was green: the dedup line had no teeth. Pin both the
         no-duplicates invariant and the first-wins order (a last-wins dedup
@@ -141,43 +141,43 @@ class TestNoProxyDedup:
         assert cfg.no_proxy.index("first.example") < cfg.no_proxy.index("second.example")
         assert sum(1 for x in cfg.no_proxy if x == ".node.test") == 1
 
-class TestChildEnv:
+class test_child_env:
     def test_sets_proxy_and_no_proxy(self):
-        cfg = netproxy.ProxyConfig("http://user:pass@192.0.2.8:7890", "env:HTTPS_PROXY", ("localhost", "203.0.113.0/24"))
+        cfg = netproxy.proxy_config("http://user:pass@192.0.2.8:7890", "env:HTTPS_PROXY", ("localhost", "203.0.113.0/24"))
         env = netproxy.child_env(cfg, base = {"PATH": "/usr/bin"})
         assert env["HTTPS_PROXY"] == "http://user:pass@192.0.2.8:7890"  # creds needed to work
         assert env["no_proxy"] == "localhost,203.0.113.0/24"
         assert "ALL_PROXY" not in env
 
     def test_direct_clears_inherited_proxy_vars(self):
-        cfg = netproxy.ProxyConfig(None, "direct")
+        cfg = netproxy.proxy_config(None, "direct")
         env = netproxy.child_env(cfg, base = {"HTTPS_PROXY": "http://stale.example:1", "http_proxy": "http://stale.example:2"})
         assert ("HTTPS_PROXY" not in env) and ("http_proxy" not in env)
 
     def test_direct_also_clears_tool_aliases(self):
         """R1-F4: flag:none must not leave PIP_PROXY routing pip behind
         detect()'s back."""
-        cfg = netproxy.ProxyConfig(None, "flag:none")
+        cfg = netproxy.proxy_config(None, "flag:none")
         env = netproxy.child_env(cfg, base = {"PIP_PROXY": "http://stale.example:3", "UV_HTTP_PROXY": "http://stale.example:4", "npm_config_proxy": "http://stale.example:5"})
 
         for name in ("PIP_PROXY", "UV_HTTP_PROXY", "npm_config_proxy"):
             assert name not in env, name
 
     def test_display_never_carries_credentials(self):
-        cfg = netproxy.ProxyConfig("http://user:pass@192.0.2.8:7890", "x")
+        cfg = netproxy.proxy_config("http://user:pass@192.0.2.8:7890", "x")
         assert "@" not in cfg.display
         assert "@" not in cfg.summary()
 
-class TestWpad:
+class test_wpad:
     def _fake_urlopen(self, monkeypatch, body):
-        class FakeResp(io.BytesIO):
+        class fake_resp(io.BytesIO):
             def __enter__(self):
                 return self
 
             def __exit__(self, *exc):
                 return False
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout = None: FakeResp(body.encode()))
+        monkeypatch.setattr("urllib.request.urlopen", lambda url, timeout = None: fake_resp(body.encode()))
         # urllib.request.urlopen is imported inside _from_wpad, so the global
         # monkeypatch is what takes effect.
 
@@ -198,7 +198,7 @@ class TestWpad:
         truthy (None, source) tuple that mislabels direct as wpad."""
         bodies = {"http://wpad.bad.test/wpad.dat": 'return "PROXY h:99999; DIRECT";', "http://wpad.good.test/wpad.dat": 'return "PROXY ok.good.test:3128; DIRECT";'}
 
-        class FakeResp(io.BytesIO):
+        class fake_resp(io.BytesIO):
             def __enter__(self):
                 return self
 
@@ -206,7 +206,7 @@ class TestWpad:
                 return False
 
         def fake_open(url, timeout = None):
-            return FakeResp(bodies[url].encode())
+            return fake_resp(bodies[url].encode())
 
         import urllib.request
         monkeypatch.setattr(urllib.request, "urlopen", fake_open)

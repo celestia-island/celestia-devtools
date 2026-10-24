@@ -32,7 +32,7 @@ def _make_target(root: Path, *, root_deps: dict | None = None, webui_deps: dict 
 def hikari_sibling(tmp_path: Path) -> NpmPackage:
     return _make_sibling(tmp_path, "hikari", "hikari")
 
-class TestCollectDeclaredFamilyDeps:
+class test_collect_declared_family_deps:
     def test_root_and_package_level(self, tmp_path: Path):
         repo = _make_target(tmp_path, root_deps = {"@celestia-island/kirino": "^*"}, webui_deps = {"@celestia-island/hikari": "workspace:*"})
         declared = collect_declared_family_deps(repo)
@@ -51,7 +51,7 @@ class TestCollectDeclaredFamilyDeps:
         declared = collect_declared_family_deps(repo)
         assert declared["@celestia-island/hikari"] == [repo, repo / "packages" / "webui"]
 
-class TestPlanLinks:
+class test_plan_links:
     def test_matches_sibling_and_skips_missing(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path, webui_deps = {"@celestia-island/hikari": "^*", "@celestia-island/ghost": "^*"})
         plans, notices = plan_links(repo, [hikari_sibling], collect_declared_family_deps(repo))
@@ -65,7 +65,7 @@ class TestPlanLinks:
         plans, _ = plan_links(repo, [hikari_sibling], collect_declared_family_deps(repo))
         assert [p.link_path for p in plans] == [repo / "packages" / "webui" / "node_modules" / "@celestia-island/hikari"]
 
-class TestApplyLink:
+class test_apply_link:
     def _plan(self, repo: Path, sibling: NpmPackage) -> LinkPlan:
         return LinkPlan(name = sibling.name, sibling = sibling, link_path = repo / "packages" / "webui" / "node_modules" / sibling.name, consumer = "packages/webui")
 
@@ -169,7 +169,7 @@ class TestApplyLink:
         assert plan.link_path.is_symlink()
         assert Path(os.readlink(plan.link_path)) == hikari_sibling.path
 
-class TestRemoveLinks:
+class test_remove_links:
     def test_restores_original_and_clears_state(self, tmp_path: Path, hikari_sibling: NpmPackage):
         repo = _make_target(tmp_path)
         plan = LinkPlan(name = hikari_sibling.name, sibling = hikari_sibling, link_path = repo / "packages" / "webui" / "node_modules" / hikari_sibling.name, consumer = "packages/webui")
@@ -224,7 +224,7 @@ class TestRemoveLinks:
         assert remove_links(wt_b) == 0
         assert not ls._state_path(repo).exists()
 
-class TestIsCelestiaRepo:
+class test_is_celestia_repo:
     def test_reads_raw_config_not_insteadof_rewritten(self, tmp_path: Path):
         """Runners rewrite github.com/celestia-island/* onto local mirrors via
         url.insteadOf; `git remote get-url` would print the mirror path and
@@ -240,7 +240,7 @@ class TestIsCelestiaRepo:
         assert "mirrors" in rewritten  # sanity: the rewrite is in effect
         assert ls.is_celestia_repo(repo) == "hikari"
 
-class TestLinkSiblingsMain:
+class test_link_siblings_main:
     def _git_repo(self, path: Path, origin: str) -> None:
         import subprocess
 

@@ -31,7 +31,7 @@ import threading
 from datetime import datetime
 from typing import IO, Optional
 
-__all__ = ["Logger", "SOURCE_WIDTH", "MODULE_WIDTH", "configure", "log", "debug", "info", "ok", "warn", "error", "section", "tag", "blank", "rule"]
+__all__ = ["logger", "SOURCE_WIDTH", "MODULE_WIDTH", "configure", "log", "debug", "info", "ok", "warn", "error", "section", "tag", "blank", "rule"]
 
 _LEVELS = {"DEBUG": "dim", "INFO": "cyan", "OK": "green", "WARN": "yellow", "ERROR": "red"}
 
@@ -142,7 +142,7 @@ def _wrap(text: str, width: int, indent: str) -> str:
 
     return "\n".join(out)
 
-class Logger:
+class logger:
     """Columnar logger. Instantiate for a fixed source/module, or use the
     module-level functions (which share a process-wide default Logger)."""
 
@@ -154,7 +154,7 @@ class Logger:
         self.stream: IO = stream if stream is not None else sys.stdout
         self._color = _color_enabled(self.stream)
 
-    def configure(self, *, source: Optional[str] = None, module: Optional[str] = None, source_width: Optional[int] = None, module_width: Optional[int] = None, stream: Optional[IO] = None) -> "Logger":
+    def configure(self, *, source: Optional[str] = None, module: Optional[str] = None, source_width: Optional[int] = None, module_width: Optional[int] = None, stream: Optional[IO] = None) -> "logger":
         if source is not None:
             self.source = source
 
@@ -327,9 +327,9 @@ class Logger:
             except (BrokenPipeError, OSError, ValueError):
                 pass
 
-_default = Logger()
+_default = logger()
 
-def configure(**kw) -> Logger:
+def configure(**kw) -> logger:
     return _default.configure(**kw)
 
 def log(level: str, message: str, **kw) -> None:
@@ -362,5 +362,5 @@ def blank() -> None:
 def rule() -> None:
     _default.rule()
 
-def get_logger(_name: str) -> Logger:
+def get_logger(_name: str) -> logger:
     return _default

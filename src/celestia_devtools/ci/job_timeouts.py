@@ -154,7 +154,7 @@ def suggest(job_name: str, runs_on: Union[str, Sequence[str], None], job_body_te
 # 纯文本扫描
 # ---------------------------------------------------------------------------
 
-class WorkflowParseError(Exception):
+class workflow_parse_error(Exception):
     """Workflow text that cannot be parsed safely (tab indentation, flow mapping, symlink escape)."""
 
 # 键行：``key:`` 或 ``key: value``。key 允许被单/双引号包裹；取值到**第一个**冒号为止
@@ -360,7 +360,7 @@ def _reject_tab_indentation(lines: Sequence[str], path: Path, opaque: Optional[s
         content = _chomp(raw)
 
         if "\t" in _leading_ws(content):
-            raise WorkflowParseError(f"{path}:{number}: tab indentation is not supported; " "refusing to guess the indentation width")
+            raise workflow_parse_error(f"{path}:{number}: tab indentation is not supported; " "refusing to guess the indentation width")
 
 def _entry_last_line(lines: Sequence[str], key_index: int, block_end: int, key_indent: int) -> int:
     """Return the last line index occupied by the ``key:`` entry, inclusive.
@@ -475,7 +475,7 @@ def _parse_timeout_value(rest: str, lines: Sequence[str], first: int, last: int)
     except ValueError:
         return raw
 
-class Job:
+class job_record:
     """Scan result for a single workflow job."""
 
     def __init__(self, name: str, key_line: int, indent: int, body_text: str) -> None:
@@ -520,16 +520,16 @@ class Job:
 
         return "none"
 
-class WorkflowScan:
+class workflow_scan:
     """Scan result for a single workflow file."""
 
-    def __init__(self, path: Path, rel: str, lines: List[str], jobs: List[Job]) -> None:
+    def __init__(self, path: Path, rel: str, lines: List[str], jobs: List[job_record]) -> None:
         self.path = path
         self.rel = rel
         self.lines = lines
         self.jobs = jobs
 
-def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
+def scan_workflow_text(text: str, path: Path, rel: str) -> workflow_scan:
     """Scan workflow text and locate every job, its anchor line and its insertion point.
 
     This only locates structure and never changes content; anything that cannot be inferred
@@ -551,7 +551,7 @@ def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
             break
 
     if jobs_line < 0:
-        return WorkflowScan(path, rel, lines, [])  # 没有 jobs: —— 0 个 job
+        return workflow_scan(path, rel, lines, [])  # 没有 jobs: —— 0 个 job
 
     # ``jobs:`` 的子键缩进 = 其后第一条结构行的缩进（不写死 +2，容忍 4 空格缩进风格）。
     job_indent = 0
@@ -568,9 +568,9 @@ def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
         break
 
     if cursor >= len(lines):
-        return WorkflowScan(path, rel, lines, [])  # jobs: 之下没有内容
+        return workflow_scan(path, rel, lines, [])  # jobs: 之下没有内容
 
-    jobs: List[Job] = []
+    jobs: List[job_record] = []
     index = cursor
 
     while index < len(lines):
@@ -597,12 +597,12 @@ def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
         parsed = _parse_key(content[indent:])
 
         if parsed is None:
-            raise WorkflowParseError(f"{path}:{index + 1}: cannot parse job key")
+            raise workflow_parse_error(f"{path}:{index + 1}: cannot parse job key")
 
         name, rest = parsed
 
         if _has_inline_value(rest):
-            raise WorkflowParseError(f"{path}:{index + 1}: flow-mapping job body " f"(jobs.{name}: {{...}}) is not supported; refusing to guess")
+            raise workflow_parse_error(f"{path}:{index + 1}: flow-mapping job body " f"(jobs.{name}: {{...}}) is not supported; refusing to guess")
 
         block_end = index + 1
 
@@ -627,13 +627,13 @@ def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
         jobs.append(_scan_job(lines, name, index, indent, block_end, opaque))
         index = block_end
 
-    return WorkflowScan(path, rel, lines, jobs)
+    return workflow_scan(path, rel, lines, jobs)
 
-def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block_end: int, opaque: Optional[set] = None) -> Job:
+def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block_end: int, opaque: Optional[set] = None) -> job_record:
     """Scan one job block: locate job-level properties, the anchor and the insertion point."""
     skip = opaque or set()
     body_text = "".join(lines[key_line:block_end])
-    job = Job(name = name, key_line = key_line, indent = indent, body_text = body_text)
+    job = job_record(name = name, key_line = key_line, indent = indent, body_text = body_text)
 
     # job 级属性的缩进 = 块内所有键行的最小缩进（步骤里的 ``- timeout-minutes`` 会更
     # 深，因此不会被误判成 job 级 timeout）。
@@ -723,7 +723,7 @@ def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block
 
     return job
 
-def resolve_timeout(job: Job, overrides: Dict[str, int]) -> int:
+def resolve_timeout(job: job_record, overrides: Dict[str, int]) -> int:
     """Return the timeout to write for this job: ``--policy-override`` beats the policy table."""
     forced = overrides.get(job.name.lower())
 
@@ -743,7 +743,7 @@ def _read_text(path: Path) -> str:
         with path.open("r", encoding = "utf-8", newline = "") as handle:
             return handle.read()
     except UnicodeDecodeError as exc:
-        raise WorkflowParseError(f"{path}: not valid UTF-8: {exc}") from exc
+        raise workflow_parse_error(f"{path}: not valid UTF-8: {exc}") from exc
 
 def _write_text(path: Path, text: str) -> None:
     """Write with ``newline=""`` so existing CRLF endings survive."""
@@ -778,7 +778,7 @@ def workflow_files(root: Path) -> List[Path]:
     found += [item for item in directory.glob("*.yaml") if item.is_file()]
     return sorted(found)
 
-def collect_jobs(roots: Sequence[Path]) -> List[Tuple[Path, WorkflowScan]]:
+def collect_jobs(roots: Sequence[Path]) -> List[Tuple[Path, workflow_scan]]:
     """Scan every root and return ``[(root, WorkflowScan)]`` (empty for a repo without workflows).
 
     A file that yields 0 jobs gets a warning on stderr but is **not** an error: this org really
@@ -791,14 +791,14 @@ def collect_jobs(roots: Sequence[Path]) -> List[Tuple[Path, WorkflowScan]]:
     resolved (real on-disk) path, so an intra-directory symlink is scanned and counted
     once rather than twice.
     """
-    collected: List[Tuple[Path, WorkflowScan]] = []
+    collected: List[Tuple[Path, workflow_scan]] = []
     seen: set = set()
 
     for root in roots:
         directory = root / ".github" / "workflows"
 
         if directory.is_dir() and not _is_inside(directory.resolve(), root.resolve()):
-            raise WorkflowParseError(f"{directory}: resolves to {directory.resolve()}, outside {root.resolve()} " "— refusing to write through a symlinked workflows directory")
+            raise workflow_parse_error(f"{directory}: resolves to {directory.resolve()}, outside {root.resolve()} " "— refusing to write through a symlinked workflows directory")
 
         for path in workflow_files(root):
             real = path.resolve()
@@ -811,7 +811,7 @@ def collect_jobs(roots: Sequence[Path]) -> List[Tuple[Path, WorkflowScan]]:
             # 契约：fix 不得改动 ``.github/workflows`` 之外的任何文件。软链会让写入
             # 穿透到目录之外，所以这里显式拒绝，而不是照写。
             if path.is_symlink() and not _is_inside(real, directory.resolve()):
-                raise WorkflowParseError(f"{path}: symlink escapes .github/workflows " f"(-> {real}); refusing to write through it")
+                raise workflow_parse_error(f"{path}: symlink escapes .github/workflows " f"(-> {real}); refusing to write through it")
 
             rel = path.relative_to(root).as_posix()
             text = _read_text(path)
@@ -868,7 +868,7 @@ def _repository_roots(raw_paths: Sequence[str]) -> Tuple[List[Path], Optional[in
 
     return roots, None
 
-def _in_scope(job: Job, args: argparse.Namespace) -> bool:
+def _in_scope(job: job_record, args: argparse.Namespace) -> bool:
     """Whether this job falls inside the current run's scope.
 
     * ``runs-on`` contains ``self-hosted`` — in scope by default (this tool's purpose).
@@ -1080,7 +1080,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _run_audit(args, roots, overrides)
 
         return _run_fix(args, roots, overrides)
-    except WorkflowParseError as exc:
+    except workflow_parse_error as exc:
         print(f"error: {exc}", file = sys.stderr)
         return 2
     except OSError as exc:
