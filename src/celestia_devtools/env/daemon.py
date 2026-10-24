@@ -11,80 +11,49 @@ Usage:
 No systemd required — services are supervised by `malkuth daemon --config`.
 """
 from __future__ import annotations
-
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional, Sequence
+from celestia_devtools.repo.register_patches import is_celestia_repo
 
 # ── Service definitions ──────────────────────────────────────────────────────
 
-SERVICE_DEFS: dict[str, dict] = {
-    "shittim-chest": {
-        "bin": "chest",
-        # core has no "mock-mode" feature (only embedded-frontend) — the
-        # flag below used to make `daemon build` fail outright. The listen
-        # port must be pinned to run_port: chest defaults to :80.
-        "build_cmd": ["cargo", "build", "-p", "core", "--bin", "chest", "--release"],
-        "run_port": 8400,
-        "args": [],
-        "env_defaults": {
-            "SHITTIM_CHEST_HOST": "127.0.0.1",
-            "SHITTIM_CHEST_PORT": "8400",
-            "RUST_LOG": "warn,chest=info",
-        },
-    },
-    "entelecheia": {
-        "bin": "scepter",
-        # scepter has no "embedded-db" feature either; default features
-        # (all-agents) are what a local daemon pod wants. SERVER_BIND_ADDRESS
-        # is the real knob (setup.rs) and must be pinned to run_port or the
-        # pod lands on the :8424 native default.
-        "build_cmd": ["cargo", "build", "-p", "scepter", "--release"],
-        "run_port": 8410,
-        "args": [],
-        "env_defaults": {
-            "SERVER_BIND_ADDRESS": "127.0.0.1:8410",
-            "RUST_LOG": "warn,scepter=info",
-        },
-    },
-    "arona": {
-        "bin": "_cli",
-        "build_cmd": ["cargo", "build", "-p", "_cli", "--release"],
-        "run_port": 8405,
-        "args": ["serve"],
-        "env_defaults": {
-            "MOCK_MODE": "1",
-            "ARONA_PORT": "8405",
-            "RUST_LOG": "warn,arona=info",
-        },
-    },
-}
+# core has no "mock-mode" feature (only embedded-frontend) — the
+# flag below used to make `daemon build` fail outright. The listen
+# port must be pinned to run_port: chest defaults to :80.
+# scepter has no "embedded-db" feature either; default features
+# (all-agents) are what a local daemon pod wants. SERVER_BIND_ADDRESS
+# is the real knob (setup.rs) and must be pinned to run_port or the
+# pod lands on the :8424 native default.
+SERVICE_DEFS: dict[str, dict] = {"shittim-chest": {"bin": "chest", "build_cmd": ["cargo", "build", "-p", "core", "--bin", "chest", "--release"], "run_port": 8400, "args": [], "env_defaults": {"SHITTIM_CHEST_HOST": "127.0.0.1", "SHITTIM_CHEST_PORT": "8400", "RUST_LOG": "warn,chest=info"}}, "entelecheia": {"bin": "scepter", "build_cmd": ["cargo", "build", "-p", "scepter", "--release"], "run_port": 8410, "args": [], "env_defaults": {"SERVER_BIND_ADDRESS": "127.0.0.1:8410", "RUST_LOG": "warn,scepter=info"}}, "arona": {"bin": "_cli", "build_cmd": ["cargo", "build", "-p", "_cli", "--release"], "run_port": 8405, "args": ["serve"], "env_defaults": {"MOCK_MODE": "1", "ARONA_PORT": "8405", "RUST_LOG": "warn,arona=info"}}}
 
 DEFAULT_CONFIG_PATH = "/etc/malkuth/services.toml"
 DAEMON_PID_FILE = "/tmp/malkuth-daemon.pid"
 
-
 def detect_repo() -> Optional[str]:
-    from celestia_devtools.repo.register_patches import is_celestia_repo
     d = Path.cwd()
+
     while d != d.parent:
         if (d / "Cargo.toml").exists() or (d / ".git").exists():
             name = is_celestia_repo(d)
+
             if name in SERVICE_DEFS:
                 return name
-        d = d.parent
-    return None
 
+        d = d.parent
+
+    return None
 
 def _find_sibling_dir(repo: str) -> Optional[Path]:
     d = Path.cwd().parent / repo
+
     if d.is_dir() and (d / "Cargo.toml").exists():
         return d
-    return None
 
+    return None
 
 # ── Commands ─────────────────────────────────────────────────────────────────
 
@@ -92,31 +61,37 @@ def cmd_build(repos: list[str]) -> int:
     if not repos:
         r = detect_repo()
         repos = [r] if r else []
+
     if not repos:
-        print("[daemon] no repos specified", file=sys.stderr)
+        print("[daemon] no repos specified", file = sys.stderr)
         return 1
 
     for repo in repos:
         if repo not in SERVICE_DEFS:
-            print(f"[daemon] unsupported: {repo}", file=sys.stderr)
+            print(f"[daemon] unsupported: {repo}", file = sys.stderr)
             continue
+
         svc = SERVICE_DEFS[repo]
         work_dir = _find_sibling_dir(repo) or Path.cwd()
-        if not (work_dir / "Cargo.toml").exists():
-            print(f"[daemon] {repo} not found at {work_dir}", file=sys.stderr)
-            continue
-        print(f"[daemon] building {repo}...")
-        result = subprocess.run(svc["build_cmd"], cwd=work_dir)
-        if result.returncode != 0:
-            print(f"[daemon] {repo} build failed", file=sys.stderr)
-            return result.returncode
-        print(f"[daemon] {repo} built")
-    return 0
 
+        if not (work_dir / "Cargo.toml").exists():
+            print(f"[daemon] {repo} not found at {work_dir}", file = sys.stderr)
+            continue
+
+        print(f"[daemon] building {repo}...")
+        result = subprocess.run(svc["build_cmd"], cwd = work_dir)
+
+        if result.returncode != 0:
+            print(f"[daemon] {repo} build failed", file = sys.stderr)
+            return result.returncode
+
+        print(f"[daemon] {repo} built")
+
+    return 0
 
 def cmd_generate_config(repos: list[str], output_path: str = "") -> int:
     if not repos:
-        print("[daemon] usage: generate-config <repo> [repo...] [--output path]", file=sys.stderr)
+        print("[daemon] usage: generate-config <repo> [repo...] [--output path]", file = sys.stderr)
         return 1
 
     _scan_dir = Path.cwd().parent
@@ -130,16 +105,18 @@ cooldown_secs = 30
 
     for repo in repos:
         if repo not in SERVICE_DEFS:
-            print(f"[daemon] unsupported: {repo}", file=sys.stderr)
+            print(f"[daemon] unsupported: {repo}", file = sys.stderr)
             continue
+
         svc = SERVICE_DEFS[repo]
         work_dir = _find_sibling_dir(repo) or Path.cwd()
         # cargo emits <bin>.exe on Windows — check and emit the real name
         # or every service is "not found" there.
         bin_name = svc["bin"] + (".exe" if sys.platform == "win32" else "")
         binary = work_dir / "target" / "release" / bin_name
+
         if not binary.is_file():
-            print(f"[daemon] binary not found: {binary} — run 'daemon build' first", file=sys.stderr)
+            print(f"[daemon] binary not found: {binary} — run 'daemon build' first", file = sys.stderr)
             continue
 
         env = dict(svc.get("env_defaults", {}))
@@ -159,20 +136,22 @@ restart_policy = "permanent"
 """)
 
     full = header + "\n".join(services_toml)
+
     if output_path:
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).parent.mkdir(parents = True, exist_ok = True)
         Path(output_path).write_text(full)
         print(f"[daemon] wrote {output_path}")
     else:
         print(full)
-    return 0
 
+    return 0
 
 def cmd_start(with_mock: bool = False, config_path: str = "") -> int:
     cfg = Path(config_path or DEFAULT_CONFIG_PATH)
+
     if not cfg.exists():
-        print(f"[daemon] config not found: {cfg}", file=sys.stderr)
-        print("[daemon] run 'generate-config' first", file=sys.stderr)
+        print(f"[daemon] config not found: {cfg}", file = sys.stderr)
+        print("[daemon] run 'generate-config' first", file = sys.stderr)
         return 1
 
     # Check if already running
@@ -181,58 +160,62 @@ def cmd_start(with_mock: bool = False, config_path: str = "") -> int:
         return 0
 
     print(f"[daemon] starting: malkuth daemon --config {cfg}")
+
     with open(DAEMON_PID_FILE, "w") as f:
-        proc = subprocess.Popen(
-            ["malkuth", "daemon", "--config", str(cfg)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        proc = subprocess.Popen(["malkuth", "daemon", "--config", str(cfg)], stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
         f.write(str(proc.pid))
+
     time.sleep(2)
+
     if _daemon_running():
         print("[daemon] started")
     else:
-        print("[daemon] failed to start — check malkuth logs", file=sys.stderr)
-    return 0
+        print("[daemon] failed to start — check malkuth logs", file = sys.stderr)
 
+    return 0
 
 def cmd_stop() -> int:
     if not _daemon_running():
         print("[daemon] not running")
         return 0
+
     pid = _read_pid()
+
     if pid:
         try:
             os.kill(pid, 15)  # SIGTERM → graceful drain
             time.sleep(2)
+
             if _daemon_running():
                 os.kill(pid, 9)
         except ProcessLookupError:
             pass
-    Path(DAEMON_PID_FILE).unlink(missing_ok=True)
+
+    Path(DAEMON_PID_FILE).unlink(missing_ok = True)
     print("[daemon] stopped")
     return 0
 
-
 def cmd_status() -> int:
     pid = _read_pid()
+
     if pid and _daemon_running():
         print(f"[daemon] running (pid={pid})")
     else:
         print("[daemon] not running")
-    return 0
 
+    return 0
 
 def _daemon_running() -> bool:
     pid = _read_pid()
+
     if not pid:
         return False
+
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
-
 
 def _read_pid() -> Optional[int]:
     try:
@@ -240,11 +223,11 @@ def _read_pid() -> Optional[int]:
     except (FileNotFoundError, ValueError):
         return None
 
-
 # ── CLI dispatch ─────────────────────────────────────────────────────────────
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
+
     if not args:
         print(__doc__)
         return 0
@@ -257,11 +240,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif cmd == "generate-config":
         output = ""
         repos = list(rest)
+
         if "--output" in rest:
             idx = rest.index("--output")
-            if idx + 1 < len(rest):
+
+            if (idx + 1) < len(rest):
                 output = rest[idx + 1]
                 repos = [r for r in rest if r not in ("--output", output)]
+
         return cmd_generate_config(repos, output)
     elif cmd == "start":
         with_mock = "--mock" in rest
@@ -272,10 +258,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif cmd == "status":
         return cmd_status()
     else:
-        print(f"[daemon] unknown: {cmd}", file=sys.stderr)
-        print("[daemon] commands: build | generate-config | start | stop | status", file=sys.stderr)
+        print(f"[daemon] unknown: {cmd}", file = sys.stderr)
+        print("[daemon] commands: build | generate-config | start | stop | status", file = sys.stderr)
         return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

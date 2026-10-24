@@ -20,10 +20,8 @@ Three artifacts are produced:
 """
 
 from __future__ import annotations
-
 from typing import Any
-
-from celestia_devtools.npm.platforms import Platform
+from celestia_devtools.npm.platforms import platform
 
 #: The published node/shim. Kept low to stay installable on old Node.
 _MIN_NODE = ">=18"
@@ -34,19 +32,7 @@ _DEFAULT_LICENSE = "SySL-1.0"
 #: Filename of the runtime selector script dropped into the root package.
 SHIM_FILENAME = "install.js"
 
-
-def generate_root_package(
-    *,
-    scope: str,
-    name: str,
-    version: str,
-    platforms,
-    binary: str,
-    description: str = "",
-    license: str = _DEFAULT_LICENSE,
-    repository: str | None = None,
-    homepage: str | None = None,
-) -> dict[str, Any]:
+def generate_root_package(*, scope: str, name: str, version: str, platforms, binary: str, description: str = "", license: str = _DEFAULT_LICENSE, repository: str | None = None, homepage: str | None = None) -> dict[str, Any]:
     """Build the root ``package.json`` as a dict.
 
     Parameters mirror the two-layer model: the root package depends, via
@@ -60,40 +46,20 @@ def generate_root_package(
     """
     scope = scope.lstrip("@")
     full_name = f"@{scope}/{name}"
-    optional_deps = {
-        f"@{scope}/{name}{p.npm_suffix}": version for p in platforms
-    }
+    optional_deps = {f"@{scope}/{name}{p.npm_suffix}": version for p in platforms}
 
-    pkg: dict[str, Any] = {
-        "name": full_name,
-        "version": version,
-        "description": description or f"{name} — prebuilt binary (npx launcher)",
-        "license": license,
-        "bin": {name: SHIM_FILENAME},
-        "scripts": {"postinstall": f"node {SHIM_FILENAME}"},
-        "optionalDependencies": optional_deps,
-        "engines": {"node": _MIN_NODE},
-        "files": [SHIM_FILENAME],
-    }
+    pkg: dict[str, Any] = {"name": full_name, "version": version, "description": description or f"{name} — prebuilt binary (npx launcher)", "license": license, "bin": {name: SHIM_FILENAME}, "scripts": {"postinstall": f"node {SHIM_FILENAME}"}, "optionalDependencies": optional_deps, "engines": {"node": _MIN_NODE}, "files": [SHIM_FILENAME]}
+
     if repository:
         pkg["repository"] = repository
+
     if homepage:
         pkg["homepage"] = homepage
+
     pkg["publishConfig"] = {"access": "public"}
     return pkg
 
-
-def generate_subpackage(
-    *,
-    scope: str,
-    name: str,
-    version: str,
-    platform: Platform,
-    binary: str,
-    description: str = "",
-    license: str = _DEFAULT_LICENSE,
-    repository: str | None = None,
-) -> dict[str, Any]:
+def generate_subpackage(*, scope: str, name: str, version: str, platform: platform, binary: str, description: str = "", license: str = _DEFAULT_LICENSE, repository: str | None = None) -> dict[str, Any]:
     """Build a single platform subpackage ``package.json`` as a dict.
 
     The subpackage carries only the native binary for its platform and is
@@ -106,31 +72,17 @@ def generate_subpackage(
     full_name = f"@{scope}/{name}{platform.npm_suffix}"
     leaf = f"{binary}.exe" if platform.node_os == "win32" else binary
 
-    pkg: dict[str, Any] = {
-        "name": full_name,
-        "version": version,
-        "description": description or f"{name} prebuilt binary — {platform.rust_target}",
-        "license": license,
-        "os": [platform.node_os],
-        "cpu": [platform.node_cpu],
-        # The binary lives at the package root so the selector can find it by
-        # a stable path: <subpackage dir>/<leaf>.
-        "files": [leaf],
-        "engines": {"node": _MIN_NODE},
-    }
+    # The binary lives at the package root so the selector can find it by
+    # a stable path: <subpackage dir>/<leaf>.
+    pkg: dict[str, Any] = {"name": full_name, "version": version, "description": description or f"{name} prebuilt binary — {platform.rust_target}", "license": license, "os": [platform.node_os], "cpu": [platform.node_cpu], "files": [leaf], "engines": {"node": _MIN_NODE}}
+
     if repository:
         pkg["repository"] = repository
+
     pkg["publishConfig"] = {"access": "public"}
     return pkg
 
-
-def generate_postinstall_shim(
-    *,
-    scope: str,
-    name: str,
-    binary: str,
-    platforms,
-) -> str:
+def generate_postinstall_shim(*, scope: str, name: str, binary: str, platforms) -> str:
     """Generate the runtime JS selector script (the package's only JS file).
 
     The shim does two jobs:
@@ -149,19 +101,8 @@ def generate_postinstall_shim(
     scope = scope.lstrip("@")
     # Build a JSON-ish lookup the JS can consume. We embed it as a JS array of
     # objects to avoid requiring JSON.parse at module scope on every require.
-    entries = ",\n".join(
-        "    { suffix: %r, os: %r, cpu: %r }"
-        % (p.npm_suffix, p.node_os, p.node_cpu)
-        for p in platforms
-    )
-    return _SHIM_TEMPLATE.format(
-        scope=scope,
-        name=name,
-        binary=binary,
-        entries=entries,
-        shim=SHIM_FILENAME,
-    )
-
+    entries = ",\n".join("    { suffix: %r, os: %r, cpu: %r }" % (p.npm_suffix, p.node_os, p.node_cpu) for p in platforms)
+    return _SHIM_TEMPLATE.format(scope = scope, name = name, binary = binary, entries = entries, shim = SHIM_FILENAME)
 
 #: Template for the selector/launcher script. Kept dependency-free and ES5-ish.
 _SHIM_TEMPLATE = """\

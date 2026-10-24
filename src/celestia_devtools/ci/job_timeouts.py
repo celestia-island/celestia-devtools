@@ -64,9 +64,7 @@ Boundaries worth knowing (both measured, 2026-09-15):
   collection``) instead of silently skipping the "the insertion is still valid YAML" checks.
 """
 
-
 from __future__ import annotations
-
 import argparse
 import json
 import re
@@ -81,13 +79,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 # 第 1–5 条：按 job **名称** 匹配（大小写不敏感），顺序即优先级，先命中者胜。
 # 依据（自托管实测，run id 可复核）：cargo 类最长 3h50m（entelecheia / Code Checks,
 # run 34770115181），前端与其他类最高 35–67m，lint 类最高 35m（hikari Lint）。
-_NAME_RULES: Tuple[Tuple[Tuple[str, ...], int], ...] = (
-    (("bench",), 360),
-    (("fuzz",), 180),
-    (("coverage",), 180),
-    (("install", "e2e", "integration", "smoke", "drill", "docker"), 180),
-    (("release", "publish", "deploy"), 120),
-)
+_NAME_RULES: Tuple[Tuple[Tuple[str,...], int],...] = ((("bench",), 360), (("fuzz",), 180), (("coverage",), 180), (("install", "e2e", "integration", "smoke", "drill", "docker"), 180), (("release", "publish", "deploy"), 120))
 
 # 第 6 条：job 体（含 steps）里出现 cargo —— 编译/测试类，自托管实测最长 3h50m，
 # 取 300 留余量。
@@ -100,10 +92,7 @@ _BODY_JS_TIMEOUT = 120
 
 # 第 8 条：轻量作业（只看名称；前置的 cargo / 前端规则优先）。lint 类实测最高 35m，
 # 取 60 留余量——早期草案给的 20 分钟会误杀 hikari 的 Lint（实测 24–35m）。
-_LIGHT_NAME_KEYWORDS: Tuple[str, ...] = (
-    "fmt", "format", "lint", "title", "secrets", "docs", "audit",
-    "deny", "markdown", "i18n", "sign", "verify", "sync",
-)
+_LIGHT_NAME_KEYWORDS: Tuple[str,...] = ("fmt", "format", "lint", "title", "secrets", "docs", "audit", "deny", "markdown", "i18n", "sign", "verify", "sync")
 _LIGHT_TIMEOUT = 60
 
 # 第 9 条：兜底。
@@ -112,12 +101,7 @@ _DEFAULT_TIMEOUT = 120
 # 自托管判定的关键字（出现在 runs-on 里即视为自托管）。
 _SELF_HOSTED_LABEL = "self-hosted"
 
-
-def suggest(
-    job_name: str,
-    runs_on: Union[str, Sequence[str], None],
-    job_body_text: str,
-) -> int:
+def suggest(job_name: str, runs_on: Union[str, Sequence[str], None], job_body_text: str) -> int:
     """Return the suggested ``timeout-minutes`` for a job.
 
     Match order (job names are case-insensitive; *job_body_text* is that job's own raw YAML
@@ -157,20 +141,16 @@ def suggest(
 
     return _DEFAULT_TIMEOUT
 
-
 # ---------------------------------------------------------------------------
 # 纯文本扫描
 # ---------------------------------------------------------------------------
 
-class WorkflowParseError(Exception):
+class workflow_parse_error(Exception):
     """Workflow text that cannot be parsed safely (tab indentation, flow mapping, symlink escape)."""
-
 
 # 键行：``key:`` 或 ``key: value``。key 允许被单/双引号包裹；取值到**第一个**冒号为止
 # （这样 ``run: curl https://...`` 的 key 仍是 ``run``）。
-_KEY_RE = re.compile(
-    r'^(?P<key>"[^"]*"|\'[^\']*\'|[^:\s][^:]*?)\s*:(?P<rest>.*)$',
-)
+_KEY_RE = re.compile(r'^(?P<key>"[^"]*"|\'[^\']*\'|[^:\s][^:]*?)\s*:(?P<rest>.*)$')
 
 # 顶层的 ``jobs:``（GitHub 要求顶层键从第 0 列开始；容忍文件开头的 UTF-8 BOM）。
 _JOBS_LINE_RE = re.compile(r"^\ufeff?jobs\s*:\s*(?:#.*)?$")
@@ -178,24 +158,27 @@ _JOBS_LINE_RE = re.compile(r"^\ufeff?jobs\s*:\s*(?:#.*)?$")
 # 块标量指示符：``|`` / ``>`` 与可选修饰（``|-`` ``>+`` ``|2`` ``|2-``）。
 _BLOCK_SCALAR_RE = re.compile(r"^[|>][0-9+-]*$")
 
-
 def _chomp(line: str) -> str:
     """Strip the trailing ``\n`` / ``\r\n`` and return the line content (see :func:`_eol`)."""
+
     if line.endswith("\n"):
         line = line[:-1]
+
     if line.endswith("\r"):
         line = line[:-1]
-    return line
 
+    return line
 
 def _eol(line: str) -> str:
     """Return this line's ending: ``"\r\n"`` / ``"\n"`` / ``""`` (file ends without a newline)."""
+
     if line.endswith("\r\n"):
         return "\r\n"
+
     if line.endswith("\n"):
         return "\n"
-    return ""
 
+    return ""
 
 def _split_lines(text: str) -> List[str]:
     """Split on ``\n`` only, keeping each line ending so the rejoin is byte-identical.
@@ -205,29 +188,29 @@ def _split_lines(text: str) -> List[str]:
     """
     parts = text.split("\n")
     lines = [part + "\n" for part in parts[:-1]]
+
     if parts[-1] != "":
         lines.append(parts[-1])  # 文件末尾无换行
-    return lines
 
+    return lines
 
 def _leading_ws(content: str) -> str:
     """Return the leading whitespace (spaces and tabs) of a line."""
     return content[: len(content) - len(content.lstrip(" \t"))]
 
-
 def _indent_of(content: str) -> Optional[int]:
     """Return the indentation width of a line, or ``None`` for a blank line."""
     stripped = content.lstrip(" ")
+
     if stripped == "":
         return None
-    return len(content) - len(stripped)
 
+    return len(content) - len(stripped)
 
 def _is_blank_or_comment(content: str) -> bool:
     """True for a blank line or a whole-line comment (YAML comments never end a job block)."""
     stripped = content.strip()
-    return stripped == "" or stripped.startswith("#")
-
+    return (stripped == "") or stripped.startswith("#")
 
 def _parse_key(content: str) -> Optional[Tuple[str, str]]:
     """Split ``key: rest`` into ``(key, rest)``, or return ``None`` when it is not a key line.
@@ -237,13 +220,16 @@ def _parse_key(content: str) -> Optional[Tuple[str, str]]:
     ``runs-on: # note`` is correctly read as a multi-line entry whose value follows.
     """
     match = _KEY_RE.match(content)
+
     if match is None:
         return None
-    key = match.group("key").strip()
-    if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
-        key = key[1:-1]
-    return key, _strip_trailing_comment(match.group("rest"))
 
+    key = match.group("key").strip()
+
+    if (len(key) >= 2) and (key[0] == key[-1]) and (key[0] in "\"'"):
+        key = key[1:-1]
+
+    return key, _strip_trailing_comment(match.group("rest"))
 
 def _strip_trailing_comment(value: str) -> str:
     """Drop a YAML trailing comment: ``#`` only starts one when preceded by whitespace.
@@ -252,20 +238,19 @@ def _strip_trailing_comment(value: str) -> str:
     ``runs-on: x # note`` must not.
     """
     match = re.search(r"\s#", value)
+
     if match is not None:
         value = value[: match.start()]
-    return value.strip()
 
+    return value.strip()
 
 def _has_inline_value(rest: str) -> bool:
     """Whether the key line actually carries a value (a bare comment does not count)."""
-    return rest != "" and not rest.startswith("#")
-
+    return (rest != "") and not rest.startswith("#")
 
 def _is_block_scalar_indicator(value: str) -> bool:
     """``|`` / ``>`` plus modifiers (``|-`` / ``>+`` / ``|2`` / ``|2-``): the body is on following lines."""
     return bool(_BLOCK_SCALAR_RE.match(value))
-
 
 def _flow_collection_unclosed(value: str) -> bool:
     """Whether the value holds an unclosed flow collection (``[`` / ``{``) or an unclosed quote.
@@ -281,19 +266,22 @@ def _flow_collection_unclosed(value: str) -> bool:
     """
     depth = 0
     quote = ""
+
     for char in value:
         if quote:
             if char == quote:
                 quote = ""
+
             continue
+
         if char in "\"'":
             quote = char
         elif char in "[{":
             depth += 1
         elif char in "]}":
             depth -= 1
-    return depth > 0 or quote != ""
 
+    return (depth > 0) or (quote != "")
 
 def _block_scalar_body_lines(lines: Sequence[str]) -> set:
     """Mark the line indices that are **bodies** of block scalars (``|`` / ``>``).
@@ -306,62 +294,64 @@ def _block_scalar_body_lines(lines: Sequence[str]) -> set:
     opaque = set()
     total = len(lines)
     index = 0
+
     while index < total:
         content = _chomp(lines[index])
+
         if _is_blank_or_comment(content):
             index += 1
             continue
+
         indent = _indent_of(content)
         parsed = _parse_key(content[indent:]) if indent is not None else None
-        if parsed is None or not _is_block_scalar_indicator(parsed[1]):
+
+        if (parsed is None) or not _is_block_scalar_indicator(parsed[1]):
             index += 1
             continue
 
         # 正文 = 后续所有「空行 或 缩进 > 键缩进」的行。
         last = index
         cursor = index + 1
+
         while cursor < total:
             body = _chomp(lines[cursor])
+
             if body.strip() == "":
                 cursor += 1
                 continue
+
             body_indent = _indent_of(body)
-            if body_indent is not None and body_indent > indent:
+
+            if (body_indent is not None) and (body_indent > indent):
                 last = cursor
                 cursor += 1
                 continue
+
             break
+
         opaque.update(range(index + 1, last + 1))
         index = cursor if cursor > index else index + 1
+
     return opaque
 
-
-def _reject_tab_indentation(
-    lines: Sequence[str], path: Path, opaque: Optional[set] = None,
-) -> None:
+def _reject_tab_indentation(lines: Sequence[str], path: Path, opaque: Optional[set] = None) -> None:
     """Fail on a tab in the leading whitespace: the indent width is unknowable, so do not guess.
 
     Tabs inside *opaque* (block scalar body) lines are content rather than indentation and
     are skipped.
     """
     skip = opaque or set()
+
     for number, raw in enumerate(lines, 1):
         if (number - 1) in skip:
             continue
+
         content = _chomp(raw)
+
         if "\t" in _leading_ws(content):
-            raise WorkflowParseError(
-                f"{path}:{number}: tab indentation is not supported; "
-                "refusing to guess the indentation width"
-            )
+            raise workflow_parse_error(f"{path}:{number}: tab indentation is not supported; " "refusing to guess the indentation width")
 
-
-def _entry_last_line(
-    lines: Sequence[str],
-    key_index: int,
-    block_end: int,
-    key_indent: int,
-) -> int:
+def _entry_last_line(lines: Sequence[str], key_index: int, block_end: int, key_indent: int) -> int:
     """Return the last line index occupied by the ``key:`` entry, inclusive.
 
     Only a single-line, fully closed value returns *key_index*. These three forms all continue
@@ -385,41 +375,37 @@ def _entry_last_line(
     """
     content = _chomp(lines[key_index])
     key_and_rest = _parse_key(content[key_indent:])
+
     if key_and_rest is not None:
         value = key_and_rest[1]
-        if (
-            _has_inline_value(value)
-            and not _is_block_scalar_indicator(value)
-            and not _flow_collection_unclosed(value)
-        ):
+
+        if (_has_inline_value(value) and not _is_block_scalar_indicator(value) and not _flow_collection_unclosed(value)):
             return key_index
 
     last = key_index
     index = key_index + 1
+
     while index < block_end:
         current = _chomp(lines[index])
+
         if _is_blank_or_comment(current):
             index += 1
             continue
+
         indent = _indent_of(current)
-        if indent is not None and indent > key_indent:
+
+        if (indent is not None) and (indent > key_indent):
             last = index
             index += 1
             continue
+
         break
+
     return last
 
-
-def _entry_continuation_text(
-    lines: Sequence[str], first: int, last: int,
-) -> List[str]:
+def _entry_continuation_text(lines: Sequence[str], first: int, last: int) -> List[str]:
     """Collect the text of every non-blank, non-comment line in ``[first, last]``."""
-    return [
-        _chomp(lines[index]).strip()
-        for index in range(first, last + 1)
-        if not _is_blank_or_comment(_chomp(lines[index]))
-    ]
-
+    return [_chomp(lines[index]).strip()for index in range(first, last + 1)if not _is_blank_or_comment(_chomp(lines[index]))]
 
 def _parse_scalar_list(rest: str, lines: Sequence[str], first: int, last: int) -> List[str]:
     """Parse a ``runs-on`` value into a list of labels.
@@ -429,60 +415,59 @@ def _parse_scalar_list(rest: str, lines: Sequence[str], first: int, last: int) -
     nothing structured can be extracted it degrades to a single element holding the raw text,
     which only affects display and the self-hosted check — never the insertion.
     """
+
     if _has_inline_value(rest):
         if _is_block_scalar_indicator(rest):
             body = _entry_continuation_text(lines, first, last)
             return body if body else [rest]
+
         combined = rest
+
         if _flow_collection_unclosed(rest):
             tail = _entry_continuation_text(lines, first, last)
             combined = " ".join([rest] + tail)
+
         if combined.startswith("[") and combined.endswith("]"):
             inner = combined[1:-1]
             return [item.strip().strip("\"'") for item in inner.split(",") if item.strip()]
+
         return [combined.strip("\"'")]
 
     items: List[str] = []
+
     for index in range(first, last + 1):
         content = _chomp(lines[index]).strip()
+
         if content.startswith("- "):
             items.append(content[2:].strip().strip("\"'"))
+
     if items:
         return items
 
     raw = " ".join(_entry_continuation_text(lines, first, last)).strip()
     return [raw] if raw else []
 
-
 def _parse_timeout_value(rest: str, lines: Sequence[str], first: int, last: int) -> Union[int, str, None]:
     """Read an existing ``timeout-minutes`` value: ``int`` when possible, otherwise the raw string."""
+
     if _has_inline_value(rest):
         raw = rest.strip().strip("\"'")
     else:
-        collected = [
-            _chomp(lines[index]).strip()
-            for index in range(first, last + 1)
-            if not _is_blank_or_comment(_chomp(lines[index]))
-        ]
+        collected = [_chomp(lines[index]).strip()for index in range(first, last + 1)if not _is_blank_or_comment(_chomp(lines[index]))]
         raw = " ".join(collected).strip()
+
     if raw == "":
         return None
+
     try:
         return int(raw)
     except ValueError:
         return raw
 
-
-class Job:
+class job_record:
     """Scan result for a single workflow job."""
 
-    def __init__(
-        self,
-        name: str,
-        key_line: int,
-        indent: int,
-        body_text: str,
-    ) -> None:
+    def __init__(self, name: str, key_line: int, indent: int, body_text: str) -> None:
         self.name = name
         self.key_line = key_line
         self.indent = indent
@@ -503,33 +488,37 @@ class Job:
     @property
     def runs_on_text(self) -> str:
         """Display text for ``runs-on`` (multi-line lists joined with ``, ``); caller jobs fall back to ``uses``."""
+
         if self.runs_on:
             return ", ".join(self.runs_on)
+
         if self.uses:
             return f"uses: {self.uses}"
+
         return "-"
 
     @property
     def anchor_kind(self) -> str:
         """Anchor kind, for output."""
+
         if self.anchor == "runs-on":
             return "runs-on"
+
         if self.anchor == "uses":
             return "uses"
+
         return "none"
 
-
-class WorkflowScan:
+class workflow_scan:
     """Scan result for a single workflow file."""
 
-    def __init__(self, path: Path, rel: str, lines: List[str], jobs: List[Job]) -> None:
+    def __init__(self, path: Path, rel: str, lines: List[str], jobs: List[job_record]) -> None:
         self.path = path
         self.rel = rel
         self.lines = lines
         self.jobs = jobs
 
-
-def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
+def scan_workflow_text(text: str, path: Path, rel: str) -> workflow_scan:
     """Scan workflow text and locate every job, its anchor line and its insertion point.
 
     This only locates structure and never changes content; anything that cannot be inferred
@@ -541,127 +530,155 @@ def scan_workflow_text(text: str, path: Path, rel: str) -> WorkflowScan:
     _reject_tab_indentation(lines, path, opaque)
 
     jobs_line = -1
+
     for index, raw in enumerate(lines):
         if index in opaque:
             continue
+
         if _JOBS_LINE_RE.match(_chomp(raw)):
             jobs_line = index
             break
+
     if jobs_line < 0:
-        return WorkflowScan(path, rel, lines, [])  # 没有 jobs: —— 0 个 job
+        return workflow_scan(path, rel, lines, [])  # 没有 jobs: —— 0 个 job
 
     # ``jobs:`` 的子键缩进 = 其后第一条结构行的缩进（不写死 +2，容忍 4 空格缩进风格）。
     job_indent = 0
     cursor = jobs_line + 1
+
     while cursor < len(lines):
         content = _chomp(lines[cursor])
+
         if _is_blank_or_comment(content):
             cursor += 1
             continue
+
         job_indent = _indent_of(content) or 0
         break
-    if cursor >= len(lines):
-        return WorkflowScan(path, rel, lines, [])  # jobs: 之下没有内容
 
-    jobs: List[Job] = []
+    if cursor >= len(lines):
+        return workflow_scan(path, rel, lines, [])  # jobs: 之下没有内容
+
+    jobs: List[job_record] = []
     index = cursor
+
     while index < len(lines):
         if index in opaque:
             index += 1
             continue
+
         content = _chomp(lines[index])
+
         if _is_blank_or_comment(content):
             index += 1
             continue
+
         indent = _indent_of(content)
-        if indent is None or indent < job_indent:
+
+        if (indent is None) or (indent < job_indent):
             index += 1
             continue
+
         if indent > job_indent:
             index += 1  # 上一个 job 的块内内容（理论上到不了这里）
             continue
 
         parsed = _parse_key(content[indent:])
+
         if parsed is None:
-            raise WorkflowParseError(f"{path}:{index + 1}: cannot parse job key")
+            raise workflow_parse_error(f"{path}:{index + 1}: cannot parse job key")
+
         name, rest = parsed
+
         if _has_inline_value(rest):
-            raise WorkflowParseError(
-                f"{path}:{index + 1}: flow-mapping job body "
-                f"(jobs.{name}: {{...}}) is not supported; refusing to guess"
-            )
+            raise workflow_parse_error(f"{path}:{index + 1}: flow-mapping job body " f"(jobs.{name}: {{...}}) is not supported; refusing to guess")
 
         block_end = index + 1
+
         while block_end < len(lines):
             if block_end in opaque:
                 block_end += 1
                 continue
+
             candidate = _chomp(lines[block_end])
+
             if _is_blank_or_comment(candidate):
                 block_end += 1
                 continue
+
             candidate_indent = _indent_of(candidate)
-            if candidate_indent is not None and candidate_indent <= indent:
+
+            if (candidate_indent is not None) and (candidate_indent <= indent):
                 break
+
             block_end += 1
 
         jobs.append(_scan_job(lines, name, index, indent, block_end, opaque))
         index = block_end
 
-    return WorkflowScan(path, rel, lines, jobs)
+    return workflow_scan(path, rel, lines, jobs)
 
-
-def _scan_job(
-    lines: Sequence[str],
-    name: str,
-    key_line: int,
-    indent: int,
-    block_end: int,
-    opaque: Optional[set] = None,
-) -> Job:
+def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block_end: int, opaque: Optional[set] = None) -> job_record:
     """Scan one job block: locate job-level properties, the anchor and the insertion point."""
     skip = opaque or set()
     body_text = "".join(lines[key_line:block_end])
-    job = Job(name=name, key_line=key_line, indent=indent, body_text=body_text)
+    job = job_record(name = name, key_line = key_line, indent = indent, body_text = body_text)
 
     # job 级属性的缩进 = 块内所有键行的最小缩进（步骤里的 ``- timeout-minutes`` 会更
     # 深，因此不会被误判成 job 级 timeout）。
     property_indent: Optional[int] = None
+
     for index in range(key_line + 1, block_end):
         if index in skip:
             continue
+
         content = _chomp(lines[index])
+
         if _is_blank_or_comment(content):
             continue
+
         current_indent = _indent_of(content)
+
         if current_indent is None:
             continue
+
         if _parse_key(content[current_indent:]) is None:
             continue
-        if property_indent is None or current_indent < property_indent:
+
+        if (property_indent is None) or (current_indent < property_indent):
             property_indent = current_indent
+
     if property_indent is None:
         return job  # 空 job 块
 
     anchor_candidates: Dict[str, int] = {}
+
     for index in range(key_line + 1, block_end):
         if index in skip:
             continue
+
         content = _chomp(lines[index])
+
         if _is_blank_or_comment(content):
             continue
+
         current_indent = _indent_of(content)
+
         if current_indent != property_indent:
             continue
+
         parsed = _parse_key(content[current_indent:])
+
         if parsed is None:
             continue
+
         key, rest = parsed
+
         if key == "timeout-minutes":
             job.has_timeout = True
             last = _entry_last_line(lines, index, block_end, current_indent)
             job.timeout_minutes = _parse_timeout_value(rest, lines, index + 1, last)
-        elif key in ("runs-on", "uses") and key not in anchor_candidates:
+        elif (key in ("runs-on", "uses")) and (key not in anchor_candidates):
             anchor_candidates[key] = index
 
     # 锚点优先级：runs-on > uses（caller job）。
@@ -695,14 +712,14 @@ def _scan_job(
 
     return job
 
-
-def resolve_timeout(job: Job, overrides: Dict[str, int]) -> int:
+def resolve_timeout(job: job_record, overrides: Dict[str, int]) -> int:
     """Return the timeout to write for this job: ``--policy-override`` beats the policy table."""
     forced = overrides.get(job.name.lower())
+
     if forced is not None:
         return forced
-    return suggest(job.name, job.runs_on or [], job.body_text)
 
+    return suggest(job.name, job.runs_on or [], job.body_text)
 
 # ---------------------------------------------------------------------------
 # 文件 / 目录遍历
@@ -710,23 +727,22 @@ def resolve_timeout(job: Job, overrides: Dict[str, int]) -> int:
 
 def _read_text(path: Path) -> str:
     """Read with ``newline=""`` — universal newlines would turn CRLF into LF and break byte preservation."""
+
     try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
+        with path.open("r", encoding = "utf-8", newline = "") as handle:
             return handle.read()
     except UnicodeDecodeError as exc:
-        raise WorkflowParseError(f"{path}: not valid UTF-8: {exc}") from exc
-
+        raise workflow_parse_error(f"{path}: not valid UTF-8: {exc}") from exc
 
 def _write_text(path: Path, text: str) -> None:
     """Write with ``newline=""`` so existing CRLF endings survive."""
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
 
+    with path.open("w", encoding = "utf-8", newline = "") as handle:
+        handle.write(text)
 
 def _is_inside(child: Path, parent: Path) -> bool:
     """True when *child* is *parent* itself or lives underneath it (both must be resolved)."""
-    return child == parent or child.is_relative_to(parent)
-
+    return (child == parent) or child.is_relative_to(parent)
 
 def workflow_files(root: Path) -> List[Path]:
     """List the workflow files for *root* (sorted, for deterministic output).
@@ -738,20 +754,20 @@ def workflow_files(root: Path) -> List[Path]:
     empty list.  The audit then reported ``0 jobs`` and exited 0, i.e. a clean
     bill of health for a directory that was never scanned.
     """
-    if root.name == "workflows" and root.parent.name == ".github":
+
+    if (root.name == "workflows") and (root.parent.name == ".github"):
         directory = root
     else:
         directory = root / ".github" / "workflows"
+
     if not directory.is_dir():
         return []
+
     found = [item for item in directory.glob("*.yml") if item.is_file()]
     found += [item for item in directory.glob("*.yaml") if item.is_file()]
     return sorted(found)
 
-
-def collect_jobs(
-    roots: Sequence[Path],
-) -> List[Tuple[Path, WorkflowScan]]:
+def collect_jobs(roots: Sequence[Path]) -> List[Tuple[Path, workflow_scan]]:
     """Scan every root and return ``[(root, WorkflowScan)]`` (empty for a repo without workflows).
 
     A file that yields 0 jobs gets a warning on stderr but is **not** an error: this org really
@@ -764,62 +780,59 @@ def collect_jobs(
     resolved (real on-disk) path, so an intra-directory symlink is scanned and counted
     once rather than twice.
     """
-    collected: List[Tuple[Path, WorkflowScan]] = []
+    collected: List[Tuple[Path, workflow_scan]] = []
     seen: set = set()
+
     for root in roots:
         directory = root / ".github" / "workflows"
+
         if directory.is_dir() and not _is_inside(directory.resolve(), root.resolve()):
-            raise WorkflowParseError(
-                f"{directory}: resolves to {directory.resolve()}, outside {root.resolve()} "
-                "— refusing to write through a symlinked workflows directory"
-            )
+            raise workflow_parse_error(f"{directory}: resolves to {directory.resolve()}, outside {root.resolve()} " "— refusing to write through a symlinked workflows directory")
+
         for path in workflow_files(root):
             real = path.resolve()
+
             if real in seen:
                 continue
+
             seen.add(real)
+
             # 契约：fix 不得改动 ``.github/workflows`` 之外的任何文件。软链会让写入
             # 穿透到目录之外，所以这里显式拒绝，而不是照写。
             if path.is_symlink() and not _is_inside(real, directory.resolve()):
-                raise WorkflowParseError(
-                    f"{path}: symlink escapes .github/workflows "
-                    f"(-> {real}); refusing to write through it"
-                )
+                raise workflow_parse_error(f"{path}: symlink escapes .github/workflows " f"(-> {real}); refusing to write through it")
+
             rel = path.relative_to(root).as_posix()
             text = _read_text(path)
             scan = scan_workflow_text(text, path, rel)
+
             if not scan.jobs:
-                print(
-                    f"warning: {path}: no top-level `jobs:` found - 0 jobs scanned "
-                    "(is this really a workflow?)",
-                    file=sys.stderr,
-                )
+                print(f"warning: {path}: no top-level `jobs:` found - 0 jobs scanned " "(is this really a workflow?)", file = sys.stderr)
+
             collected.append((root, scan))
+
     return collected
 
-
-def _apply_insertions(
-    lines: List[str],
-    edits: Sequence[Tuple[int, str, int]],
-    default_eol: str,
-) -> List[str]:
+def _apply_insertions(lines: List[str], edits: Sequence[Tuple[int, str, int]], default_eol: str) -> List[str]:
     """Insert whole lines in descending ``insert_at`` order (descending keeps earlier indices valid).
 
     *edits* are ``(insert_at, indent, minutes)``. When the anchor line happens to be the last
     line and has no newline, it first receives the file's default ending and the inserted line
     carries none — preserving "no trailing newline".
     """
-    for insert_at, indent, minutes in sorted(edits, key=lambda item: item[0], reverse=True):
+
+    for insert_at, indent, minutes in sorted(edits, key = lambda item: item[0], reverse = True):
         previous = lines[insert_at - 1]
         previous_eol = _eol(previous)
         new_line = f"{indent}timeout-minutes: {minutes}"
+
         if previous_eol == "":
             lines[insert_at - 1] = previous + default_eol
             lines.insert(insert_at, new_line)
         else:
             lines.insert(insert_at, new_line + previous_eol)
-    return lines
 
+    return lines
 
 # ---------------------------------------------------------------------------
 # 子命令
@@ -827,19 +840,24 @@ def _apply_insertions(
 
 def _repository_roots(raw_paths: Sequence[str]) -> Tuple[List[Path], Optional[int]]:
     """Resolve the PATH arguments (default: current directory); a missing path is a usage error."""
+
     if not raw_paths:
         raw_paths = ["."]
+
     roots: List[Path] = []
+
     for raw in raw_paths:
         root = Path(raw)
+
         if not root.exists():
-            print(f"error: {raw}: no such file or directory", file=sys.stderr)
+            print(f"error: {raw}: no such file or directory", file = sys.stderr)
             return [], 2
+
         roots.append(root)
+
     return roots, None
 
-
-def _in_scope(job: Job, args: argparse.Namespace) -> bool:
+def _in_scope(job: job_record, args: argparse.Namespace) -> bool:
     """Whether this job falls inside the current run's scope.
 
     * ``runs-on`` contains ``self-hosted`` — in scope by default (this tool's purpose).
@@ -847,28 +865,18 @@ def _in_scope(job: Job, args: argparse.Namespace) -> bool:
     * a caller job (``uses:`` only, no ``runs-on``) — the called workflow may live in another
       repo, so self-hosted-ness **cannot be decided offline**; needs ``--include-callers``.
     """
+
     if job.is_caller:
         return bool(args.include_callers)
+
     if job.self_hosted:
         return True
+
     return bool(args.include_hosted)
 
-
-def _summary_line(
-    in_scope_missing: int,
-    in_scope_total: int,
-    self_hosted_missing: int,
-    self_hosted_total: int,
-    hosted_missing: int,
-    hosted_total: int,
-) -> str:
+def _summary_line(in_scope_missing: int, in_scope_total: int, self_hosted_missing: int, self_hosted_total: int, hosted_missing: int, hosted_total: int) -> str:
     """Summary line: ``N/M`` counts the **current scope**, and the parentheses break out self-hosted and hosted."""
-    return (
-        f"{in_scope_missing}/{in_scope_total} jobs missing timeout-minutes "
-        f"(self-hosted: {self_hosted_missing}/{self_hosted_total}, "
-        f"hosted: {hosted_missing}/{hosted_total})"
-    )
-
+    return f"{in_scope_missing}/{in_scope_total} jobs missing timeout-minutes " f"(self-hosted: {self_hosted_missing}/{self_hosted_total}, " f"hosted: {hosted_missing}/{hosted_total})"
 
 def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, int]) -> int:
     """``audit`` implementation."""
@@ -887,79 +895,69 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
     for root, scan in scanned:
         for job in scan.jobs:
             suggested = resolve_timeout(job, overrides)
+
             if job.is_caller:
                 caller_total += 1
+
                 if not job.has_timeout:
                     caller_missing += 1
             elif job.self_hosted:
                 self_hosted_total += 1
+
                 if not job.has_timeout:
                     self_hosted_missing += 1
             else:
                 hosted_total += 1
+
                 if not job.has_timeout:
                     hosted_missing += 1
+
             if _in_scope(job, args):
                 in_scope_total += 1
+
                 if not job.has_timeout:
                     in_scope_missing += 1
 
-            records.append({
-                "path": str(root),
-                "workflow": scan.rel,
-                "job": job.name,
-                "runs_on": job.runs_on,
-                "uses": job.uses,
-                "timeout_minutes": job.timeout_minutes,
-                "suggested": suggested,
-                "self_hosted": job.self_hosted,
-                "caller": job.is_caller,
-            })
+            records.append({"path": str(root), "workflow": scan.rel, "job": job.name, "runs_on": job.runs_on, "uses": job.uses, "timeout_minutes": job.timeout_minutes, "suggested": suggested, "self_hosted": job.self_hosted, "caller": job.is_caller})
 
             if args.as_json:
                 continue
+
             if current_root != root:
                 lines_out.append(str(root))
                 current_root = root
                 current_rel = None
+
             if current_rel != scan.rel:
                 lines_out.append(f"  {scan.rel}")
                 current_rel = scan.rel
-                width = max((len(item.name) for item in scan.jobs), default=0)
+                width = max((len(item.name) for item in scan.jobs), default = 0)
+
             tag = "self-hosted" if job.self_hosted else ("caller" if job.is_caller else "hosted")
+
             if job.has_timeout:
                 state = f"ok (timeout-minutes: {job.timeout_minutes})"
             else:
                 state = f"MISSING -> {suggested}"
+
             mark = " " if _in_scope(job, args) else "-"
-            lines_out.append(
-                f"  {mark} {job.name:<{width}}  {state:<16} [{tag}]  {job.runs_on_text}"
-            )
+            lines_out.append(f"  {mark} {job.name:<{width}}  {state:<16} [{tag}]  {job.runs_on_text}")
 
     if args.as_json:
-        print(json.dumps(records, indent=2, ensure_ascii=False))
+        print(json.dumps(records, indent = 2, ensure_ascii = False))
     else:
         for line in lines_out:
             print(line)
+
         print("  (`-` marks jobs outside the current scope)")
 
-    summary = _summary_line(
-        in_scope_missing, in_scope_total,
-        self_hosted_missing, self_hosted_total,
-        hosted_missing, hosted_total,
-    )
-    print(summary, file=sys.stderr if args.as_json else sys.stdout)
+    summary = _summary_line(in_scope_missing, in_scope_total, self_hosted_missing, self_hosted_total, hosted_missing, hosted_total)
+    print(summary, file = sys.stderr if args.as_json else sys.stdout)
+
     if caller_total and not args.include_callers:
-        print(
-            f"note: {caller_missing}/{caller_total} caller job(s) (`uses:` without "
-            "`runs-on`) are outside the default scope - their runner is decided by the "
-            "called workflow, which may live in another repo; pass --include-callers to "
-            "cover them.",
-            file=sys.stderr if args.as_json else sys.stdout,
-        )
+        print(f"note: {caller_missing}/{caller_total} caller job(s) (`uses:` without " "`runs-on`) are outside the default scope - their runner is decided by the " "called workflow, which may live in another repo; pass --include-callers to " "cover them.", file = sys.stderr if args.as_json else sys.stdout)
 
     return 1 if in_scope_missing else 0
-
 
 def _run_fix(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, int]) -> int:
     """``fix`` implementation: only whole lines are added, everything else stays byte-identical."""
@@ -970,20 +968,23 @@ def _run_fix(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, i
     for _root, scan in scanned:
         edits: List[Tuple[int, str, int]] = []
         descriptions: List[Tuple[str, str, int, str, str]] = []
+
         for job in scan.jobs:
-            if job.has_timeout or job.anchor is None or job.insert_at < 0:
+            if job.has_timeout or (job.anchor is None) or (job.insert_at < 0):
                 continue
+
             if not _in_scope(job, args):
                 continue
+
             minutes = resolve_timeout(job, overrides)
             edits.append((job.insert_at, job.insert_indent, minutes))
-            descriptions.append(
-                (job.name, job.anchor_kind, minutes, job.anchor_text, job.insert_indent)
-            )
+            descriptions.append((job.name, job.anchor_kind, minutes, job.anchor_text, job.insert_indent))
+
         if not edits:
             continue
 
         print(f"--- {scan.path}")
+
         for name, kind, minutes, anchor_text, indent in descriptions:
             print(f"  job {name!r} after `{anchor_text.strip()}` ({kind})")
             print(f"    insert `{indent}timeout-minutes: {minutes}`")
@@ -1005,7 +1006,6 @@ def _run_fix(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, i
     print(f"{verb} {inserted_lines} line(s) in {changed_files} file(s){suffix}.")
     return 0
 
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1013,60 +1013,40 @@ def _run_fix(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, i
 def _parse_override(raw: str) -> Tuple[str, int]:
     """Parse ``--policy-override JOB=MINUTES``."""
     name, separator, value = raw.rpartition("=")
+
     if not separator or not name.strip():
         raise argparse.ArgumentTypeError(f"expected JOB=MINUTES, got {raw!r}")
+
     try:
         minutes = int(value.strip())
     except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"expected JOB=MINUTES with an integer MINUTES, got {raw!r}"
-        ) from None
+        raise argparse.ArgumentTypeError(f"expected JOB=MINUTES with an integer MINUTES, got {raw!r}") from None
+
     if minutes <= 0:
         raise argparse.ArgumentTypeError(f"MINUTES must be positive, got {raw!r}")
-    return name.strip(), minutes
 
+    return name.strip(), minutes
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser."""
-    parser = argparse.ArgumentParser(
-        prog="celestia-job-timeouts",
-        description=(
-            "Audit and bulk-fill `timeout-minutes` on GitHub Actions jobs. "
-            "Self-hosted jobs are handled by default; pass --include-hosted to "
-            "cover GitHub-hosted jobs too."
-        ),
-    )
-    sub = parser.add_subparsers(dest="subcmd")
+    parser = argparse.ArgumentParser(prog = "celestia-job-timeouts", description = "Audit and bulk-fill `timeout-minutes` on GitHub Actions jobs. " "Self-hosted jobs are handled by default; pass --include-hosted to " "cover GitHub-hosted jobs too.")
+    sub = parser.add_subparsers(dest = "subcmd")
 
-    p_audit = sub.add_parser(
-        "audit",
-        help="list jobs, their runs-on and timeout-minutes state",
-    )
-    p_audit.add_argument("paths", nargs="*", help="repository roots (default: cwd)")
-    p_audit.add_argument("--json", action="store_true", dest="as_json",
-                         help="emit machine-readable JSON on stdout")
-    p_audit.add_argument("--include-hosted", action="store_true",
-                         help="also report/fix GitHub-hosted jobs")
-    p_audit.add_argument("--include-callers", action="store_true",
-                         help="also report/fix reusable-workflow caller jobs (jobs.<id>.uses)")
-    p_audit.add_argument("--policy-override", action="append", default=[],
-                         type=_parse_override, metavar="JOB=MINUTES",
-                         help="force the timeout for a job name (repeatable)")
+    p_audit = sub.add_parser("audit", help = "list jobs, their runs-on and timeout-minutes state")
+    p_audit.add_argument("paths", nargs = "*", help = "repository roots (default: cwd)")
+    p_audit.add_argument("--json", action = "store_true", dest = "as_json", help = "emit machine-readable JSON on stdout")
+    p_audit.add_argument("--include-hosted", action = "store_true", help = "also report/fix GitHub-hosted jobs")
+    p_audit.add_argument("--include-callers", action = "store_true", help = "also report/fix reusable-workflow caller jobs (jobs.<id>.uses)")
+    p_audit.add_argument("--policy-override", action = "append", default = [], type = _parse_override, metavar = "JOB=MINUTES", help = "force the timeout for a job name (repeatable)")
 
-    p_fix = sub.add_parser("fix", help="insert timeout-minutes where missing")
-    p_fix.add_argument("paths", nargs="*", help="repository roots (default: cwd)")
-    p_fix.add_argument("--dry-run", action="store_true",
-                       help="print the insertions without writing any file")
-    p_fix.add_argument("--include-hosted", action="store_true",
-                       help="also report/fix GitHub-hosted jobs")
-    p_fix.add_argument("--include-callers", action="store_true",
-                       help="also report/fix reusable-workflow caller jobs (jobs.<id>.uses)")
-    p_fix.add_argument("--policy-override", action="append", default=[],
-                       type=_parse_override, metavar="JOB=MINUTES",
-                       help="force the timeout for a job name (repeatable)")
+    p_fix = sub.add_parser("fix", help = "insert timeout-minutes where missing")
+    p_fix.add_argument("paths", nargs = "*", help = "repository roots (default: cwd)")
+    p_fix.add_argument("--dry-run", action = "store_true", help = "print the insertions without writing any file")
+    p_fix.add_argument("--include-hosted", action = "store_true", help = "also report/fix GitHub-hosted jobs")
+    p_fix.add_argument("--include-callers", action = "store_true", help = "also report/fix reusable-workflow caller jobs (jobs.<id>.uses)")
+    p_fix.add_argument("--policy-override", action = "append", default = [], type = _parse_override, metavar = "JOB=MINUTES", help = "force the timeout for a job name (repeatable)")
 
     return parser
-
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI entry point; returns the exit code (0 success / 1 missing timeout / 2 usage or parse error)."""
@@ -1078,24 +1058,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     roots, failure = _repository_roots(args.paths)
+
     if failure is not None:
         return failure
 
-    overrides: Dict[str, int] = {
-        name.lower(): minutes for name, minutes in args.policy_override
-    }
+    overrides: Dict[str, int] = {name.lower(): minutes for name, minutes in args.policy_override}
 
     try:
         if args.subcmd == "audit":
             return _run_audit(args, roots, overrides)
+
         return _run_fix(args, roots, overrides)
-    except WorkflowParseError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+    except workflow_parse_error as exc:
+        print(f"error: {exc}", file = sys.stderr)
         return 2
     except OSError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {exc}", file = sys.stderr)
         return 2
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

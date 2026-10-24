@@ -8,14 +8,10 @@ WebView2 CDP line.
 """
 
 from __future__ import annotations
-
 import json
 import socket
-
 import pytest
-
 from celestia_devtools.env import ports
-
 
 @pytest.fixture()
 def registry(tmp_path, monkeypatch):
@@ -23,8 +19,7 @@ def registry(tmp_path, monkeypatch):
     monkeypatch.setenv("CELESTIA_PORTS_REGISTRY", str(path))
     yield path
 
-
-class TestAcquire:
+class test_acquire:
     def test_two_apps_never_share_a_kind_port(self, registry):
         a = ports.acquire("shittim-chest", "vite")
         b = ports.acquire("wowsp", "vite")
@@ -35,10 +30,8 @@ class TestAcquire:
         assert ports.acquire("shittim-chest", "vite") == first
 
     def test_preferred_port_is_deterministic(self):
-        assert ports._preferred("shittim-chest", "vite") == \
-            ports._preferred("shittim-chest", "vite")
-        assert ports._preferred("shittim-chest", "vite") != \
-            ports._preferred("wowsp", "vite")
+        assert ports._preferred("shittim-chest", "vite") == ports._preferred("shittim-chest", "vite")
+        assert ports._preferred("shittim-chest", "vite") != ports._preferred("wowsp", "vite")
 
     def test_kinds_are_independent(self, registry):
         vite = ports.acquire("shittim-chest", "vite")
@@ -61,17 +54,14 @@ class TestAcquire:
         # the SAME key: the GC drops the stale claim and re-allocates
         # (deterministically the preferred port).
         stale_pid = 4_000_000  # far beyond any real pid
-        registry.write_text(json.dumps({
-            "app:vite": {"port": 5999, "pid": stale_pid, "ts": 0},
-        }), encoding="utf-8")
+        registry.write_text(json.dumps({"app:vite": {"port": 5999, "pid": stale_pid, "ts": 0}}), encoding = "utf-8")
         got = ports.acquire("app", "vite")
         assert got == ports._preferred("app", "vite")
-        data = json.loads(registry.read_text(encoding="utf-8"))
+        data = json.loads(registry.read_text(encoding = "utf-8"))
         assert data["app:vite"]["port"] == got
         assert data["app:vite"]["pid"] != stale_pid
 
-
-class TestReleaseAndList:
+class test_release_and_list:
     def test_release_one_kind_keeps_the_other(self, registry):
         ports.acquire("app", "vite")
         ports.acquire("app", "cdp")
@@ -86,21 +76,18 @@ class TestReleaseAndList:
         ports.release("app", None)
         assert ports.list_entries() == {}
 
-
-class TestEnvContract:
+class test_env_contract:
     def test_env_carries_both_kinds_and_webview2_line(self, registry):
         exports = ports.env_exports("shittim-chest")
         assert exports["CELESTIA_VITE_PORT"].isdigit()
         assert exports["CELESTIA_CDP_PORT"].isdigit()
         assert exports["CELESTIA_VITE_PORT"] != exports["CELESTIA_CDP_PORT"]
-        assert exports["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] == \
-            f"--remote-debugging-port={exports['CELESTIA_CDP_PORT']}"
+        assert exports["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] == f"--remote-debugging-port={exports['CELESTIA_CDP_PORT']}"
 
     def test_env_is_stable_per_app(self, registry):
         assert ports.env_exports("app") == ports.env_exports("app")
 
-
-class TestCli:
+class test_cli:
     def test_acquire_prints_bare_port(self, registry, capsys):
         assert ports.main(["acquire", "--app", "app", "--kind", "vite"]) == 0
         out = capsys.readouterr().out.strip()

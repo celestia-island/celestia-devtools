@@ -19,20 +19,10 @@ in one wave. These tests pin both constants, and pin that they stay distinct.
 """
 
 from __future__ import annotations
-
 import hashlib
 from pathlib import Path
-
 import yaml
-
-from celestia_devtools.repo.init import (
-    WORKFLOW_CI_CACHE,
-    WORKFLOW_COMMIT_LINT,
-    WORKFLOW_COMMIT_LINT_LEGACY,
-    WORKFLOW_COMMIT_LINT_NO_PERMS,
-    WORKFLOW_PR_TITLE_CHECK,
-    _ensure_workflows,
-)
+from celestia_devtools.repo.init import (OPT_IN_GATES, WORKFLOW_CI_CACHE, WORKFLOW_CNB_OVERFLOW, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, WORKFLOW_FAMILY_VERSIONS, WORKFLOW_P0_GATE, WORKFLOW_PR_TITLE_CHECK, WORKFLOW_RELEASE_NOTES, WORKFLOW_RULES_LINT, WORKFLOW_VERIFY_VERSIONS, _ensure_workflows)
 
 #: sha256 of the canonical caller shipped in celestia-island repositories: the
 #: lane-carrying form **plus** the explicit `permissions` grant. A caller that
@@ -52,13 +42,11 @@ NO_PERMS_BYTES = 1170
 LEGACY_SHA256 = "106a93d0ca2bb1db223ef0fc82b72a53a58ea0ebcbd44bbd2eb8539be8b27342"
 LEGACY_BYTES = 273
 
-
 def _on(doc):
     """``on`` parses as the boolean ``True`` under YAML 1.1 loaders."""
     return doc.get("on") or doc.get(True)
 
-
-class TestCanonicalBytes:
+class test_canonical_bytes:
     def test_template_hashes_to_the_canonical_file(self):
         assert hashlib.sha256(WORKFLOW_COMMIT_LINT.encode()).hexdigest() == CANONICAL_SHA256
 
@@ -69,8 +57,7 @@ class TestCanonicalBytes:
         assert WORKFLOW_COMMIT_LINT.endswith("pr: ${{ inputs.pr }}\n")
         assert not WORKFLOW_COMMIT_LINT.endswith("\n\n")
 
-
-class TestLegacyBytes:
+class test_legacy_bytes:
     """The pre-lane template: the audit's migration marker, frozen on purpose.
 
     ``_canonical_caller_findings`` reports exactly these bytes as a warning, so a
@@ -80,10 +67,7 @@ class TestLegacyBytes:
     """
 
     def test_legacy_hashes_to_the_historical_file(self):
-        assert (
-            hashlib.sha256(WORKFLOW_COMMIT_LINT_LEGACY.encode()).hexdigest()
-            == LEGACY_SHA256
-        )
+        assert (hashlib.sha256(WORKFLOW_COMMIT_LINT_LEGACY.encode()).hexdigest() == LEGACY_SHA256)
 
     def test_legacy_length_is_the_pre_lane_fleet(self):
         assert len(WORKFLOW_COMMIT_LINT_LEGACY.encode()) == LEGACY_BYTES
@@ -97,8 +81,7 @@ class TestLegacyBytes:
         assert "vars.LINT_LANE" in WORKFLOW_COMMIT_LINT
         assert "vars.LINT_RUNNER" not in WORKFLOW_COMMIT_LINT_LEGACY
 
-
-class TestNoPermsBytes:
+class test_no_perms_bytes:
     """The lane-carrying template that predates the permission grant.
 
     ``_canonical_caller_findings`` reports exactly these bytes as a warning, so a
@@ -108,10 +91,7 @@ class TestNoPermsBytes:
     """
 
     def test_hashes_to_the_pre_grant_file(self):
-        assert (
-            hashlib.sha256(WORKFLOW_COMMIT_LINT_NO_PERMS.encode()).hexdigest()
-            == NO_PERMS_SHA256
-        )
+        assert (hashlib.sha256(WORKFLOW_COMMIT_LINT_NO_PERMS.encode()).hexdigest() == NO_PERMS_SHA256)
 
     def test_length_is_the_pre_grant_fleet(self):
         assert len(WORKFLOW_COMMIT_LINT_NO_PERMS.encode()) == NO_PERMS_BYTES
@@ -122,13 +102,9 @@ class TestNoPermsBytes:
         assert "permissions" in WORKFLOW_COMMIT_LINT
 
     def test_distinct_from_both_other_forms(self):
-        assert WORKFLOW_COMMIT_LINT_NO_PERMS not in (
-            WORKFLOW_COMMIT_LINT,
-            WORKFLOW_COMMIT_LINT_LEGACY,
-        )
+        assert WORKFLOW_COMMIT_LINT_NO_PERMS not in (WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY)
 
-
-class TestPermissionGrant:
+class test_permission_grant:
     """The grant is the fix for the 2026-10-02 regression: without it the called
     workflow cannot start, the required check never reports, and a repository with
     `enforce_admins` on cannot be merged by anyone."""
@@ -142,17 +118,10 @@ class TestPermissionGrant:
         doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
         assert "permissions" not in doc["jobs"]["lint-commits"]
 
-
-class TestTriggerShape:
+class test_trigger_shape:
     def test_every_lifecycle_event_is_covered(self):
         doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
-        assert _on(doc)["pull_request"]["types"] == [
-            "opened",
-            "edited",
-            "reopened",
-            "ready_for_review",
-            "synchronize",
-        ]
+        assert _on(doc)["pull_request"]["types"] == ["opened", "edited", "reopened", "ready_for_review", "synchronize"]
 
     def test_ready_for_review_is_present(self):
         """Its absence is the §8.3.6 deadlock: a draft PR marked ready never lints."""
@@ -175,8 +144,7 @@ class TestTriggerShape:
     def test_no_workflow_level_concurrency(self):
         assert "concurrency" not in yaml.safe_load(WORKFLOW_COMMIT_LINT)
 
-
-class TestCallerJobShape:
+class test_caller_job_shape:
     def test_job_carries_only_uses_and_with(self):
         """A caller job accepts nine legal keys; this one uses ``uses`` + ``with``.
 
@@ -193,12 +161,9 @@ class TestCallerJobShape:
 
     def test_job_calls_the_shared_reusable_workflow(self):
         job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
-        assert job["uses"] == (
-            "celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master"
-        )
+        assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master")
 
-
-class TestLanePassthrough:
+class test_lane_passthrough:
     """The 2026-09-26 canonical additions: dispatch fallback + lane variables.
 
     Without these, moving the single required check off the (broken) hosted lane
@@ -221,8 +186,7 @@ class TestLanePassthrough:
         job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
         assert job["with"]["pr"] == "${{ inputs.pr }}"
 
-
-class TestGeneratedFile:
+class test_generated_file:
     def test_writer_emits_the_canonical_bytes(self, tmp_path):
         _ensure_workflows(tmp_path)
         written = (tmp_path / ".github" / "workflows" / "commit-msg-lint.yml").read_bytes()
@@ -232,29 +196,26 @@ class TestGeneratedFile:
     def test_force_rewrites_to_the_canonical_bytes(self, tmp_path):
         """``--force`` overwrites an existing file; that rewrite must land on canonical."""
         target = tmp_path / ".github" / "workflows" / "commit-msg-lint.yml"
-        target.parent.mkdir(parents=True)
-        target.write_text("name: stale\n", encoding="utf-8")
-        _ensure_workflows(tmp_path, force=True)
+        target.parent.mkdir(parents = True)
+        target.write_text("name: stale\n", encoding = "utf-8")
+        _ensure_workflows(tmp_path, force = True)
         assert hashlib.sha256(target.read_bytes()).hexdigest() == CANONICAL_SHA256
 
     def test_existing_file_is_left_alone_without_force(self, tmp_path):
         target = tmp_path / ".github" / "workflows" / "commit-msg-lint.yml"
-        target.parent.mkdir(parents=True)
-        target.write_text("name: mine\n", encoding="utf-8")
+        target.parent.mkdir(parents = True)
+        target.write_text("name: mine\n", encoding = "utf-8")
         _ensure_workflows(tmp_path)
-        assert target.read_text(encoding="utf-8") == "name: mine\n"
-
+        assert target.read_text(encoding = "utf-8") == "name: mine\n"
 
 #: The callee this repository hosts: the reusable workflow the template's ``uses:`` resolves to.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CALLEE_PATH = REPO_ROOT / ".github" / "workflows" / "commit-msg-lint.yml"
 
-
 def _callee():
-    return yaml.safe_load(CALLEE_PATH.read_text(encoding="utf-8"))
+    return yaml.safe_load(CALLEE_PATH.read_text(encoding = "utf-8"))
 
-
-class TestCalleeMatchesTheTemplate:
+class test_callee_matches_the_template:
     """Two files must agree on the trigger: the caller (copied into 42 repositories) and the
     callee this repository hosts.
 
@@ -269,23 +230,16 @@ class TestCalleeMatchesTheTemplate:
         assert CALLEE_PATH.is_file(), f"missing callee workflow: {CALLEE_PATH}"
 
     def test_pull_request_types_match_the_template(self):
-        assert (
-            _on(_callee())["pull_request"]["types"]
-            == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["pull_request"]["types"]
-        )
+        assert (_on(_callee())["pull_request"]["types"] == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["pull_request"]["types"])
 
     def test_merge_group_types_match_the_template(self):
-        assert (
-            _on(_callee())["merge_group"]["types"]
-            == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["merge_group"]["types"]
-        )
+        assert (_on(_callee())["merge_group"]["types"] == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["merge_group"]["types"])
 
     def test_callee_declares_every_event_the_caller_waits_on(self):
         caller_events = set(_on(yaml.safe_load(WORKFLOW_COMMIT_LINT)))
         assert caller_events <= set(_on(_callee()))
 
-
-class TestCachePolicyCallerTemplate:
+class test_cache_policy_caller_template:
     """The second generated caller: same discipline as the commit-lint one.
 
     It is written from the same generator (`init --with-workflows`), so it carries the same
@@ -296,9 +250,7 @@ class TestCachePolicyCallerTemplate:
 
     def test_uses_the_shared_workflow_at_master(self):
         doc = yaml.safe_load(WORKFLOW_CI_CACHE)
-        assert doc["jobs"]["cache-policy"]["uses"] == (
-            "celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master"
-        )
+        assert doc["jobs"]["cache-policy"]["uses"] == ("celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master")
 
     def test_synchronize_is_present(self):
         """Without it a re-pushed head never re-runs the check: the §8.3.6 deadlock."""
@@ -329,19 +281,16 @@ class TestCachePolicyCallerTemplate:
         _ensure_workflows(tmp_path)
         written = sorted(p.name for p in (tmp_path / ".github" / "workflows").iterdir())
         assert written == ["ci-cache.yml", "commit-msg-lint.yml", "pr-title-check.yml"]
-        assert (tmp_path / ".github" / "workflows" / "ci-cache.yml").read_text(
-            encoding="utf-8"
-        ) == WORKFLOW_CI_CACHE
+        assert (tmp_path / ".github" / "workflows" / "ci-cache.yml").read_text(encoding = "utf-8") == WORKFLOW_CI_CACHE
 
     def test_generator_does_not_overwrite_without_force(self, tmp_path: Path):
         workflows = tmp_path / ".github" / "workflows"
-        workflows.mkdir(parents=True)
-        (workflows / "ci-cache.yml").write_text("hand-edited\n", encoding="utf-8")
+        workflows.mkdir(parents = True)
+        (workflows / "ci-cache.yml").write_text("hand-edited\n", encoding = "utf-8")
         _ensure_workflows(tmp_path)
-        assert (workflows / "ci-cache.yml").read_text(encoding="utf-8") == "hand-edited\n"
+        assert (workflows / "ci-cache.yml").read_text(encoding = "utf-8") == "hand-edited\n"
 
-
-class TestPrTitleCallerTemplate:
+class test_pr_title_caller_template:
     """The third generated caller, added 2026-09-20.
 
     It had no template before that, which is why 21 repositories carried a hand-written copy
@@ -352,9 +301,7 @@ class TestPrTitleCallerTemplate:
 
     def test_uses_the_shared_workflow_at_master(self):
         doc = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)
-        assert doc["jobs"]["pr-title-check"]["uses"] == (
-            "celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master"
-        )
+        assert doc["jobs"]["pr-title-check"]["uses"] == ("celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master")
 
     def test_synchronize_is_present(self):
         types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
@@ -371,10 +318,7 @@ class TestPrTitleCallerTemplate:
 
     def test_callee_also_re_runs_on_synchronize(self):
         """The reusable workflow's own trigger list must match, or the caller is useless."""
-        callee = yaml.safe_load(
-            (Path(__file__).resolve().parent.parent / ".github/workflows/pr-title-check.yml")
-            .read_text(encoding="utf-8")
-        )
+        callee = yaml.safe_load((Path(__file__).resolve().parent.parent / ".github/workflows/pr-title-check.yml").read_text(encoding = "utf-8"))
         types = _on(callee)["pull_request"]["types"]
         assert "synchronize" in types
 
@@ -382,7 +326,6 @@ class TestPrTitleCallerTemplate:
         _ensure_workflows(tmp_path)
         written = sorted(p.name for p in (tmp_path / ".github" / "workflows").iterdir())
         assert written == ["ci-cache.yml", "commit-msg-lint.yml", "pr-title-check.yml"]
-
 
 # ── Opt-in gate callers (2026-10-24) ─────────────────────────────────────────
 #
@@ -392,33 +335,14 @@ class TestPrTitleCallerTemplate:
 # open P0 actually covered (evernight) never adopted `p0-gate` at all. These
 # tests pin the generated bytes and the opt-in contract that keeps a repository
 # from being handed gates it cannot pass.
-
-from celestia_devtools.repo.init import (  # noqa: E402  (grouped with the block above)
-    OPT_IN_GATES,
-    WORKFLOW_CNB_OVERFLOW,
-    WORKFLOW_FAMILY_VERSIONS,
-    WORKFLOW_P0_GATE,
-    WORKFLOW_RELEASE_NOTES,
-    WORKFLOW_RULES_LINT,
-    WORKFLOW_VERIFY_VERSIONS,
-)
-
-_OPT_IN = {
-    "p0": WORKFLOW_P0_GATE,
-    "family": WORKFLOW_FAMILY_VERSIONS,
-    "verify": WORKFLOW_VERIFY_VERSIONS,
-    "rules": WORKFLOW_RULES_LINT,
-    "release-notes": WORKFLOW_RELEASE_NOTES,
-    "cnb": WORKFLOW_CNB_OVERFLOW,
-}
-
+_OPT_IN = {"p0": WORKFLOW_P0_GATE, "family": WORKFLOW_FAMILY_VERSIONS, "verify": WORKFLOW_VERIFY_VERSIONS, "rules": WORKFLOW_RULES_LINT, "release-notes": WORKFLOW_RELEASE_NOTES, "cnb": WORKFLOW_CNB_OVERFLOW}
 
 def test_opt_in_registry_matches_the_templates():
     assert set(OPT_IN_GATES) == set(_OPT_IN)
+
     for gate, (filename, template, _label) in OPT_IN_GATES.items():
         assert _OPT_IN[gate] is template
         assert filename.endswith(".yml")
-
 
 def test_every_opt_in_caller_is_canonicalisable_and_valid_yaml():
     # `ci-audit` compares callers byte-for-byte, so the templates must be the
@@ -427,12 +351,8 @@ def test_every_opt_in_caller_is_canonicalisable_and_valid_yaml():
     for gate, template in _OPT_IN.items():
         parsed = yaml.safe_load(template)
         (job,) = parsed["jobs"].values()
-        assert job["uses"] == (
-            "celestia-island/celestia-devtools/.github/workflows/"
-            f"{job['uses'].rsplit('/', 1)[-1]}"
-        ), gate
+        assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/" f"{job['uses'].rsplit('/', 1)[-1]}"), gate
         assert job["uses"].endswith("@master"), gate
-
 
 def test_pr_triggering_gates_react_to_new_pushes():
     # A required check that ignores `synchronize` never re-runs on the pushed
@@ -443,12 +363,10 @@ def test_pr_triggering_gates_react_to_new_pushes():
         types = parsed[True]["pull_request"]["types"]
         assert "synchronize" in types, gate
 
-
 def test_p0_gate_reacts_to_edited_bodies():
     # The acknowledgment is written into the PR body, so `edited` must re-run it.
     parsed = yaml.safe_load(WORKFLOW_P0_GATE)
     assert "edited" in parsed[True]["pull_request"]["types"]
-
 
 def test_release_notes_keeps_its_write_permission():
     # The callee patches the release body; a caller that withholds
@@ -456,46 +374,31 @@ def test_release_notes_keeps_its_write_permission():
     parsed = yaml.safe_load(WORKFLOW_RELEASE_NOTES)
     assert parsed["jobs"]["release-notes"]["permissions"] == {"contents": "write"}
 
-
 def test_cnb_caller_declares_the_permissions_the_callee_needs():
     parsed = yaml.safe_load(WORKFLOW_CNB_OVERFLOW)
     assert parsed["permissions"] == {"statuses": "write", "actions": "read"}
     assert parsed["jobs"]["lane"]["secrets"] == "inherit"
-    assert parsed["jobs"]["lane"]["with"]["target_repo"] == (
-        "${{ github.event.repository.name }}"
-    )
-
+    assert parsed["jobs"]["lane"]["with"]["target_repo"] == ("${{ github.event.repository.name }}")
 
 def test_init_writes_only_the_three_required_callers_by_default(tmp_path):
     _ensure_workflows(tmp_path)
     written = sorted(p.name for p in (tmp_path / ".github/workflows").iterdir())
     assert written == ["ci-cache.yml", "commit-msg-lint.yml", "pr-title-check.yml"]
 
-
 def test_init_writes_an_opt_in_gate_only_when_asked(tmp_path):
-    _ensure_workflows(tmp_path, gates=("p0", "verify"))
+    _ensure_workflows(tmp_path, gates = ("p0", "verify"))
     written = sorted(p.name for p in (tmp_path / ".github/workflows").iterdir())
-    assert written == [
-        "ci-cache.yml",
-        "commit-msg-lint.yml",
-        "p0-gate.yml",
-        "pr-title-check.yml",
-        "verify-versions.yml",
-    ]
-    assert (tmp_path / ".github/workflows/p0-gate.yml").read_bytes() == (
-        WORKFLOW_P0_GATE.encode()
-    )
-
+    assert written == ["ci-cache.yml", "commit-msg-lint.yml", "p0-gate.yml", "pr-title-check.yml", "verify-versions.yml"]
+    assert (tmp_path / ".github/workflows/p0-gate.yml").read_bytes() == (WORKFLOW_P0_GATE.encode())
 
 def test_opt_in_gate_respects_force(tmp_path):
-    _ensure_workflows(tmp_path, gates=("family",))
+    _ensure_workflows(tmp_path, gates = ("family",))
     target = tmp_path / ".github/workflows/family-versions.yml"
-    target.write_text("hand-edited\n", encoding="utf-8")
-    _ensure_workflows(tmp_path, gates=("family",))
-    assert target.read_text(encoding="utf-8") == "hand-edited\n"
-    _ensure_workflows(tmp_path, gates=("family",), force=True)
+    target.write_text("hand-edited\n", encoding = "utf-8")
+    _ensure_workflows(tmp_path, gates = ("family",))
+    assert target.read_text(encoding = "utf-8") == "hand-edited\n"
+    _ensure_workflows(tmp_path, gates = ("family",), force = True)
     assert target.read_bytes() == WORKFLOW_FAMILY_VERSIONS.encode()
-
 
 def test_the_p0_gate_caller_cannot_collide_with_the_callee_concurrency_group():
     """A callee's `concurrency` is evaluated in the CALLER's context.
@@ -509,21 +412,13 @@ def test_the_p0_gate_caller_cannot_collide_with_the_callee_concurrency_group():
     coming back: the ref is `master`, and the two groups are never the same
     expression.
     """
-    from celestia_devtools.repo.init import common_just_path  # noqa: F401  (import check)
-
     caller = yaml.safe_load(WORKFLOW_P0_GATE)
-    callee_path = (
-        Path(__file__).resolve().parent.parent / ".github/workflows/p0-gate.yml"
-    )
-    callee = yaml.safe_load(callee_path.read_text(encoding="utf-8"))
+    callee_path = Path(__file__).resolve().parent.parent / ".github/workflows/p0-gate.yml"
+    callee = yaml.safe_load(callee_path.read_text(encoding = "utf-8"))
 
     caller_group = caller["concurrency"]["group"]
     callee_group = callee["concurrency"]["group"]
-    assert caller_group != callee_group, (
-        "the generated p0-gate caller must not reuse the callee's concurrency group: "
-        "the callee evaluates it in the caller's context and cancels the very run "
-        "that called it"
-    )
+    assert caller_group != callee_group, ("the generated p0-gate caller must not reuse the callee's concurrency group: " "the callee evaluates it in the caller's context and cancels the very run " "that called it")
     # `synchronize` keeps the required check alive on every push, and the
     # dispatch entry is what lets an operator re-run the gate without a push.
     assert "synchronize" in caller[True]["pull_request"]["types"]

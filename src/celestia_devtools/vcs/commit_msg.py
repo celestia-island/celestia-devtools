@@ -40,7 +40,6 @@ the message passes all rules.
 """
 
 from __future__ import annotations
-
 import argparse
 import re
 import subprocess
@@ -52,120 +51,106 @@ from typing import List, Optional
 # (including variation selectors and ZWJ sequences where applicable).  The
 # lookup is `subject.startswith(emoji)`, so multi-codepoint emoji work
 # correctly without decoding.
-GITMOJI_WHITELIST: frozenset[str] = frozenset([
-    "\U0001f3a8",    # ðŸŽ¨ :art:
-    "\u26a1\ufe0f",  # âš¡ï¸ :zap:
-    "⚡",        # ⚡ :zap (without variation selector)
-    "\U0001f525",    # ðŸ”¥ :fire:
-    "\U0001f41b",    # ðŸ› :bug:
-    "\U0001f691",    # ðŸš‘ :ambulance:
-    "\u2728",        # âœ¨ :sparkles:
-    "\U0001f4dd",    # ðŸ“ :memo:
-    "\U0001f680",    # ðŸš€ :rocket:
-    "\U0001f484",    # ðŸ’„ :lipstick:
-    "\U0001f389",    # ðŸŽ‰ :tada:
-    "\u2705",        # âœ… :white_check_mark:
-    "\U0001f512",    # ðŸ”’ :lock:
-    "\U0001f516",    # ðŸ”– :bookmark:
-    "🔗",    # 🔗 :link (org: symlink/copilot)
-    "\U0001f6a8",    # ðŸš¨ :rotating_light:
-    "\U0001f6a7",    # ðŸš§ :construction:
-    "\U0001f49a",    # ðŸ’š :green_heart:
-    "\u2b07\ufe0f",  # â¬‡ï¸ :arrow_down:
-    "\u2b06\ufe0f",  # â¬†ï¸ :arrow_up:
-    "\U0001f4cc",    # ðŸ“Œ :pushpin:
-    "\U0001f477",    # ðŸ‘· :construction_worker:
-    "\U0001f4c8",    # ðŸ“ˆ :chart_with_upwards_trend:
-    "\u267b\ufe0f",  # â™»ï¸ :recycle:
-    "\u2795",        # âž• :heavy_plus_sign:
-    "\u2796",        # âž– :heavy_minus_sign:
-    "\U0001f527",    # ðŸ”§ :wrench:
-    "\U0001f528",    # ðŸ”¨ :hammer:
-    "\U0001f310",    # ðŸŒ :globe_with_meridians:
-    "\u270f\ufe0f",  # âœï¸ :pencil2:
-    "\U0001f4a9",    # ðŸ’© :poop:
-    "\u23ea",        # âª :rewind:
-    "\U0001f500",    # ðŸ”€ :twisted_rightwards_arrows:
-    "🔄",    # 🔄 :counterclockwise_arrows_button (org: sync/refresh)
-    "\U0001f4e6",    # ðŸ“¦ :package:
-    "\U0001f47d",    # ðŸ‘½ :alien:
-    "\U0001f69a",    # ðŸšš :truck:
-    "\U0001f4c4",    # ðŸ“„ :page_facing_up:
-    "\U0001f4a5",    # ðŸ’¥ :boom:
-    "\U0001f371",    # ðŸ± :bento:
-    "\u267f\ufe0f",  # â™¿ï¸ :wheelchair:
-    "\U0001f4a1",    # ðŸ’¡ :bulb:
-    "\U0001f37b",    # ðŸ» :beers:
-    "\U0001f4ac",    # ðŸ’¬ :speech_balloon:
-    "\U0001f5c3\ufe0f",  # ðŸ—ƒï¸ :card_file_box:
-    "\U0001f50a",    # ðŸ”Š :loud_sound:
-    "\U0001f507",    # ðŸ”‡ :mute:
-    "\U0001f465",    # ðŸ‘¥ :busts_in_silhouette:
-    "\U0001f6b8",    # ðŸš¸ :children_crossing:
-    "\U0001f3d7\ufe0f",  # ðŸ—ï¸ :building_construction:
-    "\U0001f4f1",    # ðŸ“± :iphone:
-    "\U0001f921",    # ðŸ¤¡ :clown_face:
-    "\U0001f95a",    # ðŸ¥š :egg:
-    "\U0001f648",    # ðŸ™ˆ :see_no_evil:
-    "\U0001f4f8",    # ðŸ“¸ :camera_flash:
-    "\u2697\ufe0f",  # âš—ï¸ :alembic:
-    "\U0001f50d",    # ðŸ” :mag:
-    "\U0001f3f7\ufe0f",  # ðŸ·ï¸ :label:
-    "\U0001f331",    # ðŸŒ± :seedling:
-    "\U0001f6a9",    # ðŸš© :triangular_flag_on_post:
-    "\U0001f945",    # ðŸ¥… :goal_net:
-    "\U0001f4ab",    # ðŸ’« :dizzy:
-    "\U0001f5d1\ufe0f",  # ðŸ—‘ï¸ :wastebasket:
-    "\U0001f6c2",    # ðŸ›‚ :passport_control:
-    "\U0001fa79",    # ðŸ©¹ :adhesive_bandage:
-    "\U0001f9d0",    # ðŸ§ :monocle_face:
-    "\u26b0\ufe0f",  # âš°ï¸ :coffin:
-    "\U0001f9ea",    # ðŸ§ª :test_tube:
-    "\U0001f454",    # ðŸ‘” :necktie:
-    "\U0001fa7a",    # ðŸ©º :stethoscope:
-    "\U0001f9f1",    # ðŸ§± :bricks:
-    "\U0001f9d1\u200d\U0001f4bb",  # ðŸ§‘â€ðŸ’» :technologist:
-    "\U0001f4b8",    # ðŸ’¸ :money_with_wings:
-    "\U0001f9f5",    # ðŸ§µ :thread:
-    "\U0001f9ba",    # ðŸ¦º :safety_vest:
-    "📜",    # 📜 :scroll (org: license)
-    "\U0001f6e1\ufe0f",  # 🛡️ :shield:
-])
+# ðŸŽ¨ :art:
+# âš¡ï¸ :zap:
+# ⚡ :zap (without variation selector)
+# ðŸ”¥ :fire:
+# ðŸ› :bug:
+# ðŸš‘ :ambulance:
+# âœ¨ :sparkles:
+# ðŸ“ :memo:
+# ðŸš€ :rocket:
+# ðŸ’„ :lipstick:
+# ðŸŽ‰ :tada:
+# âœ… :white_check_mark:
+# ðŸ”’ :lock:
+# ðŸ”– :bookmark:
+# 🔗 :link (org: symlink/copilot)
+# ðŸš¨ :rotating_light:
+# ðŸš§ :construction:
+# ðŸ’š :green_heart:
+# â¬‡ï¸ :arrow_down:
+# â¬†ï¸ :arrow_up:
+# ðŸ“Œ :pushpin:
+# ðŸ‘· :construction_worker:
+# ðŸ“ˆ :chart_with_upwards_trend:
+# â™»ï¸ :recycle:
+# âž• :heavy_plus_sign:
+# âž– :heavy_minus_sign:
+# ðŸ”§ :wrench:
+# ðŸ”¨ :hammer:
+# ðŸŒ :globe_with_meridians:
+# âœï¸ :pencil2:
+# ðŸ’© :poop:
+# âª :rewind:
+# ðŸ”€ :twisted_rightwards_arrows:
+# 🔄 :counterclockwise_arrows_button (org: sync/refresh)
+# ðŸ“¦ :package:
+# ðŸ‘½ :alien:
+# ðŸšš :truck:
+# ðŸ“„ :page_facing_up:
+# ðŸ’¥ :boom:
+# ðŸ± :bento:
+# â™¿ï¸ :wheelchair:
+# ðŸ’¡ :bulb:
+# ðŸ» :beers:
+# ðŸ’¬ :speech_balloon:
+# ðŸ—ƒï¸ :card_file_box:
+# ðŸ”Š :loud_sound:
+# ðŸ”‡ :mute:
+# ðŸ‘¥ :busts_in_silhouette:
+# ðŸš¸ :children_crossing:
+# ðŸ—ï¸ :building_construction:
+# ðŸ“± :iphone:
+# ðŸ¤¡ :clown_face:
+# ðŸ¥š :egg:
+# ðŸ™ˆ :see_no_evil:
+# ðŸ“¸ :camera_flash:
+# âš—ï¸ :alembic:
+# ðŸ” :mag:
+# ðŸ·ï¸ :label:
+# ðŸŒ± :seedling:
+# ðŸš© :triangular_flag_on_post:
+# ðŸ¥… :goal_net:
+# ðŸ’« :dizzy:
+# ðŸ—‘ï¸ :wastebasket:
+# ðŸ›‚ :passport_control:
+# ðŸ©¹ :adhesive_bandage:
+# ðŸ§ :monocle_face:
+# âš°ï¸ :coffin:
+# ðŸ§ª :test_tube:
+# ðŸ‘” :necktie:
+# ðŸ©º :stethoscope:
+# ðŸ§± :bricks:
+# ðŸ§‘â€ðŸ’» :technologist:
+# ðŸ’¸ :money_with_wings:
+# ðŸ§µ :thread:
+# ðŸ¦º :safety_vest:
+# 📜 :scroll (org: license)
+# 🛡️ :shield:
+GITMOJI_WHITELIST: frozenset[str] = frozenset(["\U0001f3a8", "\u26a1\ufe0f", "⚡", "\U0001f525", "\U0001f41b", "\U0001f691", "\u2728", "\U0001f4dd", "\U0001f680", "\U0001f484", "\U0001f389", "\u2705", "\U0001f512", "\U0001f516", "🔗", "\U0001f6a8", "\U0001f6a7", "\U0001f49a", "\u2b07\ufe0f", "\u2b06\ufe0f", "\U0001f4cc", "\U0001f477", "\U0001f4c8", "\u267b\ufe0f", "\u2795", "\u2796", "\U0001f527", "\U0001f528", "\U0001f310", "\u270f\ufe0f", "\U0001f4a9", "\u23ea", "\U0001f500", "🔄", "\U0001f4e6", "\U0001f47d", "\U0001f69a", "\U0001f4c4", "\U0001f4a5", "\U0001f371", "\u267f\ufe0f", "\U0001f4a1", "\U0001f37b", "\U0001f4ac", "\U0001f5c3\ufe0f", "\U0001f50a", "\U0001f507", "\U0001f465", "\U0001f6b8", "\U0001f3d7\ufe0f", "\U0001f4f1", "\U0001f921", "\U0001f95a", "\U0001f648", "\U0001f4f8", "\u2697\ufe0f", "\U0001f50d", "\U0001f3f7\ufe0f", "\U0001f331", "\U0001f6a9", "\U0001f945", "\U0001f4ab", "\U0001f5d1\ufe0f", "\U0001f6c2", "\U0001fa79", "\U0001f9d0", "\u26b0\ufe0f", "\U0001f9ea", "\U0001f454", "\U0001fa7a", "\U0001f9f1", "\U0001f9d1\u200d\U0001f4bb", "\U0001f4b8", "\U0001f9f5", "\U0001f9ba", "📜", "\U0001f6e1\ufe0f"])
 
 # ── Regexes (compiled once) ──────────────────────────────────────────────────
 
 # Conventional Commits prefix: feat, fix, chore, docs, style, refactor, perf,
 # test, build, ci, revert, net, init — with optional scope parens.
-_CONVENTIONAL_PREFIX_RE = re.compile(
-    r"^(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|net|init)"
-    r"(?:\([^)]*\))?\s*[:!]",
-)
+_CONVENTIONAL_PREFIX_RE = re.compile(r"^(?:feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert|net|init)" r"(?:\([^)]*\))?\s*[:!]")
 
 # Colon-prefix subject ("Topic phrase: details"). Forbidden even when the
 # leading phrase is capitalized, e.g. "Fix compliance: ..." or
 # "Audit round 23: ...". The character immediately before the colon must be a
 # letter/digit so code tokens like "Support :is()" or timestamps such as
 # "09:34Z" are not false positives.
-_COLON_PREFIX_RE = re.compile(
-    r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s",
-)
+_COLON_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 ._/-]{0,60}[A-Za-z0-9._/-]:\s")
 
 # Leading bare version number or filler phrases (after gitmoji and space).
-_VERSION_OR_FILLER_START_RE = re.compile(
-    r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)",
-    re.IGNORECASE,
-)
+_VERSION_OR_FILLER_START_RE = re.compile(r"^(?:v?\d+\.\d+(?:\.\d+)*|bump\s|update\sto\b|upgrade\sto\b|downgrade\s)", re.IGNORECASE)
 
 # CJK and full-width characters (Chinese, Japanese, Korean, etc.).
-_CJK_RE = re.compile(r"[\u2e80-\u2eff\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff"
-                     r"\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff"
-                     r"\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]")
+_CJK_RE = re.compile(r"[\u2e80-\u2eff\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff" r"\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff" r"\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]")
 
 # Repositories exempt from the English-only rule (org decision; see AGENTS.md).
-EASY_HYDRO_REPOS: frozenset[str] = frozenset({
-    "easy-hydro-erp",
-    "easy-hydro-miniprogram",
-})
+EASY_HYDRO_REPOS: frozenset[str] = frozenset({"easy-hydro-erp", "easy-hydro-miniprogram"})
 
 # First English letter position (used for capital-letter check).
 _FIRST_ALPHA_RE = re.compile(r"[A-Za-z]")
@@ -179,22 +164,23 @@ def _first_line(text: str) -> str:
     """Return the subject line (up to first newline, stripped)."""
     return text.split("\n", 1)[0].rstrip()
 
-
 def _has_any_gitmoji_prefix(subject: str) -> bool:
     """Check whether *subject* starts with any emoji in the whitelist."""
+
     for emoji in GITMOJI_WHITELIST:
         if subject.startswith(emoji):
             return True
-    return False
 
+    return False
 
 def _trim_gitmoji(subject: str) -> str:
     """Strip the leading gitmoji and any whitespace from the subject."""
+
     for emoji in GITMOJI_WHITELIST:
         if subject.startswith(emoji):
             return subject[len(emoji):].lstrip()
-    return subject
 
+    return subject
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
@@ -204,44 +190,43 @@ def repo_allows_cjk(repo: Optional[str]) -> bool:
     keep the strict English convention."""
     return (repo or "") in EASY_HYDRO_REPOS
 
-
 def repo_name_from_gh_flag(args: List[str]) -> Optional[str]:
     """Extract the bare repo name from a gh ``--repo owner/name`` / ``-R`` flag
     anywhere in *args*; ``None`` when the flag is absent."""
+
     for i, a in enumerate(args):
-        if a in ("--repo", "-R") and i + 1 < len(args):
+        if (a in ("--repo", "-R")) and ((i + 1) < len(args)):
             return args[i + 1].split("/")[-1].removesuffix(".git") or None
+
         if a.startswith("--repo="):
             return a.split("=", 1)[1].split("/")[-1].removesuffix(".git") or None
-    return None
 
+    return None
 
 def repo_name_from_git_remote(cwd: Optional[str] = None) -> Optional[str]:
     """Bare repo name from the ``origin`` remote URL of *cwd* (best effort;
     mirrors gate.py's ``_repo_name`` remote branch).  Falls back to the
     directory name, then ``None`` outside any repository."""
     url = ""
+
     try:
-        url = subprocess.run(
-            ["git", "config", "--get", "remote.origin.url"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if url:
-        name = url.rstrip("/").split("/")[-1]
-        if name.endswith(".git"):
-            name = name[:-4]
-        if name:
-            return name
-    try:
-        return subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=cwd, capture_output=True, text=True, timeout=5,
-        ).stdout.strip().replace("\\", "/").rstrip("/").split("/")[-1] or None
+        url = subprocess.run(["git", "config", "--get", "remote.origin.url"], cwd = cwd, capture_output = True, text = True, timeout = 5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
 
+    if url:
+        name = url.rstrip("/").split("/")[-1]
+
+        if name.endswith(".git"):
+            name = name[:-4]
+
+        if name:
+            return name
+
+    try:
+        return subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd = cwd, capture_output = True, text = True, timeout = 5).stdout.strip().replace("\\", "/").rstrip("/").split("/")[-1] or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
     """Validate a single commit-message subject line.
@@ -263,17 +248,12 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
 
     # Merge subjects are banned: the org uses squash merges only.
     if subject.startswith("Merge "):
-        violations.append(
-            "merge-commit subjects are forbidden; use squash merge"
-        )
+        violations.append("merge-commit subjects are forbidden; use squash merge")
         return violations
 
     # Rule 1 — gitmoji prefix.
     if not _has_any_gitmoji_prefix(subject):
-        violations.append(
-            "must start with a gitmoji (https://gitmoji.dev); "
-            "e.g. '🐛 Fix the parser crash.'"
-        )
+        violations.append("must start with a gitmoji (https://gitmoji.dev); " "e.g. '🐛 Fix the parser crash.'")
         return violations  # remaining rules depend on correct prefix
 
     # Text after the gitmoji.
@@ -281,17 +261,11 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
 
     # Rule 2 — no Conventional Commits prefix.
     if _CONVENTIONAL_PREFIX_RE.match(tail):
-        violations.append(
-            "must NOT use a Conventional Commits prefix (feat:/fix:/chore:/etc.); "
-            "the emoji is the type marker"
-        )
+        violations.append("must NOT use a Conventional Commits prefix (feat:/fix:/chore:/etc.); " "the emoji is the type marker")
 
     # Rule 7 — no colon-prefix subject.
     if _COLON_PREFIX_RE.match(tail):
-        violations.append(
-            "must NOT use a colon-prefix subject (e.g. 'Fix compliance: ...', "
-            "'Audit round 23: ...'); write one plain sentence instead"
-        )
+        violations.append("must NOT use a colon-prefix subject (e.g. 'Fix compliance: ...', " "'Audit round 23: ...'); write one plain sentence instead")
 
     # Rule 3 — first letter after emoji must be uppercase.
     # For CJK-led summaries (allow_cjk), English tokens appearing later in the
@@ -300,22 +274,16 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
         pass
     else:
         alpha = _FIRST_ALPHA_RE.search(tail)
+
         if alpha is not None:
             if not alpha.group()[0].isupper():
-                violations.append(
-                    "first letter after the emoji must be uppercase; "
-                    f"found lowercase '{alpha.group()}'"
-                )
+                violations.append("first letter after the emoji must be uppercase; " f"found lowercase '{alpha.group()}'")
         elif not allow_cjk:
             violations.append("summary must contain at least one English letter")
 
     # Rule 4 — no version-number / filler start.
     if _VERSION_OR_FILLER_START_RE.match(tail):
-        violations.append(
-            "must NOT start with a bare version number or filler phrase "
-            "(e.g. '0.3', 'Bump version', 'Update to'); "
-            "describe the change instead"
-        )
+        violations.append("must NOT start with a bare version number or filler phrase " "(e.g. '0.3', 'Bump version', 'Update to'); " "describe the change instead")
 
     # Rule 5 — trailing period.
     # 🔄 sync/refresh messages often carry timestamp metadata in parens, so
@@ -327,52 +295,32 @@ def lint(subject: str, *, allow_cjk: bool = False) -> List[str]:
     else:
         # Strip GitHub squash merge PR reference " (#123)" before checking.
         pr_stripped = re.sub(r'\s*\(#\d+\)\s*$', '', subject)
+
         if not _ENDS_WITH_PERIOD_RE.search(pr_stripped):
             violations.append("must end with a period (.)")
 
     # Rule 6 — English-only (no CJK), except for the org's Easy Hydro repos.
     cjk = _CJK_RE.search(subject)
-    if cjk is not None and not allow_cjk:
-        violations.append(
-            f"must be English-only; found CJK character "
-            f"'{cjk.group()}' at position {cjk.start()}"
-        )
+
+    if (cjk is not None) and not allow_cjk:
+        violations.append(f"must be English-only; found CJK character " f"'{cjk.group()}' at position {cjk.start()}")
 
     return violations
-
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main() -> int:
     """CLI entry point for ``celestia-devtools commit-msg-lint``."""
-    parser = argparse.ArgumentParser(
-        prog="celestia-devtools commit-msg-lint",
-        description="Validate commit messages against the org gitmoji convention.",
-    )
-    sub = parser.add_subparsers(dest="subcmd")
+    parser = argparse.ArgumentParser(prog = "celestia-devtools commit-msg-lint", description = "Validate commit messages against the org gitmoji convention.")
+    sub = parser.add_subparsers(dest = "subcmd")
 
     # check <file>
-    p_check = sub.add_parser("check", help="validate a commit message")
-    p_check.add_argument(
-        "file", nargs="?", default=None,
-        help="path to the commit message file (as passed by git to the hook; $1)",
-    )
-    p_check.add_argument(
-        "--subject", default=None,
-        help="validate a literal subject string instead of a file",
-    )
-    p_check.add_argument(
-        "--stdin-subjects", action="store_true",
-        help="read subjects from stdin (one per line) for batch CI validation",
-    )
-    p_check.add_argument(
-        "--repo", default=None,
-        help="repository name; easy-hydro-erp / easy-hydro-miniprogram allow CJK",
-    )
-    p_check.add_argument(
-        "--allow-cjk", action="store_true",
-        help="allow CJK in commit subjects (used for easy-hydro repos)",
-    )
+    p_check = sub.add_parser("check", help = "validate a commit message")
+    p_check.add_argument("file", nargs = "?", default = None, help = "path to the commit message file (as passed by git to the hook; $1)")
+    p_check.add_argument("--subject", default = None, help = "validate a literal subject string instead of a file")
+    p_check.add_argument("--stdin-subjects", action = "store_true", help = "read subjects from stdin (one per line) for batch CI validation")
+    p_check.add_argument("--repo", default = None, help = "repository name; easy-hydro-erp / easy-hydro-miniprogram allow CJK")
+    p_check.add_argument("--allow-cjk", action = "store_true", help = "allow CJK in commit subjects (used for easy-hydro repos)")
 
     args = parser.parse_args()
 
@@ -389,40 +337,34 @@ def main() -> int:
         subjects = [line.strip() for line in raw.splitlines() if line.strip()]
     elif args.file is not None:
         try:
-            raw = open(args.file, encoding="utf-8").read()
+            raw = open(args.file, encoding = "utf-8").read()
         except OSError as exc:
-            print(f"error: cannot read {args.file}: {exc}", file=sys.stderr)
+            print(f"error: cannot read {args.file}: {exc}", file = sys.stderr)
             return 2
+
         subjects.append(_first_line(raw))
     else:
-        print("error: either FILE, --subject, or --stdin-subjects required",
-              file=sys.stderr)
+        print("error: either FILE, --subject, or --stdin-subjects required", file = sys.stderr)
         return 2
 
     errors: List[str] = []
     allow_cjk = args.allow_cjk or (args.repo in EASY_HYDRO_REPOS)
+
     for subject in subjects:
-        violations = lint(subject, allow_cjk=allow_cjk)
+        violations = lint(subject, allow_cjk = allow_cjk)
+
         if violations:
             errors.append(subject)
+
             for v in violations:
                 errors.append(f"  - {v}")
 
     if errors:
-        print("\n".join(errors), file=sys.stderr)
-        print(
-            "\nCommit message format:  <gitmoji> <Capitalized English summary.>\n"
-            "Examples:\n"
-            "  ✅ 🐛 Fix the parser crash.\n"
-            "  ✅ ✨ Add distributed tracing support.\n"
-            "  ❌ fix: broken thing\n"
-            "  ❌ 🐛 修复解析器\n",
-            file=sys.stderr,
-        )
+        print("\n".join(errors), file = sys.stderr)
+        print("\nCommit message format:  <gitmoji> <Capitalized English summary.>\n" "Examples:\n" "  ✅ 🐛 Fix the parser crash.\n" "  ✅ ✨ Add distributed tracing support.\n" "  ❌ fix: broken thing\n" "  ❌ 🐛 修复解析器\n", file = sys.stderr)
         return 1
 
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

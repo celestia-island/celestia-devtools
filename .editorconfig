@@ -10,8 +10,12 @@ indent_style = space
 [*.{rs,toml}]
 indent_size = 4
 
-[*.{js,ts,tsx,vue,json,yml,yaml,md,py,html,css,scss}]
+[*.{js,ts,tsx,vue,json,yml,yaml,md,html,css,scss}]
 indent_size = 2
+
+# The Python conventions require four-space block indentation.
+[*.py]
+indent_size = 4
 
 [Makefile]
 indent_style = tab

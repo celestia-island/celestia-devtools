@@ -22,32 +22,35 @@ shell (sh, bash, PowerShell) is involved at any point.
 """
 
 from __future__ import annotations
-
 import os
 import shlex
 import subprocess
 import sys
 
-
 def _run(cmd: str) -> int:
-    argv = shlex.split(cmd, posix=(os.name != "nt"))
+    argv = shlex.split(cmd, posix = os.name != "nt")
+
     if not argv:
         return 0
+
     if argv[0] == ":":
         return 0
+
     completed = subprocess.run(argv)
     return completed.returncode
 
-
 def main() -> int:
     args = sys.argv[1:]
+
     if len(args) < 3:
-        print(__doc__, file=sys.stderr)
+        print(__doc__, file = sys.stderr)
         return 2
+
     pre, dev_cmd, rel_cmd = args[0], args[1], args[2]
     flags = args[3:]
 
     profile_release = True
+
     for flag in flags:
         if flag == "--dev":
             profile_release = False
@@ -58,8 +61,8 @@ def main() -> int:
     if pre not in ("", ":"):
         if _run(pre) != 0:
             return 1
-    return _run(rel_cmd if profile_release else dev_cmd)
 
+    return _run(rel_cmd if profile_release else dev_cmd)
 
 if __name__ == "__main__":
     raise SystemExit(main())

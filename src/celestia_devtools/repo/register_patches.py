@@ -33,7 +33,6 @@ Usage::
 """
 
 from __future__ import annotations
-
 import argparse
 import os
 import re
@@ -41,6 +40,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
+import json
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
 
@@ -54,14 +54,12 @@ USER_CARGO_CONFIG = Path.home() / ".cargo" / "config.toml"
 # Extended by the --crates-io flag. The defaults cover the current set.
 DEFAULT_CRATES_IO = {"aoba", "libnoa"}
 
-
 class CrateInfo(NamedTuple):
     """A single member crate discovered in a repo workspace."""
 
     name: str       # crates.io name (e.g. "hikari-components")
     path: Path      # absolute path to the crate directory (containing Cargo.toml)
     repo: str       # repo name (e.g. "hikari")
-
 
 class RepoInfo(NamedTuple):
     """A discovered celestia-island repo with its member crates."""
@@ -71,23 +69,20 @@ class RepoInfo(NamedTuple):
     local_path: Path    # absolute path to the repo root
     crates: list[CrateInfo]
 
-
 # ── discovery ──────────────────────────────────────────────────────────────
-
 
 def _git_remote_origin(repo_path: Path) -> str | None:
     """Return the origin URL for *repo_path*, or ``None``."""
+
     try:
-        r = subprocess.run(
-            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
-            capture_output=True, text=True, timeout=10,
-        )
+        r = subprocess.run(["git", "-C", str(repo_path), "remote", "get-url", "origin"], capture_output = True, text = True, timeout = 10)
+
         if r.returncode == 0:
             return r.stdout.strip()
     except (subprocess.SubprocessError, OSError):
         pass
-    return None
 
+    return None
 
 def is_celestia_repo(repo_path: Path) -> str | None:
     """Check if *repo_path* is a celestia-island repo.
@@ -95,14 +90,15 @@ def is_celestia_repo(repo_path: Path) -> str | None:
     Returns the repo name (e.g. ``"hikari"``) if it is, or ``None``.
     """
     url = _git_remote_origin(repo_path)
+
     if not url:
         return None
+
     # Match both https and ssh URLs:
     #   https://github.com/celestia-island/hikari.git
     #   git@github.com:celestia-island/hikari.git
     m = re.search(r"celestia-island[:/]([^/]+?)(?:\.git)?$", url)
     return m.group(1) if m else None
-
 
 def scan_celestia_repos(scan_dir: Path) -> list[RepoInfo]:
     """Scan *scan_dir* for celestia-island git repos.
@@ -111,47 +107,43 @@ def scan_celestia_repos(scan_dir: Path) -> list[RepoInfo]:
     origin is inspected for workspace member crates.
     """
     repos: list[RepoInfo] = []
+
     if not scan_dir.is_dir():
         return repos
 
     for entry in sorted(scan_dir.iterdir()):
         if not entry.is_dir() or entry.name.startswith("."):
             continue
+
         if not (entry / ".git").exists():
             continue
+
         repo_name = is_celestia_repo(entry)
+
         if not repo_name:
             continue
-        crates = parse_workspace_crates(entry, repo_name)
-        if crates:
-            repos.append(RepoInfo(
-                name=repo_name,
-                git_url=f"{ORG_GIT_BASE}/{repo_name}.git",
-                local_path=entry,
-                crates=crates,
-            ))
-    return repos
 
+        crates = parse_workspace_crates(entry, repo_name)
+
+        if crates:
+            repos.append(RepoInfo(name = repo_name, git_url = f"{ORG_GIT_BASE}/{repo_name}.git", local_path = entry, crates = crates))
+
+    return repos
 
 # ── Cargo.toml parsing ────────────────────────────────────────────────────
 
-
 def _extract_package_name(manifest_text: str) -> str | None:
     """Extract the ``[package] name`` field from a Cargo.toml manifest."""
-    m = re.search(
-        r'^\[package\]\s*(.*?)(?=\n\[|\Z)',
-        manifest_text, re.S | re.M,
-    )
+    m = re.search(r'^\[package\]\s*(.*?)(?=\n\[|\Z)', manifest_text, re.S | re.M)
+
     if not m:
         return None
+
     pkg_section = m.group(1)
     nm = re.search(r'^name\s*=\s*"([^"]+)"', pkg_section, re.M)
     return nm.group(1) if nm else None
 
-
-def parse_workspace_crates(
-    repo_path: Path, repo_name: str,
-) -> list[CrateInfo]:
+def parse_workspace_crates(repo_path: Path, repo_name: str) -> list[CrateInfo]:
     """Parse a repo's Cargo.toml to discover all member crates.
 
     Handles both workspace manifests (``[workspace] members = [...]``) and
@@ -159,43 +151,38 @@ def parse_workspace_crates(
     :class:`CrateInfo` with absolute paths.
     """
     root_manifest = repo_path / "Cargo.toml"
+
     if not root_manifest.is_file():
         return []
 
-    text = root_manifest.read_text(encoding="utf-8", errors="ignore")
+    text = root_manifest.read_text(encoding = "utf-8", errors = "ignore")
     crates: list[CrateInfo] = []
 
     # Case 1: single-crate manifest (has [package] but no [workspace]).
-    if "[package]" in text and "[workspace]" not in text:
+    if ("[package]" in text) and ("[workspace]" not in text):
         name = _extract_package_name(text)
+
         if name:
-            crates.append(CrateInfo(
-                name=name, path=repo_path, repo=repo_name,
-            ))
+            crates.append(CrateInfo(name = name, path = repo_path, repo = repo_name))
+
         return crates
 
     # Case 2: workspace manifest — parse members list.
-    ws_match = re.search(
-        r'^\[workspace\]\s*(.*?)(?=\n\[|\Z)',
-        text, re.S | re.M,
-    )
+    ws_match = re.search(r'^\[workspace\]\s*(.*?)(?=\n\[|\Z)', text, re.S | re.M)
+
     if not ws_match:
         return crates
 
     ws_section = ws_match.group(1)
-    members_match = re.search(
-        r'members\s*=\s*\[(.*?)\]',
-        ws_section, re.S,
-    )
+    members_match = re.search(r'members\s*=\s*\[(.*?)\]', ws_section, re.S)
+
     if not members_match:
         return crates
 
     member_paths = re.findall(r'"([^"]+)"', members_match.group(1))
-    exclude_match = re.search(
-        r'exclude\s*=\s*\[(.*?)\]',
-        ws_section, re.S,
-    )
+    exclude_match = re.search(r'exclude\s*=\s*\[(.*?)\]', ws_section, re.S)
     excluded = set()
+
     if exclude_match:
         excluded = set(re.findall(r'"([^"]+)"', exclude_match.group(1)))
 
@@ -204,27 +191,30 @@ def parse_workspace_crates(
     for mp in member_paths:
         if mp in excluded:
             continue
+
         parts = mp.replace("\\", "/").split("/")
+
         if any(p in _SKIP_DIRS for p in parts):
             continue
+
         crate_dir = repo_path / mp
         manifest = crate_dir / "Cargo.toml"
+
         if not manifest.is_file():
             continue
-        mtext = manifest.read_text(encoding="utf-8", errors="ignore")
+
+        mtext = manifest.read_text(encoding = "utf-8", errors = "ignore")
         name = _extract_package_name(mtext)
+
         if name:
             if name.endswith("-e2e"):
                 continue
-            crates.append(CrateInfo(
-                name=name, path=crate_dir.resolve(), repo=repo_name,
-            ))
+
+            crates.append(CrateInfo(name = name, path = crate_dir.resolve(), repo = repo_name))
 
     return crates
 
-
 # ── config.toml generation ────────────────────────────────────────────────
-
 
 def discover_actual_celestia_deps() -> dict[str, str]:
     """Run ``cargo metadata`` in cwd and return the celestia-island git deps.
@@ -239,53 +229,58 @@ def discover_actual_celestia_deps() -> dict[str, str]:
 
     Only deps whose source contains ``celestia-island`` are returned.
     """
-    import json
 
     def _run_metadata(offline: bool) -> dict[str, str] | None:
         cmd = ["cargo", "metadata", "--format-version", "1"]
+
         if offline:
             cmd.append("--offline")
+
         try:
-            r = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=60,
-            )
+            r = subprocess.run(cmd, capture_output = True, text = True, timeout = 60)
+
             if r.returncode != 0:
                 return None
+
             return json.loads(r.stdout)
         except (subprocess.SubprocessError, json.JSONDecodeError, OSError):
             return None
 
-    data = _run_metadata(offline=True)
+    data = _run_metadata(offline = True)
+
     if data is None:
-        data = _run_metadata(offline=False)
+        data = _run_metadata(offline = False)
+
     if data is None:
         return {}
 
     deps: dict[str, str] = {}
+
     for pkg in data.get("packages", []):
         for dep in pkg.get("dependencies", []):
             src = dep.get("source") or ""
+
             if "celestia-island" not in src:
                 continue
+
             url = src
+
             if url.startswith("git+"):
                 url = url[4:]
+
             url = url.split("?")[0]
             deps[dep["name"]] = url
+
     return deps
 
-
-def generate_per_repo_patches(
-    actual_deps: dict[str, str],
-    repos: list[RepoInfo],
-    crates_io_names: set[str],
-) -> str:
+def generate_per_repo_patches(actual_deps: dict[str, str], repos: list[RepoInfo], crates_io_names: set[str]) -> str:
     """Generate [patch] sections for ONLY the deps this repo actually uses.
 
     Filters the discovered sibling crates down to those in *actual_deps*,
     then emits a ``[patch."<url>"]`` section per distinct git URL.
     """
     crate_index: dict[str, CrateInfo] = {}
+
     for repo in repos:
         for crate in repo.crates:
             crate_index[crate.name] = crate
@@ -297,29 +292,25 @@ def generate_per_repo_patches(
 
     for dep_name, git_url in sorted(actual_deps.items()):
         crate = crate_index.get(dep_name)
+
         if crate is None:
             missing.append(dep_name)
             continue
+
         if not (crate.path / "Cargo.toml").is_file():
             stale.append(f"{dep_name} ({crate.path})")
             continue
-        if dep_name in crates_io_names or git_url == "crates-io":
+
+        if (dep_name in crates_io_names) or (git_url == "crates-io"):
             crates_io_patches.append((dep_name, crate.path))
         else:
             patches.setdefault(git_url, []).append((dep_name, crate.path))
 
     if missing:
-        print(
-            f"[register-patches] {len(missing)} dep(s) have no local checkout "
-            f"(will stay as git dep): {', '.join(sorted(missing))}",
-            file=sys.stderr,
-        )
+        print(f"[register-patches] {len(missing)} dep(s) have no local checkout " f"(will stay as git dep): {', '.join(sorted(missing))}", file = sys.stderr)
+
     if stale:
-        print(
-            f"[register-patches] {len(stale)} crate(s) have missing Cargo.toml "
-            f"(workspace member removed?): {', '.join(sorted(stale))}",
-            file=sys.stderr,
-        )
+        print(f"[register-patches] {len(stale)} crate(s) have missing Cargo.toml " f"(workspace member removed?): {', '.join(sorted(stale))}", file = sys.stderr)
 
     if not patches and not crates_io_patches:
         return ""
@@ -333,23 +324,25 @@ def generate_per_repo_patches(
 
     if crates_io_patches:
         lines.append("[patch.crates-io]")
+
         for name, path in sorted(crates_io_patches):
             lines.append(f'{name} = {{ path = "{_path_to_toml(path)}" }}')
+
         lines.append("")
 
     for git_url in sorted(patches):
         lines.append(f'[patch."{git_url}"]')
+
         for name, path in sorted(patches[git_url]):
             lines.append(f'{name} = {{ path = "{_path_to_toml(path)}" }}')
+
         lines.append("")
 
     return "\n".join(lines)
 
-
 def _path_to_toml(p: Path) -> str:
     """Convert a path to a TOML-safe string with forward slashes."""
     return str(p).replace("\\", "/")
-
 
 def generate_fallback_patches(repos: list[RepoInfo]) -> str:
     """Generate [patch] entries for ALL discovered repos (no filtering).
@@ -365,29 +358,27 @@ def generate_fallback_patches(repos: list[RepoInfo]) -> str:
     lines.append("# `cargo metadata` was unavailable — ALL sibling crates are registered.")
     lines.append("")
 
-    for repo in sorted(repos, key=lambda r: r.name):
+    for repo in sorted(repos, key = lambda r: r.name):
         lines.append(f'[patch."{repo.git_url}"]')
         wrote_any = False
-        for crate in sorted(repo.crates, key=lambda c: c.name):
+
+        for crate in sorted(repo.crates, key = lambda c: c.name):
             if not (crate.path / "Cargo.toml").is_file():
-                print(
-                    f"[register-patches] skipping stale crate path "
-                    f"{crate.name} ({crate.path}) — Cargo.toml missing",
-                    file=sys.stderr,
-                )
+                print(f"[register-patches] skipping stale crate path " f"{crate.name} ({crate.path}) — Cargo.toml missing", file = sys.stderr)
                 continue
+
             lines.append(f'{crate.name} = {{ path = "{_path_to_toml(crate.path)}" }}')
             wrote_any = True
+
         if not wrote_any:
             lines.pop()  # remove the section header
+
         lines.append("")
 
     return "\n".join(lines)
 
-
 MANUAL_BEGIN = "# ── celestia-devtools BEGIN manual (preserved across regeneration) ──"
 MANUAL_END = "# ── celestia-devtools END manual ──"
-
 
 def _clean_stale_local_patches(text: str) -> tuple[str, list[str]]:
     """Scan *text* for local-path ``[patch.*]`` entries whose directories no
@@ -410,9 +401,11 @@ def _clean_stale_local_patches(text: str) -> tuple[str, list[str]]:
         if stripped == MANUAL_BEGIN:
             in_manual = True
             continue
+
         if stripped == MANUAL_END:
             in_manual = False
             continue
+
         if in_manual:
             continue
 
@@ -428,28 +421,28 @@ def _clean_stale_local_patches(text: str) -> tuple[str, list[str]]:
                 continue
 
             m = re.match(r'^(\S+)\s*=\s*\{\s*path\s*=\s*"([^"]+)"', stripped)
+
             if m:
                 key, path_val = m.group(1), m.group(2)
+
                 # Ignore non-filesystem references (git/registry URLs).
                 if path_val.startswith(("http://", "https://", "git://", "git+", "ssh://")):
                     continue
+
                 p = Path(path_val)
+
                 # A local path is stale iff it points to a directory that
                 # no longer contains a Cargo.toml.  Relative paths ("./pkgs/…")
                 # are left alone — they may be legit intra-repo references.
                 if p.is_absolute() and not (p / "Cargo.toml").is_file():
                     skip_lines.add(i)
-                    removed.append(
-                        f"{key} = {{ path = \"{path_val}\" }}"
-                        f"  (section: {current_section})"
-                    )
+                    removed.append(f"{key} = {{ path = \"{path_val}\" }}" f"  (section: {current_section})")
 
     if not removed:
         return text, []
 
     cleaned = [line for i, line in enumerate(lines) if i not in skip_lines]
     return "\n".join(cleaned).rstrip() + "\n", removed
-
 
 def _strip_all_patch_sections(text: str) -> str:
     """Remove every ``[patch.*]`` section from *text*, preserving manual blocks."""
@@ -465,9 +458,11 @@ def _strip_all_patch_sections(text: str) -> str:
         if stripped == MANUAL_BEGIN:
             in_manual = True
             continue
+
         if stripped == MANUAL_END:
             in_manual = False
             continue
+
         if in_manual:
             continue
 
@@ -494,58 +489,49 @@ def _strip_all_patch_sections(text: str) -> str:
             pending_comments = []
 
     result = [line for i, line in enumerate(lines) if i not in skip_lines]
-    _STRIP_MARKERS = (
-        "# ── celestia-devtools",
-        "# Generated by `celestia-devtools",
-        "# Only patches deps this repo",
-        "# `cargo metadata` was unavailable",
-    )
-    result = [
-        line for line in result
-        if not any(line.strip().startswith(m) for m in _STRIP_MARKERS)
-    ]
+    _STRIP_MARKERS = ("# ── celestia-devtools", "# Generated by `celestia-devtools", "# Only patches deps this repo", "# `cargo metadata` was unavailable")
+    result = [line for line in result if not any(line.strip().startswith(m)for m in _STRIP_MARKERS)]
     cleaned: list[str] = []
     prev_blank = False
+
     for line in result:
         is_blank = line.strip() == ""
+
         if is_blank and prev_blank:
             continue
+
         cleaned.append(line)
         prev_blank = is_blank
+
     return "\n".join(cleaned).rstrip() + "\n"
 
-
-def update_cargo_config(
-    new_sections: str,
-    config_path: Path,
-    *,
-    dry_run: bool = False,
-) -> bool:
+def update_cargo_config(new_sections: str, config_path: Path, *, dry_run: bool = False) -> bool:
     """Replace all ``[patch]`` sections in the cargo config with *new_sections*.
 
     Returns ``True`` if the file was (or would be) modified.
     """
     existing = ""
+
     if config_path.is_file():
-        existing = config_path.read_text(encoding="utf-8", errors="ignore")
+        existing = config_path.read_text(encoding = "utf-8", errors = "ignore")
 
     # Step 0 — scan for stale local-path patches (paths that no longer exist on
     # disk) and remove them.  Only local absolute paths are checked; git /
     # registry source patches are left alone.
     cleaned, stale_warnings = _clean_stale_local_patches(existing)
+
     if stale_warnings:
-        print(
-            f"[register-patches] {len(stale_warnings)} stale local-patch"
-            f" path(s) removed (directory no longer exists):",
-            file=sys.stderr,
-        )
+        print(f"[register-patches] {len(stale_warnings)} stale local-patch" f" path(s) removed (directory no longer exists):", file = sys.stderr)
+
         for w in stale_warnings:
-            print(f"  ✗ {w}", file=sys.stderr)
+            print(f"  ✗ {w}", file = sys.stderr)
+
         # Only update `existing` if we actually changed something so the
         # config is written back with stale entries removed.
         if not dry_run:
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            config_path.write_text(cleaned, encoding="utf-8")
+            config_path.parent.mkdir(parents = True, exist_ok = True)
+            config_path.write_text(cleaned, encoding = "utf-8")
+
         existing = cleaned
 
     stripped = _strip_all_patch_sections(existing)
@@ -563,14 +549,12 @@ def update_cargo_config(
         print(new_text[-500:] if len(new_text) > 500 else new_text)
         return True
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(new_text, encoding="utf-8")
+    config_path.parent.mkdir(parents = True, exist_ok = True)
+    config_path.write_text(new_text, encoding = "utf-8")
     print(f"[register-patches] updated {config_path}")
     return True
 
-
 # ── scan directory resolution ─────────────────────────────────────────────
-
 
 def _resolve_scan_dir(explicit: str | None) -> Path:
     """Resolve the scan directory.
@@ -580,59 +564,42 @@ def _resolve_scan_dir(explicit: str | None) -> Path:
     2. ``CELESTIA_ROOT`` environment variable
     3. Parent of the current working directory
     """
+
     if explicit:
         return Path(explicit)
+
     env_root = os.environ.get("CELESTIA_ROOT")
+
     if env_root:
         return Path(env_root)
-    return Path.cwd().parent
 
+    return Path.cwd().parent
 
 # ── CLI ───────────────────────────────────────────────────────────────────
 
-
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Auto-register celestia-island repos as cargo [patch] entries",
-    )
-    parser.add_argument(
-        "--scan-dir", default=None,
-        help="directory to scan for sibling repos "
-             "(env: CELESTIA_ROOT; default: parent of cwd)",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="show what would change without writing",
-    )
-    parser.add_argument(
-        "--crates-io", default=",".join(sorted(DEFAULT_CRATES_IO)),
-        help="comma-separated crate names to put in [patch.crates-io] "
-             f"(default: {','.join(sorted(DEFAULT_CRATES_IO))})",
-    )
-    parser.add_argument(
-        "--config", default=None,
-        help="cargo config path (default: ~/.cargo/config.toml)",
-    )
+    parser = argparse.ArgumentParser(description = "Auto-register celestia-island repos as cargo [patch] entries")
+    parser.add_argument("--scan-dir", default = None, help = "directory to scan for sibling repos " "(env: CELESTIA_ROOT; default: parent of cwd)")
+    parser.add_argument("--dry-run", action = "store_true", help = "show what would change without writing")
+    parser.add_argument("--crates-io", default = ",".join(sorted(DEFAULT_CRATES_IO)), help = "comma-separated crate names to put in [patch.crates-io] " f"(default: {','.join(sorted(DEFAULT_CRATES_IO))})")
+    parser.add_argument("--config", default = None, help = "cargo config path (default: ~/.cargo/config.toml)")
     args = parser.parse_args()
 
     scan_dir = _resolve_scan_dir(args.scan_dir)
 
     print(f"[register-patches] scanning {scan_dir} …")
     repos = scan_celestia_repos(scan_dir)
+
     if not repos:
-        print("[register-patches] no celestia-island repos found", file=sys.stderr)
+        print("[register-patches] no celestia-island repos found", file = sys.stderr)
         return 1
 
-    crates_io_names = {
-        n.strip() for n in args.crates_io.split(",") if n.strip()
-    }
+    crates_io_names = {n.strip()for n in args.crates_io.split(",")if n.strip()}
 
     print("[register-patches] analyzing actual dependencies …")
     actual_deps = discover_actual_celestia_deps()
-    print(
-        f"[register-patches] {len(actual_deps)} celestia-island git dep(s) "
-        f"found in dependency graph"
-    )
+    print(f"[register-patches] {len(actual_deps)} celestia-island git dep(s) " f"found in dependency graph")
+
     for name, url in sorted(actual_deps.items()):
         print(f"  {name} -> {url}")
 
@@ -642,28 +609,28 @@ def main() -> int:
     if not new_sections:
         if actual_deps:
             print(f"[register-patches] no patches needed -> ensuring {config_path} is clean")
+
             if config_path.is_file():
-                changed = update_cargo_config("", config_path, dry_run=args.dry_run)
+                changed = update_cargo_config("", config_path, dry_run = args.dry_run)
+
                 if not changed:
                     print("[register-patches] config already clean")
+
             return 0
 
-        print(
-            "[register-patches] cargo metadata unavailable "
-            "(network down or stale lockfile) -> falling back to full scan",
-            file=sys.stderr,
-        )
+        print("[register-patches] cargo metadata unavailable " "(network down or stale lockfile) -> falling back to full scan", file = sys.stderr)
         new_sections = generate_fallback_patches(repos)
 
         if not new_sections:
             return 0
 
     print(f"[register-patches] writing patches to {config_path}")
-    changed = update_cargo_config(new_sections, config_path, dry_run=args.dry_run)
+    changed = update_cargo_config(new_sections, config_path, dry_run = args.dry_run)
+
     if not changed:
         print("[register-patches] config already up to date")
-    return 0
 
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())

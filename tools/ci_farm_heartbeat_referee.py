@@ -37,7 +37,6 @@
 """
 
 from __future__ import annotations
-
 import fcntl
 import json
 import os
@@ -51,10 +50,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # ── 约定路径与默认值 ────────────────────────────────────────────────────────────
 def _require(name: str) -> str:
     value = os.environ.get(name)
+
     if not value:
         raise SystemExit(f"ci-farm-heartbeat referee: missing required env {name}")
-    return value
 
+    return value
 
 ESXI_HOST = _require("CI_HB_ESXI_HOST")
 ESXI_USER = os.environ.get("CI_HB_ESXI_USER", "root")
@@ -88,81 +88,59 @@ ESXI_KEY_FILE = _require("CI_HB_ESXI_KEY_FILE")
 # 为什么不用密码：ESXi 7 开着 FIPS（ed25519 被拒）+ SecurityAccountLockout
 # （密码方式的失败尝试会锁 root，锁定期内正确密码也被拒）。
 # 部署：node-1 的 id_rsa_esxi.pub 已装入 /etc/ssh/keys-root/authorized_keys。
-SSH_BASE = [
-    "ssh",
-    "-i",
-    ESXI_KEY_FILE,
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    f"ConnectTimeout={CONNECT_TIMEOUT}",
-    "-o",
-    "StrictHostKeyChecking=no",
-    "-o",
-    "UserKnownHostsFile=/dev/null",
-    "-o",
-    "LogLevel=ERROR",
-    f"{ESXI_USER}@{ESXI_HOST}",
-]
-
+SSH_BASE = ["ssh", "-i", ESXI_KEY_FILE, "-o", "BatchMode=yes", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f"{ESXI_USER}@{ESXI_HOST}"]
 
 def now_ts() -> float:
     return time.time()
 
-
 def iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-
 def load_json(path: str, default: Any) -> Any:
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding = "utf-8") as fh:
             return json.load(fh)
     except FileNotFoundError:
         return default
     except (json.JSONDecodeError, OSError):
         return default
 
-
 def save_json(path: str, data: Any) -> None:
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=1)
+
+    with open(tmp, "w", encoding = "utf-8") as fh:
+        json.dump(data, fh, ensure_ascii = False, indent = 1)
+
     os.replace(tmp, path)
 
-
 def log(msg: str) -> None:
-    print(f"[{iso(now_ts())}] {msg}", flush=True)
-
+    print(f"[{iso(now_ts())}] {msg}", flush = True)
 
 def _read_secret(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, "r", encoding = "utf-8") as fh:
         return fh.read().strip()
-
 
 def run_esxi(command_key: str, vmid: int, remote_cmd: str, timeout: Optional[int] = None) -> Tuple[bool, str]:
     """在 ESXi 上执行一条 vim-cmd 命令。fixture 模式读伪输出并记录 key。"""
+
     if FIXTURE_DIR:
         if RECORD_FILE:
-            with open(RECORD_FILE, "a", encoding="utf-8") as fh:
+            with open(RECORD_FILE, "a", encoding = "utf-8") as fh:
                 fh.write(f"{command_key} {vmid}\n")
+
         path = os.path.join(FIXTURE_DIR, f"{command_key}.{vmid}")
+
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, "r", encoding = "utf-8") as fh:
                 return True, fh.read()
         except FileNotFoundError:
             return False, ""
+
     try:
-        proc = subprocess.run(
-            SSH_BASE + [remote_cmd],
-            capture_output=True,
-            text=True,
-            timeout=timeout or (CONNECT_TIMEOUT + 30),
-        )
+        proc = subprocess.run(SSH_BASE + [remote_cmd], capture_output = True, text = True, timeout = timeout or (CONNECT_TIMEOUT + 30))
         return proc.returncode == 0, proc.stdout
     except subprocess.TimeoutExpired:
         return False, ""
-
 
 # ── 采集 ────────────────────────────────────────────────────────────────────────
 def read_beat(name: str) -> Optional[str]:
@@ -172,51 +150,39 @@ def read_beat(name: str) -> Optional[str]:
     强制动作需要 ESXi，所以 main() 仍先探活 ESXi。
     """
     path = os.path.join(BEAT_DIR, name)
+
     try:
         age = time.time() - os.path.getmtime(path)
     except FileNotFoundError:
         return None
-    return "green" if age <= STALE_SEC else "red"
 
+    return "green" if age <= STALE_SEC else "red"
 
 SNAP_NAME_RE = re.compile(r"Snapshot Name\s*:\s*(\S+)")
 SNAP_ID_RE = re.compile(r"Snapshot Id\s*:\s*(\d+)")
 
-
 def snapshot_baseline(vmid: int) -> Tuple[bool, str, Optional[int]]:
     """快照不变量：恰好 1 个快照时返回 (True, 名称, id)；否则 (False, 原因, None)。"""
-    ok, out = run_esxi(
-        CMD_SNAPSHOTS,
-        vmid,
-        f"vim-cmd vmsvc/snapshot.get {vmid} 2>/dev/null",
-    )
+    ok, out = run_esxi(CMD_SNAPSHOTS, vmid, f"vim-cmd vmsvc/snapshot.get {vmid} 2>/dev/null")
+
     if not ok:
         return False, "esxi-error", None
+
     names = SNAP_NAME_RE.findall(out)
     ids = SNAP_ID_RE.findall(out)
-    if len(names) == 1 and len(ids) == 1:
-        return True, names[0], int(ids[0])
-    return False, f"snapshot-count={len(names)}", None
 
+    if (len(names) == 1) and (len(ids) == 1):
+        return True, names[0], int(ids[0])
+
+    return False, f"snapshot-count={len(names)}", None
 
 def recover_vm(vmid: int, snap_id: Optional[int]) -> Tuple[bool, str]:
     """§8.1 恢复动作：power.off → snapshot.revert → power.on。fixture 模式只记录。"""
     snap_arg = str(snap_id if snap_id is not None else 1)
-    remote = (
-        f"vim-cmd vmsvc/power.off {vmid} 2>/dev/null; "
-        f"vim-cmd vmsvc/snapshot.revert {vmid} {snap_arg} 1; "
-        f"sleep 5; vim-cmd vmsvc/power.on {vmid}; "
-        f"vim-cmd vmsvc/power.getstate {vmid} | tail -1"
-    )
+    remote = f"vim-cmd vmsvc/power.off {vmid} 2>/dev/null; " f"vim-cmd vmsvc/snapshot.revert {vmid} {snap_arg} 1; " f"sleep 5; vim-cmd vmsvc/power.on {vmid}; " f"vim-cmd vmsvc/power.getstate {vmid} | tail -1"
     # 回滚序列含 sleep + 两轮 hostd 操作，50s 默认超时不够 → 单独放宽。
-    ok, out = run_esxi(
-        CMD_RECOVER,
-        vmid,
-        remote,
-        timeout=CONNECT_TIMEOUT + 90,
-    )
+    ok, out = run_esxi(CMD_RECOVER, vmid, remote, timeout = CONNECT_TIMEOUT + 90)
     return ok, out if ok else out + "recover-timeout-or-ssh-failure"
-
 
 # ── guest 侧 beat 单元自愈部署 ──────────────────────────────────────────────────
 BEAT_SERVICE_TEMPLATE = """[Unit]
@@ -242,39 +208,17 @@ WantedBy=timers.target
 """
 NODE1_ADDR = _require("CI_HB_NODE1_ADDR")
 
-
 def run_guest(guest_ip: str, remote_cmd: str, stdin_payload: Optional[str] = None) -> Tuple[bool, str]:
     """SSH 进 guest 执行命令（farm 标准参数；revert 会轮换 guest host key，
     故 known_hosts 必须 /dev/null）。"""
     password = _read_secret(GUEST_PASSWORD_FILE)
-    cmd = [
-        "sshpass",
-        "-p",
-        password,
-        "ssh",
-        "-o",
-        f"ConnectTimeout={CONNECT_TIMEOUT}",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "LogLevel=ERROR",
-        f"{GUEST_USER}@{guest_ip}",
-        remote_cmd,
-    ]
+    cmd = ["sshpass", "-p", password, "ssh", "-o", f"ConnectTimeout={CONNECT_TIMEOUT}", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", f"{GUEST_USER}@{guest_ip}", remote_cmd]
+
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            input=stdin_payload,
-            timeout=CONNECT_TIMEOUT + 30,
-        )
+        proc = subprocess.run(cmd, capture_output = True, text = True, input = stdin_payload, timeout = CONNECT_TIMEOUT + 30)
         return proc.returncode == 0, proc.stdout
     except subprocess.TimeoutExpired:
         return False, ""
-
 
 def receiver_url() -> str:
     """The receiver base URL, tolerant of the scheme being supplied either way.
@@ -296,113 +240,90 @@ def receiver_url() -> str:
     cannot reintroduce a doubled scheme.
     """
     value = NODE1_ADDR.strip()
+
     for prefix in ("http://", "https://"):
         if value.startswith(prefix):
             value = value[len(prefix) :]
             break
-    return "http://" + value.rstrip("/")
 
+    return "http://" + value.rstrip("/")
 
 def deploy_guest_beat_unit(guest_ip: str, name: str) -> Tuple[bool, str]:
     """把 beat 单元装进 guest 并启用（revert 后 baseline 里没有它）。"""
-    service = BEAT_SERVICE_TEMPLATE.format(receiver_url=receiver_url(), name=name)
-    ok1, out1 = run_guest(
-        guest_ip,
-        "sudo -n tee /etc/systemd/system/ci-beat.service >/dev/null",
-        stdin_payload=service,
-    )
-    ok2, out2 = run_guest(
-        guest_ip,
-        "sudo -n tee /etc/systemd/system/ci-beat.timer >/dev/null",
-        stdin_payload=BEAT_TIMER_UNIT,
-    )
-    ok3, out3 = run_guest(
-        guest_ip,
-        "sudo -n systemctl daemon-reload && sudo -n systemctl enable --now ci-beat.timer",
-    )
+    service = BEAT_SERVICE_TEMPLATE.format(receiver_url = receiver_url(), name = name)
+    ok1, out1 = run_guest(guest_ip, "sudo -n tee /etc/systemd/system/ci-beat.service >/dev/null", stdin_payload = service)
+    ok2, out2 = run_guest(guest_ip, "sudo -n tee /etc/systemd/system/ci-beat.timer >/dev/null", stdin_payload = BEAT_TIMER_UNIT)
+    ok3, out3 = run_guest(guest_ip, "sudo -n systemctl daemon-reload && sudo -n systemctl enable --now ci-beat.timer")
+
     if ok1 and ok2 and ok3:
         return True, "beat unit deployed"
-    return False, f"deploy failed (service={ok1} timer={ok2} enable={ok3}) {out1}{out2}{out3}"[:200]
 
+    return False, f"deploy failed (service={ok1} timer={ok2} enable={ok3}) {out1}{out2}{out3}"[:200]
 
 def rearm_guest(name: str, opts: Dict[str, Any]) -> None:
     """revert 后自愈：等 guest 起来，把 beat 单元重装回去，让监管自动恢复。"""
     guest_ip = opts.get("guest_ip")
+
     if not guest_ip:
         log(f"{name}: no guest_ip in inventory — cannot re-arm; ALERT: node silently unmonitored")
         return
+
     for attempt in range(1, REARM_TRIES + 1):
         time.sleep(max(1, REARM_WAIT_SEC // REARM_TRIES))
         ok, _ = run_guest(guest_ip, "systemctl is-active --quiet open-vm-tools")
+
         if not ok:
             continue
+
         ok2, _ = deploy_guest_beat_unit(guest_ip, name)
+
         if ok2:
             log(f"{name}: beat unit re-armed after revert (attempt {attempt})")
             return
+
     log(f"{name}: ALERT — could not re-arm beat unit after revert; node silently unmonitored")
 
-
 # ── 纯决策函数（selftest 的主靶）──────────────────────────────────────────────
-def decide(
-    hb: Optional[str],
-    stale_polls: int,
-    reverts_24h: int,
-    last_action_ts: Optional[float],
-    snap_ok: bool,
-    snap_reason: str,
-    now_ts_: float,
-    stale_threshold: int = STALE_ROUNDS,
-    budget: int = REVERT_BUDGET_24H,
-    cooldown: int = COOLDOWN_SEC,
-) -> Tuple[str, int, str]:
+def decide(hb: Optional[str], stale_polls: int, reverts_24h: int, last_action_ts: Optional[float], snap_ok: bool, snap_reason: str, now_ts_: float, stale_threshold: int = STALE_ROUNDS, budget: int = REVERT_BUDGET_24H, cooldown: int = COOLDOWN_SEC) -> Tuple[str, int, str]:
     """返回 (decision, new_stale_polls, reason)。
 
     decision ∈ {"ok", "stale", "trigger", "refused-budget", "refused-cooldown",
                 "refused-snapshot"}。hb 非 "green"（red/gray/None=字段缺失）一律
     计入 stale——探活已前置，ESXi 可达时字段缺失本身就是异常。
     """
+
     if hb == "green":
         return "ok", 0, "heartbeat-green"
 
     stale = stale_polls + 1
     observed = hb if hb is not None else "missing"
+
     if stale < stale_threshold:
         return "stale", stale, f"heartbeat-{observed} ({stale}/{stale_threshold})"
 
     # 达到阈值 → 检查护栏（顺序：冷却 → 预算 → 快照不变量）。
-    if last_action_ts is not None and (now_ts_ - last_action_ts) < cooldown:
+    if (last_action_ts is not None) and ((now_ts_ - last_action_ts) < cooldown):
         return "refused-cooldown", stale, "cooldown-active"
+
     if reverts_24h >= budget:
-        return (
-            "refused-budget",
-            stale,
-            f"revert-budget-exhausted ({reverts_24h}/{budget} in 24h) — needs human",
-        )
+        return ("refused-budget", stale, f"revert-budget-exhausted ({reverts_24h}/{budget} in 24h) — needs human")
+
     if not snap_ok:
         return "refused-snapshot", stale, f"snapshot-invariant-broken ({snap_reason})"
 
     return "trigger", 0, f"heartbeat-{observed} x{stale} — forced rollback"
 
-
 def reverts_in_last_24h(revert_ts_list: List[float], now_ts_: float) -> int:
-    horizon = now_ts_ - 24 * 3600
+    horizon = now_ts_ - (24 * 3600)
     return sum(1 for ts in revert_ts_list if ts >= horizon)
 
-
 # ── 主流程 ──────────────────────────────────────────────────────────────────────
-def process_vm(
-    name: str,
-    vmid: int,
-    state: Dict[str, Any],
-    actions: List[Dict[str, Any]],
-    opts: Dict[str, Any],
-    guest_ip: Optional[str] = None,
-) -> None:
+def process_vm(name: str, vmid: int, state: Dict[str, Any], actions: List[Dict[str, Any]], opts: Dict[str, Any], guest_ip: Optional[str] = None) -> None:
     # 首跳注册制：从未打过心跳的节点 = 未部署 beat 单元 = 不受监管。
     # 绝不对它做任何判定/动作（防误伤未纳管节点）。
     if not os.path.isfile(os.path.join(BEAT_DIR, name)):
         return
+
     now_ts_ = now_ts()
     entry = state.setdefault(name, {"stale_polls": 0, "reverts": [], "last_action_ts": None})
     stale_polls = int(entry.get("stale_polls", 0))
@@ -410,21 +331,11 @@ def process_vm(
     last_action_ts = entry.get("last_action_ts")
 
     hb = read_beat(name)
-    decision, new_stale, reason = decide(
-        hb,
-        stale_polls,
-        reverts_in_last_24h(reverts, now_ts_),
-        last_action_ts,
-        True,
-        "",
-        now_ts_,
-        stale_threshold=opts["stale_rounds"],
-        budget=opts["budget"],
-        cooldown=opts["cooldown"],
-    )
+    decision, new_stale, reason = decide(hb, stale_polls, reverts_in_last_24h(reverts, now_ts_), last_action_ts, True, "", now_ts_, stale_threshold = opts["stale_rounds"], budget = opts["budget"], cooldown = opts["cooldown"])
 
     if decision == "trigger":
         snap_ok, snap_name, snap_id = snapshot_baseline(vmid)
+
         if not snap_ok:
             decision, reason = "refused-snapshot", f"snapshot-invariant-broken ({snap_name})"
 
@@ -439,10 +350,12 @@ def process_vm(
             log(f"[dry-run] {name}(vmid={vmid}): would REVERT to baseline ({reason})")
             actions.append({"vm": name, "action": "would-revert", "reason": reason})
             return  # dry-run 不清零 stale，便于连续观察
+
         ok, out = recover_vm(vmid, snap_id)
         reverts.append(now_ts_)
         entry["reverts"] = reverts[-10:]
         entry["last_action_ts"] = now_ts_
+
         if ok:
             log(f"{name}(vmid={vmid}): REVERTED to baseline ({reason}); out={out.strip()[:120]}")
             actions.append({"vm": name, "action": "reverted", "reason": reason})
@@ -452,24 +365,20 @@ def process_vm(
         else:
             log(f"{name}(vmid={vmid}): REVERT command FAILED ({reason})")
             actions.append({"vm": name, "action": "revert-failed", "reason": reason})
+
         return
 
     if decision != "ok":
         log(f"{name}(vmid={vmid}): {decision} — {reason}")
         actions.append({"vm": name, "action": decision, "reason": reason})
 
-
 def main(argv: List[str]) -> int:
     dry_run = "--dry-run" in argv
     verbose = "--verbose" in argv
-    opts = {
-        "dry_run": dry_run,
-        "stale_rounds": STALE_ROUNDS,
-        "budget": REVERT_BUDGET_24H,
-        "cooldown": COOLDOWN_SEC,
-    }
+    opts = {"dry_run": dry_run, "stale_rounds": STALE_ROUNDS, "budget": REVERT_BUDGET_24H, "cooldown": COOLDOWN_SEC}
 
     lock_fh = open(LOCK_FILE, "w")
+
     try:
         fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -485,22 +394,27 @@ def main(argv: List[str]) -> int:
     now_ts_ = now_ts()
     fail_streak = int(state.get("probe_fail_streak", 0))
     backoff_until = state.get("probe_backoff_until")
-    if backoff_until and now_ts_ < float(backoff_until):
+
+    if backoff_until and (now_ts_ < float(backoff_until)):
         lock_fh.close()
+
         if verbose:
             log(f"ESXi probe backoff until {iso(float(backoff_until))} — skipping quietly")
+
         return 0
+
     probe_ok, _ = run_esxi("probe", 0, "vim-cmd hostsvc/hostsummary 2>/dev/null")
+
     if not probe_ok:
         fail_streak += 1
         backoff = min(60 * (2 ** (fail_streak - 1)), 1800)
         state["probe_fail_streak"] = fail_streak
         state["probe_backoff_until"] = now_ts_ + backoff
         save_json(STATE_FILE, state)
-        log(f"ESXi unreachable ({ESXI_HOST}) — probe failed x{fail_streak}, "
-            f"backing off {backoff}s (enforcement channel down)")
+        log(f"ESXi unreachable ({ESXI_HOST}) — probe failed x{fail_streak}, " f"backing off {backoff}s (enforcement channel down)")
         lock_fh.close()
         return 2
+
     state["probe_fail_streak"] = 0
     state.pop("probe_backoff_until", None)
 
@@ -510,19 +424,22 @@ def main(argv: List[str]) -> int:
         entries = sorted(os.listdir(BEAT_DIR))
     except FileNotFoundError:
         entries = []
+
     monitored = [e for e in entries if NAME_OK_RE.match(e)]
-    inventory = {item.get("name"): item
-                 for item in load_json(INVENTORY_FILE, []) if isinstance(item, dict)}
+    inventory = {item.get("name"): item for item in load_json(INVENTORY_FILE, [])if isinstance(item, dict)}
 
     if not monitored:
         log(f"no beats under {BEAT_DIR} — nothing monitored yet")
+
     for name in monitored:
         info = inventory.get(name) or {}
         vmid = info.get("vmid")
+
         if not isinstance(vmid, int):
             log(f"{name}: beat present but no inventory vmid — cannot enforce; skipped")
             continue
-        process_vm(name, vmid, state, actions, opts, guest_ip=info.get("guest_ip"))
+
+        process_vm(name, vmid, state, actions, opts, guest_ip = info.get("guest_ip"))
 
     save_json(STATE_FILE, state)
     save_json(LEDGER_FILE, {"ts": iso(now_ts()), "actions": actions, "state": state})
@@ -530,9 +447,9 @@ def main(argv: List[str]) -> int:
 
     if verbose:
         for a in actions:
-            print(json.dumps(a, ensure_ascii=False))
-    return 0
+            print(json.dumps(a, ensure_ascii = False))
 
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

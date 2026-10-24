@@ -42,10 +42,8 @@ that this is deliberate rather than forgotten.
 """
 
 from __future__ import annotations
-
 import re
 from pathlib import Path
-
 import pytest
 import yaml
 
@@ -60,10 +58,7 @@ FORK_CLAUSE = "head.repo.fork==true"
 #: Reusable workflows served to the fleet as required checks and reachable by
 #: fork PRs after the fix: both jobs are sub-minute, stdlib-only, hold no
 #: secrets, and never execute the pull request's code.
-FORK_SERVED = {
-    "commit-msg-lint.yml": "lint",
-    "pr-title-check.yml": "title",
-}
+FORK_SERVED = {"commit-msg-lint.yml": "lint", "pr-title-check.yml": "title"}
 
 #: Farm-pinned workflows that must stay guarded until they grow a lane
 #: override — opening them would spend shared runner time on untrusted content.
@@ -71,58 +66,33 @@ FARM_PINNED = ("p0-gate.yml", "family-versions.yml", "verify-versions.yml")
 
 FORK_MARKER = "head.repo.fork"
 
-
 def _normalise(expr: object) -> str:
     return re.sub(r"\s+", "", str(expr))
 
-
 def _job(filename: str, job_id: str) -> dict:
-    doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding="utf-8"))
+    doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding = "utf-8"))
     return doc["jobs"][job_id]
 
-
 @pytest.mark.parametrize("filename,job_id", sorted(FORK_SERVED.items()))
-class TestForkPullRequestsAreServed:
+class test_fork_pull_requests_are_served:
     def test_job_is_not_skipped_for_forks(self, filename: str, job_id: str) -> None:
         """A fork PR must reach the job, or the required check never reports."""
         condition = _job(filename, job_id).get("if")
-        assert condition is not None, (
-            f"{filename}:{job_id} lost its condition entirely; the callers rely on "
-            "the callee to decide whether a run is served"
-        )
-        assert FORK_CLAUSE in _normalise(condition), (
-            f"{filename}:{job_id} no longer admits fork pull requests (expected the "
-            f"clause {FORK_CLAUSE!r}). A skipped job reports no check run, so every "
-            "outside contribution stays BLOCKED - the exact regression 466d207 caused "
-            "and this test exists to prevent."
-        )
+        assert condition is not None, (f"{filename}:{job_id} lost its condition entirely; the callers rely on " "the callee to decide whether a run is served")
+        assert FORK_CLAUSE in _normalise(condition), (f"{filename}:{job_id} no longer admits fork pull requests (expected the " f"clause {FORK_CLAUSE!r}). A skipped job reports no check run, so every " "outside contribution stays BLOCKED - the exact regression 466d207 caused " "and this test exists to prevent.")
 
     def test_job_requires_no_secret(self, filename: str, job_id: str) -> None:
         """A fork run gets no secrets, so a required one would fail every outside PR."""
         job = _job(filename, job_id)
-        assert "secrets" not in job, (
-            f"{filename}:{job_id} now consumes secrets, which are withheld from fork "
-            "runs; outside contributions would go red instead of green"
-        )
-        doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding="utf-8"))
-        for name, other in doc["jobs"].items():
-            assert "secrets" not in other, (
-                f"{filename}:{name} now consumes secrets, which are withheld from "
-                "fork runs"
-            )
+        assert "secrets" not in job, (f"{filename}:{job_id} now consumes secrets, which are withheld from fork " "runs; outside contributions would go red instead of green")
+        doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding = "utf-8"))
 
+        for name, other in doc["jobs"].items():
+            assert "secrets" not in other, (f"{filename}:{name} now consumes secrets, which are withheld from " "fork runs")
 
 @pytest.mark.parametrize("filename", FARM_PINNED)
 def test_farm_pinned_workflows_keep_the_guard(filename: str) -> None:
     """Documented scope: farm-pinned jobs stay fork-guarded until they get a lane."""
-    doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding="utf-8"))
-    guarded = [
-        job_id
-        for job_id, job in doc["jobs"].items()
-        if FORK_MARKER not in str(job.get("if", ""))
-    ]
-    assert guarded, (
-        f"{filename} now serves fork PRs on a self-hosted runner. That is fine only "
-        "once the job resolves its lane from the event rather than from a caller "
-        "input or org variable - update this test and the fix note together."
-    )
+    doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding = "utf-8"))
+    guarded = [job_id for job_id, job in doc["jobs"].items()if FORK_MARKER not in str(job.get("if", ""))]
+    assert guarded, (f"{filename} now serves fork PRs on a self-hosted runner. That is fine only " "once the job resolves its lane from the event rather than from a caller " "input or org variable - update this test and the fix note together.")

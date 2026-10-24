@@ -3,58 +3,56 @@
 
 import tempfile
 from pathlib import Path
-
 import pytest
-
 from celestia_devtools.vcs import hook
-
 
 @pytest.fixture
 def tmp_git_repo():
     """Create a temporary directory with a .git/hooks subdirectory."""
+
     with tempfile.TemporaryDirectory() as tmp:
         hooks_dir = Path(tmp) / ".git" / "hooks"
-        hooks_dir.mkdir(parents=True)
+        hooks_dir.mkdir(parents = True)
         yield Path(tmp)
 
-
-class TestInstallHook:
+class test_install_hook:
     def test_installs_and_writes_sentinel(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
-        content = hook_path.read_text(encoding="utf-8")
+        content = hook_path.read_text(encoding = "utf-8")
         assert hook.HOOK_SENTINEL in content
         assert "@DEVTOOLS_BIN@" not in content  # substituted
 
     def test_refuses_overwrite_non_managed(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook_path.write_text("#!/bin/bash\necho custom")
+
         with pytest.raises(SystemExit):
-            hook.install_hook(hook_path, force=False)
+            hook.install_hook(hook_path, force = False)
 
     def test_force_overwrites_non_managed(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook_path.write_text("#!/bin/bash\necho custom")
-        hook.install_hook(hook_path, force=True)
-        content = hook_path.read_text(encoding="utf-8")
+        hook.install_hook(hook_path, force = True)
+        content = hook_path.read_text(encoding = "utf-8")
         assert hook.HOOK_SENTINEL in content
 
     def test_reinstalls_own_managed_hook(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
         # reinstall without force should succeed (own managed)
-        hook.install_hook(hook_path, force=False)
-        content = hook_path.read_text(encoding="utf-8")
+        hook.install_hook(hook_path, force = False)
+        content = hook_path.read_text(encoding = "utf-8")
         assert hook.HOOK_SENTINEL in content
 
     def test_refuses_noa_managed_overwrite(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook_path.write_text("#!/bin/bash\n# noa-managed\n echo noa")
+
         with pytest.raises(SystemExit):
-            hook.install_hook(hook_path, force=False)
+            hook.install_hook(hook_path, force = False)
 
-
-class TestUninstallHook:
+class test_uninstall_hook:
     def test_uninstalls_managed_hook(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
@@ -65,17 +63,17 @@ class TestUninstallHook:
     def test_refuses_uninstall_non_managed(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook_path.write_text("#!/bin/bash\necho custom")
+
         with pytest.raises(SystemExit):
-            hook.uninstall_hook(hook_path, force=False)
+            hook.uninstall_hook(hook_path, force = False)
 
     def test_force_uninstalls_non_managed(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook_path.write_text("#!/bin/bash\necho custom")
-        hook.uninstall_hook(hook_path, force=True)
+        hook.uninstall_hook(hook_path, force = True)
         assert not hook_path.exists()
 
-
-class TestCheckHook:
+class test_check_hook:
     def test_up_to_date_passes(self, tmp_git_repo):
         hook_path = tmp_git_repo / ".git" / "hooks" / "commit-msg"
         hook.install_hook(hook_path)
@@ -95,15 +93,13 @@ class TestCheckHook:
         rc = hook.check_hook(hook_path)
         assert rc == 1
 
-
-class TestShowTemplate:
+class test_show_template:
     def test_contains_sentinel(self):
         template = hook.show_template()
         assert hook.HOOK_SENTINEL in template
         assert "@DEVTOOLS_BIN@" not in template  # substituted
 
-
-class TestResolveDevtoolsBin:
+class test_resolve_devtools_bin:
     def test_explicit_bin(self):
         bin_val = hook._resolve_devtools_bin("celestia-devtools")
         assert bin_val == "celestia-devtools"
@@ -111,4 +107,4 @@ class TestResolveDevtoolsBin:
     def test_fallback(self):
         bin_val = hook._resolve_devtools_bin(None)
         # Should contain either 'celestia-devtools' or 'python'
-        assert "celestia" in bin_val.lower() or "python" in bin_val.lower()
+        assert ("celestia" in bin_val.lower()) or ("python" in bin_val.lower())

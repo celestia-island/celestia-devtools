@@ -81,9 +81,46 @@ target-version = "py311"
 line-length = 100
 src = ["src", "tests"]
 
+# Style policy: the custom layout conventions are enforced by the handwritten
+# `py-style` checker (see [tool.py_style]); ruff keeps the stable semantic checks
+# only. Preview rules stay disabled: they drift between releases, and the ones
+# that would police whitespace encode the OPPOSITE conventions (E251 wants no
+# spaces around keyword/default `=`, E301/E302/E305 want two blank lines, W292
+# always wants a final newline, W391 is preview-only). The list below is the
+# explicit ignore contract, kept even while preview is off, so accidentally
+# enabling preview cannot silently contradict the checker.
 [tool.ruff.lint]
 select = ["E", "F", "W", "B"]
-ignore = ["E501"]
+ignore = [
+    "E501",
+    "E111",
+    "E117",
+    "E251",
+    "E252",
+    "E301",
+    "E302",
+    "E303",
+    "E304",
+    "E305",
+    "E306",
+    "W391",
+]
+
+# This repository is fully migrated to the custom layout conventions: the
+# handwritten checker (not a formatter) is the authority, and `gate python` plus
+# CI run it as a blocking step. The keys below pin the interpretation choices.
+[tool.py_style]
+docstrings = "allow"
+# unittest-style callback names inherited from the framework (lowercase "do_HEAD"
+# is the contract, not a local naming choice).
+framework_callbacks = ["do_HEAD"]
+slice_colons = "pep8"
+final_newline = "one"
+blank_line_scope = "all"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The style requires lower_snake class names, including test classes, so pytest
+# must collect both the legacy `Test*` spelling (third-party patterns) and
+# `test_*` (the migrated spelling).
+python_classes = ["Test*", "test_*"]

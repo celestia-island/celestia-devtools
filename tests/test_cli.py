@@ -2,63 +2,41 @@
 
 import subprocess
 import sys
-
+from importlib import import_module
 import pytest
-
 from celestia_devtools.core.cli import COMMANDS, main
+import tomllib
+from pathlib import Path
+from celestia_devtools.repo.register_patches import _clean_stale_local_patches
+import os
+import tempfile
 
-
-class TestCommandRegistry:
+class test_command_registry:
     def test_all_commands_registered(self):
         # The full set of commands the dispatcher knows about. Update this set
         # whenever a command is added or removed in core/cli.py — keeping it an
         # explicit literal (rather than set(COMMANDS)) guards against accidental
         # removals of a command that downstream justfiles depend on.
-        expected = {
-            "cache-guard", "format-markdown", "prefetch", "check-cross-deps",
-            "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite",
-            "serve", "locate", "register-patches", "init",
-            "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates",
-            "daemon", "mock-start", "mock-status", "mock-stop",
-            "registry", "toml-sort", "sign-agent", "gate", "verify-versions",
-            "link-npm-siblings", "protocol-bundle", "nav-lint", "p0-gate",
-            "rules-lint",
-            "fetch-just", "build-dispatch", "upstream-sync",
-            "worktree-create", "worktree-remove", "dev-watch",
-            "vite-build", "vite-serve", "vite-dev", "npm-release",
-            "release-notes",
-            # Added 2026-09-20: these four shipped console scripts but had no
-            # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
-            "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit",
-            "ci-cache",
-            # release-notes is already listed above (line 29); the
-            # reverse-direction test below pins the whole set either way.
-            # Added 2026-09-20: production-target lifecycle group (deploy doctor;
-            # the remaining subcommands land with their own slices and fail loudly).
-            "deploy",
-            # Added 2026-10-22: local branch hygiene sweeper.
-            "git-sweep",
-            # Added 2026-10-25: custom layout checkers for the org style rules.
-            # Each ships a RULES catalog (check/list-rules); Python also has a
-            # safe fix mode used by the migration follow-up.
-            "py-style",
-            "cpp-style",
-            "e2e-sandbox",
-            # Added 2026-09-25: family dependency-identity check. The audit found
-            # kirino at two incompatible majors, plana on seven revisions and
-            # hikari declared unbounded — nothing compared how the repositories
-            # consume the shared layers.
-            "family-versions",
-            "version-string",
-            # Added 2026-10-16: dev-mode gateway environment — the DEBUG_* +
-            # per-repo variable set for a run profile, with an injecting
-            # launcher (replaces the abandoned hosts-file hostmap approach).
-            "devenv",
-            # Added 2026-10-17: per-app vite/CDP port allocation — two
-            # tauri debug shells on one machine must never cross-wire.
-            "ports",
-            "brand-stamp",
-        }
+        # Added 2026-09-20: these four shipped console scripts but had no
+        # dispatcher command, so `celestia-devtools <cmd>` could not reach them.
+        # release-notes is already listed above (line 29); the
+        # reverse-direction test below pins the whole set either way.
+        # Added 2026-09-20: production-target lifecycle group (deploy doctor;
+        # the remaining subcommands land with their own slices and fail loudly).
+        # Added 2026-10-22: local branch hygiene sweeper.
+        # Added 2026-10-25: custom layout checkers for the org style rules.
+        # Each ships a RULES catalog (check/list-rules); Python also has a
+        # safe fix mode used by the migration follow-up.
+        # Added 2026-09-25: family dependency-identity check. The audit found
+        # kirino at two incompatible majors, plana on seven revisions and
+        # hikari declared unbounded — nothing compared how the repositories
+        # consume the shared layers.
+        # Added 2026-10-16: dev-mode gateway environment — the DEBUG_* +
+        # per-repo variable set for a run profile, with an injecting
+        # launcher (replaces the abandoned hosts-file hostmap approach).
+        # Added 2026-10-17: per-app vite/CDP port allocation — two
+        # tauri debug shells on one machine must never cross-wire.
+        expected = {"cache-guard", "format-markdown", "prefetch", "check-cross-deps", "npm-dist", "preflight", "wsl-ensure", "qemu-ensure", "pglite", "serve", "locate", "register-patches", "init", "commit-msg-lint", "hook", "pr-merge", "gh", "publish-crates", "daemon", "mock-start", "mock-status", "mock-stop", "registry", "toml-sort", "sign-agent", "gate", "verify-versions", "link-npm-siblings", "protocol-bundle", "nav-lint", "p0-gate", "rules-lint", "fetch-just", "build-dispatch", "upstream-sync", "worktree-create", "worktree-remove", "dev-watch", "vite-build", "vite-serve", "vite-dev", "npm-release", "release-notes", "cargo-cache-guard", "lint-separators", "job-timeouts", "ci-audit", "ci-cache", "deploy", "git-sweep", "py-style", "cpp-style", "e2e-sandbox", "family-versions", "version-string", "devenv", "ports", "brand-stamp"}
         assert set(COMMANDS.keys()) == expected
 
     def test_every_console_script_has_a_dispatcher_command(self):
@@ -68,20 +46,17 @@ class TestCommandRegistry:
         *omissions* — which is how four entry points sat unreachable. The convention below
         (strip the `celestia-` prefix the package adds) is what the missing four follow.
         """
-        import tomllib
-        from pathlib import Path
 
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        data = tomllib.loads(pyproject.read_text(encoding = "utf-8"))
         scripts = data["project"]["scripts"]
+
         for name, target in scripts.items():
             if name in ("celestia-devtools",):
                 continue
+
             short = name[len("celestia-"):] if name.startswith("celestia-") else name
-            assert short in COMMANDS or name in COMMANDS, (
-                f"console script '{name}' ({target}) has no `celestia-devtools` command; "
-                "add it to COMMANDS in core/cli.py or the unified CLI cannot run it"
-            )
+            assert (short in COMMANDS) or (name in COMMANDS), (f"console script '{name}' ({target}) has no `celestia-devtools` command; " "add it to COMMANDS in core/cli.py or the unified CLI cannot run it")
 
     @pytest.mark.parametrize("cmd,module_path", list(COMMANDS.items()))
     def test_command_modules_importable(self, cmd, module_path):
@@ -92,17 +67,15 @@ class TestCommandRegistry:
         on Windows raises ModuleNotFoundError/AttributeError before main() is
         ever reached, so the importability contract only applies on POSIX.
         """
-        import sys
 
-        from importlib import import_module
-
-        if sys.platform == "win32" and cmd in ("deploy", "e2e-sandbox"):
+        if (sys.platform == "win32") and (cmd in ("deploy", "e2e-sandbox")):
             pytest.skip(f"{cmd} is POSIX-only (imports pwd / signal.SIGKILL)")
+
+        # py-style-ok: no-dynamic-imports: exercises the documented lazy-dispatcher exception (see core/cli.py)
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
 
-
-class TestVersionHelp:
+class test_version_help:
     def test_version(self, capsys):
         rc = main(["--version"])
         captured = capsys.readouterr()
@@ -121,42 +94,31 @@ class TestVersionHelp:
         assert rc == 0
         assert "format-markdown" in captured.out
 
-
-class TestUnknownCommand:
+class test_unknown_command:
     def test_unknown_returns_error(self, capsys):
         rc = main(["nonexistent-command"])
         assert rc == 2
         captured = capsys.readouterr()
         assert "unknown command" in captured.err
 
-
-class TestIncludePath:
+class test_include_path:
     def test_include_path_prints_common_just(self, capsys):
         rc = main(["include-path"])
         captured = capsys.readouterr()
         assert rc == 0
         assert "common.just" in captured.out
 
-
-class TestModuleRun:
+class test_module_run:
     def test_python_m_invocation(self):
         """`python -m celestia_devtools --version` should work."""
-        result = subprocess.run(
-            [sys.executable, "-m", "celestia_devtools", "--version"],
-            capture_output=True, text=True,
-        )
+        result = subprocess.run([sys.executable, "-m", "celestia_devtools", "--version"], capture_output = True, text = True)
         assert result.returncode == 0
         assert "celestia-devtools" in result.stdout
 
-
-class TestStaleLocalPatchCleanup:
+class test_stale_local_patch_cleanup:
     def test_removes_stale_absolute_path(self):
-        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
-
-        import os
-        import tempfile
-        from pathlib import Path
         bad = os.path.abspath(os.path.join(os.sep, "nonexistent", "abcdef", "crate"))
+
         with tempfile.TemporaryDirectory() as td:
             (Path(td) / "Cargo.toml").write_text("[package]\nname = \"ok\"\n")
             config = f"""[patch.crates-io]
@@ -170,8 +132,6 @@ ok = {{ path = "{td}" }}
             assert 'ok' in cleaned
 
     def test_ignores_relative_and_git_patches(self):
-        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
-
         config = """[patch.crates-io]
 lib = { path = "./packages/lib" }
 
@@ -184,11 +144,7 @@ crate = { git = "https://github.com/org/repo" }
         assert 'github.com/org/repo' in cleaned
 
     def test_leaves_intact_when_nothing_stale(self):
-        from celestia_devtools.repo.register_patches import _clean_stale_local_patches
-
-        import tempfile
         with tempfile.TemporaryDirectory() as td:
-            from pathlib import Path
             p = Path(td)
             (p / "Cargo.toml").write_text("[package]\nname = \"test\"\n")
             config = f"""[patch.crates-io]
@@ -198,8 +154,7 @@ test = {{ path = \"{td}\" }}
             assert len(warnings) == 0
             assert 'test' in cleaned
 
-
-class TestModuleMainGuard:
+class test_module_main_guard:
     """`python3 -m celestia_devtools.core.cli …` must actually dispatch.
 
     Before the `__main__` guard, `-m` imported the module, exited 0, and ran
@@ -210,32 +165,18 @@ class TestModuleMainGuard:
     """
 
     def _run_module(self, *args):
-        import os
-        import subprocess
-        import sys
-        from pathlib import Path
         # Resolve the module from THIS checkout (src/ layout), not whatever
         # celestia_devtools happens to be pip-installed on the host — otherwise
         # the test would exercise a stale copy and drift with it.
         src = Path(__file__).resolve().parents[1] / "src"
         env = dict(os.environ)
-        env["PYTHONPATH"] = (
-            f"{src}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(src)
-        )
-        return subprocess.run(
-            [sys.executable, "-m", "celestia_devtools.core.cli", *args],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env=env,
-        )
+        env["PYTHONPATH"] = f"{src}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(src)
+        return subprocess.run([sys.executable, "-m", "celestia_devtools.core.cli", *args], capture_output = True, text = True, timeout = 60, env = env)
 
     def test_module_run_dispatches_a_real_command(self):
         result = self._run_module("--version")
         assert result.returncode == 0, result.stderr
-        assert result.stdout.startswith("celestia-devtools "), (
-            f"-m run produced no version output: stdout={result.stdout!r}"
-        )
+        assert result.stdout.startswith("celestia-devtools "), (f"-m run produced no version output: stdout={result.stdout!r}")
 
     def test_module_run_fails_loudly_on_unknown_command(self):
         result = self._run_module("definitely-not-a-command")

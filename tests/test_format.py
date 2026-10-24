@@ -1,16 +1,8 @@
 """Tests for the Markdown formatting pipeline (doc/markdown.py)."""
 
-from celestia_devtools.doc.markdown import (
-    apply_fence_languages,
-    format_markdown,
-    normalize_table_separator,
-    postprocess_lines,
-    split_frontmatter,
-    wrap_code_like_tokens,
-)
+from celestia_devtools.doc.markdown import (apply_fence_languages, format_markdown, normalize_table_separator, postprocess_lines, split_frontmatter, wrap_code_like_tokens)
 
-
-class TestHeadingSpacing:
+class test_heading_spacing:
     def test_missing_space_after_hash(self):
         assert postprocess_lines(["#Heading"]) == ["# Heading"]
 
@@ -21,8 +13,7 @@ class TestHeadingSpacing:
     def test_multiple_hashes(self):
         assert postprocess_lines(["###Deep"]) == ["### Deep"]
 
-
-class TestListNormalization:
+class test_list_normalization:
     def test_ordered_marker_normalized(self):
         result = postprocess_lines(["3. item"])
         assert result == ["1. item"]
@@ -35,8 +26,7 @@ class TestListNormalization:
         result = postprocess_lines(["paragraph", "- item"])
         assert result == ["paragraph", "", "- item"]
 
-
-class TestTableSeparator:
+class test_table_separator:
     def test_simple_separator(self):
         assert normalize_table_separator("|---|---|") == "| --- | --- |"
 
@@ -45,8 +35,7 @@ class TestTableSeparator:
         # Left-align (:---) → leading space; right-align (---:) → trailing space
         assert result == "|  --- | ---  |"
 
-
-class TestFrontmatter:
+class test_frontmatter:
     def test_valid_frontmatter(self):
         lines = ["+++", 'title = "x"', "+++", "# Body"]
         fm, body = split_frontmatter(lines)
@@ -69,8 +58,7 @@ class TestFrontmatter:
         assert result.startswith("+++\ntitle = \"Test\"\n+++")
         assert "# Hello" in result
 
-
-class TestFenceLanguageApplication:
+class test_fence_language_application:
     def test_bare_fence_gets_language(self):
         lines = ["```", "def foo():", "    pass", "```"]
         result = apply_fence_languages(lines)
@@ -81,8 +69,7 @@ class TestFenceLanguageApplication:
         result = apply_fence_languages(lines)
         assert result[0] == "```bash"
 
-
-class TestCodeLikeTokens:
+class test_code_like_tokens:
     def test_long_camelcase_wrapped(self):
         result = wrap_code_like_tokens("cacheGuardDiskThreshold")
         assert "`cacheGuardDiskThreshold`" in result
@@ -99,8 +86,7 @@ class TestCodeLikeTokens:
         result = wrap_code_like_tokens("see `cache_guard` here")
         assert "`cache_guard`" in result
 
-
-class TestFullFormat:
+class test_full_format:
     def test_idempotent(self):
         """Running format_markdown twice should not change the result."""
         content = "# Title\n\n- item one\n- item two\n"

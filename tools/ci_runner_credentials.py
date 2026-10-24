@@ -39,7 +39,6 @@ Exit codes: 0 all requested hosts configured; 1 at least one host failed;
 """
 
 from __future__ import annotations
-
 import argparse
 import os
 import shlex
@@ -64,26 +63,23 @@ EXIT_USAGE = 2
 # gh-ci-readonly-<repo>.  kei-wire joined 2026-10-20 when #582 pointed the
 # bridge dependency at it -- the runners had no key, so every cargo job
 # fetching the graph failed (the 09-13 incident class, one repo deeper).
-REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest",
-         "kei-wire")
+REPOS = ("akivili", "arona", "entelecheia", "evernight", "shittim-chest", "kei-wire")
 
 MANAGED_BEGIN = "# >>> celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
 MANAGED_END = "# <<< celestia-ci-readonly (managed by _tools/ci-runner-credentials.sh)"
 
-
-class CredentialsError(Exception):
+class credentials_error(Exception):
     """Actionable ci-runner-credentials error (exit 1)."""
-
 
 def key_basename(repo: str) -> str:
     """Local key filename (without extension) for one private repo."""
+
     if repo == "akivili":
         return "gh-ci-readonly"
+
     return f"gh-ci-readonly-{repo}"
 
-
 # ── Pure rendering helpers (no I/O; unit-tested) ─────────────────────────────
-
 
 def render_managed_ssh_block() -> str:
     """Render the managed ``~/.ssh/config`` block (between the markers).
@@ -92,55 +88,46 @@ def render_managed_ssh_block() -> str:
     makes re-running the tool idempotent.
     """
     lines = [MANAGED_BEGIN]
+
     for repo in REPOS:
-        lines += [
-            f"Host gh-ci-{repo}",
-            "  HostName github.com",
-            "  User git",
-            f"  IdentityFile ~/.ssh/id_ed25519_ci_{repo}",
-            "  IdentitiesOnly yes",
-            "  StrictHostKeyChecking accept-new",
-        ]
+        lines += [f"Host gh-ci-{repo}", "  HostName github.com", "  User git", f"  IdentityFile ~/.ssh/id_ed25519_ci_{repo}", "  IdentitiesOnly yes", "  StrictHostKeyChecking accept-new"]
+
     lines.append(MANAGED_END)
     return "\n".join(lines) + "\n"
-
 
 def strip_managed_ssh_block(text: str) -> str:
     """Remove the previously managed block from ``~/.ssh/config`` content."""
     out: list[str] = []
     skipping = False
+
     for line in text.splitlines():
         if line.startswith(MANAGED_BEGIN):
             skipping = True
             continue
+
         if line.startswith(MANAGED_END):
             skipping = False
             continue
+
         if not skipping:
             out.append(line)
-    return "\n".join(out) + ("\n" if out else "")
 
+    return "\n".join(out) + ("\n" if out else "")
 
 def apply_managed_ssh_block(existing: str | None) -> str:
     """Return new ``~/.ssh/config`` content: old managed block replaced.
 
     Idempotent: applying the block to already-applied content is a no-op.
     """
+
     if existing is None:
         existing = ""
-    return strip_managed_ssh_block(existing) + render_managed_ssh_block()
 
+    return strip_managed_ssh_block(existing) + render_managed_ssh_block()
 
 def insteadof_rules() -> list[tuple[str, str]]:
     """The gitconfig rewrite rules (key, value) pairs, one per repo."""
-    return [
-        (
-            f"url.gh-ci-{repo}:celestia-island/{repo}.git.insteadOf",
-            f"https://github.com/celestia-island/{repo}.git",
-        )
-        for repo in REPOS
-    ]
-
+    return [(f"url.gh-ci-{repo}:celestia-island/{repo}.git.insteadOf", f"https://github.com/celestia-island/{repo}.git") for repo in REPOS]
 
 def patch_cargo_net_config(text: str) -> str:
     """Ensure ``[net] git-fetch-with-cli = true`` in ~/.cargo/config.toml.
@@ -153,121 +140,120 @@ def patch_cargo_net_config(text: str) -> str:
     """
     lines = text.split("\n")
     net_start = None
+
     for i, line in enumerate(lines):
         if line.startswith("[net]"):
             net_start = i
             break
+
     if net_start is None:
         out = text
+
         if out and not out.endswith("\n"):
             out += "\n"
+
         return out + "\n[net]\ngit-fetch-with-cli = true\n"
 
     # Find the end of the [net] section (next section header or EOF).
     net_end = len(lines)
+
     for j in range(net_start + 1, len(lines)):
         if lines[j].startswith("["):
             net_end = j
             break
+
     body = lines[net_start + 1 : net_end]
     has_key = False
     patched: list[str] = []
+
     for line in body:
         if line.strip().startswith("git-fetch-with-cli"):
             has_key = True
             patched.append("git-fetch-with-cli = true")
         else:
             patched.append(line)
+
     if not has_key:
         patched = ["git-fetch-with-cli = true"] + patched
-    return "\n".join(lines[: net_start + 1] + patched + lines[net_end:])
 
+    return "\n".join(lines[: net_start + 1] + patched + lines[net_end:])
 
 # ── Preflight (local) ────────────────────────────────────────────────────────
 
-
 def check_key_material(keys_dir: Path) -> None:
     """Die like the bash script when the key directory or any key is missing."""
+
     if not keys_dir.is_dir():
-        raise CredentialsError(f"key directory not found: {keys_dir}")
+        raise credentials_error(f"key directory not found: {keys_dir}")
+
     missing: list[str] = []
+
     for repo in REPOS:
         key = keys_dir / key_basename(repo)
+
         if not key.is_file():
             missing.append(str(key))
+
         if not key.with_suffix(key.suffix + ".pub").is_file():
             missing.append(str(key) + ".pub")
-    if missing:
-        raise CredentialsError("missing key material: " + " ".join(missing))
 
+    if missing:
+        raise credentials_error("missing key material: " + " ".join(missing))
 
 def resolve_password(env: dict) -> str:
     """Password from ``CI_RUNNER_PASSWORD`` or the 600-mode password file."""
     password = env.get("CI_RUNNER_PASSWORD", "")
+
     if password:
         return password
+
     path = Path(env.get("CI_RUNNER_PASSWORD_FILE", str(DEFAULT_RUNNER_PASSWORD_FILE)))
+
     try:
         if path.is_file() and os.access(path, os.R_OK):
-            return path.read_text(encoding="utf-8").strip()
+            return path.read_text(encoding = "utf-8").strip()
     except OSError:
         pass
-    return ""
 
+    return ""
 
 def build_ssh_command(env: dict) -> list[str]:
     """The ssh (optionally sshpass-wrapped) argv used to reach each runner."""
     timeout = env.get("CI_RUNNER_CONNECT_TIMEOUT", str(DEFAULT_CONNECT_TIMEOUT))
-    ssh_opts = [
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", f"ConnectTimeout={timeout}",
-        "-o", "LogLevel=ERROR",
-    ]
+    ssh_opts = ["-o", "StrictHostKeyChecking=accept-new", "-o", f"ConnectTimeout={timeout}", "-o", "LogLevel=ERROR"]
     password = resolve_password(env)
-    if password:
-        if not any(
-            os.access(os.path.join(dirpath, "sshpass"), os.X_OK)
-            for dirpath in os.get_exec_path()
-        ):
-            raise CredentialsError("sshpass not found but a password is set")
-        return ["sshpass", "-p", password, "ssh", *ssh_opts]
-    return ["ssh", *ssh_opts]
 
+    if password:
+        if not any(os.access(os.path.join(dirpath, "sshpass"), os.X_OK)for dirpath in os.get_exec_path()):
+            raise credentials_error("sshpass not found but a password is set")
+
+        return ["sshpass", "-p", password, "ssh", *ssh_opts]
+
+    return ["ssh", *ssh_opts]
 
 # ── Remote script emission ───────────────────────────────────────────────────
 
-
 def remote_header(no_restart: str, force_restart: str, pnpm_version: str) -> str:
     """Fixed remote head plus locally-switched values, shlex-quoted."""
-    lines = [
-        "set -euo pipefail",
-        "umask 077",
-        "REMOTE_FAIL=0",
-        "REPOS=" + shlex.quote(" ".join(REPOS)),
-        'mkdir -p "$HOME/.ssh" "$HOME/.cargo"',
-        'chmod 700 "$HOME/.ssh"',
-        # Local switches must be re-declared on the remote side: the remote
-        # script runs in its own shell (set -u), so referencing a local-only
-        # variable aborts it (measured 2026-09-15).
-        "CI_RUNNER_NO_RESTART=" + shlex.quote(no_restart),
-        "CI_RUNNER_FORCE_RESTART=" + shlex.quote(force_restart),
-        "CI_RUNNER_PNPM_VERSION=" + shlex.quote(pnpm_version),
-    ]
+    # Local switches must be re-declared on the remote side: the remote
+    # script runs in its own shell (set -u), so referencing a local-only
+    # variable aborts it (measured 2026-09-15).
+    lines = ["set -euo pipefail", "umask 077", "REMOTE_FAIL=0", "REPOS=" + shlex.quote(" ".join(REPOS)), 'mkdir -p "$HOME/.ssh" "$HOME/.cargo"', 'chmod 700 "$HOME/.ssh"', "CI_RUNNER_NO_RESTART=" + shlex.quote(no_restart), "CI_RUNNER_FORCE_RESTART=" + shlex.quote(force_restart), "CI_RUNNER_PNPM_VERSION=" + shlex.quote(pnpm_version)]
     return "\n".join(lines) + "\n"
-
 
 def key_heredocs(keys_dir: Path) -> str:
     """Stream each private key as one strict heredoc, then chmod 600 it."""
     parts: list[str] = []
+
     for repo in REPOS:
         key = keys_dir / key_basename(repo)
         tag = f"CIKEY_EOF_{repo}"
         parts.append(f'cat > "$HOME/.ssh/id_ed25519_ci_{repo}" <<{tag}\n')
-        parts.append(key.read_text(encoding="utf-8"))
+        parts.append(key.read_text(encoding = "utf-8"))
         parts.append(f"{tag}\n")
         parts.append(f'chmod 600 "$HOME/.ssh/id_ed25519_ci_{repo}"\n')
-    return "".join(parts)
 
+    return "".join(parts)
 
 REMOTE_SSH_GIT_CARGO = r'''
 # --- 2. ~/.ssh/config: replace only our managed block -------------------------
@@ -286,28 +272,18 @@ mv "$CFG.ci-tmp.$$" "$CFG"
   printf '%s\n' "$BEGIN"
 '''.replace("__BEGIN__", MANAGED_BEGIN).replace("__END__", MANAGED_END)
 
-
 def ssh_config_emitter() -> str:
     lines = [REMOTE_SSH_GIT_CARGO.rstrip("\n")]
+
     for repo in REPOS:
-        lines += [
-            f'  printf \'Host gh-ci-%s\\n\'          "{repo}"',
-            '  printf \'  HostName github.com\\n\'',
-            '  printf \'  User git\\n\'',
-            f'  printf \'  IdentityFile ~/.ssh/id_ed25519_ci_{repo}\\n\'',
-            '  printf \'  IdentitiesOnly yes\\n\'',
-            '  printf \'  StrictHostKeyChecking accept-new\\n\'',
-        ]
-    lines += [
-        '  printf \'%s\\n\' "$END"',
-        '} >> "$CFG"',
-        "",
-        "# --- 3. ~/.gitconfig: the insteadOf rules, nothing global -------------------",
-    ]
+        lines += [f'  printf \'Host gh-ci-%s\\n\'          "{repo}"', '  printf \'  HostName github.com\\n\'', '  printf \'  User git\\n\'', f'  printf \'  IdentityFile ~/.ssh/id_ed25519_ci_{repo}\\n\'', '  printf \'  IdentitiesOnly yes\\n\'', '  printf \'  StrictHostKeyChecking accept-new\\n\'']
+
+    lines+= ['  printf \'%s\\n\' "$END"', '} >> "$CFG"', "", "# --- 3. ~/.gitconfig: the insteadOf rules, nothing global -------------------"]
+
     for key, value in insteadof_rules():
         lines.append("git config --global " + shlex.quote(key) + " " + shlex.quote(value))
-    return "\n".join(lines) + "\n"
 
+    return "\n".join(lines) + "\n"
 
 REMOTE_TAIL = r'''
 # --- 4. ~/.cargo/config.toml: add [net] git-fetch-with-cli, preserve the rest -
@@ -453,102 +429,75 @@ fi
 
 REMOTE_PACKAGES_SKIPPED = 'echo "--- system packages: skipped (CI_RUNNER_SKIP_PACKAGES=1)"\n'
 
-
 def emit_remote_script(env: dict, keys_dir: Path) -> str:
     """Build the full remote apply script streamed over ssh's stdin.
 
     Nothing is staged in a temp file on either side; key material is only
     inlined into the ssh stdin stream.
     """
-    parts = [
-        remote_header(
-            env.get("CI_RUNNER_NO_RESTART", DEFAULT_NO_RESTART),
-            env.get("CI_RUNNER_FORCE_RESTART", DEFAULT_FORCE_RESTART),
-            env.get("CI_RUNNER_PNPM_VERSION", DEFAULT_PNPM_VERSION),
-        ),
-        key_heredocs(keys_dir),
-        ssh_config_emitter(),
-        REMOTE_TAIL,
-    ]
+    parts = [remote_header(env.get("CI_RUNNER_NO_RESTART", DEFAULT_NO_RESTART), env.get("CI_RUNNER_FORCE_RESTART", DEFAULT_FORCE_RESTART), env.get("CI_RUNNER_PNPM_VERSION", DEFAULT_PNPM_VERSION)), key_heredocs(keys_dir), ssh_config_emitter(), REMOTE_TAIL]
+
     if env.get("CI_RUNNER_SKIP_PACKAGES") == "1":
         parts.append(REMOTE_PACKAGES_SKIPPED)
     else:
         parts.append(REMOTE_PACKAGES)
+
     return "".join(parts)
 
-
 # ── Apply ────────────────────────────────────────────────────────────────────
-
 
 def all_hosts(env: dict) -> list[str]:
     """Runner list for ``all``; runtime values from CI_RUNNER_ALL_HOSTS."""
     raw = env.get("CI_RUNNER_ALL_HOSTS", "").strip()
+
     if not raw:
-        raise CredentialsError(
-            "CI_RUNNER_ALL_HOSTS is not set; 'all' needs the runner list "
-            "(space-separated hostnames/IPs, e.g. from AGENTS §8.1)"
-        )
+        raise credentials_error("CI_RUNNER_ALL_HOSTS is not set; 'all' needs the runner list " "(space-separated hostnames/IPs, e.g. from AGENTS §8.1)")
+
     return raw.split()
 
-
 def apply_host(host: str, ssh_cmd: list[str], user: str, remote_script: str) -> bool:
-    print(f"############ configuring {host} ############", flush=True)
+    print(f"############ configuring {host} ############", flush = True)
     cmd = [*ssh_cmd, f"{user}@{host}", "bash -s"]
+
     try:
-        proc = subprocess.run(cmd, input=remote_script, text=True)
+        proc = subprocess.run(cmd, input = remote_script, text = True)
     except OSError as exc:
-        print(f"ci-runner-credentials: FAILED on {host}: {exc}", file=sys.stderr)
+        print(f"ci-runner-credentials: FAILED on {host}: {exc}", file = sys.stderr)
         return False
+
     if proc.returncode != 0:
-        print(f"ci-runner-credentials: FAILED on {host}", file=sys.stderr)
+        print(f"ci-runner-credentials: FAILED on {host}", file = sys.stderr)
         return False
+
     return True
 
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="ci_runner_credentials.py",
-        description=(
-            "Install read-only deploy-key SSH credentials for private git deps "
-            "onto a celestia-island self-hosted CI runner (idempotent)."
-        ),
-        epilog=(
-            "Re-run freely after any ESXi baseline revert; the runners are "
-            "stateless. Credentials come from CI_KEYS_DIR at run time; the SSH "
-            "password comes from CI_RUNNER_PASSWORD / CI_RUNNER_PASSWORD_FILE."
-        ),
-    )
-    parser.add_argument("host", help="runner hostname or IP, or 'all'")
-    parser.add_argument(
-        "--user", default=os.environ.get("CI_RUNNER_USER", DEFAULT_RUNNER_USER),
-        help="runner login user (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--keys-dir", type=Path,
-        default=Path(os.environ.get("CI_KEYS_DIR", str(DEFAULT_KEYS_DIR))),
-        help="local key material directory (default: %(default)s)",
-    )
+    parser = argparse.ArgumentParser(prog = "ci_runner_credentials.py", description = "Install read-only deploy-key SSH credentials for private git deps " "onto a celestia-island self-hosted CI runner (idempotent).", epilog = "Re-run freely after any ESXi baseline revert; the runners are " "stateless. Credentials come from CI_KEYS_DIR at run time; the SSH " "password comes from CI_RUNNER_PASSWORD / CI_RUNNER_PASSWORD_FILE.")
+    parser.add_argument("host", help = "runner hostname or IP, or 'all'")
+    parser.add_argument("--user", default = os.environ.get("CI_RUNNER_USER", DEFAULT_RUNNER_USER), help = "runner login user (default: %(default)s)")
+    parser.add_argument("--keys-dir", type = Path, default = Path(os.environ.get("CI_KEYS_DIR", str(DEFAULT_KEYS_DIR))), help = "local key material directory (default: %(default)s)")
     return parser
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     env = os.environ
+
     try:
         check_key_material(args.keys_dir)
         ssh_cmd = build_ssh_command(env)
         remote_script = emit_remote_script(env, args.keys_dir)
         hosts = all_hosts(env) if args.host == "all" else [args.host]
-    except CredentialsError as exc:
-        print(f"ci-runner-credentials: {exc}", file=sys.stderr)
+    except credentials_error as exc:
+        print(f"ci-runner-credentials: {exc}", file = sys.stderr)
         return EXIT_FAILURE
 
     rc = EXIT_OK
+
     for host in hosts:
         if not apply_host(host, ssh_cmd, args.user, remote_script):
             rc = EXIT_FAILURE
-    return rc
 
+    return rc
 
 if __name__ == "__main__":
     sys.exit(main())

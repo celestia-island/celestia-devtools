@@ -32,12 +32,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import subprocess
+import tempfile
 
-WATCHED = [
-    "shittim-chest", "entelecheia", "arona", "malkuth",
-    "plana", "hikari", "kirino", "evernight",
-    "celestia-devtools", "evernight-appliance",
-]
+WATCHED = ["shittim-chest", "entelecheia", "arona", "malkuth", "plana", "hikari", "kirino", "evernight", "celestia-devtools", "evernight-appliance"]
 TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-check"}
 # Repos whose spills run in a CNB dev-quota workspace instead of the ci-farm build lane: the
 # dev pool carries 1600 free core-hours/month against the build pool's 160, and build-pool burn
@@ -51,9 +49,7 @@ TASKS = {"celestia-devtools": "python-check", "evernight-appliance": "webui-chec
 # the lane pipeline on its master. `publish_lane_ref()` checks that at dispatch time and anything
 # missing falls back to the build lane; the target repo itself no longer needs a `.cnb.yml` — the
 # lane stopped reading the target's tree when it moved to the host.
-DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari",
-             "plana", "entelecheia", "malkuth", "kirino",
-             "celestia-devtools", "evernight-appliance"}
+DEV_QUOTA = {"shittim-chest", "evernight", "arona", "hikari", "plana", "entelecheia", "malkuth", "kirino", "celestia-devtools", "evernight-appliance"}
 # Each dev-quota repo is validated by a CNB-side lane host (`ci-infra-<repo>`, a repo that
 # exists only on cnb.cool) rather than by a pipeline file in the GitHub repo: the dispatcher
 # pushes `spill/<sha10>` into the host, CNB runs the host's own `.cnb.yml`, and that pipeline
@@ -70,32 +66,29 @@ LANE_HOST = os.environ.get("DISPATCH_LANE_HOST", "ci-infra-{repo}")
 # instance and `ci-infra-<repo>-<n>` for every later one, counting from 2 (user directive
 # 2026-09-25: every watched repo gets at least three instances). Comma-separated extra
 # templates; first free host wins; defer only when the whole pool is busy.
-LANE_HOST_EXTRA = [t.strip() for t in os.environ.get(
-    "DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2,ci-infra-{repo}-3").split(",") if t.strip()]
-
+LANE_HOST_EXTRA = [t.strip() for t in os.environ.get("DISPATCH_LANE_HOST_EXTRA", "ci-infra-{repo}-2,ci-infra-{repo}-3").split(",") if t.strip()]
 
 def lane_hosts(repo):
     """The lane-host pool for a repo: primary first, then extras, deduplicated."""
-    hosts = [LANE_HOST.format(repo=repo)]
-    hosts += [t.format(repo=repo) for t in LANE_HOST_EXTRA]
+    hosts = [LANE_HOST.format(repo = repo)]
+    hosts += [t.format(repo = repo) for t in LANE_HOST_EXTRA]
     return list(dict.fromkeys(hosts))
-
 
 def busy_hosts(state):
     """Host repos currently holding a tracked dev-quota workspace."""
-    return {t.get("host") for k, t in state.items() if not k.startswith("_")
-            and t.get("mode") == "ws" and t.get("host")}
-
+    return {t.get("host")for k, t in state.items()if not k.startswith("_") and (t.get("mode") == "ws") and t.get("host")}
 
 def free_host(repo, state):
     """First lane host of `repo` without a workspace, or None when the pool is exhausted."""
     busy = busy_hosts(state)
+
     for host in lane_hosts(repo):
         if host not in busy:
             return host
-    return None
-WS_CHECK_STAGE = "cargo-check"
 
+    return None
+
+WS_CHECK_STAGE = "cargo-check"
 
 def _env_int(name, default, low, high):
     """Bounded integer knob from the service env, falling back to the default.
@@ -106,18 +99,21 @@ def _env_int(name, default, low, high):
     dev-quota lane (0 attempts raises without ever calling workspace/start).
     """
     raw = os.environ.get(name)
+
     if raw is None:
         return default
+
     try:
         val = int(raw)
     except ValueError:
-        print(f"WARN: {name}={raw!r} is not an integer — using {default}", file=sys.stderr)
+        print(f"WARN: {name}={raw!r} is not an integer — using {default}", file = sys.stderr)
         return default
-    if not low <= val <= high:
-        print(f"WARN: {name}={val} outside [{low}, {high}] — using {default}", file=sys.stderr)
-        return default
-    return val
 
+    if not low <= val <= high:
+        print(f"WARN: {name}={val} outside [{low}, {high}] — using {default}", file = sys.stderr)
+        return default
+
+    return val
 
 # Bounded retry budget for workspace/start: CNB answers 200 without `sn` while the
 # dev-quota concurrency cap is fully occupied (transient — slots free up as running
@@ -142,18 +138,17 @@ GITCACHE = os.environ.get("DISPATCH_GITCACHE", "/var/lib/ci-dispatcher/git")
 GIT_PROXY = os.environ.get("DISPATCH_GIT_PROXY", "http://daemon.node.local:7890")
 EVENTS = {"cargo-check": "api_trigger_ci", "python-check": "api_trigger_py", "webui-check": "api_trigger_web"}
 CARGO_ARGS = {"shittim-chest": "--exclude shittim_chest_tauri --exclude shittim_chest_tauri_mobile"}
-APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev",
-                "plana": "libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev pkg-config libssl-dev"}
+APT_PACKAGES = {"shittim-chest": "libgtk-3-dev pkg-config libssl-dev", "plana": "libgtk-3-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libwebkit2gtk-4.1-dev pkg-config libssl-dev"}
 ORG = "celestia-island"
 THRESHOLD = _env_int("DISPATCH_THRESHOLD", 6, 0, 100)
 POLL_SEC = _env_int("DISPATCH_POLL_SEC", 60, 5, 3600)
 SPILL_TTL_SEC = _env_int("DISPATCH_SPILL_TTL_SEC", 2700, 60, 86400)
 
-if WS_STAGE_GRACE_SEC >= SPILL_TTL_SEC - POLL_SEC:
+if WS_STAGE_GRACE_SEC >= (SPILL_TTL_SEC - POLL_SEC):
     _fixed = max(60, min(WS_STAGE_GRACE_SEC, (SPILL_TTL_SEC - POLL_SEC) // 2))
-    print(f"WARN: DISPATCH_WS_STAGE_GRACE_SEC={WS_STAGE_GRACE_SEC} leaves no room inside "
-          f"DISPATCH_SPILL_TTL_SEC={SPILL_TTL_SEC} — using {_fixed}", file=sys.stderr)
+    print(f"WARN: DISPATCH_WS_STAGE_GRACE_SEC={WS_STAGE_GRACE_SEC} leaves no room inside " f"DISPATCH_SPILL_TTL_SEC={SPILL_TTL_SEC} — using {_fixed}", file = sys.stderr)
     WS_STAGE_GRACE_SEC = _fixed
+
 # ── dev-pool budget guard ────────────────────────────────────────────────────────────────
 # The dev pool (云原生开发, 1600 free core-hours/month) carries every dev-quota lane run. Its
 # quota is a capability limit like the build pool's: once it is used up CNB restricts the
@@ -176,27 +171,26 @@ DEV_STALE_SEC = _env_int("DISPATCH_DEV_STALE_SEC", 1800, 60, 86400)
 # holding the fallback to the same line keeps the whole overflow layer under one ceiling.
 BUILD_CAP_H = _env_int("DISPATCH_BUILD_CAP_H", 160, 1, 100000)
 BUILD_BUDGET_PCT = _env_int("DISPATCH_BUILD_BUDGET_PCT", 70, 1, 100)
+
 if DEV_POLL_SEC > DEV_STALE_SEC:
     # A reading that expires before the next refresh means the gate is blind between refreshes
     # (every spill defers) even while the ledger is perfectly healthy — the same trap the
     # grace-vs-TTL guard above clamps.
     _fixed = max(30, min(DEV_POLL_SEC, DEV_STALE_SEC))
-    print(f"WARN: DISPATCH_DEV_POLL_SEC={DEV_POLL_SEC} exceeds DISPATCH_DEV_STALE_SEC="
-          f"{DEV_STALE_SEC} — using {_fixed}", file=sys.stderr)
+    print(f"WARN: DISPATCH_DEV_POLL_SEC={DEV_POLL_SEC} exceeds DISPATCH_DEV_STALE_SEC=" f"{DEV_STALE_SEC} — using {_fixed}", file = sys.stderr)
     DEV_POLL_SEC = _fixed
+
 STATE_PATH = os.environ.get("DISPATCH_STATE", "/var/lib/ci-dispatcher/state.json")
 GH = os.environ.get("GH_TOKEN", "")
 FETCH = os.environ.get("GH_FETCH", "")
 CNB = os.environ.get("CNB_TOKEN", "")
 CNB_WS = os.environ.get("CNB_WS_TOKEN", "")
 
-
 def log(msg):
     # choke point: even if a call site misses redact(), or logging itself fails
     # inside an except block (Python would print the raw __context__ chain),
     # nothing reaches journald unredacted. redact() is idempotent.
-    print(time.strftime("[%FT%TZ] ") + redact(msg), flush=True)
-
+    print(time.strftime("[%FT%TZ] ") + redact(msg), flush = True)
 
 # subprocess raises CalledProcessError whose str() embeds the full argv, and the
 # fetch/push URLs carry the tokens inline (https://user:<PAT>@host/...). Those
@@ -204,15 +198,14 @@ def log(msg):
 # that may contain an exception goes through redact() first.
 URL_CRED_RE = re.compile(r"(https?://[^/\s:@]+:)([^@\s/]+)@")
 
-
 def redact(text):
     # bare-value pass first: tokens containing "@" would otherwise be split by
     # the URL pass and only partially masked
     for secret in (GH, FETCH, CNB, CNB_WS):
         if secret:
             text = text.replace(secret, "***")
-    return URL_CRED_RE.sub(r"\1***@", text)
 
+    return URL_CRED_RE.sub(r"\1***@", text)
 
 def redact_obj(obj):
     """Redact every string inside a decoded JSON value before it is re-serialized.
@@ -221,56 +214,47 @@ def redact_obj(obj):
     by json.dumps, so the bare-value pass no longer matches it and the escaped form
     reaches the log intact. Redacting the values first closes that hole.
     """
+
     if isinstance(obj, str):
         return redact(obj)
+
     if isinstance(obj, dict):
         return {redact(k): redact_obj(v) for k, v in obj.items()}
+
     if isinstance(obj, list):
         return [redact_obj(v) for v in obj]
+
     return obj
 
+def gh_api(path, data = None, method = None):
+    req = urllib.request.Request(f"https://api.github.com{path}", data = json.dumps(data).encode() if data is not None else None, headers = {"Authorization": "Bearer " + GH, "Accept": "application/vnd.github+json"}, method = method or ("POST" if data is not None else "GET"))
 
-def gh_api(path, data=None, method=None):
-    req = urllib.request.Request(
-        f"https://api.github.com{path}",
-        data=json.dumps(data).encode() if data is not None else None,
-        headers={"Authorization": "Bearer " + GH, "Accept": "application/vnd.github+json"},
-        method=method or ("POST" if data is not None else "GET"))
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout = 30) as r:
         body = r.read()
+
     return json.loads(body) if body else {}
 
+def cnb_api(path, data = None):
+    req = urllib.request.Request(f"https://api.cnb.cool{path}", data = json.dumps(data).encode() if data is not None else None, headers = {"Authorization": "Bearer " + CNB, "Content-Type": "application/json", "Accept": "application/vnd.cnb.api+json"}, method = "POST" if data is not None else "GET")
 
-def cnb_api(path, data=None):
-    req = urllib.request.Request(
-        f"https://api.cnb.cool{path}",
-        data=json.dumps(data).encode() if data is not None else None,
-        headers={"Authorization": "Bearer " + CNB,
-                 "Content-Type": "application/json",
-                 "Accept": "application/vnd.cnb.api+json"},
-        method="POST" if data is not None else "GET")
-    with urllib.request.urlopen(req, timeout=30) as r:
+    with urllib.request.urlopen(req, timeout = 30) as r:
         body = r.read()
-    return json.loads(body) if body else {}
 
+    return json.loads(body) if body else {}
 
 CHARGE_URL = f"https://api.cnb.cool/{ORG}/-/charge/volume"
 #  `t`        — when the last *successful* read happened (staleness is measured from it)
 #  `attempt`  — when the last read was *attempted*, success or not (negative cache)
-_pool_reading = {"t": 0.0, "attempt": 0.0, "dev": None, "dev_pct": None, "build": None,
-                 "build_pct": None, "fresh": False}
-_NO_READING = {"dev_hours": None, "dev_pct": None, "build_hours": None, "build_pct": None,
-               "fresh": False}
-
+_pool_reading = {"t": 0.0, "attempt": 0.0, "dev": None, "dev_pct": None, "build": None, "build_pct": None, "fresh": False}
+_NO_READING = {"dev_hours": None, "dev_pct": None, "build_hours": None, "build_pct": None, "fresh": False}
 
 def charge_volume():
     """The org charge ledger, read **directly**: through the proxy cnb.cool crawls."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(CHARGE_URL, headers={
-        "Authorization": "Bearer " + CNB, "Accept": "application/vnd.cnb.api+json"})
-    with opener.open(req, timeout=30) as r:
-        return json.loads(r.read())
+    req = urllib.request.Request(CHARGE_URL, headers = {"Authorization": "Bearer " + CNB, "Accept": "application/vnd.cnb.api+json"})
 
+    with opener.open(req, timeout = 30) as r:
+        return json.loads(r.read())
 
 def core_seconds(led, key, required):
     """A usage counter from the ledger: a finite, non-negative JSON number.
@@ -279,20 +263,26 @@ def core_seconds(led, key, required):
     `inf`) must not read as a fresh pool — both would be fail-open in the wrong direction.
     Only the optional in-flight `freeze_*` field may be absent (it is omitempty upstream).
     """
+
     if key not in led:
         if required:
             raise ValueError(f"ledger has no {key}")
+
         return 0.0
+
     v = led[key]
+
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise ValueError(f"{key} is not a number: {v!r}")
+
     v = float(v)
-    if not math.isfinite(v) or v < 0:
+
+    if not math.isfinite(v) or (v < 0):
         raise ValueError(f"{key} is not a usable counter: {v!r}")
+
     return v
 
-
-def pools(now=None, refresh=False):
+def pools(now = None, refresh = False):
     """Both pools from one ledger read; all-None when no reading is usable.
 
     Logs a single trend line whenever it refreshes — that line *is* the monitor, and it carries
@@ -305,65 +295,64 @@ def pools(now=None, refresh=False):
     # blackholed API costs one blocking read (up to 30 s) per queued run *before* resolve(),
     # whose cancel-green step is what frees farm slots. `attempt` is deliberately separate from
     # `t`: a failed attempt must not make the last good reading look fresher than it is.
-    due = refresh or c["dev"] is None or now - c["t"] >= DEV_POLL_SEC
-    if due and (refresh or now - c["attempt"] >= DEV_POLL_SEC):
+    due = refresh or (c["dev"] is None) or ((now - c["t"]) >= DEV_POLL_SEC)
+
+    if due and (refresh or ((now - c["attempt"]) >= DEV_POLL_SEC)):
         c["attempt"] = now
+
         try:
             led = charge_volume()
-            dev = (core_seconds(led, "dev_in_sec", True)
-                   + core_seconds(led, "freeze_dev_in_sec", False)) / 3600.0
-            build = (core_seconds(led, "ci_in_sec", True)
-                     + core_seconds(led, "freeze_ci_in_sec", False)) / 3600.0
-            c.update(t=now, dev=dev, dev_pct=dev / DEV_CAP_H * 100.0,
-                     build=build, build_pct=build / BUILD_CAP_H * 100.0, fresh=True)
-            log(f"pools dev {dev:.1f}/{DEV_CAP_H} core-h = {c['dev_pct']:.1f}% "
-                f"(limit {DEV_BUDGET_PCT}%) | build {build:.1f}/{BUILD_CAP_H} "
-                f"= {c['build_pct']:.1f}% (limit {BUILD_BUDGET_PCT}%)")
+            dev = (core_seconds(led, "dev_in_sec", True) + core_seconds(led, "freeze_dev_in_sec", False)) / 3600.0
+            build = (core_seconds(led, "ci_in_sec", True) + core_seconds(led, "freeze_ci_in_sec", False)) / 3600.0
+            c.update(t = now, dev = dev, dev_pct = dev / DEV_CAP_H * 100.0, build = build, build_pct = build / BUILD_CAP_H * 100.0, fresh = True)
+            log(f"pools dev {dev:.1f}/{DEV_CAP_H} core-h = {c['dev_pct']:.1f}% " f"(limit {DEV_BUDGET_PCT}%) | build {build:.1f}/{BUILD_CAP_H} " f"= {c['build_pct']:.1f}% (limit {BUILD_BUDGET_PCT}%)")
         except Exception as e:
             # Fall through, do NOT return: the previous reading is still the best available
             # protection (it is what makes a transient API failure cost nothing), so only the
             # staleness check below may discard it.
             c["fresh"] = False
             log(f"charge ledger unreadable: {redact(str(e))}")
-    if c["dev"] is None or now - c["t"] >= DEV_STALE_SEC:
+
+    if (c["dev"] is None) or ((now - c["t"]) >= DEV_STALE_SEC):
         return dict(_NO_READING)
-    return {"dev_hours": c["dev"], "dev_pct": c["dev_pct"],
-            "build_hours": c["build"], "build_pct": c["build_pct"], "fresh": c["fresh"]}
 
+    return {"dev_hours": c["dev"], "dev_pct": c["dev_pct"], "build_hours": c["build"], "build_pct": c["build_pct"], "fresh": c["fresh"]}
 
-def dev_pool(now=None, refresh=False):
+def dev_pool(now = None, refresh = False):
     p = pools(now, refresh)
     return p["dev_hours"], p["dev_pct"], p["fresh"]
 
-
-def build_pool(now=None, refresh=False):
+def build_pool(now = None, refresh = False):
     p = pools(now, refresh)
     return p["build_hours"], p["build_pct"], p["fresh"]
-
 
 def census():
     """Queued self-hosted runs across watched repos, newest first."""
     runs = []
+
     for repo in WATCHED:
         try:
             rr = gh_api(f"/repos/{ORG}/{repo}/actions/runs?status=queued&per_page=20").get("workflow_runs", [])
         except Exception as e:
             log(f"census {repo}: {redact(str(e))}")
             continue
+
         for run in rr:
-            if run.get("event") == "workflow_dispatch" and run.get("name", "").startswith("CNB"):
+            if (run.get("event") == "workflow_dispatch") and run.get("name", "").startswith("CNB"):
                 continue  # our own lane/router runs are not farm CI
+
             try:
                 jobs = gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run['id']}/jobs?per_page=20").get("jobs", [])
             except Exception:
                 continue
-            if not any("self-hosted" in (j.get("labels") or []) and j.get("status") == "queued" for j in jobs):
-                continue
-            runs.append({"repo": repo, "run_id": run["id"], "sha": run["head_sha"],
-                         "created": run["created_at"], "html": run.get("html_url", "")})
-    runs.sort(key=lambda x: x["created"], reverse=True)
-    return runs
 
+            if not any(("self-hosted" in (j.get("labels") or [])) and (j.get("status") == "queued") for j in jobs):
+                continue
+
+            runs.append({"repo": repo, "run_id": run["id"], "sha": run["head_sha"], "created": run["created_at"], "html": run.get("html_url", "")})
+
+    runs.sort(key = lambda x: x["created"], reverse = True)
+    return runs
 
 RECENT_TTL_SEC = _env_int("DISPATCH_RECENT_TTL_SEC", 2700, 60, 86400)
 # Failed-spill blacklist TTL — deliberately shorter than RECENT_TTL_SEC: a spill
@@ -373,37 +362,39 @@ RECENT_TTL_SEC = _env_int("DISPATCH_RECENT_TTL_SEC", 2700, 60, 86400)
 # poll (285 futile spill attempts over 72 h before this blacklist existed).
 FAILED_TTL_SEC = _env_int("DISPATCH_FAILED_TTL_SEC", 1800, 60, 86400)
 
-
 def load_state():
     try:
         st = json.load(open(STATE_PATH))
     except Exception:
         return {"_recent": {}, "_failed": {}}
+
     if not isinstance(st.get("_recent"), dict):
         st["_recent"] = {}
+
     if not isinstance(st.get("_failed"), dict):
         st["_failed"] = {}
-    return st
 
+    return st
 
 def _prune_bookkeeping(st, now):
     """Lazy TTL prune of both bookkeeping maps, run on every write to either."""
     recent = st.get("_recent")
+
     if isinstance(recent, dict):
         for s, ts in list(recent.items()):
-            if now - ts > RECENT_TTL_SEC:
+            if (now - ts) > RECENT_TTL_SEC:
                 del recent[s]
+
     failed = st.get("_failed")
+
     if isinstance(failed, dict):
         for k, ts in list(failed.items()):
-            if now - ts > FAILED_TTL_SEC:
+            if (now - ts) > FAILED_TTL_SEC:
                 del failed[k]
-
 
 def remember(st, sha):
     st.setdefault("_recent", {})[sha] = time.time()
     _prune_bookkeeping(st, time.time())
-
 
 def note_failure(st, repo, sha):
     """Blacklist (repo, sha) after a failed spill attempt.
@@ -416,70 +407,63 @@ def note_failure(st, repo, sha):
     st.setdefault("_failed", {})[f"{repo}:{sha}"] = time.time()
     _prune_bookkeeping(st, time.time())
 
-
-def failed_cooldown(st, repo, sha, now=None):
+def failed_cooldown(st, repo, sha, now = None):
     """Seconds left on the (repo, sha) failure blacklist, or None when clear."""
     now = time.time() if now is None else now
     ts = st.get("_failed", {}).get(f"{repo}:{sha}")
+
     if ts is None:
         return None
+
     left = FAILED_TTL_SEC - (now - ts)
     return left if left > 0 else None
 
-
 def save_state(st):
     tmp = STATE_PATH + ".tmp"
-    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    with open(tmp, "w") as f:
-        json.dump(st, f, indent=1)
-    os.replace(tmp, STATE_PATH)
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok = True)
 
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent = 1)
+
+    os.replace(tmp, STATE_PATH)
 
 # commit-tree refuses to run without an author identity (exit 128, "Author
 # identity unknown") and the service env / gitcache bare repos carry none, which
 # made every ws-spill fall back to the build lane. Pass a fixed synthetic
 # identity explicitly so the spill merge commit never depends on ambient config.
-SPILL_COMMIT_IDENTITY = (
-    "-c", "user.name=ci-dispatcher",
-    "-c", "user.email=ci-dispatcher@users.noreply.github.com",
-)
-
+SPILL_COMMIT_IDENTITY = ("-c", "user.name=ci-dispatcher", "-c", "user.email=ci-dispatcher@users.noreply.github.com")
 
 def spill_merge_commit(d, tree_sha, parent_a, parent_b):
-    import subprocess
-    merge = subprocess.run(["git", "-C", d, *SPILL_COMMIT_IDENTITY, "commit-tree", tree_sha,
-                            "-p", parent_a, "-p", parent_b],
-                           input="spill merge" + chr(10), text=True, capture_output=True,
-                           check=True, timeout=60)
+    merge = subprocess.run(["git", "-C", d, *SPILL_COMMIT_IDENTITY, "commit-tree", tree_sha, "-p", parent_a, "-p", parent_b], input = "spill merge" + chr(10), text = True, capture_output = True, check = True, timeout = 60)
     return merge.stdout.strip()
-
 
 def spill_merge_tree(d, ours, theirs):
     """merge-tree the spilled sha onto master; raise (with conflict files) on conflict."""
-    import subprocess
-    tree = subprocess.run(["git", "-C", d, "merge-tree", "--write-tree", ours, theirs],
-                          capture_output=True, text=True, timeout=120)
+    tree = subprocess.run(["git", "-C", d, "merge-tree", "--write-tree", ours, theirs], capture_output = True, text = True, timeout = 120)
     tree_sha = tree.stdout.split(chr(10), 1)[0].strip()
-    if tree.returncode != 0 or not tree_sha:
+
+    if (tree.returncode != 0) or not tree_sha:
         # git puts conflict detail on stdout (after the tree line), not stderr
         conflicts = [ln.strip() for ln in tree.stdout.splitlines()[1:] if "CONFLICT" in ln]
         detail = conflicts or [ln.strip() for ln in (tree.stderr or "").splitlines() if ln.strip()]
         msg = f"merge-tree conflict for {theirs[:10]}"
+
         if detail:
             msg += ": " + "; ".join(detail[:3])[:300]
+
         raise RuntimeError(msg)
+
     return tree_sha
 
-
 def ensure_sha_on_mirror(repo, sha):
-    import subprocess
     d = f"{GITCACHE}/{repo}.git"
-    os.makedirs(GITCACHE, exist_ok=True)
+    os.makedirs(GITCACHE, exist_ok = True)
+
     if not os.path.isdir(d):
-        subprocess.run(["git", "init", "-q", "--bare", d], check=True)
-    env_gh = dict(os.environ, HTTPS_PROXY=GIT_PROXY, NO_PROXY="127.0.0.1,localhost,192.168.0.0/16")
-    subprocess.run(["git", "-C", d, "fetch", "-q", f"https://langyo:{FETCH}@github.com/{ORG}/{repo}.git",
-                    "+refs/heads/master:refs/heads/master", sha], check=True, env=env_gh, timeout=300)
+        subprocess.run(["git", "init", "-q", "--bare", d], check = True)
+
+    env_gh = dict(os.environ, HTTPS_PROXY = GIT_PROXY, NO_PROXY = "127.0.0.1,localhost,192.168.0.0/16")
+    subprocess.run(["git", "-C", d, "fetch", "-q", f"https://langyo:{FETCH}@github.com/{ORG}/{repo}.git", "+refs/heads/master:refs/heads/master", sha], check = True, env = env_gh, timeout = 300)
     tree_sha = spill_merge_tree(d, "master", sha)
     msha = spill_merge_commit(d, tree_sha, "master", sha)
     env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
@@ -493,15 +477,12 @@ def ensure_sha_on_mirror(repo, sha):
     # "stale info" exactly like a plain push. Pin the lease explicitly instead:
     # ls-remote the current value and require the push to land on exactly that
     # value (empty expect = ref must not exist yet). Never bare --force.
-    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, spill_ref],
-                         capture_output=True, text=True, check=True, env=env_cnb, timeout=60)
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, spill_ref], capture_output = True, text = True, check = True, env = env_cnb, timeout = 60)
     remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
-    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={spill_ref}:{remote_val}",
-                    cnb_url, f"{msha}:{spill_ref}"], check=True, env=env_cnb, timeout=300)
+    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={spill_ref}:{remote_val}", cnb_url, f"{msha}:{spill_ref}"], check = True, env = env_cnb, timeout = 300)
     return msha
 
-
-def publish_lane_ref(repo, sha, host=None):
+def publish_lane_ref(repo, sha, host = None):
     """Publish `spill/<sha10>` into the repo's CNB-side lane host.
 
     Returns (branch, host_has_pipeline). The branch points at the *host's* own master, so the
@@ -510,47 +491,41 @@ def publish_lane_ref(repo, sha, host=None):
     under the same ref name). Fails closed: any git error propagates so `spill()` falls back to
     the build lane instead of starting a workspace that can never reach the gated stage.
     """
-    import subprocess
-    host = host or LANE_HOST.format(repo=repo)
+    host = host or LANE_HOST.format(repo = repo)
     d = f"{GITCACHE}/{host}.git"
-    os.makedirs(GITCACHE, exist_ok=True)
+    os.makedirs(GITCACHE, exist_ok = True)
+
     if not os.path.isdir(d):
-        subprocess.run(["git", "init", "-q", "--bare", d], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", d], check = True)
+
     # cnb.cool must be reached directly (the proxy throttles it to ~13 KB/s)
-    env_cnb = {k: v for k, v in os.environ.items()
-               if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
+    env_cnb = {k: v for k, v in os.environ.items() if k.upper() not in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy")}
     cnb_url = f"https://cnb:{CNB}@cnb.cool/{ORG}/{host}.git"
-    subprocess.run(["git", "-C", d, "fetch", "-q", "--force", cnb_url,
-                    "+refs/heads/master:refs/heads/master"], check=True, env=env_cnb, timeout=300)
-    has_pipeline = subprocess.run(["git", "-C", d, "cat-file", "-e", "master:.cnb.yml"],
-                                  capture_output=True).returncode == 0
+    subprocess.run(["git", "-C", d, "fetch", "-q", "--force", cnb_url, "+refs/heads/master:refs/heads/master"], check = True, env = env_cnb, timeout = 300)
+    has_pipeline = subprocess.run(["git", "-C", d, "cat-file", "-e", "master:.cnb.yml"], capture_output = True).returncode == 0
     ref = f"refs/heads/spill/{sha[:10]}"
+
     if not has_pipeline:
         # Do not leave a stray branch behind on a host that cannot run the lane.
         log(f"lane host {host} carries no .cnb.yml — not publishing {ref}")
         return f"spill/{sha[:10]}", False
+
     # Same one-shot-ref caution as the mirror push: a stale ref from a previous spill of the
     # same sha makes a plain push non-fast-forward, and a bare --force-with-lease is a no-op
     # without tracking refs, so pin the expected value explicitly.
-    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, ref],
-                         capture_output=True, text=True, check=True, env=env_cnb, timeout=60)
+    lsr = subprocess.run(["git", "-C", d, "ls-remote", cnb_url, ref], capture_output = True, text = True, check = True, env = env_cnb, timeout = 60)
     remote_val = lsr.stdout.split()[0] if lsr.stdout.strip() else ""
-    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={ref}:{remote_val}",
-                    cnb_url, f"master:{ref}"], check=True, env=env_cnb, timeout=300)
+    subprocess.run(["git", "-C", d, "push", "-q", f"--force-with-lease={ref}:{remote_val}", cnb_url, f"master:{ref}"], check = True, env = env_cnb, timeout = 300)
     log(f"lane ref {host} spill/{sha[:10]} pipeline={'yes' if has_pipeline else 'NO'}")
     return f"spill/{sha[:10]}", has_pipeline
 
-
 def ws_stop(sn):
-    req = urllib.request.Request("https://api.cnb.cool/workspace/stop",
-        data=json.dumps({"pipelineId": f"{sn}-001"}).encode(),
-        headers={"Authorization": "Bearer " + CNB_WS, "Content-Type": "application/json",
-                 "Accept": "application/vnd.cnb.api+json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=30) as r:
+    req = urllib.request.Request("https://api.cnb.cool/workspace/stop", data = json.dumps({"pipelineId": f"{sn}-001"}).encode(), headers = {"Authorization": "Bearer " + CNB_WS, "Content-Type": "application/json", "Accept": "application/vnd.cnb.api+json"}, method = "POST")
+
+    with urllib.request.urlopen(req, timeout = 30) as r:
         return json.loads(r.read() or b"{}")
 
-
-def ws_start(repo, ref, attempts=None, delay=None):
+def ws_start(repo, ref, attempts = None, delay = None):
     """Start a dev-quota workspace, retrying while the response carries no `sn`.
 
     CNB's workspace/start intermittently returns 200 without `sn` when the
@@ -564,71 +539,81 @@ def ws_start(repo, ref, attempts=None, delay=None):
     attempts = WS_START_ATTEMPTS if attempts is None else attempts
     delay = WS_START_RETRY_SEC if delay is None else delay
     last = RuntimeError("workspace/start failed: no attempts made")
+
     for i in range(attempts):
         if i:
             time.sleep(delay)
+
         # Only `branch` is accepted here: passing a symbolic `ref` alongside `branch: master`
         # made CNB check out master instead (measured), and `branch` is required by the API.
         r = cnb_api(f"/{ORG}/{repo}/-/workspace/start", {"branch": ref})
+
         if r.get("sn"):
             return r
-        last = RuntimeError(f"workspace/start returned no sn (attempt {i + 1}/{attempts}): "
-                            f"{redact(json.dumps(redact_obj(r)))[:200]}")
-    raise last
 
+        last = RuntimeError(f"workspace/start returned no sn (attempt {i + 1}/{attempts}): " f"{redact(json.dumps(redact_obj(r)))[:200]}")
+
+    raise last
 
 def spill(entry, state):
     repo, sha = entry["repo"], entry["sha"]
     task = TASKS.get(repo, "cargo-check")
     env = {"TARGET_REPO": repo, "TARGET_SHA": sha, "GH_REPO": f"{ORG}/{repo}", "TASK": task}
+
     if FETCH:
         env["GH_READ_PAT"] = FETCH  # dedicated read PAT (contents:read) for SHA fallback fetch
+
     if repo in CARGO_ARGS:
         env["CARGO_CHECK_ARGS"] = CARGO_ARGS[repo]
+
     if repo in APT_PACKAGES:
         env["APT_PACKAGES"] = APT_PACKAGES[repo]
+
     if repo == "celestia-devtools":
         env["NEED_NODE"] = "1"
         env["PY_IGNORE"] = "tests/test_ci_orphan_janitor.py tests/test_deploy_e2e.py"
-    if repo in DEV_QUOTA and CNB_WS:
+
+    if (repo in DEV_QUOTA) and CNB_WS:
         # CNB allows one workspace per repository, so the repo's pool decides: take the first
         # host without a workspace and defer only when the whole pool is busy. Deferring a full
         # pool is still right — the alternative burns the whole workspace/start retry budget and
         # then falls back to the build lane, spending exactly the pool this lane exists to save
         # (no record, so the census re-offers the run next poll).
         host = free_host(repo, state)
+
         if host is None:
-            log(f"ws-spill {repo} run {entry['run_id']} deferred — "
-                f"all {len(lane_hosts(repo))} lane hosts busy")
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — " f"all {len(lane_hosts(repo))} lane hosts busy")
             return False
+
         # Dev-pool budget gate: attempting a workspace at (or near) exhaustion fails
         # `workspace/start` and falls back to the build lane, spending the pool this lane
         # exists to protect. Defer instead — the farm run is untouched and re-offered next poll.
         hours, pct, fresh = dev_pool()
+
         if pct is None:
-            log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool usage unknown "
-                f"(ledger unreadable; not attempting a spill that would fall back to the build lane)")
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool usage unknown " f"(ledger unreadable; not attempting a spill that would fall back to the build lane)")
             return False
+
         if pct >= DEV_BUDGET_PCT:
-            log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool at {pct:.1f}% "
-                f"({hours:.1f}/{DEV_CAP_H} core-h, limit {DEV_BUDGET_PCT}%"
-                f"{'' if fresh else ', stale reading'})")
+            log(f"ws-spill {repo} run {entry['run_id']} deferred — dev pool at {pct:.1f}% " f"({hours:.1f}/{DEV_CAP_H} core-h, limit {DEV_BUDGET_PCT}%" f"{'' if fresh else ', stale reading'})")
             return False
+
         if not fresh:
             log(f"dev pool reading is stale ({hours:.1f}/{DEV_CAP_H} core-h = {pct:.1f}%) — proceeding")
+
         try:
             ensure_sha_on_mirror(repo, sha)
             branch, has_pipeline = publish_lane_ref(repo, sha, host)
+
             if not has_pipeline:
                 raise RuntimeError(f"{host}: no .cnb.yml on master")
+
             r = ws_start(host, branch)
             # `build/status/{sn}` is scoped to the repo the pipeline belongs to, and since the
             # lane moved to the host that is NOT the target repo any more: polling the target
             # returned "Failed to retrieve pipeline", so `cs` stayed None and the run was
             # released at the grace window without ever posting a status or cancelling it.
-            state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha,
-                                           "url": redact(r.get("buildLogUrl", "")), "since": time.time(),
-                                           "task": task}
+            state[str(entry["run_id"])] = {"mode": "ws", "host": host, "sn": r["sn"], "repo": repo, "sha": sha, "url": redact(r.get("buildLogUrl", "")), "since": time.time(), "task": task}
             log(f"ws-spill {repo} run {entry['run_id']} sha {sha[:10]} -> workspace {r['sn']}")
             return
         except Exception as e:
@@ -640,61 +625,55 @@ def spill(entry, state):
             # can turn the same conflict into a clean merge.
             note_failure(state, repo, sha)
             log(f"ws-spill {repo} failed ({redact(str(e))}); falling back to build lane")
+
     # Build-pool gate on the fallback: same ceiling as the caller-lane router, fail-closed (the
     # farm run simply stays queued), so no path of this daemon spends build core-hours above it.
     bhours, bpct, _ = build_pool()
-    if bpct is None or bpct >= BUILD_BUDGET_PCT:
-        log(f"spill {repo} run {entry['run_id']} deferred — build pool "
-            + (f"at {bpct:.1f}% ({bhours:.1f}/{BUILD_CAP_H} core-h, limit {BUILD_BUDGET_PCT}%)"
-               if bpct is not None else "usage unknown (ledger unreadable)")
-            + "; farm run stays queued")
+
+    if (bpct is None) or (bpct >= BUILD_BUDGET_PCT):
+        log(f"spill {repo} run {entry['run_id']} deferred — build pool " + (f"at {bpct:.1f}% ({bhours:.1f}/{BUILD_CAP_H} core-h, limit {BUILD_BUDGET_PCT}%)" if bpct is not None else "usage unknown (ledger unreadable)") + "; farm run stays queued")
         return False
+
     try:
-        r = cnb_api(f"/{ORG}/ci-farm/-/build/start",
-                    {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master",
-                     "title": f"daemon spill {repo} {sha[:10]}", "env": env})
+        r = cnb_api(f"/{ORG}/ci-farm/-/build/start", {"event": EVENTS.get(task, "api_trigger_ci"), "branch": "master", "title": f"daemon spill {repo} {sha[:10]}", "env": env})
     except Exception as e:
         # Before this handler the POST's error escaped spill() into main()'s
         # loop-error catch: no record, no remember() — the census re-offered the
         # run next poll and re-failed it, the other half of the hammering above.
         note_failure(state, repo, sha)
-        log(f"spill {repo} run {entry['run_id']} build-lane dispatch failed "
-            f"({redact(str(e))}); farm run stays queued, retry in {FAILED_TTL_SEC}s")
+        log(f"spill {repo} run {entry['run_id']} build-lane dispatch failed " f"({redact(str(e))}); farm run stays queued, retry in {FAILED_TTL_SEC}s")
         return False
-    state[str(entry["run_id"])] = {"mode": "build", "sn": r["sn"], "repo": repo, "sha": sha,
-                                   "url": redact(r.get("buildLogUrl", "")), "since": time.time(),
-                                   "task": task}
+
+    state[str(entry["run_id"])] = {"mode": "build", "sn": r["sn"], "repo": repo, "sha": sha, "url": redact(r.get("buildLogUrl", "")), "since": time.time(), "task": task}
     log(f"spill {repo} run {entry['run_id']} sha {sha[:10]} -> cnb {r['sn']}")
 
-
-def post_status(repo, sha, state_, url, task="cargo-check"):
+def post_status(repo, sha, state_, url, task = "cargo-check"):
     """Post the dispatcher's commit status under a per-task context.
 
     `task` defaults to cargo-check so legacy callers — and in-flight records
     written before contexts went per-task — keep the historical context name
     (state.json survives the deploy restart).
     """
+
     try:
-        gh_api(f"/repos/{ORG}/{repo}/statuses/{sha}",
-               {"state": state_, "context": f"cnb/{task}", "target_url": url,
-                "description": "dispatcher spill result"})
+        gh_api(f"/repos/{ORG}/{repo}/statuses/{sha}", {"state": state_, "context": f"cnb/{task}", "target_url": url, "description": "dispatcher spill result"})
         log(f"status {repo} {sha[:10]} -> {state_}")
     except Exception as e:
         log(f"status post failed {repo}: {redact(str(e))}")
-
 
 def _env_json(name, default):
     """JSON object knob from the service env; malformed input falls back to
     the default (same crash-loop discipline as _env_int)."""
     raw = os.environ.get(name)
+
     if raw is None:
         return default
+
     try:
         value = json.loads(raw)
         return value if isinstance(value, dict) else default
     except ValueError:
         return default
-
 
 # Workflows whose queued farm run MAY be cancelled once a spill goes green.
 # Round-16's F-1 guard kept ci.yml (full-matrix) runs and cancelled every
@@ -706,34 +685,37 @@ def _env_json(name, default):
 # Env shape: DISPATCH_CANCELABLE='{"entelecheia": [".github/workflows/fuzz.yml"]}'
 CANCELABLE = _env_json("DISPATCH_CANCELABLE", {})
 
-
 def _cancelable(repo: str, wf_path: str) -> bool:
     """Whether this repo's workflow is allowlisted for spill-green cancellation
     (path-suffix match, repo-scoped)."""
     return any(wf_path.endswith(suffix) for suffix in CANCELABLE.get(repo, ()))
 
-
 def resolve(state):
     for run_id, t in list(state.items()):
         if run_id.startswith("_"):
             continue  # bookkeeping dicts (_recent, _failed), not spill records
+
         repo, sha, sn, url = t["repo"], t["sha"], t["sn"], t.get("url", "")
         # records written before contexts went per-task keep the old cargo-check name
         task = t.get("task", "cargo-check")
-        if time.time() - t["since"] > SPILL_TTL_SEC:
+
+        if (time.time() - t["since"]) > SPILL_TTL_SEC:
             # Same class as the grace release below: dropping the record without stopping
             # the workspace abandons a dev-quota slot, and without remember() the run is
             # re-spilled on the next poll (three workspace/start calls for one run, R3 T5).
             log(f"spill ttl exceeded {repo} run {run_id}; untracking (farm run untouched)")
+
             if t.get("mode") == "ws":
                 try:
                     ws_stop(sn)
                     log(f"ws {sn} stopped after ttl expiry")
                 except Exception as e:
                     log(f"ws stop {sn} failed: {redact(str(e))}")
+
             remember(state, sha)
             del state[run_id]
             continue
+
         try:
             if t.get("mode") == "ws":
                 # records written before the lane moved to the host carry no "host" key
@@ -742,14 +724,16 @@ def resolve(state):
                 stages = pipelines[0].get("stages", []) if pipelines else []
                 cs = next((s for s in stages if s.get("name") == WS_CHECK_STAGE), None)
                 st = None
-                if cs and cs.get("status") in ("success", "error", "cancel"):
+
+                if cs and (cs.get("status") in ("success", "error", "cancel")):
                     st = "success" if cs["status"] == "success" else "error"
+
                     try:
                         ws_stop(sn)
                         log(f"ws {sn} stopped after check {cs['status']}")
                     except Exception as e:
                         log(f"ws stop {sn} failed: {redact(str(e))}")
-                elif cs is None and time.time() - t["since"] > WS_STAGE_GRACE_SEC:
+                elif (cs is None) and ((time.time() - t["since"]) > WS_STAGE_GRACE_SEC):
                     # The stage is *absent*, so the spilled ref carries no dev-quota
                     # pipeline at all (e.g. the repo's master has no .cnb.yml yet): this
                     # would never reach a terminal state and the workspace would hold a
@@ -757,8 +741,8 @@ def resolve(state):
                     # repos into build-lane fallbacks. Fail closed: release the slot,
                     # post no status, leave the farm run. A stage that merely exists and
                     # is still running is healthy and must never be cut short here.
-                    log(f"ws {sn} ({repo}) has no {WS_CHECK_STAGE} stage after "
-                        f"{WS_STAGE_GRACE_SEC}s — stopping workspace, farm run untouched")
+                    log(f"ws {sn} ({repo}) has no {WS_CHECK_STAGE} stage after " f"{WS_STAGE_GRACE_SEC}s — stopping workspace, farm run untouched")
+
                     try:
                         ws_stop(sn)
                     except Exception as e:
@@ -766,6 +750,7 @@ def resolve(state):
                         # here would abandon it with nothing left to retry (R3 T4).
                         log(f"ws stop {sn} failed: {redact(str(e))}; keeping the record")
                         continue
+
                     # Without this the record is dropped and the same run is re-spilled
                     # on the very next poll (verified: a 15-minute churn loop that also
                     # ate the per-loop batch).
@@ -777,12 +762,16 @@ def resolve(state):
         except Exception as e:
             log(f"poll {sn}: {redact(str(e))}")
             continue
+
         if st in ("success", "error", "cancel"):
             remember(state, sha)
+
         if st == "success":
             post_status(repo, sha, "success", url, task)
+
             try:
                 run = gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}")
+
                 if run.get("status") == "queued":
                     # Round-16's F-1 guard: the CNB spill runs its ONE task
                     # (cargo-check / python-check / webui-check) only. A queued
@@ -794,30 +783,27 @@ def resolve(state):
                     # DISPATCH_CANCELABLE by an operator who verified coverage.
                     wfid = run.get("workflow_id")
                     wf_path = ""
+
                     if wfid:
                         try:
-                            wf = gh_api(
-                                f"/repos/{ORG}/{repo}/actions/workflows/{wfid}")
+                            wf = gh_api(f"/repos/{ORG}/{repo}/actions/workflows/{wfid}")
                             wf_path = wf.get("path", "")
                         except Exception:
                             pass
+
                     if _cancelable(repo, wf_path):
-                        gh_api(
-                            f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel",
-                            {}, method="POST")
-                        log(f"cancelled queued farm run {run_id} ({repo}) "
-                            f"— spill-covered (allowlisted {wf_path})")
+                        gh_api(f"/repos/{ORG}/{repo}/actions/runs/{run_id}/cancel", {}, method = "POST")
+                        log(f"cancelled queued farm run {run_id} ({repo}) " f"— spill-covered (allowlisted {wf_path})")
                     else:
-                        log(f"keep queued farm run {run_id} ({repo}) — "
-                            f"spill does not vouch ({wf_path or 'unknown'})")
+                        log(f"keep queued farm run {run_id} ({repo}) — " f"spill does not vouch ({wf_path or 'unknown'})")
             except Exception as e:
                 log(f"cancel check {run_id}: {redact(str(e))}")
+
             del state[run_id]
         elif st in ("error", "cancel"):
             post_status(repo, sha, "failure", url, task)
             log(f"spill {repo} run {run_id} cnb {st}; farm run left untouched")
             del state[run_id]
-
 
 def _self_test() -> None:
     """Round-16's F-1 guard contract (`python3 -c \
@@ -825,6 +811,7 @@ def _self_test() -> None:
     # cancel-on-green allowlist: empty by default (nothing is spill-covered
     # until an operator verifies it), suffix-matched, repo-scoped.
     saved = dict(CANCELABLE)
+
     try:
         CANCELABLE.clear()
         assert not _cancelable("hikari", ".github/workflows/ci.yml")
@@ -837,13 +824,14 @@ def _self_test() -> None:
     finally:
         CANCELABLE.clear()
         CANCELABLE.update(saved)
+
     print("cancel allowlist: 6/6")
     # spill-failure blacklist: write -> consult -> TTL expiry -> prune
     st = {}
     assert failed_cooldown(st, "arona", "s1") is None
     note_failure(st, "arona", "s1")
     left = failed_cooldown(st, "arona", "s1")
-    assert left is not None and 0 < left <= FAILED_TTL_SEC
+    assert (left is not None) and (0 < left <= FAILED_TTL_SEC)
     assert failed_cooldown(st, "arona", "s2") is None        # keyed per sha
     assert failed_cooldown(st, "plana", "s1") is None        # and per repo
     st["_failed"]["arona:s1"] -= FAILED_TTL_SEC + 1          # age past the cooldown
@@ -851,53 +839,53 @@ def _self_test() -> None:
     note_failure(st, "plana", "p1")
     st["_failed"]["plana:p1"] -= FAILED_TTL_SEC + 1
     remember(st, "s9")                                       # prune rides along
-    assert "plana:p1" not in st["_failed"] and "s9" in st["_recent"]
+    assert ("plana:p1" not in st["_failed"]) and ("s9" in st["_recent"])
     print(f"failure blacklist: write/consult/expiry/prune ok (ttl {FAILED_TTL_SEC}s)")
     # per-task status contexts, including the legacy default for pre-deploy records
     posted = []
     orig_api, orig_log = gh_api, log
-    globals()["gh_api"] = lambda path, data=None, method=None: (posted.append(data), {})[1]
+    globals()["gh_api"] = lambda path, data = None, method = None: (posted.append(data), {})[1]
     globals()["log"] = lambda msg: None
+
     try:
         post_status("arona", "a" * 40, "success", "https://example.invalid/x", "webui-check")
-        post_status("celestia-devtools", "a" * 40, "success", "https://example.invalid/x",
-                    "python-check")
+        post_status("celestia-devtools", "a" * 40, "success", "https://example.invalid/x", "python-check")
         post_status("arona", "a" * 40, "failure", "https://example.invalid/x")  # no task
     finally:
         globals()["gh_api"], globals()["log"] = orig_api, orig_log
-    assert [d["context"] for d in posted] == ["cnb/webui-check", "cnb/python-check",
-                                              "cnb/cargo-check"], posted
+
+    assert [d["context"]for d in posted] == ["cnb/webui-check", "cnb/python-check", "cnb/cargo-check"], posted
     # a record written before the deploy resolves under the same legacy default
-    assert {"repo": "arona", "sha": "a", "sn": "s", "url": "", "since": 0.0}.get(
-        "task", "cargo-check") == "cargo-check"
+    assert {"repo": "arona", "sha": "a", "sn": "s", "url": "", "since": 0.0}.get("task", "cargo-check") == "cargo-check"
     print("status contexts: per-task + legacy default ok")
     # state.json migration: `_failed` is initialised beside `_recent` on load
     global STATE_PATH
     _old_state = STATE_PATH
+
     try:
-        import tempfile
         with tempfile.TemporaryDirectory() as td:
             STATE_PATH = os.path.join(td, "state.json")
             fresh = load_state()
             assert fresh == {"_recent": {}, "_failed": {}}, fresh
-            save_state({"_recent": {"a": 1.0}, "42": {"mode": "build", "sn": "x",
-                                                      "repo": "arona", "sha": "b",
-                                                      "url": "", "since": 0.0}})
+            save_state({"_recent": {"a": 1.0}, "42": {"mode": "build", "sn": "x", "repo": "arona", "sha": "b", "url": "", "since": 0.0}})
             legacy = load_state()  # written by a pre-blacklist daemon: gains _failed
-            assert legacy["_failed"] == {} and legacy["_recent"] == {"a": 1.0}
+            assert (legacy["_failed"] == {}) and (legacy["_recent"] == {"a": 1.0})
             assert "42" in legacy
     finally:
         STATE_PATH = _old_state
-    print("state migration: _failed initialised beside _recent ok")
 
+    print("state migration: _failed initialised beside _recent ok")
 
 def main():
     if not GH or not CNB or not FETCH:
-        print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file=sys.stderr)
+        print("FATAL: GH_TOKEN / GH_FETCH / CNB_TOKEN missing", file = sys.stderr)
         sys.exit(1)
+
     if not CNB_WS:
-        print("WARN: CNB_WS_TOKEN missing — dev-quota lane disabled", file=sys.stderr)
+        print("WARN: CNB_WS_TOKEN missing — dev-quota lane disabled", file = sys.stderr)
+
     log(f"ci-dispatcherd start: watched={len(WATCHED)} threshold={THRESHOLD} poll={POLL_SEC}s")
+
     while True:
         try:
             state = load_state()
@@ -908,6 +896,7 @@ def main():
             # the daemon never spills (nor persists) anything again.
             spilled_shas = {t["sha"] for k, t in state.items() if not k.startswith("_")}
             excess = len(q) - THRESHOLD
+
             if excess > 0:
                 now = time.time()
                 recent = state.get("_recent", {})
@@ -920,35 +909,43 @@ def main():
                 # entries: already-tracked runs at the head of the queue must not eat the
                 # budget and starve everything behind them in a saturated queue.
                 started = 0
+
                 for entry in q[:excess]:
                     if started >= SPILL_BATCH_PER_LOOP:
                         break
-                    if entry["sha"] in spilled_shas or str(entry["run_id"]) in state:
+
+                    if (entry["sha"] in spilled_shas) or (str(entry["run_id"]) in state):
                         continue
+
                     ts = recent.get(entry["sha"])
-                    if ts and now - ts < RECENT_TTL_SEC:
+
+                    if ts and ((now - ts) < RECENT_TTL_SEC):
                         continue  # recently resolved on CNB; skip re-spill
+
                     cooldown = failed_cooldown(state, entry["repo"], entry["sha"], now)
+
                     if cooldown is not None:
                         # One cheap line per poll instead of a full doomed spill:
                         # this skip sits before spill() — hence before any
                         # mirror fetch/merge — so a blacklisted run costs nothing.
-                        log(f"skipping recently-failed spill {entry['repo']}/"
-                            f"{entry['sha'][:10]}, retry in {int(cooldown)}s")
+                        log(f"skipping recently-failed spill {entry['repo']}/" f"{entry['sha'][:10]}, retry in {int(cooldown)}s")
                         continue
+
                     if spill(entry, state) is False:
                         continue           # deferred: do not spend the batch budget
+
                     started += 1
                     spilled_shas.add(entry["sha"])
                     save_state(state)
+
             resolve(state)
             save_state(state)
             tracked = sum(1 for k in state if not k.startswith("_"))
             log(f"queued={len(q)} tracked={tracked} threshold={THRESHOLD}")
         except Exception as e:
             log(f"loop error: {redact(str(e))}")
-        time.sleep(POLL_SEC)
 
+        time.sleep(POLL_SEC)
 
 if __name__ == "__main__":
     main()

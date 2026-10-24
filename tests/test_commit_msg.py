@@ -2,9 +2,13 @@
 """Tests for the commit-message linter (``celestia_devtools.vcs.commit_msg``)."""
 
 from celestia_devtools.vcs.commit_msg import lint, GITMOJI_WHITELIST
+from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
+from celestia_devtools.vcs.commit_msg import repo_allows_cjk
+from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
+import os
+from celestia_devtools.vcs.commit_msg import repo_name_from_git_remote
 
-
-class TestGitmojiWhitelist:
+class test_gitmoji_whitelist:
     """Verify the gitmoji whitelist covers common cases."""
 
     def test_common_emojis_present(self):
@@ -17,8 +21,7 @@ class TestGitmojiWhitelist:
         assert "\u267b\ufe0f" in GITMOJI_WHITELIST  # ♻️
         assert "\U0001f504" in GITMOJI_WHITELIST  # 🔄 (org extension)
 
-
-class TestMergeBanned:
+class test_merge_banned:
     def test_merge_branch_subject_rejected(self):
         v = lint("Merge branch 'fix' into master")
         assert any("merge" in violation.lower() for violation in v)
@@ -27,29 +30,24 @@ class TestMergeBanned:
         v = lint("Merge pull request #42 from celestia-island/dev")
         assert any("merge" in violation.lower() for violation in v)
 
-
-class TestRevertExemption:
+class test_revert_exemption:
     def test_revert_commit_bypasses_all_rules(self):
         assert lint('Revert "Fix the parser crash."') == []
         assert lint("Revert something") == []
 
-
-class TestEasyHydroCjkExemption:
+class test_easy_hydro_cjk_exemption:
     def test_cjk_rejected_by_default(self):
         v = lint("✨ 修复解析器")
         assert any("CJK" in violation for violation in v)
 
     def test_cjk_allowed_with_flag(self):
-        assert lint("✨ 修复解析器", allow_cjk=True) == []
+        assert lint("✨ 修复解析器", allow_cjk = True) == []
 
     def test_easy_hydro_repos_are_in_the_whitelist(self):
-        from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS
-
         assert "easy-hydro-erp" in EASY_HYDRO_REPOS
         assert "easy-hydro-miniprogram" in EASY_HYDRO_REPOS
 
-
-class TestRule1GitmojiPrefix:
+class test_rule1_gitmoji_prefix:
     def test_passes_with_valid_emoji(self):
         assert lint("\U0001f41b Fix the parser crash.") == []
 
@@ -68,8 +66,7 @@ class TestRule1GitmojiPrefix:
     def test_sync_emoji_with_period_also_passes(self):
         assert lint("\U0001f504 Sync provider model list.") == []
 
-
-class TestSyncEmojiPeriodExemption:
+class test_sync_emoji_period_exemption:
     """🔄-prefixed messages are exempt from the trailing-period rule."""
 
     def test_sync_without_period_passes(self):
@@ -83,8 +80,7 @@ class TestSyncEmojiPeriodExemption:
         v = lint("\U0001f504 sync provider model list.")
         assert any("uppercase" in violation for violation in v)
 
-
-class TestRule2NoConventionalPrefix:
+class test_rule2_no_conventional_prefix:
     def test_fails_feat_prefix(self):
         v = lint("\U0001f41b feat: add new parser")
         assert any("Conventional Commits" in violation for violation in v)
@@ -101,8 +97,7 @@ class TestRule2NoConventionalPrefix:
         v = lint("\U0001f41b refactor: split module.")
         assert any("Conventional Commits" in violation for violation in v)
 
-
-class TestRule3CapitalLetter:
+class test_rule3_capital_letter:
     def test_passes_uppercase(self):
         assert lint("\U0001f41b Fix the parser crash.") == []
 
@@ -114,8 +109,7 @@ class TestRule3CapitalLetter:
         v = lint("\U0001f41b 123")
         assert any("least one English letter" in violation for violation in v)
 
-
-class TestRule4NoVersionOrFillerPrefix:
+class test_rule4_no_version_or_filler_prefix:
     def test_fails_version_number_start(self):
         v = lint("\u2b06\ufe0f 0.3.0 is released.")  # ⬆️
         assert any("version" in violation.lower() for violation in v)
@@ -127,8 +121,7 @@ class TestRule4NoVersionOrFillerPrefix:
     def test_passes_descriptive_content(self):
         assert lint("\u2b06\ufe0f Upgrade the HTTP client to v2.") == []
 
-
-class TestRule5TrailingPeriod:
+class test_rule5_trailing_period:
     def test_passes_with_period(self):
         assert lint("\U0001f41b Fix the parser crash.") == []
 
@@ -136,8 +129,7 @@ class TestRule5TrailingPeriod:
         v = lint("\U0001f41b Fix the parser crash")
         assert any("period" in violation.lower() for violation in v)
 
-
-class TestRule6EnglishOnly:
+class test_rule6_english_only:
     def test_passes_english(self):
         assert lint("\u2728 Add distributed tracing.") == []
 
@@ -149,8 +141,7 @@ class TestRule6EnglishOnly:
         v = lint("\u2728 Fix \u89e3\u6790\u5668 crash.")
         assert any("CJK" in violation for violation in v)
 
-
-class TestRule7NoColonPrefix:
+class test_rule7_no_colon_prefix:
     """Topic-phrase colon prefixes are forbidden, even capitalized."""
 
     def test_fails_capitalized_fix_colon(self):
@@ -185,8 +176,7 @@ class TestRule7NoColonPrefix:
     def test_passes_dependabot_style_quoted_subject(self):
         assert lint('\u2b07\ufe0f "Bump actions/setup-python from 6 to 7". (#38)') == []
 
-
-class TestEmptyAndWhitespace:
+class test_empty_and_whitespace:
     def test_empty_fails(self):
         v = lint("")
         assert any("empty" in violation.lower() for violation in v)
@@ -195,114 +185,75 @@ class TestEmptyAndWhitespace:
         v = lint("   ")
         assert any("empty" in violation.lower() for violation in v)
 
-
-class TestRegressionRealHistory:
+class test_regression_real_history:
     """Sample real commit subjects from celestia-island master branches."""
 
     def test_noa_commits_pass(self):
         # noa master: 🐛 Eliminate aws-lc-sys C dependency...
-        assert lint(
-            "\U0001f41b Eliminate aws-lc-sys C dependency and enable Windows builds."
-        ) == []
+        assert lint("\U0001f41b Eliminate aws-lc-sys C dependency and enable Windows builds.") == []
 
     def test_kirino_commits_pass(self):
         # kirino master: 🔒 Add zero-trust authentication with trust scoring.
-        assert lint(
-            "\U0001f512 Add zero-trust authentication with trust scoring."
-        ) == []
+        assert lint("\U0001f512 Add zero-trust authentication with trust scoring.") == []
 
     def test_aoba_commits_pass(self):
         # aoba master: 🐛 Use license-file only so crates.io accepts...
-        assert lint(
-            "\U0001f41b Use license-file only so crates.io accepts the non-SPDX SySL license."
-        ) == []
+        assert lint("\U0001f41b Use license-file only so crates.io accepts the non-SPDX SySL license.") == []
 
-
-class TestCjkLedUppercaseRule:
+class test_cjk_led_uppercase_rule:
     """Rule 3 must not fire on English tokens inside CJK-led summaries."""
 
     def test_cjk_led_with_english_token_passes(self):
         # easy-hydro-miniprogram #42: lowercase token "base_qty" mid-sentence.
-        assert lint(
-            "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。",
-            allow_cjk=True,
-        ) == []
+        assert lint("✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。", allow_cjk = True) == []
 
     def test_cjk_led_no_period_passes(self):
-        assert lint("✨ 修复解析器", allow_cjk=True) == []
+        assert lint("✨ 修复解析器", allow_cjk = True) == []
 
     def test_gitmoji_still_required_with_cjk(self):
-        v = lint("修复解析器。", allow_cjk=True)
+        v = lint("修复解析器。", allow_cjk = True)
         assert any("gitmoji" in violation for violation in v)
 
     def test_english_led_lowercase_still_flagged_under_cjk(self):
-        v = lint("✨ fix 解析器。", allow_cjk=True)
+        v = lint("✨ fix 解析器。", allow_cjk = True)
         assert any("uppercase" in violation for violation in v)
 
     def test_cjk_rejected_without_flag(self):
         v = lint("✨ 修复解析器。")
         assert any("CJK" in violation for violation in v)
 
-
-class TestRegressionEasyHydroHistory:
+class test_regression_easy_hydro_history:
     """Real squash-merge subjects from easy-hydro master (Chinese + gitmoji)."""
 
-    SUBJECTS = [
-        "✨ 登录补齐手机号一键授权弹窗并修复重登后重复索要手机号。 (#44)",
-        "🐛 修复订单卡片溢出与详情页静默卡死，增加超时与重试。 (#29)",
-        "💄 交互防误触：点按统一改 tap 语义并把过小热区提到微信规范尺寸。 (#43)",
-        "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。 (#42)",
-    ]
+    SUBJECTS = ["✨ 登录补齐手机号一键授权弹窗并修复重登后重复索要手机号。 (#44)", "🐛 修复订单卡片溢出与详情页静默卡死，增加超时与重试。 (#29)", "💄 交互防误触：点按统一改 tap 语义并把过小热区提到微信规范尺寸。 (#43)", "✨ 计价支持起步价覆盖件数（base_qty），缺省 1 保持旧口径并与 ERP 侧联动。 (#42)"]
 
     def test_all_pass_with_allow_cjk(self):
         for subject in self.SUBJECTS:
-            assert lint(subject, allow_cjk=True) == [], subject
+            assert lint(subject, allow_cjk = True) == [], subject
 
-
-class TestRepoDetectionHelpers:
+class test_repo_detection_helpers:
     def test_allows_cjk_for_easy_hydro_repos(self):
-        from celestia_devtools.vcs.commit_msg import repo_allows_cjk
-
         assert repo_allows_cjk("easy-hydro-erp") is True
         assert repo_allows_cjk("easy-hydro-miniprogram") is True
 
     def test_strict_for_unknown_or_missing_repo(self):
-        from celestia_devtools.vcs.commit_msg import repo_allows_cjk
-
         assert repo_allows_cjk("celestia-devtools") is False
         assert repo_allows_cjk(None) is False
         assert repo_allows_cjk("") is False
 
     def test_gh_flag_long_form(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
-        assert (
-            repo_name_from_gh_flag(
-                ["pr", "merge", "44", "--repo", "langyo/easy-hydro-miniprogram"]
-            )
-            == "easy-hydro-miniprogram"
-        )
+        assert (repo_name_from_gh_flag(["pr", "merge", "44", "--repo", "langyo/easy-hydro-miniprogram"]) == "easy-hydro-miniprogram")
 
     def test_gh_flag_short_form_with_git_suffix(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert repo_name_from_gh_flag(["-R", "owner/repo.git"]) == "repo"
 
     def test_gh_flag_equals_form(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert repo_name_from_gh_flag(["--repo=owner/repo"]) == "repo"
 
     def test_gh_flag_absent(self):
-        from celestia_devtools.vcs.commit_msg import repo_name_from_gh_flag
-
         assert repo_name_from_gh_flag(["pr", "merge", "44", "--squash"]) is None
 
     def test_git_remote_of_this_checkout(self):
         # This test suite runs inside the celestia-devtools checkout itself.
-        import os
-
-        from celestia_devtools.vcs.commit_msg import repo_name_from_git_remote
-
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         assert repo_name_from_git_remote(root) == "celestia-devtools"

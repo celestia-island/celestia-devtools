@@ -30,7 +30,6 @@ CLI::
 """
 
 from __future__ import annotations
-
 import os
 import re
 import signal
@@ -40,25 +39,16 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
-
 from celestia_devtools.core import logger as _logger
+import argparse
 
 _log = _logger
 
-
-def _print_tagged(tag: str, text: str, *, file=None) -> None:
+def _print_tagged(tag: str, text: str, *, file = None) -> None:
     """Print a line with a [tag] prefix."""
-    print(f"[{tag}] {text}", file=file or sys.stdout, flush=True)
+    print(f"[{tag}] {text}", file = file or sys.stdout, flush = True)
 
-
-def _stream_tagged(
-    tag: str,
-    proc: subprocess.Popen,
-    stop: threading.Event,
-    ready_patterns: list[re.Pattern] | None = None,
-    ready_event: threading.Event | None = None,
-    log_fn: "_LogFn | None" = None,
-) -> None:
+def _stream_tagged(tag: str, proc: subprocess.Popen, stop: threading.Event, ready_patterns: list[re.Pattern] | None = None, ready_event: threading.Event | None = None, log_fn: "_log_fn | None" = None) -> None:
     """Read proc.stdout line-by-line, print with [tag], detect readiness.
 
     ``log_fn`` overrides the default ``_print_tagged`` (e.g. for project-specific
@@ -66,31 +56,35 @@ def _stream_tagged(
     """
     print_fn = log_fn or _print_tagged
     reader = proc.stdout
+
     if reader is None:
         return
+
     try:
         for raw in reader:
             if stop.is_set():
                 break
+
             try:
-                line = raw.decode(errors="replace")
+                line = raw.decode(errors = "replace")
             except AttributeError:
                 line = raw
+
             text = line.rstrip("\n\r")
+
             if text:
                 print_fn(tag, text)
-            if ready_event is not None and not ready_event.is_set() and text:
+
+            if (ready_event is not None) and not ready_event.is_set() and text:
                 if any(p.search(text) for p in ready_patterns or ()):
                     ready_event.set()
     except ValueError:
         pass
 
-
 # Type alias for the per-line log function override.
-_LogFn = Callable[[str, str], None]
+_log_fn = Callable[[str, str], None]
 
-
-class ProcessManager:
+class process_manager:
     """Manages multiple child processes with tagged output and graceful shutdown.
 
     Shared across shittim-chest / entelecheia / evernight dev scripts so they
@@ -100,23 +94,13 @@ class ProcessManager:
     ``_print_tagged`` for project-specific formatting / filtering.
     """
 
-    def __init__(self, *, log_fn: "_LogFn | None" = None) -> None:
+    def __init__(self, *, log_fn: "_log_fn | None" = None) -> None:
         self._procs: list[tuple[str, subprocess.Popen]] = []
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._log_fn = log_fn
 
-    def start(
-        self,
-        tag: str,
-        cmd: list[str],
-        *,
-        cwd: Path | str | None = None,
-        env: dict[str, str] | None = None,
-        ready_patterns: list[re.Pattern | str] | None = None,
-        ready_event: threading.Event | None = None,
-        log_fn: "_LogFn | None" = None,
-    ) -> subprocess.Popen:
+    def start(self, tag: str, cmd: list[str], *, cwd: Path | str | None = None, env: dict[str, str] | None = None, ready_patterns: list[re.Pattern | str] | None = None, ready_event: threading.Event | None = None, log_fn: "_log_fn | None" = None) -> subprocess.Popen:
         """Spawn *cmd* as a child, stream stdout with [tag].
 
         ``ready_patterns`` is a list of regex (compiled or raw strings); when
@@ -124,25 +108,11 @@ class ProcessManager:
         ``log_fn`` overrides the instance-level log function for this process.
         """
         effective_env = env if env is not None else os.environ.copy()
-        compiled = [
-            p if isinstance(p, re.Pattern) else re.compile(p)
-            for p in (ready_patterns or ())
-        ]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(cwd) if cwd else None,
-            env=effective_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        compiled = [p if isinstance(p, re.Pattern)else re.compile(p)for p in (ready_patterns or ())]
+        proc = subprocess.Popen(cmd, cwd = str(cwd)if cwd else None, env = effective_env, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, start_new_session = True)
         self._procs.append((tag, proc))
         fn = log_fn or self._log_fn
-        t = threading.Thread(
-            target=_stream_tagged,
-            args=(tag, proc, self._stop, compiled, ready_event, fn),
-            daemon=True,
-        )
+        t = threading.Thread(target = _stream_tagged, args = (tag, proc, self._stop, compiled, ready_event, fn), daemon = True)
         t.start()
         self._threads.append(t)
         return proc
@@ -151,6 +121,7 @@ class ProcessManager:
         """SIGTERM every live child, wait (5s), SIGKILL stragglers."""
         self._stop.set()
         fn = self._log_fn or _print_tagged
+
         for _tag, proc in self._procs:
             if proc.poll() is None:
                 try:
@@ -163,40 +134,41 @@ class ProcessManager:
                         proc.terminate()
                     except OSError:
                         pass
+
         for tag, proc in self._procs:
             if proc.poll() is not None:
                 fn(tag, f"already exited (pid={proc.pid})")
                 continue
+
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout = 5)
                 fn(tag, f"stopped (pid={proc.pid})")
             except subprocess.TimeoutExpired:
                 proc.kill()
+
                 try:
-                    proc.wait(timeout=3)
+                    proc.wait(timeout = 3)
                 except subprocess.TimeoutExpired:
                     pass
+
                 fn(tag, f"killed after timeout (pid={proc.pid})")
+
         for t in self._threads:
-            t.join(timeout=2)
+            t.join(timeout = 2)
 
     def any_dead(self) -> tuple[str, int] | None:
         """Return (tag, returncode) of the first dead child, or None."""
+
         for tag, proc in self._procs:
             if proc.poll() is not None:
                 return (tag, proc.returncode)
+
         return None
 
-    def restart(
-        self,
-        tag: str,
-        cmd: list[str],
-        *,
-        cwd: Path | str | None = None,
-        env: dict[str, str] | None = None,
-    ) -> subprocess.Popen:
+    def restart(self, tag: str, cmd: list[str], *, cwd: Path | str | None = None, env: dict[str, str] | None = None) -> subprocess.Popen:
         """Kill any existing process with *tag*, then start a new one."""
         remaining: list[tuple[str, subprocess.Popen]] = []
+
         for t, proc in self._procs:
             if t == tag:
                 if proc.poll() is None:
@@ -207,61 +179,61 @@ class ProcessManager:
                             proc.terminate()
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.terminate()
+
                     try:
-                        proc.wait(timeout=5)
+                        proc.wait(timeout = 5)
                     except subprocess.TimeoutExpired:
                         proc.kill()
             else:
                 remaining.append((t, proc))
+
         self._procs = remaining
-        return self.start(tag, cmd, cwd=cwd, env=env)
+        return self.start(tag, cmd, cwd = cwd, env = env)
 
     def wait_forever(self) -> None:
         """Block until any child exits, then shut them all down.
 
         Installs SIGINT/SIGTERM handlers so Ctrl-C cleanly drains.
         """
+
         def _on_signal(signum, frame):
             raise KeyboardInterrupt
 
         signal.signal(signal.SIGINT, _on_signal)
+
         if hasattr(signal, "SIGTERM"):
             signal.signal(signal.SIGTERM, _on_signal)
+
         try:
             fn = self._log_fn or _print_tagged
+
             while True:
                 dead = self.any_dead()
+
                 if dead:
                     dead_tag, rc = dead
                     fn(dead_tag, f"process exited (rc={rc}) — shutting down")
                     break
+
                 time.sleep(0.5)
         except KeyboardInterrupt:
             pass
         finally:
             self.shutdown()
 
-
 def main() -> int:
     """CLI entry — minimal, mainly for help/listing."""
-    import argparse
 
-    p = argparse.ArgumentParser(
-        prog="celestia-devtools serve",
-        description="Shared process-supervision facility (import ProcessManager in dev scripts).",
-    )
-    p.add_argument(
-        "--help-full",
-        action="store_true",
-        help="show detailed usage",
-    )
+    p = argparse.ArgumentParser(prog = "celestia-devtools serve", description = "Shared process-supervision facility (import ProcessManager in dev scripts).")
+    p.add_argument("--help-full", action = "store_true", help = "show detailed usage")
     args = p.parse_args()
+
     if args.help_full:
         print(__doc__)
     else:
         p.print_help()
-    return 0
 
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())
