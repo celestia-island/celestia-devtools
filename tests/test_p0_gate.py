@@ -54,13 +54,14 @@ class test_ledger_parsing:
         real and could not break the shared addressing. P0-B's evidence carries an
         explicit residual list, so that "closed" is not read as "perfect".
         P0-C is closed by easy-hydro-miniprogram #27 and P0-D by entelecheia
-        #284; P0-E is still open and scoped to evernight because its original
-        master-CI numbers were measured on rewritten commits (AGENTS §8.3.7).
+        #284; P0-E was closed by evernight #359 on 2026-10-25 — the
+        RUSTSEC-2026-0387 advisory became a documented, time-boxed risk
+        acceptance and the master Security run went green on the squash.
         """
         entries = load_ledger(bundled_ledger_path())
         by_id = {entry.id: entry for entry in entries}
         assert set(by_id) == {"P0-A", "P0-B", "P0-C", "P0-D", "P0-E"}
-        assert {entry.id for entry in entries if entry.is_open} == {"P0-E"}
+        assert {entry.id for entry in entries if entry.is_open} == set()
         assert by_id["P0-A"].status == "closed"
         assert by_id["P0-A"].closed_by == "celestia-island/entelecheia#285"
         assert by_id["P0-B"].status == "closed"
@@ -77,6 +78,10 @@ class test_ledger_parsing:
         assert by_id["P0-C"].covers("easy-hydro-miniprogram")
         assert by_id["P0-D"].covers("arona") and by_id["P0-D"].covers("entelecheia")
         assert by_id["P0-E"].covers("evernight") and not by_id["P0-E"].covers("entelecheia")
+        assert by_id["P0-E"].status == "closed"
+        assert by_id["P0-E"].closed_by == "celestia-island/evernight#359"
+        # A time-boxed acceptance must keep its re-check date visible in the evidence.
+        assert "2026-12-01" in by_id["P0-E"].evidence
 
     def test_missing_file_fails_closed(self, tmp_path):
         with pytest.raises(ledger_error, match = "not found"):
