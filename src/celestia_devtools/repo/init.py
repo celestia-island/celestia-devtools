@@ -202,6 +202,13 @@ def main() -> int:
 WORKFLOW_COMMIT_LINT = """\
 name: Commit Message Lint
 
+# One in-flight run per pull request (ci-ops 8.3.3): a superseded push cancels
+# its predecessor instead of queueing a second lint behind it on the lane the
+# repository resolves — which, on the farm, means one slot instead of many.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 on:
   pull_request:
     types: [opened, edited, reopened, ready_for_review, synchronize]
@@ -311,6 +318,13 @@ jobs:
 # the constant above for what that omission costs.
 WORKFLOW_PR_TITLE_CHECK = """\
 name: PR Title Check
+
+# One in-flight run per pull request (ci-ops 8.3.3): a superseded push cancels
+# its predecessor instead of queueing a second title check behind it on the
+# lane the repository resolves.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 on:
   pull_request:
