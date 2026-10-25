@@ -30,8 +30,8 @@ from celestia_devtools.repo.init import (OPT_IN_GATES, WORKFLOW_CI_CACHE, WORKFL
 #: `startup_failure` (zero jobs) — the required check never reports, and a
 #: protected repository cannot be merged. Thirty repositories were missed when the
 #: org default token permissions were tightened on 2026-10-02.
-CANONICAL_SHA256 = "46ef1a7308c735fb2edcd2eacc59acd40b303b95648097baddfcfc7c25703e49"
-CANONICAL_BYTES = 1504
+CANONICAL_SHA256 = "943a8f3564151a6569bc43330ea8e8e38b0885a43bdc383a135ad623fc1743d9"
+CANONICAL_BYTES = 1866
 
 #: The lane-carrying template without the grant (2026-09-26 → 2026-10-06): audit
 #: reports it as a warning, because the check still cannot start.
@@ -141,8 +141,16 @@ class test_trigger_shape:
         """Lint is a required check, not a master-post-processing step."""
         assert "push" not in _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))
 
-    def test_no_workflow_level_concurrency(self):
-        assert "concurrency" not in yaml.safe_load(WORKFLOW_COMMIT_LINT)
+    def test_per_pull_request_concurrency(self):
+        """One in-flight lint per pull request (ci-ops 8.3.3).
+
+        A superseded push cancels its predecessor instead of queueing a second
+        lint on the lane the repository resolves — on the farm lane that is one
+        runner slot instead of many. Dispatch runs fall back to the run ref, so
+        a manual re-lint still cancels only its own predecessors.
+        """
+        doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
+        assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "cancel-in-progress": True}
 
 class test_caller_job_shape:
     def test_job_carries_only_uses_and_with(self):
@@ -315,6 +323,16 @@ class test_pr_title_caller_template:
     def test_caller_job_carries_only_uses(self):
         job = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)["jobs"]["pr-title-check"]
         assert set(job) == {"uses"}
+
+    def test_per_pull_request_concurrency(self):
+        """Mirror of the commit-msg caller: one in-flight title check per PR.
+
+        The hikari line ran this exact block in production for two months
+        (2026-08-31 #333 onward) before it was absorbed here — including 16
+        cancelled runs in October with zero merge-blocked cases.
+        """
+        doc = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)
+        assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "cancel-in-progress": True}
 
     def test_callee_also_re_runs_on_synchronize(self):
         """The reusable workflow's own trigger list must match, or the caller is useless."""

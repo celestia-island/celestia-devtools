@@ -1039,8 +1039,12 @@ class test_canonical_caller:
         assert "init --with-workflows --force" in finding["message"]
         assert report["summary"]["rules"][RULE_CALLER_NOT_CANONICAL] == 1
 
-    def test_extra_concurrency_block_is_reported(self, tmp_path, monkeypatch, capsys):
-        drifted = WORKFLOW_COMMIT_LINT.replace("\njobs:", "\nconcurrency:\n  group: lint-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:")
+    def test_drifted_concurrency_group_is_reported(self, tmp_path, monkeypatch, capsys):
+        # The canonical caller HAS a per-PR concurrency block since 2026-10-25;
+        # drift now looks like a hand-tuned group string instead of an extra block.
+        canonical_group = "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+        drifted = WORKFLOW_COMMIT_LINT.replace(canonical_group, "group: lint-${{ github.ref }}")
+        assert drifted != WORKFLOW_COMMIT_LINT
         _workflow(tmp_path, drifted, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 1
