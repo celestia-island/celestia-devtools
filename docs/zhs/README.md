@@ -127,6 +127,29 @@ celestia-devtools init --with-workflows
 
 > **注意：** 私有仓库需要 GitHub Team（$4/月）才能使用分支保护。公开仓库免费。
 
+### 钉版的可复用工作流引用
+
+`init --with-workflows` 生成的 caller 以**钉版基准 tag**（如 `v2026.10`）引用
+可复用工作流，而非 `@master`：全家族约 46 仓共用这一条引用，浮动 `@master`
+意味着一次坏提交即时重定义全家族的门禁语义（verify-versions 空转先例）。
+
+- **两层都钉**：`uses:` 的 ref 决定 GitHub 加载哪份 workflow 文件，
+  `devtools-ref` 输入让 callee 运行时引导安装同一快照——只钉 YAML 而工具
+  仍从 master 浮动是装饰性钉版。`p0-gate` 是刻意例外：P0 台账是活策略
+  状态，钉版 caller 也照读 master。
+- **CalVer 滚动基准 tag**：每个迁移波次在验证绿的 master SHA 上切新 tag
+  （`v2026.10` → `v2026.11`），tag 永不移动；前进 = 重生成 caller。
+- **升级路径**：`celestia-devtools init --with-workflows --force`（opt-in 门
+  加 `--gate <name>`）按当前 pin 重写 caller；不要手改 ref。
+- **逃生口**：`celestia-devtools init --with-workflows --ref master` 生成浮动
+  形态（应急消费未合并修复时用）。
+- **迁移可审计**：`celestia-ci-audit` 对 `@master` caller 记
+  `devtools-ref-not-pinned` warning（迁移期不 error）；
+  `celestia-devtools fleet-audit` 输出存量普查行。
+
+诚实边界：自托管农场上预装的 CLI 优先于引导拉取（强制重装已被证明不可
+靠），`devtools-ref` 约束的是 git 拉取通道；农场镜像属运维侧供给线。
+
 ### 所有命令
 
 | 命令 | 用途 |

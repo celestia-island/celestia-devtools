@@ -22,16 +22,26 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import yaml
-from celestia_devtools.repo.init import (OPT_IN_GATES, WORKFLOW_CI_CACHE, WORKFLOW_CNB_OVERFLOW, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, WORKFLOW_FAMILY_VERSIONS, WORKFLOW_P0_GATE, WORKFLOW_PR_TITLE_CHECK, WORKFLOW_RELEASE_NOTES, WORKFLOW_RULES_LINT, WORKFLOW_VERIFY_VERSIONS, _ensure_workflows)
+from celestia_devtools.repo import init
+from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, workflow_drift_problems, WORKFLOW_CI_CACHE, WORKFLOW_CNB_OVERFLOW, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, WORKFLOW_FAMILY_VERSIONS, WORKFLOW_P0_GATE, WORKFLOW_PR_TITLE_CHECK, WORKFLOW_RELEASE_NOTES, WORKFLOW_RULES_LINT, WORKFLOW_VERIFY_VERSIONS, _T_COMMIT_LINT, _ensure_workflows, caller_render_state, render_caller, unpinned_caller_warnings)
 
 #: sha256 of the canonical caller shipped in celestia-island repositories: the
-#: lane-carrying form **plus** the explicit `permissions` grant. A caller that
-#: withholds `pull-requests: read` makes the reusable lint fail as
-#: `startup_failure` (zero jobs) — the required check never reports, and a
-#: protected repository cannot be merged. Thirty repositories were missed when the
-#: org default token permissions were tightened on 2026-10-02.
-CANONICAL_SHA256 = "943a8f3564151a6569bc43330ea8e8e38b0885a43bdc383a135ad623fc1743d9"
-CANONICAL_BYTES = 1866
+#: lane-carrying form **plus** the explicit `permissions` grant, rendered at the
+#: pinned devtools ref (P2-3). A caller that withholds `pull-requests: read`
+#: makes the reusable lint fail as `startup_failure` (zero jobs) — the required
+#: check never reports, and a protected repository cannot be merged. Thirty
+#: repositories were missed when the org default token permissions were
+#: tightened on 2026-10-02.
+CANONICAL_SHA256 = "3cdb9e7a35e5df7877c906fec508f0bb4a2b24ed7aabdbdb5465b2ee97492568"
+CANONICAL_BYTES = 1897
+
+#: sha256 of the **master render** — the floating form the entire fleet carries
+#: today. This is the comparator that classifies un-migrated repositories as
+#: "unpinned" (warning) instead of "drifted" (error): if a template edit ever
+#: moves these bytes, the fleet turns red in one wave, which is exactly the
+#: outcome the pin migration must avoid. Frozen from the 2026-10-06 canonical.
+MASTER_SHA256 = "943a8f3564151a6569bc43330ea8e8e38b0885a43bdc383a135ad623fc1743d9"
+MASTER_BYTES = 1866
 
 #: The lane-carrying template without the grant (2026-09-26 → 2026-10-06): audit
 #: reports it as a warning, because the check still cannot start.
@@ -56,6 +66,139 @@ class test_canonical_bytes:
     def test_template_ends_with_a_single_newline(self):
         assert WORKFLOW_COMMIT_LINT.endswith("pr: ${{ inputs.pr }}\n")
         assert not WORKFLOW_COMMIT_LINT.endswith("\n\n")
+
+class test_master_render_is_the_fleet_comparator:
+    """P2-3: rendering at ``master`` must reproduce today's fleet bytes exactly.
+
+    ``caller_render_state`` classifies the un-migrated fleet through this
+    render: if it drifts, every repository still on ``@master`` flips from the
+    "unpinned" warning to the "drifted" error and the migration goes red in one
+    wave — the failure mode this pin project exists to prevent.
+    """
+
+    def test_master_render_hashes_to_the_2026_10_06_canonical(self):
+        assert hashlib.sha256(render_caller(_T_COMMIT_LINT, "master").encode()).hexdigest() == MASTER_SHA256
+
+    def test_master_render_keeps_the_fleet_length(self):
+        assert len(render_caller(_T_COMMIT_LINT, "master").encode()) == MASTER_BYTES
+
+    def test_master_render_is_distinct_from_canonical(self):
+        assert render_caller(_T_COMMIT_LINT, "master") != WORKFLOW_COMMIT_LINT
+
+class test_ref_rendering:
+    """The render mechanism behind both the generator and the classifiers."""
+
+    def test_markers_never_leak_into_rendered_output(self):
+        for source in TEMPLATE_SOURCES.values():
+            for ref in (PINNED_DEVTOOLS_REF, "master", "v2099.1", "0123456789abcdef"):
+                assert "__DEVTOOLS_REF" not in render_caller(source, ref)
+
+    def test_pinned_render_passes_the_ref_to_the_callee(self):
+        for filename in ("commit-msg-lint.yml", "ci-cache.yml", "pr-title-check.yml", "family-versions.yml", "verify-versions.yml", "rules-lint.yml", "release-notes.yml"):
+            job = yaml.safe_load(render_caller(TEMPLATE_SOURCES[filename], PINNED_DEVTOOLS_REF))["jobs"]
+            body = next(iter(job.values()))
+            assert body["uses"].endswith("@" + PINNED_DEVTOOLS_REF), filename
+            assert body["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF, filename
+
+    def test_master_render_passes_no_devtools_ref(self):
+        for filename in TEMPLATE_SOURCES:
+            body = next(iter(yaml.safe_load(render_caller(TEMPLATE_SOURCES[filename], "master"))["jobs"].values()))
+            assert "devtools-ref" not in (body.get("with") or {}), filename
+
+    def test_p0_gate_and_cnb_pins_do_not_pass_the_ref(self):
+        """p0-gate reads the live ledger from master by design; cnb never fetches devtools."""
+
+        for filename in ("p0-gate.yml", "cnb-overflow-lane.yml"):
+            body = next(iter(yaml.safe_load(render_caller(TEMPLATE_SOURCES[filename], PINNED_DEVTOOLS_REF))["jobs"].values()))
+            assert body["uses"].endswith("@" + PINNED_DEVTOOLS_REF), filename
+            assert "devtools-ref" not in (body.get("with") or {}), filename
+
+    def test_classification_matrix(self, tmp_path):
+        workflows = tmp_path / "workflows"
+        workflows.mkdir()
+        source = TEMPLATE_SOURCES["ci-cache.yml"]
+
+        for name, text in (("clean", render_caller(source, PINNED_DEVTOOLS_REF)), ("fleet-master", render_caller(source, "master")), ("stale", render_caller(source, "v2026.9")), ("drifted", render_caller(source, PINNED_DEVTOOLS_REF) + "# hand edit\n")):
+            state, ref = caller_render_state(text, source)
+            assert (state, ref) == {"clean": ("clean", PINNED_DEVTOOLS_REF), "fleet-master": ("master", "master"), "stale": ("stale", "v2026.9"), "drifted": ("drifted", PINNED_DEVTOOLS_REF)}[name], name
+
+class test_unpinned_warnings:
+    """The migration-period judgement: floating/stale callers warn, never fail."""
+
+    def _stage(self, tmp_path, ref):
+        workflows = tmp_path / "workflows"
+        workflows.mkdir(exist_ok = True)
+
+        for filename in ("commit-msg-lint.yml", "ci-cache.yml", "pr-title-check.yml"):
+            (workflows / filename).write_text(render_caller(TEMPLATE_SOURCES[filename], ref), encoding = "utf-8")
+
+        return workflows
+
+    def test_fleet_stock_master_bytes_warn_without_failing(self, tmp_path):
+        workflows = self._stage(tmp_path, "master")
+        assert workflow_drift_problems(workflows) == []
+        warnings = unpinned_caller_warnings(workflows)
+        assert len(warnings) == 3
+        assert all(("pins nothing" in w) for w in warnings)
+
+    def test_pinned_callers_are_silent(self, tmp_path):
+        workflows = self._stage(tmp_path, PINNED_DEVTOOLS_REF)
+        assert unpinned_caller_warnings(workflows) == []
+
+    def test_stale_pin_names_the_refs(self, tmp_path):
+        workflows = self._stage(tmp_path, "v2026.9")
+        warnings = unpinned_caller_warnings(workflows)
+        assert len(warnings) == 3
+        assert all(("v2026.9" in w) and (PINNED_DEVTOOLS_REF in w) for w in warnings)
+
+    def test_hand_written_master_caller_is_reported_too(self, tmp_path):
+        """Files outside the template tables (style-lint adoption) count as well."""
+        workflows = tmp_path / "workflows"
+        workflows.mkdir()
+        (workflows / "style-lint.yml").write_text("jobs:\n  py-style:\n    uses: celestia-island/celestia-devtools/.github/workflows/style-lint.yml@master\n    with:\n      tool: py-style\n", encoding = "utf-8")
+        (workflows / "pinned-style.yml").write_text("jobs:\n  py-style:\n    uses: celestia-island/celestia-devtools/.github/workflows/style-lint.yml@v2026.10\n", encoding = "utf-8")
+        warnings = unpinned_caller_warnings(workflows)
+        assert len(warnings) == 1
+        assert "style-lint.yml" in warnings[0]
+
+    def test_commented_out_uses_does_not_count(self, tmp_path):
+        workflows = tmp_path / "workflows"
+        workflows.mkdir()
+        (workflows / "notes.yml").write_text("# jobs:\n#   x:\n#     uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master\n", encoding = "utf-8")
+        assert unpinned_caller_warnings(workflows) == []
+
+    def test_callee_definitions_are_skipped(self, tmp_path):
+        workflows = tmp_path / "workflows"
+        workflows.mkdir()
+        (workflows / "ci-cache.yml").write_text("on:\n  workflow_call: {}\njobs:\n  cache:\n    uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master\n", encoding = "utf-8")
+        assert unpinned_caller_warnings(workflows) == []
+
+class test_ref_escape_hatch:
+    """``--ref master`` regenerates the floating form for break-glass use."""
+
+    def test_ref_master_writes_fleet_bytes(self, tmp_path):
+        _ensure_workflows(tmp_path, force = True, ref = "master")
+        written = (tmp_path / ".github" / "workflows" / "commit-msg-lint.yml").read_bytes()
+        assert hashlib.sha256(written).hexdigest() == MASTER_SHA256
+
+    def test_explicit_ref_writes_that_pin(self, tmp_path):
+        _ensure_workflows(tmp_path, force = True, ref = "v2026.9")
+        body = next(iter(yaml.safe_load((tmp_path / ".github" / "workflows" / "ci-cache.yml").read_text(encoding = "utf-8"))["jobs"].values()))
+        assert body["uses"].endswith("@v2026.9")
+        assert body["with"]["devtools-ref"] == "v2026.9"
+
+def test_sha_ref_is_rejected_at_the_cli(monkeypatch, tmp_path):
+    """R2 F2: the clone-based gates bootstrap with `git clone --branch`, which
+    cannot honor a SHA — generating a SHA-pinned caller would ship a gate whose
+    bootstrap deterministically fails at runtime."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["init", "--with-workflows", "--ref", "0123456789abcdef0123456789abcdef01234567"])
+
+    # Return-code assertion only: the shared logger emits through a worker
+    # thread, so captured-stream assertions on it are racy by design
+    # (see test_init_check.py).
+    assert init.main() == 2
+    assert not (tmp_path / ".github" / "workflows").exists(), "a rejected ref must not generate anything"
 
 class test_legacy_bytes:
     """The pre-lane template: the audit's migration marker, frozen on purpose.
@@ -169,7 +312,12 @@ class test_caller_job_shape:
 
     def test_job_calls_the_shared_reusable_workflow(self):
         job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
-        assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master")
+        assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@" + PINNED_DEVTOOLS_REF)
+
+    def test_job_passes_the_pin_to_the_bootstrap(self):
+        """P2-3: the pin must reach the callee's runtime fetch, not just its file."""
+        job = yaml.safe_load(WORKFLOW_COMMIT_LINT)["jobs"]["lint-commits"]
+        assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF
 
 class test_lane_passthrough:
     """The 2026-09-26 canonical additions: dispatch fallback + lane variables.
@@ -256,9 +404,11 @@ class test_cache_policy_caller_template:
     hash: the file is new, so there is no fleet of byte-identical copies to match yet.
     """
 
-    def test_uses_the_shared_workflow_at_master(self):
+    def test_uses_the_shared_workflow_at_the_pin(self):
         doc = yaml.safe_load(WORKFLOW_CI_CACHE)
-        assert doc["jobs"]["cache-policy"]["uses"] == ("celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master")
+        job = doc["jobs"]["cache-policy"]
+        assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@" + PINNED_DEVTOOLS_REF)
+        assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF
 
     def test_synchronize_is_present(self):
         """Without it a re-pushed head never re-runs the check: the §8.3.6 deadlock."""
@@ -276,14 +426,16 @@ class test_cache_policy_caller_template:
     def test_no_push_trigger(self):
         assert "push" not in _on(yaml.safe_load(WORKFLOW_CI_CACHE))
 
-    def test_caller_job_carries_only_uses(self):
+    def test_caller_job_carries_only_uses_and_with(self):
         """A caller job accepts nine keys; anything else makes the whole file invalid.
 
         `timeout-minutes` is the specific trap here: it is not a caller key, and adding it
-        makes GitHub reject the file without creating a job at all.
+        makes GitHub reject the file without creating a job at all. `with` carries only
+        the pin passthrough (P2-3).
         """
         job = yaml.safe_load(WORKFLOW_CI_CACHE)["jobs"]["cache-policy"]
-        assert set(job) == {"uses"}
+        assert set(job) == {"uses", "with"}
+        assert set(job["with"]) == {"devtools-ref"}
 
     def test_generator_writes_both_callers(self, tmp_path: Path):
         _ensure_workflows(tmp_path)
@@ -307,9 +459,11 @@ class test_pr_title_caller_template:
     never produced.
     """
 
-    def test_uses_the_shared_workflow_at_master(self):
+    def test_uses_the_shared_workflow_at_the_pin(self):
         doc = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)
-        assert doc["jobs"]["pr-title-check"]["uses"] == ("celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master")
+        job = doc["jobs"]["pr-title-check"]
+        assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@" + PINNED_DEVTOOLS_REF)
+        assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF
 
     def test_synchronize_is_present(self):
         types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
@@ -320,9 +474,10 @@ class test_pr_title_caller_template:
         types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
         assert "edited" in types
 
-    def test_caller_job_carries_only_uses(self):
+    def test_caller_job_carries_only_uses_and_with(self):
         job = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)["jobs"]["pr-title-check"]
-        assert set(job) == {"uses"}
+        assert set(job) == {"uses", "with"}
+        assert set(job["with"]) == {"devtools-ref"}
 
     def test_per_pull_request_concurrency(self):
         """Mirror of the commit-msg caller: one in-flight title check per PR.
@@ -365,12 +520,20 @@ def test_opt_in_registry_matches_the_templates():
 def test_every_opt_in_caller_is_canonicalisable_and_valid_yaml():
     # `ci-audit` compares callers byte-for-byte, so the templates must be the
     # exact bytes a repository is expected to carry: valid YAML, one `uses:`
-    # into this repository, and a `@master` ref (a tag would freeze the gate).
+    # into this repository, at the pinned ref — and the pin passthrough for
+    # every gate whose callee fetches devtools at runtime (p0-gate reads the
+    # live ledger from master and cnb-overflow never fetches, so those two
+    # pin the workflow file only).
     for gate, template in _OPT_IN.items():
         parsed = yaml.safe_load(template)
-        (job,) = parsed["jobs"].values()
+        (job_id, job), = parsed["jobs"].items()
         assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/" f"{job['uses'].rsplit('/', 1)[-1]}"), gate
-        assert job["uses"].endswith("@master"), gate
+        assert job["uses"].endswith("@" + PINNED_DEVTOOLS_REF), gate
+
+        if gate in ("p0", "cnb"):
+            assert "devtools-ref" not in (job.get("with") or {}), gate
+        else:
+            assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF, gate
 
 def test_pr_triggering_gates_react_to_new_pushes():
     # A required check that ignores `synchronize` never re-runs on the pushed

@@ -6,7 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from celestia_devtools.repo.fleet_audit import GATE_FILES, main
-from celestia_devtools.repo.init import _ensure_workflows
+from celestia_devtools.repo.init import PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, _ensure_workflows, render_caller
 
 def make_repo(workspace: Path, name: str) -> Path:
     repo = workspace / name
@@ -213,3 +213,45 @@ def test_error_json_carries_the_gate_summary(tmp_path, capsys):
     assert set(payload["summary"]["gates"]) == {"commit-msg-lint", "ci-cache", "pr-title-check", "p0-gate", "family-versions", "verify-versions", "rules-lint", "release-notes", "cnb-overflow"}
     assert all(value == {"adopted": 0, "missing": 0} for value in payload["summary"]["gates"].values())
     assert payload["workspace"].startswith("/")
+
+def _repin(repo: Path, ref: str) -> None:
+    """Rewrite a canonical repo's mandatory trio at another devtools ref."""
+
+    for filename in ("commit-msg-lint.yml", "ci-cache.yml", "pr-title-check.yml"):
+        (repo / ".github" / "workflows" / filename).write_text(render_caller(TEMPLATE_SOURCES[filename], ref), encoding = "utf-8")
+
+def test_ref_census_counts_pinned_master_and_stale(tmp_path, capsys):
+    """P2-3: the census is the migration's schedule — it must see all four states."""
+    canonical_repo(tmp_path, "pinned")
+    _repin(canonical_repo(tmp_path, "floating"), "master")
+    _repin(canonical_repo(tmp_path, "stale"), "v2026.9")
+    callee_only = make_repo(tmp_path, "devtools-like")
+    callee = "name: Callee\non:\n  workflow_call: {}\njobs:\n  run:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+
+    for filename in ("commit-msg-lint.yml", "ci-cache.yml", "pr-title-check.yml"):
+        write_workflow(callee_only, filename, callee)
+
+    assert main([str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["devtools_ref_census"] == {"pinned": 1, "master": 1, "stale": 1, "none": 1}
+    assert payload["summary"]["current_pin"] == PINNED_DEVTOOLS_REF
+    states = {item["name"]: item["ref_state"] for item in payload["repositories"]}
+    assert states == {"devtools-like": "none", "floating": "master", "pinned": "pinned", "stale": "stale"}
+
+def test_master_stock_warns_and_names_the_regeneration_path(tmp_path, capsys):
+    repo = canonical_repo(tmp_path, "floating")
+    _repin(repo, "master")
+    assert main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "pins nothing" in captured.err
+    assert "init --with-workflows --force" in captured.err
+    assert f"devtools refs (pin @{PINNED_DEVTOOLS_REF}): pinned=0 master=1" in captured.err
+
+def test_mixed_repo_counts_as_master(tmp_path, capsys):
+    """One floating caller is the exposure; it must not hide behind pinned siblings."""
+    repo = canonical_repo(tmp_path, "mixed")
+    (repo / ".github" / "workflows" / "ci-cache.yml").write_text(render_caller(TEMPLATE_SOURCES["ci-cache.yml"], "master"), encoding = "utf-8")
+    assert main([str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    (item,) = payload["repositories"]
+    assert item["ref_state"] == "master"

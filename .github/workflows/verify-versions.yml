@@ -1,7 +1,13 @@
 name: Verify Versions
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: "celestia-devtools git ref cloned when the preinstalled CLI lacks the command (P2-3: pinned callers pass their baseline tag)."
+        required: false
+        type: string
+        default: "master"
 
 jobs:
   verify:
@@ -38,17 +44,22 @@ jobs:
       - name: Verify versions
         # Prefer the preinstalled CLI (node-1 convention, kept fresh by the
         # mirror sync) when it already knows the command. Otherwise clone
-        # celestia-devtools@master and run the module directly with
-        # PYTHONPATH=src — deterministic, no build dependencies. Drift always
-        # fails the job (CHANGELOG.md is deliberately not consulted: the org
-        # bans maintained changelogs, squashed PRs are the changelog). The
-        # checked-out repo is the target.
+        # celestia-devtools at the caller's ref (master default, P2-3) and run
+        # the module directly with PYTHONPATH=src — deterministic, no build
+        # dependencies. Drift always fails the job (CHANGELOG.md is
+        # deliberately not consulted: the org bans maintained changelogs,
+        # squashed PRs are the changelog). The checked-out repo is the target.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
           if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
             echo "Using preinstalled celestia-devtools: $(command -v celestia-devtools)"
             celestia-devtools verify-versions .
           else
             echo "Preinstalled CLI lacks verify-versions; running from a fresh devtools clone"
-            rm -rf /tmp/celestia-devtools && git clone --depth 1 https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools
+            # --branch takes a branch or tag ref (SHA pins are served by the
+            # pip-based bootstraps in the other callees; this farm lane only
+            # needs to honor tags).
+            rm -rf /tmp/celestia-devtools && git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools
             cd /tmp/celestia-devtools && PYTHONPATH=src python3 -m celestia_devtools verify-versions "$GITHUB_WORKSPACE"
           fi

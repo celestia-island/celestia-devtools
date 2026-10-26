@@ -34,6 +34,11 @@ on:
         required: false
         type: boolean
         default: false
+      devtools-ref:
+        description: "celestia-devtools git ref checked out for the notes generator (P2-3: pinned callers pass their baseline tag)."
+        required: false
+        type: string
+        default: "master"
 
 permissions:
   contents: write
@@ -46,14 +51,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Only celestia-devtools is checked out: the caller repo is not needed
-      # (all release data comes from the API). Checking out `@master`
-      # guarantees the taxonomy is current rather than whatever the runner
-      # has preinstalled — the same reasoning as p0-gate.yml.
+      # (all release data comes from the API). The ref comes from the caller's
+      # pin (P2-3, master default) so the taxonomy moves with the caller's
+      # baseline instead of floating.
       - name: Checkout celestia-devtools
         uses: actions/checkout@v7
         with:
           repository: celestia-island/celestia-devtools
-          ref: master
+          ref: ${{ inputs.devtools-ref }}
           path: .celestia-devtools
           fetch-depth: 1
         # Defensive (mirrors p0-gate.yml): a runner env that rewrites

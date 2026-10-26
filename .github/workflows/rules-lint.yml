@@ -44,6 +44,11 @@ on:
         required: false
         type: string
         default: "dead-reference"
+      devtools-ref:
+        description: "celestia-devtools git ref installed when the CLI is absent (P2-3: pinned callers pass their baseline tag; floating callers keep master)."
+        required: false
+        type: string
+        default: "master"
 
 jobs:
   rules-lint:
@@ -70,6 +75,8 @@ jobs:
         # Self-hosted nodes preinstall the CLI; hosted runners start empty. Same
         # bootstrap shape as commit-msg-lint.yml, minus the pip-less fallback:
         # this tool needs PyYAML, so a package install is the only working path.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
           if command -v celestia-rules-lint >/dev/null 2>&1; then
             echo "celestia-rules-lint already available: $(command -v celestia-rules-lint)"
@@ -78,7 +85,7 @@ jobs:
           fi
           python3 -m venv "$RUNNER_TEMP/dt-venv"
           GIT_CONFIG_COUNT=0 "$RUNNER_TEMP/dt-venv/bin/pip" install --quiet \
-            "git+https://github.com/celestia-island/celestia-devtools.git@master"
+            "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF:-master}"
           echo "RULES_LINT=$RUNNER_TEMP/dt-venv/bin/celestia-rules-lint" >> "$GITHUB_ENV"
 
       - name: Lint

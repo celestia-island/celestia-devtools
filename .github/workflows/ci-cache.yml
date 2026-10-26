@@ -18,7 +18,13 @@ concurrency:
 # The runners are not ephemeral, so those caches duplicate work persistence already does.
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: "celestia-devtools git ref checked out for the gate module (P2-3: pinned callers pass their baseline tag)."
+        required: false
+        type: string
+        default: "master"
   pull_request:
     types: [opened, reopened, ready_for_review, synchronize]
   merge_group:
@@ -49,7 +55,9 @@ jobs:
         with:
           repository: celestia-island/celestia-devtools
           path: .devtools-gate
-          ref: master
+          # P2-3: the caller's pin decides which snapshot of the gate module
+          # runs; floating callers keep master.
+          ref: ${{ inputs.devtools-ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -64,7 +72,7 @@ jobs:
           python -m pip install --quiet PyYAML
           export PYTHONPATH="$PWD/.devtools-gate/src"
           python -c "import celestia_devtools.ci.cache_policy" \
-            || { echo "the gate module is missing from celestia-devtools@master"; exit 1; }
+            || { echo "the gate module is missing from the checked-out celestia-devtools ref"; exit 1; }
 
       - name: Audit cache steps
         env:

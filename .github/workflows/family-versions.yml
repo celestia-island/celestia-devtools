@@ -4,7 +4,7 @@ name: Family dependency identity
 #
 #   family-versions:
 #     name: Family dependency identity
-#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@master
+#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@v2026.10
 #
 # to the repository's workflow. `with: strict: true` also fails on warnings.
 on:
@@ -14,6 +14,11 @@ on:
         description: Fail on warnings as well as violations
         type: boolean
         default: false
+      devtools-ref:
+        description: "celestia-devtools git ref cloned when the preinstalled CLI lacks the command (P2-3: pinned callers pass their baseline tag)."
+        required: false
+        type: string
+        default: "master"
 
 jobs:
   family-versions:
@@ -46,14 +51,16 @@ jobs:
       - name: Family versions
         # Prefer the preinstalled CLI (node-1 convention, kept fresh by the
         # mirror sync) when it already knows the command. Otherwise clone
-        # celestia-devtools@master and run the module directly with
-        # PYTHONPATH=src — deterministic, no build dependencies.
+        # celestia-devtools at the caller's ref (master default, P2-3) and run
+        # the module directly with PYTHONPATH=src — deterministic, no build
+        # dependencies.
         #
         # Violations fail the job; warnings (a lock linking two generations, an
         # unbounded npm range, a binding behind its crate) are printed and only
         # fail when the caller opts into `strict`.
         env:
           STRICT: ${{ inputs.strict && '--strict' || '' }}
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
           set -euo pipefail
           if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools family-versions --help >/dev/null 2>&1; then
@@ -61,6 +68,9 @@ jobs:
             celestia-devtools family-versions $STRICT "$GITHUB_WORKSPACE"
           else
             echo "Preinstalled CLI lacks family-versions; running from a fresh devtools clone"
-            rm -rf /tmp/celestia-devtools-fv && git clone --depth 1 https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
+            # --branch takes a branch or tag ref (SHA pins are served by the
+            # pip-based bootstraps in the other callees; this farm lane only
+            # needs to honor tags).
+            rm -rf /tmp/celestia-devtools-fv && git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
             cd /tmp/celestia-devtools-fv && PYTHONPATH=src python3 -m celestia_devtools family-versions $STRICT "$GITHUB_WORKSPACE"
           fi
