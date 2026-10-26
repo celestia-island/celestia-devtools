@@ -39,7 +39,15 @@ Usage::
     celestia-devtools init --force     # overwrite even if identical
     celestia-devtools init --check     # CI gate: exit 1 if drifted or ungitignored
     celestia-devtools init --no-hooks  # skip automatic commit-msg hook install
-    celestia-devtools init --with-workflows  # also generate CI commit-msg lint workflow
+    celestia-devtools init --with-workflows  # generate the canonical callers (ref-pinned)
+    celestia-devtools init --with-workflows --ref master  # escape hatch: floating @master
+
+Generated callers pin the devtools git ref (default ``@v2026.10``, see
+:data:`PINNED_DEVTOOLS_REF`): a bad master commit cannot redefine this
+repository's gate semantics until the caller is regenerated onto a newer
+baseline tag. ``init --check`` and ``fleet-audit`` report ``@master`` (or
+stale-pin) callers as **warnings** while the fleet migrates; the upgrade path
+is always regeneration, never hand-editing.
 """
 
 from __future__ import annotations
@@ -81,7 +89,12 @@ def main() -> int:
     parser.add_argument("--no-hooks", action = "store_true", help = "skip automatic commit-msg hook install")
     parser.add_argument("--with-workflows", action = "store_true", help = "also generate the three required org workflows " "(commit-msg lint, CI cache policy, PR title check)")
     parser.add_argument("--gate", action = "append", choices = sorted(OPT_IN_GATES), metavar = "NAME", help = "also (re)generate one opt-in gate caller: " + ", ".join(sorted(OPT_IN_GATES)) + " (repeatable; requires --with-workflows)")
+    parser.add_argument("--ref", default = PINNED_DEVTOOLS_REF, metavar = "REF", help = f"devtools git ref the generated callers pin (default: {PINNED_DEVTOOLS_REF}; 'master' is the escape hatch for break-glass consumption of an unmerged fix)")
     args = parser.parse_args()
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", args.ref or ""):
+        logger.error(f"--ref {args.ref!r} is not a valid git ref (letters, digits, '.', '_', '/', '-')")
+        return 2
 
     src = common_just_path()
 
@@ -176,7 +189,7 @@ def main() -> int:
 
     # ── Opt-in: GitHub Actions commit-lint workflow ───────────────
     if args.with_workflows:
-        _ensure_workflows(Path.cwd(), force = args.force, gates = tuple(args.gate or ()))
+        _ensure_workflows(Path.cwd(), force = args.force, gates = tuple(args.gate or ()), ref = args.ref)
     elif args.gate:
         logger.error("--gate requires --with-workflows (it extends the generated set)")
         return 2
@@ -192,14 +205,59 @@ def main() -> int:
 # 每个仓的树；现在设 repo 变量 `LINT_RUNNER`/`LINT_LANE` 即可无树切换，且「私仓 hosted
 # 绕行 vs 模板合规」的互斥解除。旧 273B 字节保留为 LEGACY（audit 降级 warning，见
 # workflow_audit._canonical_caller_findings），存量仓用 `init --with-workflows --force` 渐进迁移。
-#: Canonical caller since 2026-10-06 (1504 B). It is the lane-carrying form **plus** the
-#: explicit `permissions` grant the reusable lint declares: the org default token
-#: permissions were tightened on 2026-10-02, and a caller that withholds
-#: `pull-requests: read` makes the callee fail as `startup_failure` (zero jobs) so the
-#: single required check never reports — unmergeable on a protected repository. Thirty
-#: repositories were missed that day; this template is what `init --with-workflows`
-#: writes and what `workflow_audit` compares against.
-WORKFLOW_COMMIT_LINT = """\
+#: The devtools git ref generated callers pin by default (arch-review
+#: 2026-10-26 P2-3). A caller referencing ``@master`` lets any single master
+#: commit redefine gate semantics for the whole family at once — the python-track
+#: verify-versions "ok:true + null baseline" incident ran vacuously on half the
+#: fleet exactly this way. The pin is a **CalVer rolling baseline tag**: a new
+#: ``v<YYYY.MM>`` tag is cut on a verified-green master SHA each wave (or sooner
+#: when a gate change lands); tags are never moved — a moved tag is a force
+#: operation, and the CNB mirror syncs ``master`` + tags, so a mutation would
+#: race it — and callers advance by regeneration, not by tag movement. CalVer
+#: rather than the package version because the pin freezes *workflow files*,
+#: not the Python package: a per-version tag would couple the baseline to a
+#: manually bumped version line and demand a tag per release, while the monthly
+#: tag decouples "when the fleet re-pins" from "when devtools ships a lint
+#: tweak". Escape hatch: ``init --with-workflows --ref master`` writes the
+#: floating form (break-glass consumption of an unmerged fix); the audit
+#: reports every ``@master`` caller as a warning while the migration runs.
+PINNED_DEVTOOLS_REF = "v2026.10"
+
+#: Marker for the callee ref on a template's ``uses:`` line (rendered to
+#: ``@<ref>``); never present in a rendered caller.
+_REF_MARKER = "@__DEVTOOLS_REF__"
+
+#: Marker line for the ``devtools-ref`` input inside an existing ``with:`` block
+#: (rendered to one indented input line when pinned; deleted at ``master``).
+_INPUT_MARKER = "__DEVTOOLS_REF_INPUT__\n"
+
+#: Marker line standing in for a whole ``with:`` block that exists only to pass
+#: the ref (rendered to ``with:`` + input when pinned; deleted at ``master``).
+_WITH_MARKER = "__DEVTOOLS_REF_WITH__\n"
+
+def render_caller(template: str, ref: str) -> str:
+    """Render a caller *template* against a devtools git *ref*.
+
+    ``master`` renders the historical floating form **byte-for-byte**: no
+    ``devtools-ref`` input is passed, so the master render of every template is
+    exactly the bytes today's fleet carries — the comparator that classifies
+    un-migrated repositories must not move when the pin lands. Any other ref
+    (tag or SHA) additionally passes ``devtools-ref: <ref>`` so the callee's
+    runtime bootstrap installs the same snapshot the caller pinned — pinning
+    the workflow file while the tool floats from master would be cosmetic
+    (style-lint.yml set the ``devtools-ref`` input precedent).
+    """
+
+    rendered = template.replace(_REF_MARKER, "@" + ref)
+    input_line = f"      devtools-ref: {ref}\n" if ref != "master" else ""
+    with_block = f"    with:\n      devtools-ref: {ref}\n" if ref != "master" else ""
+    return rendered.replace(_INPUT_MARKER, input_line).replace(_WITH_MARKER, with_block)
+
+#: Caller template source (pre-render). The rendered canonical constant below
+#: pins :data:`PINNED_DEVTOOLS_REF`; ``render_caller(_T_COMMIT_LINT, "master")``
+#: reproduces the 2026-10-06 canonical bytes exactly, which is what lets the
+#: audit classify the un-migrated fleet as "unpinned" instead of "drifted".
+_T_COMMIT_LINT = """\
 name: Commit Message Lint
 
 # One in-flight run per pull request (ci-ops 8.3.3): a superseded push cancels
@@ -235,8 +293,9 @@ permissions:
 
 jobs:
   lint-commits:
-    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@__DEVTOOLS_REF__
     with:
+__DEVTOOLS_REF_INPUT__
       # Lane switch without touching this tree: the org variables resolve to the
       # self-hosted fleet while the hosted lane is down (2026-09-24 account
       # payments: a job sent there sits fifteen minutes with no runner before
@@ -245,6 +304,10 @@ jobs:
       lane: ${{ vars.LINT_LANE || 'hosted' }}
       pr: ${{ inputs.pr }}
 """
+
+#: The canonical caller: the template rendered at the pinned ref. This is what
+#: ``init --with-workflows`` writes and what the audits compare against.
+WORKFLOW_COMMIT_LINT = render_caller(_T_COMMIT_LINT, PINNED_DEVTOOLS_REF)
 
 WORKFLOW_COMMIT_LINT_NO_PERMS = """\
 name: Commit Message Lint
@@ -299,7 +362,7 @@ jobs:
 # rule cannot be quietly reintroduced by a later workflow edit. What the gate rejects, and
 # the measurements behind it, are documented in the callee and in
 # `celestia_devtools.ci.cache_policy`.
-WORKFLOW_CI_CACHE = """\
+_T_CI_CACHE = """\
 name: CI Cache Policy
 
 on:
@@ -310,13 +373,16 @@ on:
 
 jobs:
   cache-policy:
-    uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
 """
+
+WORKFLOW_CI_CACHE = render_caller(_T_CI_CACHE, PINNED_DEVTOOLS_REF)
 
 # Canonical caller for the org PR-title check. It had no template until 2026-09-20, which is
 # why 21 repositories carried a hand-written copy whose `types` omitted `synchronize` -- see
 # the constant above for what that omission costs.
-WORKFLOW_PR_TITLE_CHECK = """\
+_T_PR_TITLE_CHECK = """\
 name: PR Title Check
 
 # One in-flight run per pull request (ci-ops 8.3.3): a superseded push cancels
@@ -334,8 +400,11 @@ on:
 
 jobs:
   pr-title-check:
-    uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
 """
+
+WORKFLOW_PR_TITLE_CHECK = render_caller(_T_PR_TITLE_CHECK, PINNED_DEVTOOLS_REF)
 
 # Canonical callers for the six gates that had none until 2026-10-24. Until then the
 # fleet's other gates existed only as hand-written copies in each repository, which is why
@@ -347,7 +416,12 @@ jobs:
 # `p0-gate` and `family-versions` are opt-in by nature (only a repository named in the P0
 # ledger's scope, or one consuming a cross-repository family edge, needs them), so they are
 # written by `init --with-workflows` only when asked for explicitly with `--gate`.
-WORKFLOW_P0_GATE = """\
+#
+# `p0-gate` carries NO `devtools-ref` passthrough on purpose: its callee reads the P0
+# ledger itself, which is live policy state — a pinned caller would freeze an outdated
+# ledger and silently hide open P0s. Pinning the caller still freezes the gate's
+# workflow semantics; only the ledger read stays on master by design.
+_T_P0_GATE = """\
 name: P0 Gate
 
 # An unresolved P0 finding must cost something. This job fails while any P0 whose
@@ -379,10 +453,12 @@ concurrency:
 
 jobs:
   p0-gate:
-    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@__DEVTOOLS_REF__
 """
 
-WORKFLOW_FAMILY_VERSIONS = """\
+WORKFLOW_P0_GATE = render_caller(_T_P0_GATE, PINNED_DEVTOOLS_REF)
+
+_T_FAMILY_VERSIONS = """\
 name: Family dependency identity
 
 on:
@@ -393,10 +469,13 @@ on:
 
 jobs:
   family-versions:
-    uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
 """
 
-WORKFLOW_VERIFY_VERSIONS = """\
+WORKFLOW_FAMILY_VERSIONS = render_caller(_T_FAMILY_VERSIONS, PINNED_DEVTOOLS_REF)
+
+_T_VERIFY_VERSIONS = """\
 name: Verify Versions
 
 on:
@@ -407,10 +486,13 @@ on:
 
 jobs:
   verify-versions:
-    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
 """
 
-WORKFLOW_RULES_LINT = """\
+WORKFLOW_VERIFY_VERSIONS = render_caller(_T_VERIFY_VERSIONS, PINNED_DEVTOOLS_REF)
+
+_T_RULES_LINT = """\
 name: Rules Lint
 
 on:
@@ -421,10 +503,13 @@ on:
 
 jobs:
   rules-lint:
-    uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
 """
 
-WORKFLOW_RELEASE_NOTES = """\
+WORKFLOW_RULES_LINT = render_caller(_T_RULES_LINT, PINNED_DEVTOOLS_REF)
+
+_T_RELEASE_NOTES = """\
 name: Release Notes
 
 on:
@@ -435,10 +520,16 @@ jobs:
   release-notes:
     permissions:
       contents: write
-    uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
 """
 
-WORKFLOW_CNB_OVERFLOW = """\
+WORKFLOW_RELEASE_NOTES = render_caller(_T_RELEASE_NOTES, PINNED_DEVTOOLS_REF)
+
+#: The CNB spill lane dispatches work to CNB's own runners; the callee never
+#: fetches celestia-devtools at runtime, so its caller pins the workflow file
+#: only — no ``devtools-ref`` passthrough.
+_T_CNB_OVERFLOW = """\
 name: CNB Overflow Lane
 
 on:
@@ -461,7 +552,7 @@ concurrency:
 
 jobs:
   lane:
-    uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@master
+    uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@__DEVTOOLS_REF__
     with:
       target_repo: ${{ github.event.repository.name }}
       target_sha: ${{ inputs.target_sha || github.event.pull_request.head.sha || github.sha }}
@@ -472,6 +563,8 @@ jobs:
     secrets: inherit
 """
 
+WORKFLOW_CNB_OVERFLOW = render_caller(_T_CNB_OVERFLOW, PINNED_DEVTOOLS_REF)
+
 #: Opt-in gate callers: a repository needs only the ones whose scope covers it
 #: (P0 ledger scope, a cross-repository family edge, a version line, a repository
 #: AGENTS.md, a release tag, or the CNB spill lane), so they are generated only
@@ -479,10 +572,121 @@ jobs:
 #: no manifests (`family-versions` treats an empty scan as an error) or no tags.
 OPT_IN_GATES: dict[str, tuple[str, str, str]] = {"p0": ("p0-gate.yml", WORKFLOW_P0_GATE, "P0 ledger gate"), "family": ("family-versions.yml", WORKFLOW_FAMILY_VERSIONS, "family dependency identity"), "verify": ("verify-versions.yml", WORKFLOW_VERIFY_VERSIONS, "version consistency"), "rules": ("rules-lint.yml", WORKFLOW_RULES_LINT, "rules tree lint"), "release-notes": ("release-notes.yml", WORKFLOW_RELEASE_NOTES, "release notes"), "cnb": ("cnb-overflow-lane.yml", WORKFLOW_CNB_OVERFLOW, "CNB overflow lane")}
 
+#: caller filename → authored template source (with the render markers). The
+#: generator renders these at the requested ``--ref``; the tables above carry
+#: the same sources rendered at :data:`PINNED_DEVTOOLS_REF`, so a ref asked for
+#: at generation time and a ref compared at audit time can never come from two
+#: different texts.
+TEMPLATE_SOURCES: dict[str, str] = {"commit-msg-lint.yml": _T_COMMIT_LINT, "ci-cache.yml": _T_CI_CACHE, "pr-title-check.yml": _T_PR_TITLE_CHECK, "p0-gate.yml": _T_P0_GATE, "family-versions.yml": _T_FAMILY_VERSIONS, "verify-versions.yml": _T_VERIFY_VERSIONS, "rules-lint.yml": _T_RULES_LINT, "release-notes.yml": _T_RELEASE_NOTES, "cnb-overflow-lane.yml": _T_CNB_OVERFLOW}
+
 #: The three callers every repository needs, in generation order. Both the
 #: generator and ``--check`` read this table, so a new required caller cannot be
 #: added in one place and forgotten in the other.
 REQUIRED_WORKFLOWS: tuple[tuple[str, str, str], ...] = (("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"), ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"), ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"))
+
+#: A ``uses:`` line invoking any celestia-devtools reusable workflow, with the
+#: ref captured. ``(?m)^`` + non-comment body keeps commented-out examples
+#: (README snippets pasted into a file header) from counting as consumption.
+_DEVTOOLS_USES_RE = re.compile(r"(?m)^\s*uses:\s*celestia-island/celestia-devtools/\.github/workflows/[^\s@]+@(\S+)\s*$")
+
+def devtools_refs_in(text: str) -> list[str]:
+    """Refs this workflow file invokes devtools callees at (comments excluded)."""
+
+    return [match.group(1) for match in _DEVTOOLS_USES_RE.finditer(text)]
+
+def caller_render_state(text: str, template: str) -> tuple[str, str]:
+    """Classify *text* against a caller *template* by the ref it renders at.
+
+    Returns ``(state, ref)`` where state is one of:
+
+    ``clean``
+        byte-identical to the template rendered at :data:`PINNED_DEVTOOLS_REF`;
+    ``master``
+        byte-identical to the template rendered at ``master`` — the historical
+        floating form the fleet carries today (migration backlog);
+    ``stale``
+        byte-identical to the template rendered at some other ref — generator
+        output pinned to an earlier baseline (advance by regeneration);
+    ``drifted``
+        none of the above — hand-edited or from an older generator.
+
+    The un-migrated fleet must land in ``master``, never ``drifted``: a pin
+    migration that reddens every repository at once would be reverted, not
+    adopted. ``render_caller(t, "master")`` reproducing the pre-pin bytes
+    byte-for-byte is what makes that classification possible.
+    """
+
+    if text == render_caller(template, PINNED_DEVTOOLS_REF):
+        return "clean", PINNED_DEVTOOLS_REF
+
+    refs = devtools_refs_in(text)
+
+    if len(refs) == 1:
+        candidate = refs[0]
+
+        if text == render_caller(template, candidate):
+            return ("master" if candidate == "master" else "stale"), candidate
+
+    return "drifted", (refs[0] if refs else "?")
+
+def _pin_warning(rel: str, state: str, ref: str, regenerate: str) -> str:
+    """The warning line for a caller that is not at the current pin."""
+
+    if state == "master":
+        return f"{rel} pins nothing: it invokes the devtools callee at @master, so any master commit instantly redefines this gate's semantics (P2-3) — regenerate with: {regenerate}"
+
+    return f"{rel} is pinned to @{ref} (current pin @{PINNED_DEVTOOLS_REF}) — regenerate with: {regenerate} to advance"
+
+def unpinned_caller_warnings(workflows_dir: Path) -> list[str]:
+    """Callers of devtools reusable workflows not at the current pin.
+
+    Scans every workflow file (not just the table filenames) so hand-written
+    callers — style-lint adoption, gates without templates yet — are reported
+    too; callee definitions are skipped. ``@master`` is a warning, not an
+    error, for as long as the fleet migration runs (P2-3).
+    """
+
+    warnings: list[str] = []
+    table: dict[str, tuple[str, str, str]] = {}
+
+    for filename, _rendered, _label in REQUIRED_WORKFLOWS:
+        table[filename] = (TEMPLATE_SOURCES[filename], "celestia-devtools init --with-workflows --force")
+
+    for name, (filename, _rendered, _label) in OPT_IN_GATES.items():
+        table[filename] = (TEMPLATE_SOURCES[filename], f"celestia-devtools init --with-workflows --gate {name} --force")
+
+    if not workflows_dir.is_dir():
+        return warnings
+
+    for path in sorted(workflows_dir.glob("*.y*ml")):
+        try:
+            text = path.read_bytes().decode("utf-8", errors = "replace")
+        except OSError:
+            continue
+
+        if _is_callee_definition(text):
+            continue
+
+        entry = table.get(path.name)
+
+        if entry is not None:
+            state, ref = caller_render_state(text, entry[0])
+            rel = f".github/workflows/{path.name}"
+
+            if state in ("master", "stale"):
+                warnings.append(_pin_warning(rel, state, ref, entry[1]))
+
+            continue
+
+        # Not a template-owned file: warn per floating ref only (a tag or SHA
+        # reference is a pin by definition; only @master floats).
+        refs = devtools_refs_in(text)
+
+        if "master" in refs:
+            rel = f".github/workflows/{path.name}"
+            warnings.append(_pin_warning(rel, "master", "master", "regenerate the caller with a pinned devtools ref"))
+
+    return warnings
 
 def _is_callee_definition(text: str) -> bool:
     """True for the reusable workflow itself (``on: workflow_call``).
@@ -545,7 +749,14 @@ def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Optio
     return None
 
 def workflow_drift_problems(workflows_dir: Path) -> list[str]:
-    """Missing/drifted mandatory callers under *workflows_dir* (pure)."""
+    """Missing/drifted mandatory callers under *workflows_dir* (pure).
+
+    A caller rendered at ``@master`` (the fleet's current stock) or at a stale
+    pin is **not** a problem here: it is generator-owned bytes whose only issue
+    is which ref it pins, and that migration reports as a warning
+    (:func:`unpinned_caller_warnings`) so the fleet re-pins wave by wave instead
+    of going red all at once.
+    """
     problems: list[str] = []
 
     for filename, template, _label in REQUIRED_WORKFLOWS:
@@ -566,7 +777,9 @@ def workflow_drift_problems(workflows_dir: Path) -> list[str]:
         if _is_callee_definition(text):
             continue
 
-        if text != template:
+        state, _ref = caller_render_state(text, TEMPLATE_SOURCES[filename])
+
+        if state == "drifted":
             problems.append(f"{rel} drifted ({len(text.encode('utf-8'))} B ≠ canonical {len(template.encode('utf-8'))} B) — run: celestia-devtools init --with-workflows --force")
 
     return problems
@@ -587,11 +800,16 @@ def alias_warnings(workflows_dir: Path) -> list[str]:
     return warnings
 
 def opt_in_drift_warnings(workflows_dir: Path) -> list[str]:
-    """Drifted opt-in callers (warnings, not failures — inputs are hand-edited)."""
+    """Drifted opt-in callers (warnings, not failures — inputs are hand-edited).
+
+    Unpinned (``@master``) and stale-pin forms are generator-owned bytes; they
+    get the dedicated pin warning instead of the drift one.
+    """
     warnings: list[str] = []
 
-    for name, (filename, template, label) in OPT_IN_GATES.items():
+    for name, (filename, _rendered, label) in OPT_IN_GATES.items():
         path = workflows_dir / filename
+        rel = f".github/workflows/{filename}"
 
         if not path.is_file():
             continue
@@ -601,16 +819,22 @@ def opt_in_drift_warnings(workflows_dir: Path) -> list[str]:
         if _is_callee_definition(text):
             continue
 
-        if text != template:
-            warnings.append(f".github/workflows/{filename} drifted from the {label} template — regenerate with: celestia-devtools init --with-workflows --gate {name} --force (hand-edited inputs are why this is a warning, not a failure)")
+        state, ref = caller_render_state(text, TEMPLATE_SOURCES[filename])
+
+        if state in ("master", "stale"):
+            warnings.append(_pin_warning(rel, state, ref, f"celestia-devtools init --with-workflows --gate {name} --force"))
+            continue
+
+        if state == "drifted":
+            warnings.append(f"{rel} drifted from the {label} template — regenerate with: celestia-devtools init --with-workflows --gate {name} --force (hand-edited inputs are why this is a warning, not a failure)")
 
     return warnings
 
 def _workflow_drift_problems(workflows_dir: Path) -> list[str]:
-    """``init --check`` view: mandatory problems plus logged opt-in warnings."""
+    """``init --check`` view: mandatory problems plus logged pin/drift warnings."""
     problems = workflow_drift_problems(workflows_dir)
 
-    for warning in alias_warnings(workflows_dir) + opt_in_drift_warnings(workflows_dir):
+    for warning in alias_warnings(workflows_dir) + opt_in_drift_warnings(workflows_dir) + unpinned_caller_warnings(workflows_dir):
         logger.warn(warning)
 
     return problems
@@ -644,7 +868,7 @@ def _justfile_shadow_problems(repo_root: Path) -> list[str]:
 
     return problems
 
-def _ensure_workflows(repo_root: Path, *, force: bool = False, gates: tuple[str, ...] = ()) -> None:
+def _ensure_workflows(repo_root: Path, *, force: bool = False, gates: tuple[str, ...] = (), ref: str = PINNED_DEVTOOLS_REF) -> None:
     workflows_dir = repo_root / ".github" / "workflows"
     workflows_dir.mkdir(parents = True, exist_ok = True)
 
@@ -653,8 +877,9 @@ def _ensure_workflows(repo_root: Path, *, force: bool = False, gates: tuple[str,
     for gate in gates:
         wanted.append(OPT_IN_GATES[gate])
 
-    for filename, template, label in wanted:
+    for filename, _canonical, label in wanted:
         target = workflows_dir / filename
+        template = render_caller(TEMPLATE_SOURCES[filename], ref)
 
         if target.exists() and not force:
             logger.info(f"{filename} already exists — skipping (use --force to regenerate)")
@@ -671,7 +896,7 @@ def _ensure_workflows(repo_root: Path, *, force: bool = False, gates: tuple[str,
         # byte-for-byte across the fleet, and write_text's default
         # newline=os.linesep would turn their LF into CRLF on Windows.
         target.write_bytes(template.encode("utf-8"))
-        logger.ok(f"generated {label} workflow → {target}")
+        logger.ok(f"generated {label} workflow → {target} (devtools ref @{ref})")
 
 def _check_justfile_import(name: str) -> None:
     """Print a hint if the repo's justfile doesn't import the staged file."""

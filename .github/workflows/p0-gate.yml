@@ -52,6 +52,14 @@ jobs:
       # (--repo names it explicitly), and checking out `@master` guarantees the
       # gate reads the current ledger rather than whatever the runner has
       # preinstalled.
+      #
+      # P2-3 note: this checkout deliberately stays on master and takes NO
+      # `devtools-ref` input, unlike the other callees. The P0 ledger is live
+      # policy state, not gate semantics — a caller pinned to a baseline tag
+      # that also froze the ledger would read an outdated list of open P0s and
+      # could pass a repository a current ledger still gates. Pinning the
+      # caller still freezes this workflow's own semantics; only the ledger
+      # read floats, on purpose.
       - name: Checkout the ledger
         uses: actions/checkout@v7
         with:

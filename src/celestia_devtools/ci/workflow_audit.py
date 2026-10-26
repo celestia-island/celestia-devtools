@@ -15,9 +15,10 @@ This CLI makes that shape loud.
 only place an upper bound can live is the callee — the reusable workflow named by ``uses:``,
 on its self-hosted job. Rules 2 and 3 therefore fail a self-hosted job that has none.
 
-*Rules* (each finding carries ``path:line`` and a recomputable criterion; all seven are listed
-here — six carry ``error`` severity, and ``self-hosted-pr-without-fork-guard`` is ``warning``
-so the fleet can adopt the guard repository by repository instead of in one red wave):
+*Rules* (each finding carries ``path:line`` and a recomputable criterion; all eight are listed
+here — six carry ``error`` severity, and ``self-hosted-pr-without-fork-guard`` and
+``devtools-ref-not-pinned`` are ``warning`` so the fleet can adopt the guard and the ref pin
+repository by repository instead of in one red wave):
 
 ``invalid-caller-key``
     a job that has ``uses:`` **and** a key outside the nine caller keys — the incident.
@@ -58,6 +59,16 @@ so the fleet can adopt the guard repository by repository instead of in one red 
     private half of the fleet still has to grow the guard one repository at a time; a
     repository that must stay unguarded records it with
     ``--allow self-hosted-pr-without-fork-guard=<glob>``.
+``devtools-ref-not-pinned`` (warning)
+    a job whose ``uses:`` invokes a celestia-devtools reusable workflow at ``@master``.
+    A floating ref lets any single master commit redefine gate semantics for every
+    caller still floating — the python-track verify-versions vacuous-pass incident ran
+    on half the fleet exactly this way (arch-review 2026-10-26 P2-3). Any tag or SHA
+    is a pin and is not reported; only ``master`` floats. The commit-lint caller under
+    its canonical filename is classified by the byte comparison instead, which also
+    knows stale pins (a caller pinned to an earlier baseline tag). Warning, not error,
+    for as long as the fleet migration runs; a repository that must float records it
+    with ``--allow devtools-ref-not-pinned=<glob>``.
 
 *Structure:* the workflow AST is composed with PyYAML (a declared runtime dependency), so
 line numbers come from node marks and validity comes from the composer itself — a file that
@@ -104,7 +115,9 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
 # LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
 # _canonical_caller_findings。
-from celestia_devtools.repo.init import (WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS)
+# 钉版（P2-3）：caller 按 ref 分类——clean（当前 pin）/ unpinned（@master 浮动）/
+# stale（旧 pin）——分类器与生成器同源（repo.init 的 render_caller/caller_render_state）。
+from celestia_devtools.repo.init import (PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, caller_render_state, render_caller)
 import yaml as _yaml
 
 try:
@@ -124,14 +137,22 @@ RULE_YAML_PARSE_ERROR = "yaml-parse-error"
 RULE_CALLER_NOT_CANONICAL = "caller-not-canonical"
 RULE_YAML_DUPLICATE_KEY = "yaml-duplicate-key"
 RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD = "self-hosted-pr-without-fork-guard"
+RULE_DEVTOOLS_REF_NOT_PINNED = "devtools-ref-not-pinned"
 
-RULE_NAMES: Tuple[str, ...] = (RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD)
+RULE_NAMES: Tuple[str, ...] = (RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_DEVTOOLS_REF_NOT_PINNED)
 
 #: The file every repository ships for the shared commit-lint caller.
 CANONICAL_CALLER_NAME = "commit-msg-lint.yml"
 
 #: Substring that identifies a job calling the shared commit-lint reusable workflow.
 SHARED_COMMIT_LINT_REF = "celestia-devtools/.github/workflows/commit-msg-lint.yml"
+
+#: Prefix identifying any job that calls a celestia-devtools reusable workflow
+#: (rule 8 reads the ref off the ``uses:`` scalar itself, so any callee counts).
+SHARED_DEVTOOLS_PREFIX = "celestia-island/celestia-devtools/.github/workflows/"
+
+#: The ref that floats with master — the one ref that is not a pin (rule 8).
+FLOATING_REF = "master"
 
 # Two severities: ``error`` for what GitHub silently refuses to run (or what silently stops a
 # required check), ``warning`` for a shape the fleet has to adopt incrementally —
@@ -210,9 +231,10 @@ class finding_record:
 def has_failure(findings: Sequence[finding_record], strict: bool = False) -> bool:
     """Whether the run must exit non-zero: any error, or (with *strict*) any warning.
 
-    ``self-hosted-pr-without-fork-guard`` is a warning so the fleet can grow the guard one
-    repository at a time without a red wave, which makes ``--strict`` the switch a repository
-    flips once its own tree is guarded to keep it that way.
+    ``self-hosted-pr-without-fork-guard`` and ``devtools-ref-not-pinned`` are
+    warnings so the fleet can grow the guard and the ref pin one repository at
+    a time without a red wave, which makes ``--strict`` the switch a repository
+    flips once its own tree is guarded and pinned to keep it that way.
     """
 
     for finding in findings:
@@ -490,21 +512,24 @@ def _same_caller_semantics(text: str, canonical: str) -> tuple[bool, str]:
 def _canonical_caller_findings(text: str, path: str) -> List[finding_record]:
     """Byte-compare the caller against the template the generator ships.
 
-    Three outcomes (2026-09-26, the lane-carrying canonical migration):
+    Outcomes (2026-09-26 lane migration + 2026-10-26 P2-3 ref pinning):
 
-    * byte-identical to the canonical template → clean;
-    * byte-identical to the **legacy** pre-lane template → WARNING, the migration
-      path: the file is still generator-owned (not a hand edit), it just lacks
-      the ``vars.LINT_RUNNER``/``vars.LINT_LANE`` passthrough, so moving the
-      required check to the self-hosted farm still requires a tree change —
-      exactly the W-2 single-lane-of-rescue defect. Warnings stay non-fatal so
-      the fleet migrates by regeneration instead of a 38-repo red wave;
-    * the lane-carrying form without the `permissions` grant → WARNING: the check
-      still cannot start (2026-10-02 tightened the org default token permissions);
+    * byte-identical to the canonical template rendered at the current pin →
+      clean;
+    * byte-identical to the **legacy** pre-lane template → WARNING, migration;
+    * the lane-carrying form without the `permissions` grant → WARNING;
+    * byte-identical to the template rendered at ``@master`` → WARNING
+      (``devtools-ref-not-pinned``): generator-owned bytes, floating ref — the
+      fleet's migration backlog, never a red wave;
+    * byte-identical to the template rendered at an older pin → WARNING
+      (``devtools-ref-not-pinned``): advance by regeneration;
+    * semantically equal to either form, comments aside → WARNING (do not
+      delete comments to satisfy an audit);
     * anything else → ERROR: hand-edited or from an older generator, and a
       variant that drops ``ready_for_review``/``synchronize`` stops re-running
       the required check (the merge then cannot proceed).
     """
+    _source = TEMPLATE_SOURCES["commit-msg-lint.yml"]
 
     if text == WORKFLOW_COMMIT_LINT:
         return []
@@ -515,7 +540,23 @@ def _canonical_caller_findings(text: str, path: str) -> List[finding_record]:
     if text == WORKFLOW_COMMIT_LINT_LEGACY:
         return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller is the legacy pre-lane template " f"({len(WORKFLOW_COMMIT_LINT_LEGACY.encode())} bytes); regenerate it with " f"`celestia-devtools init --with-workflows --force` to gain the " f"`vars.LINT_RUNNER`/`vars.LINT_LANE` passthrough, so the required check " f"can be served from the self-hosted farm by setting repository " f"variables instead of editing this tree", excerpt = "")]
 
+    state, ref = caller_render_state(text, _source)
+
+    if state in ("master", "stale"):
+        floating = "pins nothing: it invokes the devtools callee at @master, so any master commit instantly redefines this gate's semantics" if state == "master" else f"is pinned to @{ref} while the current pin is @{PINNED_DEVTOOLS_REF}"
+        return [finding_record(path = path, line = 1, rule = RULE_DEVTOOLS_REF_NOT_PINNED, severity = SEVERITY_WARNING, message = f"this commit-lint caller {floating} (P2-3). Regenerate it with " f"`celestia-devtools init --with-workflows --force` to pin @{PINNED_DEVTOOLS_REF}; a repository that must float records it with " f"--allow devtools-ref-not-pinned={Path(path).name}", excerpt = "")]
+
     semantically_same, why = _same_caller_semantics(text, WORKFLOW_COMMIT_LINT)
+
+    if not semantically_same and (state == "drifted"):
+        # A hand-edited @master variant may still declare what the pre-pin
+        # canonical declared, comments aside: compare against the master
+        # render before failing it, so a straggler with extra comments is a
+        # warning (regenerate) and not an error that invites comment deletion.
+        semantically_same, why = _same_caller_semantics(text, render_caller(_source, FLOATING_REF))
+
+        if semantically_same:
+            why = "matches the floating @master form, comments aside"
 
     if semantically_same:
         # 2026-10-24: a caller that differs from the canonical bytes only in its
@@ -525,9 +566,45 @@ def _canonical_caller_findings(text: str, path: str) -> List[finding_record]:
         # repository to delete its explanatory comments to turn the gate green,
         # i.e. to make the tree worse to satisfy the tool. Comments are where a
         # caller records why it grants what it grants, so they stay a warning.
-        return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller declares exactly what the canonical template " f"does (same triggers, permissions, `uses` and `with`) but differs in its " f"comments ({len(text.encode())} bytes vs " f"{len(WORKFLOW_COMMIT_LINT.encode())}). That is not a broken check; " f"regenerate with `celestia-devtools init --with-workflows --force` if you " f"want the bytes to match, but do not delete the comments to satisfy the " f"audit", excerpt = "")]
+        return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_WARNING, message = f"this commit-lint caller declares exactly what a canonical template " f"does (same triggers, permissions, `uses` and `with`) but differs in its " f"comments ({len(text.encode())} bytes; {why}). That is not a broken check; " f"regenerate with `celestia-devtools init --with-workflows --force` if you " f"want the bytes to match, but do not delete the comments to satisfy the " f"audit", excerpt = "")]
 
     return [finding_record(path = path, line = 1, rule = RULE_CALLER_NOT_CANONICAL, severity = SEVERITY_ERROR, message = f"the shared commit-lint caller must be byte-identical to the canonical " f"template ({len(WORKFLOW_COMMIT_LINT.encode())} bytes); this file is " f"{len(text.encode())} bytes and {why}. Regenerate it with " f"`celestia-devtools init --with-workflows --force` instead of editing it by " f"hand — a variant that drops `ready_for_review` or `synchronize` stops " f"re-running the required check, and the PR then cannot be merged", excerpt = "")]
+
+def _devtools_unpinned_findings(jobs: MappingNode, path: str, lines: Sequence[str]) -> List[finding_record]:
+    """Rule 8: a job calling a devtools reusable workflow at ``@master``.
+
+    Any tag or SHA is a pin — only ``master`` floats, so only ``master`` is
+    reported. The ``uses:`` value is read from the parsed document, so a
+    commented-out example cannot count as consumption. The commit-lint caller
+    under its canonical name is excluded here: the byte comparison in
+    :func:`_canonical_caller_findings` already classifies its ref (and a file
+    that hits both rules would report the same fact twice).
+    """
+
+    findings: List[finding_record] = []
+
+    for key_node, body in jobs.value:
+        if not isinstance(body, MappingNode):
+            continue
+
+        uses_key = _mapping_value(body, "uses")
+
+        if not isinstance(uses_key, ScalarNode):
+            continue
+
+        value = uses_key.value or ""
+        is_devtools_callee = value.startswith(SHARED_DEVTOOLS_PREFIX)
+        is_floating = value.endswith("@" + FLOATING_REF)
+
+        if (not is_devtools_callee) or (not is_floating):
+            continue
+
+        job_id = _scalar_text(key_node) or "<unnamed>"
+        callee = value[len(SHARED_DEVTOOLS_PREFIX):].split("@", 1)[0]
+        message = f"job {job_id!r} invokes the devtools reusable workflow {callee!r} at " f"@{FLOATING_REF}: any master commit instantly redefines this gate's " f"semantics for every caller still floating (P2-3; the python-track " f"verify-versions vacuous-pass incident ran exactly this way). Pin the " f"caller — regenerate it with `celestia-devtools init --with-workflows " f"--force` (add `--gate <name>` for opt-in callers) or reference a devtools " f"baseline tag directly. A repository that must float records it with " f"--allow devtools-ref-not-pinned=<glob>"
+        findings.append(finding_record(path = path, line = _line_of(uses_key), rule = RULE_DEVTOOLS_REF_NOT_PINNED, severity = SEVERITY_WARNING, message = message, excerpt = _line_excerpt(lines, _line_of(uses_key))))
+
+    return findings
 
 def _mislocated_caller_findings(path: str) -> List[finding_record]:
     """Flag a shared caller that lives in a file other than :data:`CANONICAL_CALLER_NAME`.
@@ -614,6 +691,15 @@ def audit_text(text: str, path: str) -> List[finding_record]:
             findings.extend(_canonical_caller_findings(text, path))
         else:
             findings.extend(_mislocated_caller_findings(path))
+
+    # Rule 8 reads the ref off every `uses:` job — but not the commit-lint
+    # caller under its canonical name, which the byte comparison above already
+    # classified (reporting the same fact under two rules is noise, and the
+    # canonical comparator knows stale pins too, not just @master).
+    is_canonical_lint_file = (Path(path).name == CANONICAL_CALLER_NAME) and _calls_shared_commit_lint(jobs)
+
+    if not is_canonical_lint_file:
+        findings.extend(_devtools_unpinned_findings(jobs, path, lines))
 
     for key_node, body in jobs.value:
         job_id = _scalar_text(key_node) or "<unnamed>"
@@ -855,7 +941,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog = "celestia-ci-audit", formatter_class = _whole_word_help_formatter, description = "Fail GitHub Actions workflows that GitHub would silently refuse to run: " "illegal keys on reusable-workflow caller jobs (jobs.<id>.uses), self-hosted " "jobs without timeout-minutes, and files that are not valid YAML. The caller " "side cannot express a timeout upper bound; it belongs on the callee. " "Self-hosted jobs reachable by pull_request also have to keep fork PRs out " "(warning).")
     parser.add_argument("paths", nargs = "*", help = "workflow files or directories (default: .github/workflows)")
     parser.add_argument("--json", action = "store_true", dest = "as_json", help = "emit the fixed machine-readable report on stdout")
-    parser.add_argument("--strict", action = "store_true", help = "treat warning-severity findings as failures too " "(self-hosted-pr-without-fork-guard is the warning-severity rule)")
+    parser.add_argument("--strict", action = "store_true", help = "treat warning-severity findings as failures too " "(self-hosted-pr-without-fork-guard and devtools-ref-not-pinned are the warning-severity rules)")
     parser.add_argument("--allow", action = "append", default = [], type = parse_allow, metavar = "RULE=GLOB", help = "suppress findings of RULE whose reported path matches GLOB " f"(RULE is one of {', '.join(RULE_NAMES)}, or *; repeatable)")
     return parser
 

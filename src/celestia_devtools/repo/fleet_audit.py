@@ -20,7 +20,11 @@ gates.
   line of any workflow file (``commit-msg-lint``, ``ci-cache``,
   ``pr-title-check``, ``p0-gate``, ``family-versions``, ``verify-versions``,
   ``rules-lint``, ``release-notes``, ``cnb-overflow``); a commented-out
-  reference does not count.
+  reference does not count;
+- ``devtools_refs`` / ``ref_state`` — the unique refs those ``uses:`` lines
+  invoke and a per-repository verdict (``pinned`` at the current baseline,
+  ``master`` floating, ``stale`` older pin, ``none``); ``@master`` callers are
+  reported as warnings (P2-3) and counted in the summary census.
 
 All reads are **origin-first**: the report describes the remote default branch,
 not uncommitted local state, and falls back to the worktree (``"ref":
@@ -52,7 +56,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
-from celestia_devtools.repo.init import OPT_IN_GATES, REQUIRED_WORKFLOWS, alias_warnings, opt_in_drift_warnings, workflow_drift_problems
+from celestia_devtools.repo.init import OPT_IN_GATES, PINNED_DEVTOOLS_REF, REQUIRED_WORKFLOWS, alias_warnings, devtools_refs_in, opt_in_drift_warnings, unpinned_caller_warnings, workflow_drift_problems
 
 #: ``gate name → caller filename`` for the nine reusable workflows. The first
 #: three are the mandatory trio; the rest are opt-in (scope decides adoption).
@@ -73,13 +77,34 @@ class repo_report:
     problems: List[str] = field(default_factory = list)
     warnings: List[str] = field(default_factory = list)
     gates: Dict[str, bool] = field(default_factory = dict)
+    #: Unique devtools refs this repository's callers invoke (P2-3 census).
+    devtools_refs: List[str] = field(default_factory = list)
 
     @property
     def canonical(self) -> bool:
         return not self.problems
 
+    @property
+    def ref_state(self) -> str:
+        """``pinned`` | ``master`` | ``stale`` | ``none`` (no devtools callers).
+
+        ``master`` wins over ``pinned`` for a mixed repository: one floating
+        caller is exactly the exposure the census exists to surface.
+        """
+
+        if not self.devtools_refs:
+            return "none"
+
+        if "master" in self.devtools_refs:
+            return "master"
+
+        if set(self.devtools_refs) == {PINNED_DEVTOOLS_REF}:
+            return "pinned"
+
+        return "stale"
+
     def to_dict(self) -> dict:
-        return {"name": self.name, "ref": self.ref, "problems": list(self.problems), "warnings": list(self.warnings), "gates": dict(self.gates), "canonical": self.canonical}
+        return {"name": self.name, "ref": self.ref, "problems": list(self.problems), "warnings": list(self.warnings), "gates": dict(self.gates), "devtools_refs": list(self.devtools_refs), "ref_state": self.ref_state, "canonical": self.canonical}
 
 @dataclass
 class fleet_report:
@@ -93,7 +118,8 @@ class fleet_report:
 
     def to_dict(self) -> dict:
         adoption = {gate: {"adopted": sum(1 for repo in self.repositories if repo.gates.get(gate)), "missing": sum(1 for repo in self.repositories if not repo.gates.get(gate))} for gate in GATE_FILES}
-        return {"workspace": self.workspace, "repositories": [repo.to_dict() for repo in self.repositories], "summary": {"repositories": len(self.repositories), "clean": sum(1 for repo in self.repositories if repo.canonical), "with_problems": sum(1 for repo in self.repositories if not repo.canonical), "gates": adoption}, "errors": list(self.errors), "ok": self.ok}
+        census = {state: sum(1 for repo in self.repositories if repo.ref_state == state) for state in ("pinned", "master", "stale", "none")}
+        return {"workspace": self.workspace, "repositories": [repo.to_dict() for repo in self.repositories], "summary": {"repositories": len(self.repositories), "clean": sum(1 for repo in self.repositories if repo.canonical), "with_problems": sum(1 for repo in self.repositories if not repo.canonical), "gates": adoption, "devtools_ref_census": census, "current_pin": PINNED_DEVTOOLS_REF}, "errors": list(self.errors), "ok": self.ok}
 
 def discover_repositories(workspace: Path) -> List[Path]:
     """Immediate git checkouts under *workspace* (``_``-prefixed dirs skipped)."""
@@ -241,9 +267,11 @@ def scan_repository(repo: Path) -> repo_report:
     with tempfile.TemporaryDirectory(prefix = "fleet-audit-") as scratch:
         write_texts(texts, Path(scratch) / "workflows")
         report.problems = workflow_drift_problems(Path(scratch) / "workflows")
-        report.warnings = alias_warnings(Path(scratch) / "workflows") + opt_in_drift_warnings(Path(scratch) / "workflows")
+        report.warnings = alias_warnings(Path(scratch) / "workflows") + opt_in_drift_warnings(Path(scratch) / "workflows") + unpinned_caller_warnings(Path(scratch) / "workflows")
 
     report.gates = {gate: references_callee(texts, GATE_CALLEE_FILES[gate]) for gate in GATE_FILES}
+    refs = sorted({ref for text in texts.values() for ref in devtools_refs_in(text)})
+    report.devtools_refs = refs
     return report
 
 def audit_workspace(workspace: Path) -> fleet_report:
@@ -284,8 +312,10 @@ def _render_text(report: fleet_report) -> str:
         lines.append("")
 
     adopted = {gate: sum(1 for repo in report.repositories if repo.gates.get(gate)) for gate in GATE_FILES}
+    census = {state: sum(1 for repo in report.repositories if repo.ref_state == state) for state in ("pinned", "master", "stale", "none")}
     lines.append("fleet-audit: %d repositories, %d canonical, %d with problems" % (len(report.repositories), sum(1 for repo in report.repositories if repo.canonical), sum(1 for repo in report.repositories if not repo.canonical)))
     lines.append("gate adoption: " + ", ".join("%s=%d" % (gate, adopted[gate]) for gate in GATE_FILES))
+    lines.append("devtools refs (pin @%s): pinned=%d master=%d stale=%d none=%d" % (PINNED_DEVTOOLS_REF, census["pinned"], census["master"], census["stale"], census["none"]))
     return "\n".join(lines)
 
 def _render_error_json(workspace: Path, message: str) -> dict:

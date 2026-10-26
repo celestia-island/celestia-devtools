@@ -27,7 +27,8 @@ import json
 import pytest
 from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY
 from celestia_devtools.ci import workflow_audit
-from celestia_devtools.ci.workflow_audit import (CALLER_LEGAL_KEYS, CANONICAL_CALLER_NAME, FORK_GUARD, RULE_CALLEE_MISSING_TIMEOUT, RULE_INVALID_CALLER_KEY, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_YAML_PARSE_ERROR, RULE_NAMES, finding_record, _build_parser, audit_text, has_failure, main)
+from celestia_devtools.repo.init import TEMPLATE_SOURCES, render_caller
+from celestia_devtools.ci.workflow_audit import (CALLER_LEGAL_KEYS, CANONICAL_CALLER_NAME, FORK_GUARD, RULE_CALLEE_MISSING_TIMEOUT, RULE_INVALID_CALLER_KEY, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_YAML_PARSE_ERROR, RULE_DEVTOOLS_REF_NOT_PINNED, RULE_NAMES, finding_record, _build_parser, audit_text, has_failure, main)
 import yaml as _yaml
 import os
 from pathlib import Path as _Path
@@ -77,13 +78,13 @@ def _rules(findings):
 
 #: The accident: a caller job plus the key GitHub rejects. This is a faithful
 #: reduction of ``shittim-chest/.github/workflows/ci.yml`` (PR #870 / #872).
-ACCIDENT = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    timeout-minutes: 90\n"
+ACCIDENT = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@v2026.10\n" "    timeout-minutes: 90\n"
 
 #: A caller job carrying **only** the nine legal keys (every one of them, on purpose).
 #: The callee is deliberately *not* the shared lint workflow: rule 5 requires that caller to
 #: live in ``commit-msg-lint.yml``, so using it here would fold two rules into one fixture
 #: (变红时看不出是键集错还是位置错). Rule 5 has its own class below.
-LEGAL_CALLER = "name: CI\n" "on: [push, workflow_dispatch]\n" "jobs:\n" "  verify-versions:\n" "    name: Verify versions\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    with:\n" "      fetch-depth: 0\n" "    secrets: inherit\n" "    strategy:\n" "      fail-fast: false\n" "    needs: [build]\n" "    if: github.event_name == 'pull_request'\n" "    concurrency:\n" "      group: lint-${{ github.ref }}\n" "    permissions:\n" "      contents: read\n"
+LEGAL_CALLER = "name: CI\n" "on: [push, workflow_dispatch]\n" "jobs:\n" "  verify-versions:\n" "    name: Verify versions\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@v2026.10\n" "    with:\n" "      fetch-depth: 0\n" "    secrets: inherit\n" "    strategy:\n" "      fail-fast: false\n" "    needs: [build]\n" "    if: github.event_name == 'pull_request'\n" "    concurrency:\n" "      group: lint-${{ github.ref }}\n" "    permissions:\n" "      contents: read\n"
 
 #: A reusable-workflow callee whose self-hosted job has no upper bound.
 CALLEE_NO_TIMEOUT = "name: Verify versions\n" "on:\n" "  workflow_call:\n" "    inputs:\n" "      ref:\n" "        type: string\n" "jobs:\n" "  verify-versions:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - uses: actions/checkout@v7\n" "      - run: cargo run -p verify-versions\n"
@@ -476,7 +477,7 @@ class test_json_contract_and_exit_codes:
         assert summary["failed"] is True
         # 冻结的 JSON 契约：规则键集合 = RULE_NAMES（加规则是一次契约变更，必须同步这里）。
         assert set(summary["rules"]) == set(RULE_NAMES)
-        assert set(summary["rules"]) == {RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD}
+        assert set(summary["rules"]) == {RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_DEVTOOLS_REF_NOT_PINNED}
         assert summary["rules"][RULE_INVALID_CALLER_KEY] == 1
 
     def test_stdout_is_pure_json(self, tmp_path, monkeypatch, capsys):
@@ -687,7 +688,7 @@ class test_fork_guard:
 
     def test_caller_job_is_not_reported(self, tmp_path, monkeypatch, capsys):
         """关键防误报：caller 作业的 guard 在 callee 里，报它就是给 34 个仓刷噪音。"""
-        caller = "name: Verify Versions\n" "on:\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n"
+        caller = "name: Verify Versions\n" "on:\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@v2026.10\n"
         _workflow(tmp_path, caller)
         monkeypatch.chdir(tmp_path)
         code, out, _err = _run(["--json"], capsys)
@@ -881,9 +882,88 @@ class test_allow_list:
     def test_module_docstring_rule_count_follows_the_table(self):
         """模块 docstring 里的条数必须等于 ``len(RULE_NAMES)``——它就是漂移的那一处。"""
         doc = workflow_audit.__doc__ or ""
-        number = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"}[len(RULE_NAMES)]
+        number = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}[len(RULE_NAMES)]
         assert f"all {number} are" in doc
         assert "one of the four rule names" not in doc
+
+# ── 规则 8：devtools ref 钉版（P2-3） ───────────────────────────────────────
+
+class test_devtools_ref_not_pinned:
+    """A ``uses:`` into a devtools reusable workflow at ``@master`` warns (never fails).
+
+    The fleet migrates repo by repo: a warning is schedulable, an error is a
+    red wave that gets reverted. Pins — tags or SHAs — stay silent; only
+    ``master`` floats.
+    """
+
+    def _caller(self, ref):
+        return "name: Verify Versions\n" "on:\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" f"    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@{ref}\n"
+
+    def test_master_ref_is_a_warning_not_an_error(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self._caller("master"))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        report = json.loads(out)
+        assert _rules(report["findings"]) == ["devtools-ref-not-pinned"]
+        assert report["summary"]["warnings"] == 1
+        assert report["summary"]["errors"] == 0
+
+    def test_tag_and_sha_refs_are_clean(self, tmp_path, monkeypatch, capsys):
+        for ref in ("v2026.10", "0123456789abcdef0123456789abcdef01234567"):
+            _workflow(tmp_path, self._caller(ref))
+            monkeypatch.chdir(tmp_path)
+            code, out, _err = _run(["--json"], capsys)
+            assert code == 0, ref
+            assert json.loads(out)["findings"] == [], ref
+
+    def test_commented_out_uses_does_not_count(self, tmp_path, monkeypatch, capsys):
+        text = "# a README snippet pasted into a header:\n" "#   uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master\n" "name: CI\n" "on: [push]\n" "jobs:\n" "  build:\n" "    runs-on: ubuntu-latest\n" "    steps:\n" "      - run: echo hi\n"
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_strict_turns_the_warning_into_a_failure(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self._caller("master"))
+        monkeypatch.chdir(tmp_path)
+        code, _out, _err = _run(["--strict"], capsys)
+        assert code == 1
+
+    def test_allow_suppresses_by_glob(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self._caller("master"))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json", "--allow", "devtools-ref-not-pinned=*ci.yml"], capsys)
+        assert code == 0
+        assert json.loads(out)["summary"]["suppressed"] == 1
+
+    def test_fleet_stock_commit_lint_caller_warns_under_the_canonical_name(self, tmp_path, monkeypatch, capsys):
+        """The entire fleet's current bytes: byte-canonical modulo the floating ref."""
+        fleet_bytes = render_caller(TEMPLATE_SOURCES["commit-msg-lint.yml"], "master")
+        _workflow(tmp_path, fleet_bytes, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        report = json.loads(out)
+        assert _rules(report["findings"]) == ["devtools-ref-not-pinned"], "fleet stock must warn, never error"
+
+    def test_stale_pin_commit_lint_caller_warns(self, tmp_path, monkeypatch, capsys):
+        stale = render_caller(TEMPLATE_SOURCES["commit-msg-lint.yml"], "v2026.9")
+        _workflow(tmp_path, stale, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        report = json.loads(out)
+        assert _rules(report["findings"]) == ["devtools-ref-not-pinned"]
+        assert "v2026.9" in report["findings"][0]["message"]
+
+    def test_pinned_canonical_commit_lint_caller_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
 
 # ── 路径解析与 CLI 约定 ─────────────────────────────────────────────────────
 
