@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import yaml
+from celestia_devtools.repo import init
 from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, workflow_drift_problems, WORKFLOW_CI_CACHE, WORKFLOW_CNB_OVERFLOW, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, WORKFLOW_FAMILY_VERSIONS, WORKFLOW_P0_GATE, WORKFLOW_PR_TITLE_CHECK, WORKFLOW_RELEASE_NOTES, WORKFLOW_RULES_LINT, WORKFLOW_VERIFY_VERSIONS, _T_COMMIT_LINT, _ensure_workflows, caller_render_state, render_caller, unpinned_caller_warnings)
 
 #: sha256 of the canonical caller shipped in celestia-island repositories: the
@@ -185,6 +186,19 @@ class test_ref_escape_hatch:
         body = next(iter(yaml.safe_load((tmp_path / ".github" / "workflows" / "ci-cache.yml").read_text(encoding = "utf-8"))["jobs"].values()))
         assert body["uses"].endswith("@v2026.9")
         assert body["with"]["devtools-ref"] == "v2026.9"
+
+def test_sha_ref_is_rejected_at_the_cli(monkeypatch, tmp_path):
+    """R2 F2: the clone-based gates bootstrap with `git clone --branch`, which
+    cannot honor a SHA — generating a SHA-pinned caller would ship a gate whose
+    bootstrap deterministically fails at runtime."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["init", "--with-workflows", "--ref", "0123456789abcdef0123456789abcdef01234567"])
+
+    # Return-code assertion only: the shared logger emits through a worker
+    # thread, so captured-stream assertions on it are racy by design
+    # (see test_init_check.py).
+    assert init.main() == 2
+    assert not (tmp_path / ".github" / "workflows").exists(), "a rejected ref must not generate anything"
 
 class test_legacy_bytes:
     """The pre-lane template: the audit's migration marker, frozen on purpose.

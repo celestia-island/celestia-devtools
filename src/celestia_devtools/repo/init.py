@@ -89,11 +89,21 @@ def main() -> int:
     parser.add_argument("--no-hooks", action = "store_true", help = "skip automatic commit-msg hook install")
     parser.add_argument("--with-workflows", action = "store_true", help = "also generate the three required org workflows " "(commit-msg lint, CI cache policy, PR title check)")
     parser.add_argument("--gate", action = "append", choices = sorted(OPT_IN_GATES), metavar = "NAME", help = "also (re)generate one opt-in gate caller: " + ", ".join(sorted(OPT_IN_GATES)) + " (repeatable; requires --with-workflows)")
-    parser.add_argument("--ref", default = PINNED_DEVTOOLS_REF, metavar = "REF", help = f"devtools git ref the generated callers pin (default: {PINNED_DEVTOOLS_REF}; 'master' is the escape hatch for break-glass consumption of an unmerged fix)")
+    parser.add_argument("--ref", default = PINNED_DEVTOOLS_REF, metavar = "REF", help = f"devtools git ref (branch or tag) the generated callers pin (default: {PINNED_DEVTOOLS_REF}; 'master' is the escape hatch for break-glass consumption of an unmerged fix; a 40-hex SHA is rejected — the clone-based gates cannot bootstrap one)")
     args = parser.parse_args()
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", args.ref or ""):
         logger.error(f"--ref {args.ref!r} is not a valid git ref (letters, digits, '.', '_', '/', '-')")
+        return 2
+
+    if re.fullmatch(r"[0-9a-fA-F]{40}", args.ref or ""):
+        # R2 review F2: the clone-based callees (verify-versions,
+        # family-versions) bootstrap with `git clone --branch`, which accepts a
+        # branch or tag but not an arbitrary SHA — a caller generated at a SHA
+        # pin would fail those gates' bootstrap at runtime. Generated callers
+        # pin branches/tags only; hand-written SHA pins are still legal (the
+        # audit treats any non-master ref as a pin) and unaffected.
+        logger.error(f"--ref {args.ref[:8]}… looks like a commit SHA; generated callers pin a branch or tag (the clone-based gates cannot bootstrap a SHA ref)")
         return 2
 
     src = common_just_path()
