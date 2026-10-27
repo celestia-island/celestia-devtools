@@ -33,8 +33,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-SEP = "@@\n"  # record separator for for-each-ref
-
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     # UTF-8 is pinned: git speaks UTF-8, but a Windows console's locale
     # codec (cp936 on a Chinese install) cannot decode it — the reader
@@ -71,19 +69,59 @@ def _worktree_branches(repo: Path) -> set[str]:
 
     return out
 
+class sweep_parse_error(RuntimeError):
+    """for-each-ref output could not be parsed unambiguously.
+
+    Raised instead of guessing: a misparse names the wrong branch for
+    deletion, so any malformed shape aborts the sweep (and '--apply' with
+    it) rather than picking a best-effort answer.
+    """
+
 def _local_branches(repo: Path) -> list[tuple[str, str, str]]:
-    r = _git(repo, "for-each-ref", "refs/heads", "--format=%(refname:short)" + SEP + "%(upstream:short)" + SEP + "%(upstream:track)")
+    # One NUL per field boundary, one line per record: NUL and newline are
+    # the two byte sequences a refname and `%(upstream:track)` ("[ahead 1]",
+    # "[gone]") can never contain, so the grammar below has no ambiguous
+    # shape. The previous format split the whole buffer on "@@\n" and lost
+    # against git's per-record trailing newline: branch one's upstream read
+    # as empty (alive upstreams swept as gone), upstream names turned into
+    # phantom branch entries, and every branch after the first vanished
+    # into the previous record's track field -- '--apply' then deleted the
+    # wrong set. Regression: tests/test_branch_sweep.py parsing block.
+    r = _git(repo, "for-each-ref", "refs/heads", "--format=%(refname:short)%00%(upstream:short)%00%(upstream:track)")
+
+    if r.returncode != 0:
+        raise sweep_parse_error(f"git for-each-ref failed (rc={r.returncode}): {r.stderr.strip()}")
+
+    out = r.stdout
+
+    if not out:
+        # rc=0 with zero bytes is for-each-ref's only rendering of "zero
+        # local branches" (every record is newline-terminated, so no
+        # records means no output at all): the run after a maximal sweep
+        # deleted every branch, or a repo whose only "master" is a tag
+        # (rev-parse --verify resolves tags too). Legitimate no-op, not
+        # truncation.
+        return []
+
+    if not out.endswith("\n"):
+        raise sweep_parse_error("for-each-ref output is truncated (missing final record newline); refusing to parse")
+
     branches: list[tuple[str, str, str]] = []
 
-    for record in r.stdout.split(SEP):
-        parts = record.split("\n", 2)
+    for line in out[:-1].split("\n"):
+        fields = line.split("\x00")
 
-        while len(parts) < 3:
-            parts.append("")
+        if len(fields) != 3:
+            raise sweep_parse_error(f"malformed for-each-ref record ({len(fields)} NUL-separated fields, expected 3): {line!r}")
 
-        branches.append((parts[0], parts[1], parts[2].strip("[]")))
+        name, upstream, track = fields
 
-    return [b for b in branches if b[0]]
+        if not name:
+            raise sweep_parse_error("malformed for-each-ref record: empty refname")
+
+        branches.append((name, upstream, track.strip("[]")))
+
+    return branches
 
 def _upstream_gone(repo: Path, upstream: str, track: str) -> bool:
     if not upstream:
@@ -207,7 +245,16 @@ def main(argv: list[str] | None = None) -> int:
     reports = []
 
     for repo in repos:
-        report = sweep_repo(repo, base = args.base, apply = args.apply, backup_dir = Path(args.backup_dir)if args.backup_dir else None)
+        try:
+            report = sweep_repo(repo, base = args.base, apply = args.apply, backup_dir = Path(args.backup_dir)if args.backup_dir else None)
+        except sweep_parse_error as e:
+            # Fail closed: an unparsable listing deletes nothing and fails
+            # the run instead of sweeping a guessed branch set. Other repos
+            # in a '--root' walk still get their (independent) verdicts.
+            print(f"ERROR  {repo}: {e}", file = sys.stderr)
+            failed = True
+            continue
+
         reports.append(report)
 
         for v in report["verdicts"]:
@@ -234,7 +281,13 @@ def main(argv: list[str] | None = None) -> int:
     deletes = sum(1 for r in reports for v in r["verdicts"] if v["verdict"] == "DELETE")
     keeps = sum(1 for r in reports for v in r["verdicts"] if v["verdict"] == "KEEP")
     mode = "applied" if args.apply else "dry run ('--apply' to delete)"
-    print(f"git-sweep: {mode}; {deletes} swept, {keeps} kept")
+
+    if failed:
+        # Exit 1 is coming; do not let the summary read as a clean run.
+        print(f"git-sweep: {mode}; FAILED (see ERROR lines above); {deletes} swept, {keeps} kept")
+    else:
+        print(f"git-sweep: {mode}; {deletes} swept, {keeps} kept")
+
     return 1 if failed else 0
 
 if __name__ == "__main__":

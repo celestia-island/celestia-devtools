@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
+from celestia_devtools.vcs import branch_sweep
 from celestia_devtools.vcs.branch_sweep import sweep_repo
 import subprocess as sp
 from celestia_devtools.vcs.branch_sweep import main as sweep_main
@@ -67,18 +68,15 @@ def test_unique_content_kept(repo: Path):
     report = sweep_repo(repo)
     assert _verdicts(report)["feat/diverged"] == "KEEP"
 
-def test_alive_upstream_kept(repo: Path):
+def test_alive_upstream_kept(repo: Path, tmp_path: Path):
     _git(repo, "switch", "-c", "feat/live")
     _write(repo, "h.txt", "x\n")
     _commit(repo, "live work")
-    sha = _git(repo, "rev-parse", "feat/live")
-    _git(repo, "update-ref", "refs/remotes/origin/feat/live", sha)
-    # no real remote exists: wire the tracking config directly
-    _git(repo, "config", "branch.feat/live.remote", "origin")
-    _git(repo, "config", "branch.feat/live.merge", "refs/heads/feat/live")
+    _wire_alive_upstream(repo, "feat/live", tmp_path)
     _git(repo, "switch", "master")
     report = sweep_repo(repo)
     assert _verdicts(report)["feat/live"] == "KEEP"
+    assert any("upstream alive" in x["reason"] for x in report["verdicts"])
 
 def test_worktree_checked_out_kept(repo: Path, tmp_path: Path):
     wt = tmp_path / "wt"
@@ -177,3 +175,196 @@ def test_root_skips_repo_without_base(tmp_path: Path, capsys):
 
     assert sweep_main(["--root", str(tmp_path)]) == 0
     assert "no base branch" in capsys.readouterr().err
+
+# --- for-each-ref record parsing (git-sweep --apply safety) -----------------
+def _fake_git(stdout: str, returncode: int = 0, stderr: str = ""):
+    """Build a stand-in for branch_sweep._git returning canned for-each-ref output."""
+
+    def fake(repo: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args, returncode, stdout, stderr)
+
+    return fake
+
+def _wire_alive_upstream(repo: Path, branch: str, tmp_path: Path) -> None:
+    # Real remote-tracking, not hand-written config: `%(upstream)` only
+    # resolves when the remote's fetch refspec maps the branch, so a bare
+    # origin plus `push -u` is the faithful hermetic way to simulate an
+    # alive upstream (local-path remote, no network involved).
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    sp.run(["git", "init", "--bare", str(origin)], check = True, capture_output = True, text = True)
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-u", "origin", branch)
+
+def test_parses_one_tuple_per_record(monkeypatch):
+    """Every record must yield exactly (name, upstream, track).
+
+    Reproduction: for-each-ref appends a newline after EACH record, so the
+    old whole-buffer split on "@@\\n" shifted every field after the first
+    record: branch one lost its upstream (read as branch-less), the upstream
+    name became a phantom branch entry, and branch two's name was swallowed
+    into the previous record's track field. NUL-separated fields, one line
+    per record, are unambiguous because refnames and track text can contain
+    neither a newline nor a NUL.
+    """
+    raw = "feat/one\x00origin/one\x00[ahead 1]\n" "feat/two\x00origin/two\x00[gone]\n" "feat/三\x00origin/三\x00\n" "solo\x00\x00\n"
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git(raw))
+    assert branch_sweep._local_branches(Path("/anywhere")) == [("feat/one", "origin/one", "ahead 1"), ("feat/two", "origin/two", "gone"), ("feat/三", "origin/三", ""), ("solo", "", "")]
+
+def test_parses_exotic_branch_names(monkeypatch):
+    """Slash, CJK, @-bearing and dotted names must survive record splitting."""
+    raw = "feat/slash\x00\x00\n" "feat/中文-两\x00origin/中文-两\x00[gone]\n" "weird@@name\x00origin/x\x00\n" "feat/a@b\x00\x00\n" "dot.name\x00origin/d\x00[ahead 2, behind 1]\n"
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git(raw))
+    assert branch_sweep._local_branches(Path("/anywhere")) == [("feat/slash", "", ""), ("feat/中文-两", "origin/中文-两", "gone"), ("weird@@name", "origin/x", ""), ("feat/a@b", "", ""), ("dot.name", "origin/d", "ahead 2, behind 1")]
+
+def test_parser_refuses_truncated_output(monkeypatch):
+    """No final newline = truncated record: refuse, never guess."""
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git("only\x00partial\x00"))
+
+    with pytest.raises(branch_sweep.sweep_parse_error):
+        branch_sweep._local_branches(Path("/anywhere"))
+
+def test_empty_output_means_zero_branches(monkeypatch):
+    """Empty stdout from a SUCCESSFUL for-each-ref is the only rendering of
+    "zero local branches" (every record is newline-terminated, so zero
+    records means zero bytes): a repo whose branches were all swept in a
+    previous run, or whose only "master" is a tag, must read as an empty
+    list -- not as a truncated listing.
+    """
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git(""))
+    assert branch_sweep._local_branches(Path("/anywhere")) == []
+
+def test_zero_branch_repo_is_a_clean_noop(tmp_path: Path, capsys):
+    """A repo with no local branches must sweep nothing and exit 0 -- even
+    when its only "master" is a TAG that satisfies the base lookup (the
+    shape of the second run after a maximal sweep deleted every branch).
+    """
+    r = tmp_path / "tagbase"
+    r.mkdir()
+    _git(r, "init", "-b", "master")
+    _git(r, "config", "user.email", "test@example.com")
+    _git(r, "config", "user.name", "tester")
+    _write(r, "base.txt", "base\n")
+    _commit(r, "base")
+    _git(r, "tag", "master")  # tag satisfies rev-parse --verify master
+    _git(r, "checkout", "-q", "--detach")
+    _git(r, "branch", "-D", "master")
+    rc = sweep_main(["--repo", str(r)])
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "0 swept, 0 kept" in out.out
+    assert "ERROR" not in out.err
+
+def test_parser_refuses_wrong_field_count(monkeypatch):
+    """A record without exactly two NULs has no trustworthy field alignment."""
+    raw = "ok\x00\x00\nname-without-separators\n"
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git(raw))
+
+    with pytest.raises(branch_sweep.sweep_parse_error):
+        branch_sweep._local_branches(Path("/anywhere"))
+
+def test_parser_refuses_empty_refname(monkeypatch):
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git("\x00origin/x\x00\n"))
+
+    with pytest.raises(branch_sweep.sweep_parse_error):
+        branch_sweep._local_branches(Path("/anywhere"))
+
+def test_parser_refuses_git_failure(monkeypatch):
+    """A failed for-each-ref must not read as 'no branches to sweep'."""
+    monkeypatch.setattr(branch_sweep, "_git", _fake_git("", returncode = 128, stderr = "fatal: bad object"))
+
+    with pytest.raises(branch_sweep.sweep_parse_error):
+        branch_sweep._local_branches(Path("/anywhere"))
+
+def test_multi_branch_records_all_present(repo: Path, tmp_path: Path):
+    """With >=2 branches every real branch must get its own verdict, and no
+    phantom branch (an upstream name misread as a branch) may appear.
+
+    Reproduction: the old parser dropped records after the first, so
+    feat/merged and feat/diverged vanished from the report entirely while
+    phantom entries like "origin/feat/live" showed up as sweepable branches.
+    """
+    _git(repo, "switch", "-c", "feat/live")
+    _write(repo, "live.txt", "payload\n")
+    _commit(repo, "live work")
+    _wire_alive_upstream(repo, "feat/live", tmp_path)
+    _git(repo, "switch", "master")
+    _git(repo, "branch", "feat/merged")  # tip == master HEAD: ancestor
+    _git(repo, "switch", "-c", "feat/diverged")
+    _write(repo, "u.txt", "diverged\n")
+    _commit(repo, "diverged work")
+    _git(repo, "switch", "master")
+    _write(repo, "live.txt", "payload\n")  # squash landed the same content
+    _commit(repo, "land the squash")
+    report = sweep_repo(repo)
+    assert _verdicts(report) == {"feat/live": "KEEP", "feat/merged": "DELETE", "feat/diverged": "KEEP"}
+
+def test_apply_never_deletes_alive_upstream_branch(repo: Path, tmp_path: Path):
+    """The wrong-deletion case behind the --apply ban: a branch whose
+    upstream is alive AND whose content already landed via squash must be
+    KEEP. The old parser corrupted the first record's upstream field, read
+    the branch as upstream-less, judged its identical content sweepable and
+    `--apply` deleted a branch that still had a living upstream.
+    """
+    _git(repo, "switch", "-c", "feat/live")
+    _write(repo, "live.txt", "payload\n")
+    _commit(repo, "live work")
+    _wire_alive_upstream(repo, "feat/live", tmp_path)
+    _git(repo, "switch", "master")
+    _git(repo, "branch", "feat/merged")  # second record shifts the alignment
+    _write(repo, "live.txt", "payload\n")
+    _commit(repo, "land the squash")
+    report = sweep_repo(repo, apply = True, backup_dir = tmp_path / "bk")
+    v = _verdicts(report)
+    assert v["feat/live"] == "KEEP"
+    assert v["feat/merged"] == "DELETE"
+    assert report["deleted"] == ["feat/merged"]
+    assert report["failed"] == []
+    assert "feat/live" in _git(repo, "branch", "--list", "feat/live")
+
+def test_apply_refuses_when_parse_fails(repo: Path, tmp_path: Path, monkeypatch, capsys):
+    """A malformed for-each-ref shape must abort the sweep with a non-zero
+    exit -- --apply deletes nothing rather than guessing branch names.
+    """
+    real_git = branch_sweep._git
+
+    def poisoned(repo_path: Path, *args: str):
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(args, 0, "refs/heads/broken-record\n", "")
+
+        return real_git(repo_path, *args)
+
+    monkeypatch.setattr(branch_sweep, "_git", poisoned)
+    _git(repo, "branch", "feat/keepme")
+    rc = sweep_main(["--repo", str(repo), "--apply", "--backup-dir", str(tmp_path / "bk")])
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "ERROR" in captured.err
+    assert "for-each-ref" in captured.err  # the refusal names the parse, not a failed deletion
+    assert "FAILED" in captured.out  # the summary must not read as a clean run
+    assert "feat/keepme" in _git(repo, "branch", "--list", "feat/keepme")
+
+def test_dry_run_and_apply_verdicts_identical(repo: Path, tmp_path: Path):
+    """Dry run and --apply must surface the exact same verdict lines: both
+    consume the same parse, so a fixed parser cannot show one branch list
+    and delete another.
+    """
+    _git(repo, "switch", "-c", "feat/live")
+    _write(repo, "live.txt", "payload\n")
+    _commit(repo, "live work")
+    _wire_alive_upstream(repo, "feat/live", tmp_path)
+    _git(repo, "switch", "master")
+    _git(repo, "branch", "feat/merged")
+    _git(repo, "switch", "-c", "feat/squash")
+    _write(repo, "s.txt", "payload\n")
+    _commit(repo, "squash work")
+    _git(repo, "switch", "master")
+    _write(repo, "live.txt", "payload\n")
+    _commit(repo, "land live squash")
+    _write(repo, "s.txt", "payload\n")
+    _commit(repo, "land s squash")
+    dry = sweep_repo(repo, apply = False)
+    applied = sweep_repo(repo, apply = True, backup_dir = tmp_path / "bk")
+    assert applied["verdicts"] == dry["verdicts"]
+    assert applied["deleted"] == [v["branch"] for v in dry["verdicts"] if v["verdict"] == "DELETE"]
+    assert applied["failed"] == []
