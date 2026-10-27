@@ -224,16 +224,36 @@ def test_parser_refuses_truncated_output(monkeypatch):
     with pytest.raises(branch_sweep.sweep_parse_error):
         branch_sweep._local_branches(Path("/anywhere"))
 
-def test_parser_refuses_empty_output(monkeypatch):
-    """Empty stdout is indistinguishable from silent truncation: refuse.
-
-    sweep_repo only reaches the parser after a base branch resolved, so a
-    repo with at least one ref can never legitimately produce zero output.
+def test_empty_output_means_zero_branches(monkeypatch):
+    """Empty stdout from a SUCCESSFUL for-each-ref is the only rendering of
+    "zero local branches" (every record is newline-terminated, so zero
+    records means zero bytes): a repo whose branches were all swept in a
+    previous run, or whose only "master" is a tag, must read as an empty
+    list -- not as a truncated listing.
     """
     monkeypatch.setattr(branch_sweep, "_git", _fake_git(""))
+    assert branch_sweep._local_branches(Path("/anywhere")) == []
 
-    with pytest.raises(branch_sweep.sweep_parse_error):
-        branch_sweep._local_branches(Path("/anywhere"))
+def test_zero_branch_repo_is_a_clean_noop(tmp_path: Path, capsys):
+    """A repo with no local branches must sweep nothing and exit 0 -- even
+    when its only "master" is a TAG that satisfies the base lookup (the
+    shape of the second run after a maximal sweep deleted every branch).
+    """
+    r = tmp_path / "tagbase"
+    r.mkdir()
+    _git(r, "init", "-b", "master")
+    _git(r, "config", "user.email", "test@example.com")
+    _git(r, "config", "user.name", "tester")
+    _write(r, "base.txt", "base\n")
+    _commit(r, "base")
+    _git(r, "tag", "master")  # tag satisfies rev-parse --verify master
+    _git(r, "checkout", "-q", "--detach")
+    _git(r, "branch", "-D", "master")
+    rc = sweep_main(["--repo", str(r)])
+    out = capsys.readouterr()
+    assert rc == 0
+    assert "0 swept, 0 kept" in out.out
+    assert "ERROR" not in out.err
 
 def test_parser_refuses_wrong_field_count(monkeypatch):
     """A record without exactly two NULs has no trustworthy field alignment."""
@@ -317,10 +337,11 @@ def test_apply_refuses_when_parse_fails(repo: Path, tmp_path: Path, monkeypatch,
     monkeypatch.setattr(branch_sweep, "_git", poisoned)
     _git(repo, "branch", "feat/keepme")
     rc = sweep_main(["--repo", str(repo), "--apply", "--backup-dir", str(tmp_path / "bk")])
+    captured = capsys.readouterr()
     assert rc == 1
-    err = capsys.readouterr().err
-    assert "ERROR" in err
-    assert "for-each-ref" in err  # the refusal names the parse, not a failed deletion
+    assert "ERROR" in captured.err
+    assert "for-each-ref" in captured.err  # the refusal names the parse, not a failed deletion
+    assert "FAILED" in captured.out  # the summary must not read as a clean run
     assert "feat/keepme" in _git(repo, "branch", "--list", "feat/keepme")
 
 def test_dry_run_and_apply_verdicts_identical(repo: Path, tmp_path: Path):

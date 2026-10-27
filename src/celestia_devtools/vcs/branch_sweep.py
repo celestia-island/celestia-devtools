@@ -94,6 +94,15 @@ def _local_branches(repo: Path) -> list[tuple[str, str, str]]:
 
     out = r.stdout
 
+    if not out:
+        # rc=0 with zero bytes is for-each-ref's only rendering of "zero
+        # local branches" (every record is newline-terminated, so no
+        # records means no output at all): the run after a maximal sweep
+        # deleted every branch, or a repo whose only "master" is a tag
+        # (rev-parse --verify resolves tags too). Legitimate no-op, not
+        # truncation.
+        return []
+
     if not out.endswith("\n"):
         raise sweep_parse_error("for-each-ref output is truncated (missing final record newline); refusing to parse")
 
@@ -272,7 +281,13 @@ def main(argv: list[str] | None = None) -> int:
     deletes = sum(1 for r in reports for v in r["verdicts"] if v["verdict"] == "DELETE")
     keeps = sum(1 for r in reports for v in r["verdicts"] if v["verdict"] == "KEEP")
     mode = "applied" if args.apply else "dry run ('--apply' to delete)"
-    print(f"git-sweep: {mode}; {deletes} swept, {keeps} kept")
+
+    if failed:
+        # Exit 1 is coming; do not let the summary read as a clean run.
+        print(f"git-sweep: {mode}; FAILED (see ERROR lines above); {deletes} swept, {keeps} kept")
+    else:
+        print(f"git-sweep: {mode}; {deletes} swept, {keeps} kept")
+
     return 1 if failed else 0
 
 if __name__ == "__main__":
