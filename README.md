@@ -121,6 +121,60 @@ just ports release --app shittim-chest
 
 Same app → same ports across runs (URLs and CDP targets feel permanent); different apps → different ports; claims owned by dead pids are garbage-collected automatically. Consumers: pass the allocated port to `vite-serve --port`, and for WebView2 shells export `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` (the `env` output carries it) so each app's CDP lands on its own port.
 
+## Driving a desktop debug build (`app-drive`)
+
+The desktop debug loop used to be hand-written CDP scripts per investigation: launch the Tauri debug binary with `--remote-debugging-port`, poll `/json/list`, evaluate JavaScript, capture screenshots, click through settings, record the boot-chrome lifecycle, and hope the window and its child processes got closed. `app-drive` standardizes that channel: one command group, one JSON protocol, and cleanup that only ever touches what it launched.
+
+The CDP port comes from the ports facility above, so a debug shell never collides with another app's:
+
+```console
+$ celestia-devtools app-drive launch target/debug/shittim_chest_tauri --app shittim-chest
+{"ok": true, "protocol": 1, "cmd": "launch", "app": "shittim-chest", "pid": 34648, "port": 9333, "page": {"id": "59E2...", "url": "http://localhost:5173/"}, ...}
+```
+
+`launch` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<cdp port>` (pre-existing flags are preserved), exports the allocated vite port as `CELESTIA_VITE_PORT`, waits for the page target, and records the pid/exe/ports/log paths in a per-app state file under `%LOCALAPPDATA%/celestia/app-drive` (the XDG twin on POSIX). `close` reads that file and terminates only that pid - never a user-started app - trying a graceful close first and forcing after `--grace` seconds.
+
+### Protocol
+
+Every subcommand prints exactly one JSON object to stdout and exits `0` on success or `1` on a runtime failure; progress and diagnostics go to stderr, so `| jq` stays clean:
+
+```json
+{"ok": true, "protocol": 1, "cmd": "status", "port": 9333, "target": {"id": "...", "url": "..."}, "state": {"boot_chrome": "claimed", "has_bar": false, "tauri": true}}
+{"ok": false, "protocol": 1, "cmd": "wait", "error": {"code": "timeout", "message": "condition not satisfied within 10s"}}
+```
+
+`protocol` is the envelope version. `error.code` is the stable discriminant (`cdp-unreachable`, `js-exception`, `selector-not-found`, `timeout`, ...). `--pretty` indents the envelope for humans. The `state` object behind `status` / `wait` / `watch` is the desktop debug contract: `boot_chrome` (the `data-hk-boot-chrome` attribute: `active` / `claimed` / absent), `has_bar` / `bar_driver` (the `#hk-boot-chrome` element), `degraded`, `ready_state`, `title`, `url`, `tauri` (whether `window.__TAURI__.core.invoke` exists), `body_text_head`, and friends.
+
+| Command | What it does |
+| --- | --- |
+| `app-drive targets` | list the `/json/list` targets |
+| `app-drive status` | page target + boot-chrome/page state |
+| `app-drive eval "JS"` | evaluate JS (promises awaited, result by value); `--raw` prints the bare value, `--out FILE` saves it |
+| `app-drive shot out.png` | capture a PNG/JPEG screenshot |
+| `app-drive click "CSS"` | click a selector (`element.click()`, or `--mouse` for real mouse events at the element center) |
+| `app-drive wait --selector/--expr/--boot-chrome` | poll until a condition matches, optionally `--shot FILE` |
+| `app-drive watch --out DIR` | record state transitions and screenshots; `--reload` captures a fresh boot-chrome lifecycle |
+| `app-drive launch <exe>` | launch with the CDP environment and wait for the page |
+| `app-drive close` | graceful then forced close of the launched pid only |
+
+### Typical desktop verification loop
+
+```console
+$ celestia-devtools app-drive launch packages/app/tauri/target/debug/shittim_chest_tauri --app shittim-chest
+$ celestia-devtools app-drive watch --app shittim-chest --reload --out _scratch/boot --stop-boot-chrome claimed
+$ celestia-devtools app-drive shot --app shittim-chest _scratch/boot/final.png
+$ celestia-devtools app-drive eval --app shittim-chest --out _scratch/report.json "window.__TAURI__.core.invoke('local_suite_report')"
+$ celestia-devtools app-drive close --app shittim-chest
+```
+
+`watch` writes `timeline.jsonl` (one JSON sample per line), `watch.json` (transitions, screenshots, final state, stop reason) and `shot-NN-<ms>.png` on every change. It stops early with `--stop-boot-chrome claimed` or `--stop-selector CSS`, otherwise when `--duration` elapses.
+
+### Attaching to a running app
+
+`--port` attaches to any CDP endpoint directly (no launch state needed). That is also the documented path outside Windows: WebView2 exposes CDP, but WebKitGTK on Linux and WKWebView on macOS do not, so serve the built webui (`vite-serve`) and drive it in a Chromium/Edge started with `--remote-debugging-port=N`; every subcommand except `launch` is platform-agnostic because it only speaks CDP. The client itself is stdlib-only (a minimal RFC 6455 implementation in `env/cdp.py`): the channel needs text frames over loopback, so no new runtime dependency is added to a package consumed by the whole fleet, and the subset is pinned by unit tests plus a fake CDP endpoint.
+
+A second instance of the same WebView2 app on one machine needs its own WebView2 profile: sharing the running instance's profile makes WebView2 fail to create the webview (`0x8007139F`). Pass `--env WEBVIEW2_USER_DATA_FOLDER=<dir>` on `launch` - `--env` is forwarded verbatim and the instance still gets its own CDP port.
+
 ## Commit Message Governance
 
 `celestia-devtools` enforces the org gitmoji convention — every commit and PR merge must start with a gitmoji, use uppercase English, and end with a period (`.`). See `celestia-devtools commit-msg-lint check --help` for the full rule set.

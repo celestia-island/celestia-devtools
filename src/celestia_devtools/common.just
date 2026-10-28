@@ -451,3 +451,18 @@ devenv *ARGS='':
 #   just ports release --app shittim-chest
 ports *ARGS='':
     {{ _devtools }} ports {{ARGS}}
+
+# ── Desktop debug channel (WebView2 CDP) ─────────────────────────────
+#
+# Drive a Tauri debug build over CDP instead of hand-written scripts:
+# launch with its ports-allocated CDP port, then inspect and drive the
+# page. Every command prints one JSON envelope; close only ever stops the
+# process that app-drive launched.
+#
+#   just app-drive launch target/debug/my_app --app my-app
+#   just app-drive status --app my-app
+#   just app-drive shot --app my-app shot.png
+#   just app-drive watch --app my-app --reload --out _scratch/boot
+#   just app-drive close --app my-app
+app-drive *ARGS='':
+    {{ _devtools }} app-drive {{ARGS}}
