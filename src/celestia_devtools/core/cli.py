@@ -65,10 +65,10 @@ Commands::
                       vite/CDP ports per app so two debug shells never
                       cross-wire (acquire | env | list | release)
     app-drive         Drive a Tauri desktop debug build over WebView2 CDP:
-                      launch with the ports-allocated CDP port, then
-                      status/eval/shot/click/wait/watch/close; one-JSON
-                      envelope protocol, Windows-first with an attach
-                      fallback for Chromium/Edge on Linux and macOS
+                      identity-verified close plus launch/status/eval/shot/
+                      click/wait/watch; one ASCII JSON envelope protocol,
+                      CDP-only scope, Windows-first with an attach fallback
+                      for Chromium/Edge on Linux and macOS
     brand-stamp       Wire the family icon into a Rust project's Windows
                       build (build.rs + winresource + icon asset; idempotent)
     py-style          Check Python sources against the org's custom layout rules

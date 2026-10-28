@@ -46,6 +46,7 @@ import os
 import socket
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Sequence
 from celestia_devtools.env.host import detect_host_kind
@@ -77,7 +78,30 @@ def _preferred(app: str, kind: str) -> int:
     offset = int.from_bytes(hashlib.sha256(app.encode("utf-8")).digest()[: 2], "big") % (SCAN_WINDOW // 2)
     return KINDS[kind] + offset
 
+def _posix_process_state(pid: int) -> Optional[str]:
+    """One-letter /proc/<pid>/stat state (Z = zombie), or None when unreadable."""
+
+    try:
+        stat_text = Path("/proc/" + str(int(pid)) + "/stat").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+
+    closing = stat_text.rfind(")")
+
+    if closing < 0:
+        return None
+
+    fields = stat_text[closing + 2:].split()
+    return fields[0] if fields else None
+
 def pid_alive(pid: Optional[int]) -> bool:
+    """Is the process running (not merely present as an unreaped zombie)?
+
+    POSIX: os.kill(pid, 0) succeeds for a ZOMBIE too, so an exited-but-unreaped
+    direct child would look alive forever and make termination loops wait for
+    the whole grace budget. Zombies are therefore reported as not alive.
+    """
+
     if not pid or (pid <= 0):
         return False
 
@@ -96,9 +120,15 @@ def pid_alive(pid: Optional[int]) -> bool:
 
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+
+    state = _posix_process_state(pid)
+
+    if state is None:
+        return True  # no /proc entry despite a successful signal: stay conservative
+
+    return state not in ("Z", "X", "x")
 
 def _listening(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -106,11 +136,40 @@ def _listening(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 def _load(path: Path) -> dict:
+    """Load and sanitize the registry.
+
+    A hand-edited/corrupt registry must never crash a caller with a bare
+    ValueError/TypeError: bad entries are dropped, valid ones normalized to
+    int port/pid, so every later int() use is safe.
+    """
+
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    cleaned: dict = {}
+
+    for key, value in data.items():
+        if (not isinstance(key, str)) or (not isinstance(value, dict)):
+            continue
+
+        try:
+            port = int(value.get("port"))
+            pid = int(value.get("pid"))
+            stamp = int(value.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        if (port < 1) or (port > 65535) or (pid <= 0):
+            continue
+
+        cleaned[key] = {"port": port, "pid": pid, "ts": stamp}
+
+    return cleaned
 
 def _gc(entries: dict) -> int:
     """Drop claims whose owning pid is gone. Returns the number reclaimed."""
@@ -122,40 +181,120 @@ def _gc(entries: dict) -> int:
     return len(dead)
 
 def _save(path: Path, entries: dict) -> None:
+    """Write the registry atomically (same-directory tmp file + os.replace)."""
     path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_text(json.dumps(entries, indent = 2), encoding = "utf-8")
+    temporary = path.with_name(path.name + ".tmp-" + str(os.getpid()))
+
+    try:
+        temporary.write_text(json.dumps(entries, indent = 2), encoding = "utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+        raise SystemExit(f"error: cannot write the ports registry {path}: {exc}") from exc
+
+LOCK_TIMEOUT = 30.0
+LOCK_STALE = 60.0
+
+@contextmanager
+def registry_lock(path: Path):
+    """Exclusive cross-process lock around a registry read-modify-write.
+
+    An O_EXCL lock file works on every platform without optional imports; a
+    lock older than LOCK_STALE seconds is treated as a crash leftover (the
+    holder records its pid for diagnosis) and reclaimed. Waiting longer than
+    LOCK_TIMEOUT is an error, never a silent unlocked write.
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
+    started = time.monotonic()
+    handle = None
+
+    while handle is None:
+        try:
+            descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            handle = os.fdopen(descriptor, "w", encoding = "utf-8")
+            handle.write(str(os.getpid()))
+            handle.flush()
+        except FileExistsError:
+            # Reclaim only a lock whose holder is provably gone; a LIVE holder
+            # that merely ran longer than LOCK_STALE must never be unlinked.
+            try:
+                holder = int(lock_path.read_text(encoding = "utf-8").strip() or 0)
+            except (OSError, ValueError):
+                holder = 0
+
+            holder_alive = bool(holder) and pid_alive(holder)
+
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                age = 0.0
+
+            if (age > LOCK_STALE) and (not holder_alive):
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+
+                continue
+
+            if (time.monotonic() - started) > LOCK_TIMEOUT:
+                raise SystemExit(f"error: ports registry lock at {lock_path} is still held after {LOCK_TIMEOUT:g}s") from None
+
+            time.sleep(0.02)
+
+    try:
+        yield
+    finally:
+        # Close first: Windows cannot unlink a file that is still open (the
+        # lock would leak and deadlock every later registry command).
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
 
 def acquire(app: str, kind: str) -> int:
     if kind not in KINDS:
         raise SystemExit(f"error: unknown kind {kind!r} (known: {', '.join(KINDS)})")
 
     path = registry_path()
-    entries = _load(path)
-    _gc(entries)
-    key = f"{app}:{kind}"
 
-    held = entries.get(key)
+    with registry_lock(path):
+        entries = _load(path)
+        _gc(entries)
+        key = f"{app}:{kind}"
 
-    if isinstance(held, dict) and held.get("port"):
-        # Already ours and still valid (the GC dropped dead owners): keep
-        # the port stable across re-acquires within a session.
-        port = int(held["port"])
-        entries[key] = {"port": port, "pid": os.getpid(), "ts": int(time.time())}
-        _save(path, entries)
-        return port
+        held = entries.get(key)
 
-    taken = {int(v["port"])for v in entries.values()if isinstance(v, dict) and v.get("port")}
-    start = _preferred(app, kind)
+        if isinstance(held, dict) and held.get("port"):
+            # Already ours and still valid (the GC dropped dead owners): keep
+            # the port stable across re-acquires within a session.
+            port = int(held["port"])
+            entries[key] = {"port": port, "pid": os.getpid(), "ts": int(time.time())}
+            _save(path, entries)
+            return port
 
-    for candidate in range(start, start + SCAN_WINDOW):
-        if (candidate in taken) or _listening(candidate):
-            continue
+        taken = {int(v["port"])for v in entries.values()if isinstance(v, dict) and v.get("port")}
+        start = _preferred(app, kind)
 
-        entries[key] = {"port": candidate, "pid": os.getpid(), "ts": int(time.time())}
-        _save(path, entries)
-        return candidate
+        for candidate in range(start, start + SCAN_WINDOW):
+            if (candidate in taken) or _listening(candidate):
+                continue
 
-    raise SystemExit(f"error: no free {kind} port in [{start}, {start + SCAN_WINDOW})")
+            entries[key] = {"port": candidate, "pid": os.getpid(), "ts": int(time.time())}
+            _save(path, entries)
+            return candidate
+
+        raise SystemExit(f"error: no free {kind} port in [{start}, {start + SCAN_WINDOW})")
 
 def claim(app: str, kind: str, port: int, pid: int) -> None:
     """Record that pid - a LAUNCHED app, not this CLI process - owns the port.
@@ -170,28 +309,47 @@ def claim(app: str, kind: str, port: int, pid: int) -> None:
         raise SystemExit(f"error: unknown kind {kind!r} (known: {', '.join(KINDS)})")
 
     path = registry_path()
-    entries = _load(path)
-    _gc(entries)
-    entries[f"{app}:{kind}"] = {"port": int(port), "pid": int(pid), "ts": int(time.time())}
-    _save(path, entries)
+
+    with registry_lock(path):
+        entries = _load(path)
+        _gc(entries)
+        entries[f"{app}:{kind}"] = {"port": int(port), "pid": int(pid), "ts": int(time.time())}
+        _save(path, entries)
 
 def release(app: str, kind: Optional[str]) -> int:
     path = registry_path()
-    entries = _load(path)
-    _gc(entries)
-    keys = [k for k in entries if k.startswith(f"{app}:") and ((kind is None) or k.endswith(f":{kind}"))]
 
-    for k in keys:
-        entries.pop(k, None)
+    with registry_lock(path):
+        entries = _load(path)
+        _gc(entries)
+        keys = []
 
-    _save(path, entries)
+        for key in entries:
+            owner, separator, key_kind = key.rpartition(":")
+
+            if (not separator) or (owner != str(app)):
+                continue
+
+            if (kind is not None) and (key_kind != kind):
+                continue
+
+            keys.append(key)
+
+        for k in keys:
+            entries.pop(k, None)
+
+        _save(path, entries)
+
     return 0
 
 def list_entries() -> dict:
     path = registry_path()
-    entries = _load(path)
-    _gc(entries)
-    _save(path, entries)
+
+    with registry_lock(path):
+        entries = _load(path)
+        _gc(entries)
+        _save(path, entries)
+
     return entries
 
 def env_exports(app: str) -> dict[str, str]:
