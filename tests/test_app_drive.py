@@ -132,7 +132,7 @@ class test_launch_environment:
         assert caught.value.code == "bad-env"
 
     def test_launch_command_passes_extra_arguments(self):
-        assert app_drive.build_launch_command("app.exe", ["--", "--window", "two"]) == ["app.exe", "--window", "two"]
+        assert app_drive.build_launch_command("app.exe", ["--window", "two"]) == ["app.exe", "--window", "two"]
         assert app_drive.build_launch_command("app.exe", []) == ["app.exe"]
 
 class test_state_files:
@@ -1422,3 +1422,90 @@ class test_round4_regressions:
         # ports.pid_alive reading /proc and by the POSIX termination tests.
         assert child.returncode == 0
         assert ports.pid_alive(child.pid) is False
+
+class test_round5_termination:
+    def test_force_close_kills_a_non_group_leader_pid(self, drive_state, capsys):
+        # Deliberately NO start_new_session: killpg(pid) cannot reach this pid
+        # because it does not lead a process group. The POSIX fallback to
+        # os.kill(pid) is what --pid --force relies on.
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin = subprocess.DEVNULL, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+
+        try:
+            code, payload, _out = run_cli(capsys, "close", "--pid", str(child.pid), "--force", "--grace", "2")
+            assert code == 0
+            assert payload["closed"] is True
+            assert app_drive.wait_pid_exit(child.pid, 10) is not None
+        finally:
+            stop_child(child)
+
+    def test_force_close_app_state_kills_a_non_group_leader_pid(self, drive_state, capsys):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin = subprocess.DEVNULL, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+
+        try:
+            state = state_for(child.pid)
+            state["create_token"] = ""
+            state["create_kind"] = ""
+            state["unverified"] = True
+            record_state(state)
+            ports.claim("demo", "cdp", 9444, child.pid)
+            code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--force", "--grace", "2")
+            assert code == 0
+            assert payload["verified"] is False
+            assert payload["closed"] is True
+            assert app_drive.wait_pid_exit(child.pid, 10) is not None
+            assert app_drive.read_state("demo") is None
+            assert ports.list_entries() == {}
+        finally:
+            stop_child(child)
+            app_drive.remove_state(app_drive.state_file_path("demo"))
+            ports.release("demo", "cdp")
+
+    def test_owned_child_force_kill_escalates_and_reaps(self, drive_state):
+        child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"], stdin = subprocess.DEVNULL, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, start_new_session = os.name != "nt")
+        time.sleep(0.4)  # let the child install its SIGTERM handler
+
+        try:
+            result = app_drive.terminate_tree(child.pid, 0.2, child = child)
+            assert result["closed"] is True
+            assert result["forced"] is True
+            assert child.poll() is not None
+        finally:
+            stop_child(child)
+
+    def test_wait_child_exit_times_out_for_a_live_child(self, drive_state):
+        child = spawn_sleeper()
+
+        try:
+            assert app_drive.wait_child_exit(child, 0.2) is None
+            assert child.poll() is None
+        finally:
+            stop_child(child)
+
+    def test_state_outdated_messages_name_the_recovery(self, drive_state):
+        path = app_drive.state_file_path("demo")
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps({"app": "demo", "pid": 1, "port": 9333}), encoding = "utf-8")
+
+        with pytest.raises(cdp.cdp_error) as caught:
+            app_drive.read_state("demo")
+
+        assert "close --app demo --discard-state" in str(caught.value)
+        assert "launch --discard-state" in str(caught.value)
+
+        with pytest.raises(cdp.cdp_error) as explicit:
+            app_drive.read_state(None, str(path))
+
+        assert ("close --state-file " + str(path) + " --discard-state") in str(explicit.value)
+
+    def test_identity_probe_reason_reports_access_denied(self, monkeypatch):
+        if os.name == "nt":
+            pytest.skip("the POSIX access-denied probe path is Linux-specific")
+
+        def denied(path):
+            raise PermissionError(13, "Permission denied", path)
+
+        monkeypatch.setattr(app_drive.os, "readlink", denied)
+        assert app_drive.identity_probe_reason(os.getpid()) == "access-denied"
+
+    def test_identity_probe_reason_reports_no_such_process(self):
+        assert app_drive.identity_probe_reason(4_000_000) in ("no-such-process", "access-denied")

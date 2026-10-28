@@ -37,8 +37,8 @@ path, the process creation token (Windows GetProcessTimes FILETIME, Linux
 /proc starttime) and the observable kind. close/--replace require ALL of it
 to match the live process; when any piece is missing or unreadable they FAIL
 CLOSED and refuse to touch the process. The token is re-checked before the
-graceful signal and AGAIN inside the grace window, immediately before any
-forced kill. A state file written by an older schema (no token) is refused as
+graceful signal and AGAIN after the graceful attempt times out, immediately
+before any forced signal. A state file written by an older schema (no token) is refused as
 state-outdated; recover it with close --discard-state (or pass
 --discard-state to launch). --force is the explicit unverified break-glass for
 close: --pid N --force kills by pid, --app <key> --force kills the recorded
@@ -141,7 +141,8 @@ terminating commands:
   spawned, but only through the identity it recorded (an already-exited child
   is never signalled, and a child with no recorded identity is never
   blind-killed). close re-checks the identity before the graceful signal and
-  again inside the grace window, immediately before any forced kill. A direct
+  again after the graceful attempt times out, immediately before any forced
+  signal. A direct
   Popen child is observed through wait()/poll() so POSIX zombies are reaped
   rather than mistaken for running processes. Ctrl+C before the spawn leaves
   nothing to clean; after it, the same cleanup path runs and the envelope is
@@ -173,8 +174,10 @@ scope:
   CDP only: launch allocates/claims the CDP port and sets
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS; no vite port is allocated, claimed
   or exported (a compiled debug build keeps its baked devUrl). --env refuses
-  to override WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS / CELESTIA_CDP_PORT.
-  Attach commands never allocate or claim a port.
+  to override WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS / CELESTIA_CDP_PORT
+  (case-insensitive). Attach commands never allocate or claim a port.
+  launch app arguments: pass them after a bare -- separator, e.g.
+    app-drive launch target/debug/my_app -- --window second
 
 state directory (override with CELESTIA_APP_DRIVE_STATE):
   Windows  %LOCALAPPDATA%/celestia/app-drive
@@ -249,7 +252,7 @@ def read_state(app: Optional[str] = None, explicit: Optional[str] = None, allow_
     if (not allow_outdated) and (schema != STATE_SCHEMA):
         recovery = ("app-drive close --state-file " + str(path) + " --discard-state") if explicit else ("app-drive close --app " + str(app or "<key>") + " --discard-state")
 
-        raise cdp.cdp_error("state-outdated", "the launch state " + str(path) + " was written by an older app-drive (schema " + str(schema) + ", expected " + str(STATE_SCHEMA) + "); it carries no process creation token, so app-drive will not touch that process (fail closed). Recover the stale handle with " + recovery + ", or pass --discard-state to a launch of the same app; the old process then has to be closed manually.")
+        raise cdp.cdp_error("state-outdated", "the launch state " + str(path) + " was written by an older app-drive (schema " + str(schema) + ", expected " + str(STATE_SCHEMA) + "); it carries no process creation token, so app-drive will not touch that process (fail closed). Recover the stale handle with " + recovery + ", or run launch --discard-state for the same app; the old process then has to be closed manually.")
 
     if (app is not None) and (str(data.get("app") or "") != str(app)):
         raise cdp.cdp_error("state-app-mismatch", "the launch state " + str(path) + " belongs to app " + repr(data.get("app")) + ", not " + repr(str(app)) + "; refusing to use it (state-file slug collision?)")
@@ -399,8 +402,10 @@ def identity_probe_reason(pid: int) -> str:
         os.readlink("/proc/" + str(pid) + "/exe")
     except PermissionError:
         return "access-denied"
-    except OSError as exc:
-        return "unreadable-" + (exc.strerror or "error").replace(" ", "-")
+    except FileNotFoundError:
+        return "no-such-process"
+    except OSError:
+        return "unreadable"
 
     return "readable"
 
@@ -490,18 +495,26 @@ def _taskkill(pid: int, force: bool) -> int:
     return int(completed.returncode)
 
 def _signal_tree(pid: int, signal_number: int) -> None:
+    """Signal a process group when the pid leads one, else the pid itself.
+
+    A previously launched app normally runs in its own group (launch uses
+    start_new_session / CREATE_NEW_PROCESS_GROUP), but the explicit
+    --pid/--force break-glass can target any pid: killpg(pid) then raises
+    ProcessLookupError for a non-group-leader and the direct os.kill(pid)
+    fallback is what makes that documented path work.
+    """
+    pid = int(pid)
+
     if os.name != "nt":
         try:
-            os.killpg(int(pid), signal_number)
-            return
-        except ProcessLookupError:
+            os.killpg(pid, signal_number)
             return
         except OSError:
-            pass
+            pass  # no such group / not a group leader: fall back to the pid
 
     try:
-        os.kill(int(pid), signal_number)
-    except (ProcessLookupError, OSError):
+        os.kill(pid, signal_number)
+    except OSError:
         pass
 
 def wait_pid_exit(pid: int, timeout: float) -> Optional[int]:
@@ -653,12 +666,7 @@ def build_launch_env(base, cdp_port: int, overrides: Sequence[str]) -> dict[str,
     return environment
 
 def build_launch_command(exe: str, extra: Sequence[str]) -> list[str]:
-    arguments = [str(item) for item in extra]
-
-    if arguments and (arguments[0] == "--"):
-        arguments = arguments[1:]
-
-    return [str(exe), *arguments]
+    return [str(exe), *[str(item) for item in extra]]
 
 def resolve_executable(exe: str) -> str:
     candidate = Path(str(exe))
@@ -1573,7 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--stop-boot-chrome", default = None, help = "stop early once data-hk-boot-chrome equals this value (any | none | literal)")
     watch.add_argument("--stop-selector", default = None, help = "stop early once this CSS selector matches")
     launch = subparsers.add_parser("launch", help = "launch a debug build with the CDP environment and wait for its page")
-    launch.add_argument("exe", help = "path to the desktop debug executable")
+    launch.add_argument("exe", help = "path to the desktop debug executable (extra app arguments go after a bare -- separator)")
     launch.add_argument("--app", default = None, help = "application key for the state/port keys (default: a hash of the resolved exe path)")
     launch.add_argument("--cwd", default = None, help = "working directory for the app process")
     launch.add_argument("--port", type = int, default = None, help = "force a specific CDP port instead of allocating one")
@@ -1593,7 +1601,7 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--app", default = None, help = "application key from app-drive launch")
     close.add_argument("--exe", default = None, help = "derive the application key from this executable path")
     close.add_argument("--state-file", default = None, help = "override the launch state file")
-    close.add_argument("--pid", type = int, default = None, help = "break-glass: close this pid without verification (requires --force)")
+    close.add_argument("--pid", type = int, default = None, help = "break-glass: signal this pid without verification (through its process group when it leads one, otherwise the pid itself); requires --force")
     close.add_argument("--force", action = "store_true", help = "explicit break-glass: kill the recorded pid without identity verification (also required with --pid, and to drop an unconfirmable state)")
     close.add_argument("--discard-state", action = "store_true", help = "drop the state file + CDP claim without touching the process (recovery for schema-1/outdated state)")
     close.add_argument("--grace", type = float, default = DEFAULT_CLOSE_GRACE, metavar = "SECONDS", help = "graceful-termination budget before a forced kill (default 5)")
