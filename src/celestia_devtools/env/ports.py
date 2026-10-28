@@ -17,6 +17,10 @@ This facility owns the coordination:
     and walks forward to the first port that is both un-listening and
     un-claimed by a live registrant;
   - stale claims (dead pid) are garbage-collected on every command;
+  - ``claim`` re-points a claim at a LAUNCHED app's pid: ``acquire``
+    records the calling CLI process, which exits immediately, so a launcher
+    (``app-drive launch``) records the app pid instead and the claim stays
+    valid exactly as long as the app lives;
   - ``ports env`` emits the coordination contract as shell exports:
     ``CELESTIA_<KIND>_PORT``, plus the derived pieces consumers need
     (``WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`` with the allocated CDP
@@ -73,7 +77,7 @@ def _preferred(app: str, kind: str) -> int:
     offset = int.from_bytes(hashlib.sha256(app.encode("utf-8")).digest()[: 2], "big") % (SCAN_WINDOW // 2)
     return KINDS[kind] + offset
 
-def _pid_alive(pid: Optional[int]) -> bool:
+def pid_alive(pid: Optional[int]) -> bool:
     if not pid or (pid <= 0):
         return False
 
@@ -110,7 +114,7 @@ def _load(path: Path) -> dict:
 
 def _gc(entries: dict) -> int:
     """Drop claims whose owning pid is gone. Returns the number reclaimed."""
-    dead = [k for k, v in entries.items()if isinstance(v, dict) and not _pid_alive(v.get("pid"))]
+    dead = [k for k, v in entries.items()if isinstance(v, dict) and not pid_alive(v.get("pid"))]
 
     for k in dead:
         entries.pop(k, None)
@@ -152,6 +156,24 @@ def acquire(app: str, kind: str) -> int:
         return candidate
 
     raise SystemExit(f"error: no free {kind} port in [{start}, {start + SCAN_WINDOW})")
+
+def claim(app: str, kind: str, port: int, pid: int) -> None:
+    """Record that pid - a LAUNCHED app, not this CLI process - owns the port.
+
+    acquire writes the calling process's pid, so a launcher that spawns a
+    long-lived app and exits leaves a claim the next command's GC drops (the
+    port then looks free while the app still listens on it). Recording the app
+    pid keeps the claim live for exactly as long as the app is.
+    """
+
+    if kind not in KINDS:
+        raise SystemExit(f"error: unknown kind {kind!r} (known: {', '.join(KINDS)})")
+
+    path = registry_path()
+    entries = _load(path)
+    _gc(entries)
+    entries[f"{app}:{kind}"] = {"port": int(port), "pid": int(pid), "ts": int(time.time())}
+    _save(path, entries)
 
 def release(app: str, kind: Optional[str]) -> int:
     path = registry_path()

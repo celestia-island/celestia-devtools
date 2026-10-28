@@ -9,6 +9,7 @@ WebView2 CDP line.
 
 from __future__ import annotations
 import json
+import os
 import socket
 import pytest
 from celestia_devtools.env import ports
@@ -105,3 +106,26 @@ class test_cli:
         assert ports.main(["list", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert "app:vite" in data
+
+class test_claim:
+    def test_claim_records_the_launched_app_pid(self, registry):
+        # claim() exists for launchers (app-drive) whose own pid exits at
+        # once: the port must stay claimed while the LAUNCHED app lives.
+        ports.claim("app", "cdp", 9333, os.getpid())
+        entries = ports.list_entries()
+        assert entries["app:cdp"]["port"] == 9333
+        assert entries["app:cdp"]["pid"] == os.getpid()
+
+    def test_claim_with_a_dead_pid_is_garbage_collected(self, registry):
+        ports.claim("app", "cdp", 9333, 4_000_000)
+        assert ports.list_entries() == {}
+
+    def test_claim_replaces_an_existing_acquire_claim(self, registry):
+        ports.acquire("app", "cdp")
+        ports.claim("app", "cdp", 9444, os.getpid())
+        entries = ports.list_entries()
+        assert entries["app:cdp"]["port"] == 9444
+
+    def test_claim_rejects_an_unknown_kind(self, registry):
+        with pytest.raises(SystemExit):
+            ports.claim("app", "nonsense", 9444, os.getpid())
