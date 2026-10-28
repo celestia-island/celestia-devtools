@@ -123,39 +123,53 @@ Same app → same ports across runs (URLs and CDP targets feel permanent); diffe
 
 ## Driving a desktop debug build (`app-drive`)
 
-The desktop debug loop used to be hand-written CDP scripts per investigation: launch the Tauri debug binary with `--remote-debugging-port`, poll `/json/list`, evaluate JavaScript, capture screenshots, click through settings, record the boot-chrome lifecycle, and hope the window and its child processes got closed. `app-drive` standardizes that channel: one command group, one JSON protocol, and cleanup that only ever touches what it launched.
+The desktop debug loop used to be hand-written CDP scripts per investigation: launch the Tauri debug binary with `--remote-debugging-port`, poll `/json/list`, evaluate JavaScript, capture screenshots, click through settings, record the boot-chrome lifecycle, and hope the window and its child processes got closed. `app-drive` standardizes that channel: one command group, one JSON protocol, and a close path that only ever touches a process it launched and can prove it launched.
 
 The CDP port comes from the ports facility above, so a debug shell never collides with another app's:
 
 ```console
-$ celestia-devtools app-drive launch target/debug/shittim_chest_tauri --app shittim-chest
-{"ok": true, "protocol": 1, "cmd": "launch", "app": "shittim-chest", "pid": 34648, "port": 9333, "page": {"id": "59E2...", "url": "http://localhost:5173/"}, ...}
+$ celestia-devtools app-drive launch target/debug/shittim_chest_tauri
+{"ok": true, "protocol": 2, "cmd": "launch", "app": "exe-3f9a1c7d2e4b", "pid": 41992, "cdp_port": 9222, "page": {"id": "CC44...", "url": "http://localhost:5173/"}, ...}
 ```
 
-`launch` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<cdp port>` (pre-existing flags are preserved), exports the allocated vite port as `CELESTIA_VITE_PORT`, waits for the page target, and records the pid/exe/ports/log paths in a per-app state file under `%LOCALAPPDATA%/celestia/app-drive` (the XDG twin on POSIX). `close` reads that file and terminates only that pid - never a user-started app - trying a graceful close first and forcing after `--grace` seconds.
+`launch` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<cdp port>` (pre-existing flags are preserved), waits for its target page, records the process identity, and writes a per-app state file under `%LOCALAPPDATA%/celestia/app-drive` (the XDG twin on POSIX). The app key is `--app` when given, otherwise a hash of the resolved executable path, so two same-stem executables never share a state file.
+
+Scope: **CDP only.** `app-drive` allocates and claims the CDP port; it does not allocate a vite port and does not start or verify the frontend server. A compiled debug build keeps the `devUrl` baked in at build time, so exporting a vite port it never reads would only pretend to prevent cross-wiring. Serve the frontend with `vite-serve`/`ports` and point the build at it at build time.
+
+### Safe close: the identity contract
+
+`close` and `--replace` are the only subcommands that terminate a process, and they have to justify it. `launch` records the resolved full executable path, the process creation token (Windows `GetProcessTimes` FILETIME, Linux `/proc/<pid>` starttime) and the token kind. Both are re-read and compared before killing - once on entry and again immediately before the kill. When any piece is missing, unreadable or different, the command **fails closed**: exit 1, state file and port claim kept, and no signal sent to the process. A state file from an older schema is refused as `state-outdated`. `--pid N --force` is the single explicit break-glass and is documented as unverified. Platforms without `/proc` (macOS) cannot expose the identity, so `close`/`--replace` fail closed there. `--replace` also refuses when the recorded executable differs from the one being launched (`replace-exe-mismatch`).
+
+A launch state file (schema 2) looks like this:
+
+```json
+{"schema": 2, "protocol": 2, "app": "exe-3f9a1c7d2e4b", "pid": 41992, "exe": "C:/work/chest/target/debug/shittim_chest_tauri.exe", "create_token": "133670000000000000", "create_kind": "windows-filetime", "cdp_port": 9222, "cwd": "C:/work/chest", "launched_at": "2026-10-28T15:00:00Z", "log_dir": "...", "command": ["..."]}
+```
+
+Launch hygiene: if writing the state or the port claim fails, `launch` terminates the child it just spawned; if that termination itself fails, it **keeps** the state file and claim and reports the pid, so the process never becomes unmanageable. Ctrl+C goes through the same path, prints the envelope and exits 130.
 
 ### Protocol
 
-Every subcommand prints exactly one JSON object to stdout and exits `0` on success or `1` on a runtime failure; progress and diagnostics go to stderr, so `| jq` stays clean:
+Every subcommand prints exactly one ASCII JSON object to stdout and exits `0` on success, `1` on a runtime failure, or `2` on a usage error; progress and diagnostics go to stderr, so `| jq` stays clean. Envelopes use `ensure_ascii`, so a gbk/cp936 stdout cannot crash on out-of-codepage page text:
 
 ```json
-{"ok": true, "protocol": 1, "cmd": "status", "port": 9333, "target": {"id": "...", "url": "..."}, "state": {"boot_chrome": "claimed", "has_bar": false, "tauri": true}}
-{"ok": false, "protocol": 1, "cmd": "wait", "error": {"code": "timeout", "message": "condition not satisfied within 10s"}}
+{"ok": true, "protocol": 2, "cmd": "status", "port": 9222, "target": {"id": "...", "url": "..."}, "state": {"boot_chrome": "claimed", "has_bar": false, "tauri": true}}
+{"ok": false, "protocol": 2, "cmd": "wait", "error": {"code": "timeout", "message": "condition not satisfied within 10s"}}
 ```
 
-`protocol` is the envelope version. `error.code` is the stable discriminant (`cdp-unreachable`, `js-exception`, `selector-not-found`, `timeout`, ...). `--pretty` indents the envelope for humans. The `state` object behind `status` / `wait` / `watch` is the desktop debug contract: `boot_chrome` (the `data-hk-boot-chrome` attribute: `active` / `claimed` / absent), `has_bar` / `bar_driver` (the `#hk-boot-chrome` element), `degraded`, `ready_state`, `title`, `url`, `tauri` (whether `window.__TAURI__.core.invoke` exists), `body_text_head`, and friends.
+`protocol` is the envelope version and `error.code` is the stable discriminant (`cdp-unreachable`, `cdp-protocol`, `js-exception`, `selector-not-found`, `identity-unavailable`, `pid-mismatch`, `timeout`, ...). `--pretty` indents the envelope for humans; `--raw` (eval only) prints the bare ASCII JSON value instead of the envelope. The `state` object behind `status` / `wait` / `watch` is the desktop debug contract: `boot_chrome` (the `data-hk-boot-chrome` attribute: `active` / `claimed` / absent), `has_bar` / `bar_driver` (the `#hk-boot-chrome` element), `degraded`, `ready_state`, `title`, `url`, `tauri` (whether `window.__TAURI__.core.invoke` exists), `body_text_head`, and friends.
 
 | Command | What it does |
 | --- | --- |
-| `app-drive targets` | list the `/json/list` targets |
-| `app-drive status` | page target + boot-chrome/page state |
+| `app-drive targets` | list the `/json/list` targets (`--prefer-url` / `--target` select one) |
+| `app-drive status` | selected target + boot-chrome/page state |
 | `app-drive eval "JS"` | evaluate JS (promises awaited, result by value); `--raw` prints the bare value, `--out FILE` saves it |
 | `app-drive shot out.png` | capture a PNG/JPEG screenshot |
 | `app-drive click "CSS"` | click a selector (`element.click()`, or `--mouse` for real mouse events at the element center) |
-| `app-drive wait --selector/--expr/--boot-chrome` | poll until a condition matches, optionally `--shot FILE` |
+| `app-drive wait --selector/--expr/--boot-chrome` | poll until a condition matches; `--timeout` is the condition deadline, `--shot FILE` captures on match |
 | `app-drive watch --out DIR` | record state transitions and screenshots; `--reload` captures a fresh boot-chrome lifecycle |
-| `app-drive launch <exe>` | launch with the CDP environment and wait for the page |
-| `app-drive close` | graceful then forced close of the launched pid only |
+| `app-drive launch <exe>` | allocate the CDP port, launch with the CDP environment, wait for the page |
+| `app-drive close` | identity-verified graceful then forced close of the launched pid only |
 
 ### Typical desktop verification loop
 
@@ -171,9 +185,9 @@ $ celestia-devtools app-drive close --app shittim-chest
 
 ### Attaching to a running app
 
-`--port` attaches to any CDP endpoint directly (no launch state needed). That is also the documented path outside Windows: WebView2 exposes CDP, but WebKitGTK on Linux and WKWebView on macOS do not, so serve the built webui (`vite-serve`) and drive it in a Chromium/Edge started with `--remote-debugging-port=N`; every subcommand except `launch` is platform-agnostic because it only speaks CDP. The client itself is stdlib-only (a minimal RFC 6455 implementation in `env/cdp.py`): the channel needs text frames over loopback, so no new runtime dependency is added to a package consumed by the whole fleet, and the subset is pinned by unit tests plus a fake CDP endpoint.
+`--port` attaches to any CDP endpoint directly (no launch state needed). Attach commands never allocate or claim a port, and `--app` without a launch state fails with `no-launch-state` instead of inventing one. `--prefer-url` picks between several page targets and `--target ID` pins an exact target on every attach command (status/eval/shot/click/wait/watch). `--timeout` bounds connect/response waits (and is the condition deadline for `wait`).
 
-A second instance of the same WebView2 app on one machine needs its own WebView2 profile: sharing the running instance's profile makes WebView2 fail to create the webview (`0x8007139F`). Pass `--env WEBVIEW2_USER_DATA_FOLDER=<dir>` on `launch` - `--env` is forwarded verbatim and the instance still gets its own CDP port.
+That is also the documented path outside Windows: WebView2 exposes CDP, but WebKitGTK on Linux and WKWebView on macOS do not, so serve the built webui (`vite-serve`) and drive it in a Chromium/Edge started with `--remote-debugging-port=N`. The client itself is stdlib-only (a minimal RFC 6455 implementation in `env/cdp.py` that validates server frames instead of trusting them, and refuses `wss://` rather than pretending to own a TLS trust policy): the channel needs text frames over loopback, so no new runtime dependency is added to a package consumed by the whole fleet, and the subset is pinned by unit tests plus a fake CDP endpoint. A second instance of the same WebView2 app needs `--env WEBVIEW2_USER_DATA_FOLDER=<dir>`; sharing the running instance's profile makes WebView2 fail to create the webview (`0x8007139F`).
 
 ## Commit Message Governance
 

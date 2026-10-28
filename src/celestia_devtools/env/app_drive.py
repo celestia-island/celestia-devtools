@@ -8,7 +8,7 @@ screenshot, click, capture the boot-chrome lifecycle). Every investigation
 re-invented the same driver, and every driver leaked a process or a stray
 window when something failed. This command is that driver, standardized:
 
-  celestia-devtools app-drive launch <exe>     # CDP env + port handoff + wait
+  celestia-devtools app-drive launch <exe>     # CDP env + port + wait
   celestia-devtools app-drive status           # page + boot-chrome state JSON
   celestia-devtools app-drive eval "JS"        # Runtime.evaluate, JSON result
   celestia-devtools app-drive shot out.png     # PNG screenshot
@@ -18,33 +18,50 @@ window when something failed. This command is that driver, standardized:
   celestia-devtools app-drive close            # close only what it launched
   celestia-devtools app-drive targets          # raw /json/list targets
 
-Port handoff: launch takes its CDP port from the ports facility
-(env/ports.py) under the app name (default: the exe stem), so two debug
-shells never cross-wire; on success the port claim is re-pointed at the app
-pid so it stays valid exactly as long as the app lives. Attach commands
-resolve their port as: --port > the launch state file for --app > the ports
-registry for --app > CELESTIA_CDP_PORT.
+Scope: app-drive owns the CDP channel ONLY. It allocates/claims a CDP port
+through env/ports.py, sets WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, and drives
+the page; it does NOT allocate a vite port and does NOT start or verify the
+frontend server. A compiled debug build keeps the devUrl baked in at build
+time, so exporting a CELESTIA_VITE_PORT it never reads would only pretend to
+prevent cross-wiring. Serve the frontend with vite-serve/ports and point the
+build at it at build time.
 
-Process hygiene: launch records pid/port/exe in a per-app state file under
-the celestia state directory. close only terminates the pid recorded there
-(and refuses when that pid now belongs to a different executable), never a
-user-started app. launch that fails to reach CDP kills its own child and
-removes the state. A graceful close is attempted first (Windows taskkill
-without /F posts WM_CLOSE; POSIX SIGTERM to the session group) and forced
-after --grace seconds.
+Port handoff: launch allocates its CDP port from the ports facility under the
+app key (--app, or a hash of the resolved exe path), and re-points the claim
+at the app pid so the claim stays valid exactly as long as the app lives.
+Attach commands (everything except launch) NEVER allocate or claim a port:
+they resolve --port > the launch state for --app > CELESTIA_CDP_PORT.
+
+Process identity (the safety contract): launch records the resolved full exe
+path, the process creation token (Windows GetProcessTimes FILETIME, Linux
+/proc starttime) and the observable kind. close/--replace require ALL of it
+to match the live process; when any piece is missing or unreadable they FAIL
+CLOSED and refuse to touch the process. The token is re-checked immediately
+before the kill. A state file written by an older schema (no token) is
+refused as state-outdated. --pid N --force is the single explicit
+break-glass; it is unverified by construction and documented as such.
+
+Launch hygiene: registration failures (state write, port claim) terminate the
+spawned child; a cleanup that cannot terminate the child KEEPS the state file
+and port claim and reports the pid so nothing becomes unmanageable; Ctrl+C
+goes through the same cleanup path and exits 130 with a JSON envelope.
 
 Platforms: WebView2 on Windows is the primary CDP transport. Linux
-(WebKitGTK) and macOS (WKWebView) do not expose CDP, so on those hosts use
-the frontend fallback: serve the built webui (vite-serve), open it in a
-Chromium/Edge started with --remote-debugging-port=N, and attach app-drive
-with --port N. Every subcommand except launch is platform-agnostic because
-it only speaks CDP.
+(WebKitGTK) and macOS (WKWebView) do not expose CDP, so use the frontend
+fallback: serve the built webui (vite-serve), open it in a Chromium/Edge
+started with --remote-debugging-port=N, and attach app-drive with --port N.
+Every subcommand except launch is platform-agnostic because it only speaks
+CDP. Identity verification is unavailable on platforms without /proc
+(macOS): close/--replace fail closed there.
 
-Protocol: see --help epilog; every command prints one JSON envelope.
+Protocol: see --help epilog; every command prints exactly one ASCII JSON
+envelope (ensure_ascii, so a gbk/cp936 stdout cannot crash on out-of-codepage
+page text) to stdout.
 """
 from __future__ import annotations
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import shutil
@@ -57,10 +74,10 @@ from typing import Optional, Sequence
 from celestia_devtools.env import cdp
 from celestia_devtools.env import ports
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+STATE_SCHEMA = 2
 CDP_ENV_VAR = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
 CDP_PORT_ENV = "CELESTIA_CDP_PORT"
-VITE_PORT_ENV = "CELESTIA_VITE_PORT"
 STATE_ENV = "CELESTIA_APP_DRIVE_STATE"
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_LAUNCH_TIMEOUT = 30.0
@@ -69,7 +86,9 @@ DEFAULT_WAIT_INTERVAL = 0.1
 DEFAULT_WATCH_INTERVAL = 0.05
 DEFAULT_WATCH_DURATION = 30.0
 DEFAULT_CLOSE_GRACE = 5.0
+APP_KEY_PREFIX = "exe-"
 WATCH_FIELDS = ("boot_chrome", "has_bar", "bar_driver", "degraded", "ready_state", "url", "title")
+_TASKKILL_PATH: Optional[str] = None
 STATE_EXPRESSION = """(() => {
   const root = document.documentElement;
   const bar = document.getElementById("hk-boot-chrome");
@@ -90,24 +109,35 @@ STATE_EXPRESSION = """(() => {
     root_children: body ? body.children.length : 0
   };
 })()"""
-PROTOCOL_EPILOG = """protocol (stable, version 1):
-  Every command prints exactly one JSON object to stdout:
-    {"ok": true, "protocol": 1, "cmd": "<name>", ...fields}
-  A failure prints {"ok": false, "protocol": 1, "cmd": "<name>",
+PROTOCOL_EPILOG = """protocol (stable, version 2):
+  Every command prints exactly one ASCII JSON object to stdout:
+    {"ok": true, "protocol": 2, "cmd": "<name>", ...fields}
+  A failure prints {"ok": false, "protocol": 2, "cmd": "<name>",
   "error": {"code": "<slug>", "message": "<text>", ...}} and exits 1.
-  Usage errors follow argparse (stderr, exit 2). stdout is envelope-only;
-  progress and diagnostics go to stderr, so scripts can pipe stdout to jq.
-  --pretty indents the envelope for humans.
+  Usage errors follow argparse (stderr, exit 2). stdout is envelope-only and
+  ASCII-safe (ensure_ascii): progress goes to stderr, so stdout pipes into
+  jq. --pretty indents the envelope for humans. --raw (eval only) prints the
+  bare ASCII JSON value instead of the envelope.
 
 exit codes:
-  0  command succeeded
-  1  runtime failure (the envelope carries code/message)
-  2  usage error (argparse)
+  0    command succeeded
+  1    runtime failure (the envelope carries code/message)
+  2    usage error (argparse)
+  130  interrupted (Ctrl+C); cleanup ran and the envelope was printed
 
-process hygiene:
-  launch writes <state-dir>/<app>.json (pid, exe, cdp port, vite port,
-  log dir); close reads it and terminates only that pid. launch that never
-  reaches CDP kills its own child and removes the state file.
+safe-close contract:
+  launch records the resolved exe path + process creation token + token kind
+  in <state-dir>/<app>.json (schema 2). close and --replace require all three
+  to match the live process, re-check immediately before the kill, and fail
+  closed (state kept, exit 1) when anything is missing, unreadable or
+  different. A state file from an older schema is refused (state-outdated).
+  --pid N --force is the explicit unverified break-glass.
+
+scope:
+  CDP only: launch allocates/claims the CDP port and sets
+  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS; no vite port is allocated, claimed
+  or exported (a compiled debug build keeps its baked devUrl).
+  Attach commands never allocate or claim a port.
 
 state directory (override with CELESTIA_APP_DRIVE_STATE):
   Windows  %LOCALAPPDATA%/celestia/app-drive
@@ -125,7 +155,8 @@ def failure(command: str, code: str, message: str, **fields) -> dict:
     return payload
 
 def emit(payload: dict, pretty: bool = False) -> None:
-    print(json.dumps(payload, ensure_ascii = False, indent = 2 if pretty else None))
+    """Print the signed envelope as pure ASCII (gbk stdout cannot crash)."""
+    print(json.dumps(payload, ensure_ascii = True, indent = 2 if pretty else None))
 
 def timestamp_utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -147,12 +178,18 @@ def app_slug(app: str) -> str:
     cleaned = "".join(character if (character.isalnum() or (character in "._-")) else "_" for character in str(app))
     return cleaned.strip("._") or "app"
 
-def state_file_path(app: Optional[str], explicit: Optional[str] = None) -> Path:
+def default_app_key(executable: str) -> str:
+    """Stable app key from the resolved exe path (same-stem exes never share)."""
+    normalized = os.path.normcase(os.path.abspath(str(executable)))
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return APP_KEY_PREFIX + digest
+
+def state_file_path(app: Optional[str] = None, explicit: Optional[str] = None) -> Path:
     if explicit:
         return Path(explicit)
 
     if not app:
-        raise cdp.cdp_error("no-app", "no application name: pass --app or --state-file")
+        raise cdp.cdp_error("no-app", "no application key: pass --app or --state-file")
 
     return state_root() / (app_slug(str(app)) + ".json")
 
@@ -170,12 +207,17 @@ def read_state(app: Optional[str] = None, explicit: Optional[str] = None) -> Opt
     if not isinstance(data, dict):
         raise cdp.cdp_error("bad-state", "the app-drive state file is not a JSON object: " + str(path))
 
+    schema = data.get("schema")
+
+    if schema != STATE_SCHEMA:
+        raise cdp.cdp_error("state-outdated", "the launch state " + str(path) + " was written by an older app-drive (schema " + str(schema) + ", expected " + str(STATE_SCHEMA) + "); it carries no process creation token, so app-drive will not touch that process (fail closed). Relaunch with the current app-drive, and close the old process manually if needed.")
+
     return data
 
 def write_state(state: dict, path: Path) -> None:
     path.parent.mkdir(parents = True, exist_ok = True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(state, indent = 2, ensure_ascii = False), encoding = "utf-8")
+    temporary = path.with_name(path.name + ".tmp-" + str(os.getpid()))
+    temporary.write_text(json.dumps(state, indent = 2, ensure_ascii = True), encoding = "utf-8")
     os.replace(temporary, path)
 
 def remove_state(path: Optional[Path]) -> bool:
@@ -190,22 +232,27 @@ def remove_state(path: Optional[Path]) -> bool:
     except OSError:
         return False
 
+def state_cdp_port(state: dict, path: Optional[Path] = None) -> int:
+    port = state.get("cdp_port")
+
+    if (not isinstance(port, int)) or (port < 1) or (port > 65535):
+        raise cdp.cdp_error("bad-state", "the launch state " + str(path) + " carries no usable cdp_port")
+
+    return int(port)
+
+def state_port_for_attach(state: dict, path: Optional[Path] = None) -> int:
+    if not pid_alive(state.get("pid")):
+        raise cdp.cdp_error("app-not-running", "app " + repr(state.get("app")) + " from " + str(path) + " is not running; relaunch it with app-drive launch")
+
+    return state_cdp_port(state, path)
+
 def pid_alive(pid: Optional[int]) -> bool:
     if not pid:
         return False
 
     return ports.pid_alive(int(pid))
 
-def process_image(pid: int) -> Optional[str]:
-    if os.name == "nt":
-        return _windows_process_image(int(pid))
-
-    try:
-        return os.readlink("/proc/" + str(int(pid)) + "/exe")
-    except OSError:
-        return None
-
-def _windows_process_image(pid: int) -> Optional[str]:
+def _windows_process_identity(pid: int) -> Optional[dict]:
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.OpenProcess(0x1000, False, int(pid))
 
@@ -216,15 +263,107 @@ def _windows_process_image(pid: int) -> Optional[str]:
         buffer = ctypes.create_unicode_buffer(32768)
         size = ctypes.c_ulong(len(buffer))
 
-        if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-            return buffer.value
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
 
-        return None
+        creation = ctypes.c_ulonglong(0)
+        exit_time = ctypes.c_ulonglong(0)
+        kernel_time = ctypes.c_ulonglong(0)
+        user_time = ctypes.c_ulonglong(0)
+
+        if not kernel32.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time), ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            return None
+
+        return {"image": buffer.value, "create_token": str(creation.value), "create_kind": "windows-filetime"}
     finally:
         kernel32.CloseHandle(handle)
 
+def _posix_process_identity(pid: int) -> Optional[dict]:
+    if not os.path.isdir("/proc"):
+        return None
+
+    try:
+        image = os.readlink("/proc/" + str(int(pid)) + "/exe")
+    except OSError:
+        return None
+
+    try:
+        stat_text = Path("/proc/" + str(int(pid)) + "/stat").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+
+    closing = stat_text.rfind(")")
+
+    if closing < 0:
+        return None
+
+    fields = stat_text[closing + 2:].split()
+
+    if len(fields) <= 19:
+        return None
+
+    return {"image": image, "create_token": fields[19], "create_kind": "proc-starttime"}
+
+def read_process_identity(pid: int) -> Optional[dict]:
+    """Best-effort identity of a live process: full image path + creation token.
+
+    Returns None when the platform or the process cannot be inspected; every
+    caller treats None as "fail closed".
+    """
+
+    if not pid:
+        return None
+
+    if os.name == "nt":
+        return _windows_process_identity(int(pid))
+
+    return _posix_process_identity(int(pid))
+
+def same_image_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.abspath(str(left))) == os.path.normcase(os.path.abspath(str(right)))
+
+def verify_process_identity(state: dict, pid: int) -> dict:
+    """Require the recorded path + creation token to match the live process.
+
+    Raises identity-unavailable when anything needed is missing or
+    unreadable, and pid-mismatch when the live process is not the recorded
+    one. Never returns a "probably" answer: this is the S0 safety boundary.
+    """
+    recorded_exe = str(state.get("exe") or "")
+    recorded_token = str(state.get("create_token") or "")
+    recorded_kind = str(state.get("create_kind") or "")
+
+    if (not recorded_exe) or (not recorded_token) or (not recorded_kind):
+        raise cdp.cdp_error("identity-unavailable", "the launch state for pid " + str(pid) + " has no recorded executable path/creation token; refusing to touch it (fail closed)")
+
+    current = read_process_identity(int(pid))
+
+    if current is None:
+        raise cdp.cdp_error("identity-unavailable", "cannot read the executable path and creation time of pid " + str(pid) + "; refusing to touch it (fail closed)")
+
+    if not same_image_path(recorded_exe, str(current.get("image") or "")):
+        raise cdp.cdp_error("pid-mismatch", "pid " + str(pid) + " now runs " + repr(current.get("image")) + ", not the launched " + repr(recorded_exe) + "; refusing to touch it")
+
+    if (str(current.get("create_kind") or "") != recorded_kind) or (str(current.get("create_token") or "") != recorded_token):
+        raise cdp.cdp_error("pid-mismatch", "pid " + str(pid) + " was reused (creation token " + repr(current.get("create_token")) + " != recorded " + repr(recorded_token) + "); refusing to touch it")
+
+    return current
+
+def taskkill_path() -> str:
+    global _TASKKILL_PATH
+
+    if _TASKKILL_PATH is None:
+        candidate = Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32" / "taskkill.exe"
+
+        if candidate.is_file():
+            _TASKKILL_PATH = str(candidate)
+        else:
+            _TASKKILL_PATH = shutil.which("taskkill") or "taskkill"
+
+    return _TASKKILL_PATH
+
 def _taskkill(pid: int, force: bool) -> int:
-    command = ["taskkill", "/PID", str(int(pid)), "/T"]
+    command = [taskkill_path(), "/PID", str(int(pid)), "/T"]
 
     if force:
         command.append("/F")
@@ -292,6 +431,12 @@ def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
 
     return {"closed": True, "forced": forced, "waited_ms": waited, "reason": "terminated"}
 
+def terminate_verified(state: dict, pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
+    """Verify identity, then verify AGAIN immediately before the kill."""
+    verify_process_identity(state, pid)
+    verify_process_identity(state, pid)
+    return terminate_tree(pid, grace)
+
 def merge_webview2_arguments(existing: str, cdp_port: int) -> str:
     tokens = [token for token in str(existing or "").split() if token and not token.startswith("--remote-debugging-port=")]
     tokens.append("--remote-debugging-port=" + str(int(cdp_port)))
@@ -310,14 +455,10 @@ def parse_env_overrides(overrides: Sequence[str]) -> dict[str, str]:
 
     return parsed
 
-def build_launch_env(base, cdp_port: int, vite_port: Optional[int], overrides: Sequence[str]) -> dict[str, str]:
+def build_launch_env(base, cdp_port: int, overrides: Sequence[str]) -> dict[str, str]:
     environment = dict(base)
     environment[CDP_ENV_VAR] = merge_webview2_arguments(environment.get(CDP_ENV_VAR, ""), cdp_port)
     environment[CDP_PORT_ENV] = str(int(cdp_port))
-
-    if vite_port is not None:
-        environment[VITE_PORT_ENV] = str(int(vite_port))
-
     environment.update(parse_env_overrides(overrides))
     return environment
 
@@ -342,72 +483,78 @@ def resolve_executable(exe: str) -> str:
 
     raise cdp.cdp_error("exe-not-found", "executable not found: " + str(exe) + " (pass a path, or a name on PATH)")
 
-def default_app_name(exe: str) -> str:
-    return Path(str(exe)).stem or "app"
+def acquire_cdp_port(app: str) -> int:
+    try:
+        port = int(ports.acquire(str(app), "cdp"))
+    except SystemExit as exc:
+        raise cdp.cdp_error("port-unavailable", "no free CDP port for app " + repr(app) + ": " + str(exc)) from None
+    except OSError as exc:
+        raise cdp.cdp_error("port-registry", "cannot read/write the ports registry: " + str(exc)) from exc
 
-def _open_launch_logs(app: str, log_dir: Optional[str], no_log: bool) -> tuple[Optional[Path], object, object]:
-    if no_log:
-        return None, subprocess.DEVNULL, subprocess.DEVNULL
+    if (port < 1) or (port > 65535):
+        raise cdp.cdp_error("port-unavailable", "the ports registry handed out an invalid CDP port: " + str(port))
 
-    directory = Path(log_dir) if log_dir else (state_root() / "logs" / (app_slug(app) + "-" + time.strftime("%Y%m%d-%H%M%S")))
-    directory.mkdir(parents = True, exist_ok = True)
-    return directory, open(directory / "stdout.log", "wb"), open(directory / "stderr.log", "wb")
+    return port
 
-def _close_handles(*handles) -> None:
-    for handle in handles:
-        closing = getattr(handle, "close", None)
+def claim_cdp_port(app: str, port: int, pid: int) -> None:
+    try:
+        ports.claim(str(app), "cdp", int(port), int(pid))
+    except SystemExit as exc:
+        raise cdp.cdp_error("port-unavailable", "cannot claim CDP port " + str(port) + ": " + str(exc)) from None
+    except OSError as exc:
+        raise cdp.cdp_error("port-registry", "cannot write the ports registry: " + str(exc)) from exc
 
-        if callable(closing):
-            try:
-                closing()
-            except (OSError, ValueError):
-                pass
-
-def _spawn(command: list[str], environment: dict[str, str], cwd: Optional[str], stdout_target, stderr_target) -> subprocess.Popen:
-    kwargs: dict = {"env": environment, "cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": stdout_target, "stderr": stderr_target}
-
-    if os.name == "nt":
-        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-
-        if creation_flags:
-            kwargs["creationflags"] = creation_flags
-    else:
-        kwargs["start_new_session"] = True
+def release_ports(app: Optional[str]) -> bool:
+    if not app:
+        return False
 
     try:
-        return subprocess.Popen(command, **kwargs)
-    except OSError as exc:
-        raise cdp.cdp_error("launch-failed", "cannot start " + str(command[0]) + ": " + str(exc)) from exc
+        ports.release(str(app), None)
+        return True
+    except (SystemExit, OSError):
+        return False
 
 def resolve_attach_port(args) -> int:
     explicit = getattr(args, "port", None)
 
     if explicit is not None:
-        return int(explicit)
+        port = int(explicit)
 
+        if (port < 1) or (port > 65535):
+            raise cdp.cdp_error("bad-port", "CDP port out of range: " + str(port))
+
+        return port
+
+    state_file = getattr(args, "state_file", None)
     app = getattr(args, "app", None)
 
+    if state_file:
+        state = read_state(None, state_file)
+
+        if state is None:
+            raise cdp.cdp_error("no-launch-state", "no app-drive launch state at " + str(state_file))
+
+        return state_port_for_attach(state, Path(state_file))
+
     if app:
-        state_file = getattr(args, "state_file", None)
-        state = read_state(str(app), state_file)
+        state = read_state(str(app))
 
-        if state is not None:
-            if not state.get("port"):
-                raise cdp.cdp_error("bad-state", "the launch state for app '" + str(app) + "' carries no CDP port")
+        if state is None:
+            raise cdp.cdp_error("no-launch-state", "no app-drive launch state for app " + repr(str(app)) + "; attach mode never allocates or claims a port (launch the app with app-drive, or pass --port)")
 
-            if not pid_alive(state.get("pid")):
-                raise cdp.cdp_error("app-not-running", "app '" + str(app) + "' from " + str(state_file_path(str(app), state_file)) + " is not running; relaunch it with app-drive launch")
-
-            return int(state["port"])
-
-        return int(ports.acquire(str(app), "cdp"))
+        return state_port_for_attach(state, state_file_path(str(app)))
 
     environment_port = os.environ.get(CDP_PORT_ENV, "").strip()
 
     if environment_port.isdigit():
-        return int(environment_port)
+        port = int(environment_port)
 
-    raise cdp.cdp_error("no-port", "no CDP port: pass --port, pass --app for a port recorded by app-drive launch, or set " + CDP_PORT_ENV)
+        if (port < 1) or (port > 65535):
+            raise cdp.cdp_error("bad-port", "CELESTIA_CDP_PORT is out of range: " + str(port))
+
+        return port
+
+    raise cdp.cdp_error("no-port", "no CDP port: pass --port, pass --app for a launch recorded by app-drive, or set " + CDP_PORT_ENV)
 
 def read_page_state(client: cdp.cdp_client) -> dict:
     value = client.evaluate_value(STATE_EXPRESSION)
@@ -419,6 +566,25 @@ def read_page_state(client: cdp.cdp_client) -> dict:
 
 def public_target(target: dict) -> dict:
     return {"id": target.get("id"), "type": target.get("type"), "title": target.get("title"), "url": target.get("url"), "websocket_url": target.get("webSocketDebuggerUrl")}
+
+def select_target(port: int, args, timeout: float) -> tuple[list[dict], dict]:
+    targets = cdp.list_targets(port, timeout = timeout)
+    target_id = str(getattr(args, "target", None) or "")
+    page = cdp.select_page_target(targets, getattr(args, "prefer_url", "") or "", target_id)
+
+    if page is None:
+        if target_id:
+            raise cdp.cdp_error("target-not-found", "no CDP target with id " + repr(target_id), {"targets": [public_target(item) for item in targets]})
+
+        raise cdp.cdp_error("no-page-target", "the CDP endpoint on 127.0.0.1:" + str(port) + " has no page target", {"targets": [public_target(item) for item in targets]})
+
+    return targets, page
+
+def connect_page(args) -> tuple[int, dict, cdp.cdp_client]:
+    port = resolve_attach_port(args)
+    _targets, page = select_target(port, args, args.timeout)
+    client = cdp.cdp_client.connect(port, target = page, timeout = args.timeout)
+    return port, page, client
 
 def element_probe_expression(selector: str) -> str:
     quoted = json.dumps(str(selector))
@@ -500,36 +666,25 @@ def watch_stop_reason(args, client: cdp.cdp_client, state: dict) -> Optional[str
 
     return None
 
-def _launched_summary(args) -> Optional[dict]:
-    app = getattr(args, "app", None)
-
+def launched_summary(app: Optional[str], state_file: Optional[str] = None) -> Optional[dict]:
     if not app:
         return None
 
-    state_file = getattr(args, "state_file", None)
     state = read_state(str(app), state_file)
 
     if state is None:
         return None
 
-    return {"app": state.get("app", app), "pid": state.get("pid"), "running": pid_alive(state.get("pid")), "state_file": str(state_file_path(str(app), state_file)), "log_dir": state.get("log_dir")}
+    return {"app": state.get("app", app), "pid": state.get("pid"), "running": pid_alive(state.get("pid")), "cdp_port": state.get("cdp_port"), "exe": state.get("exe"), "state_file": str(state_file_path(str(app), state_file)), "log_dir": state.get("log_dir")}
 
 def cmd_targets(args) -> int:
     port = resolve_attach_port(args)
-    targets = cdp.list_targets(port, timeout = args.timeout)
-    page = cdp.select_page_target(targets)
-    emit(envelope("targets", port = port, count = len(targets), targets = [public_target(item) for item in targets], selected_target_id = (page or {}).get("id")), args.pretty)
+    targets, page = select_target(port, args, args.timeout)
+    emit(envelope("targets", port = port, count = len(targets), targets = [public_target(item) for item in targets], selected_target_id = page.get("id")), args.pretty)
     return 0
 
 def cmd_status(args) -> int:
-    port = resolve_attach_port(args)
-    targets = cdp.list_targets(port, timeout = args.timeout)
-    page = cdp.select_page_target(targets, args.prefer_url)
-
-    if page is None:
-        raise cdp.cdp_error("no-page-target", "the CDP endpoint on 127.0.0.1:" + str(port) + " has no page target", {"targets": [public_target(item) for item in targets]})
-
-    client = cdp.cdp_client.connect(port, target = page, timeout = args.timeout)
+    port, page, client = connect_page(args)
 
     try:
         state = read_page_state(client)
@@ -537,7 +692,7 @@ def cmd_status(args) -> int:
     finally:
         client.close()
 
-    emit(envelope("status", port = port, target = public_target(page), target_count = len(targets), state = state, launched = _launched_summary(args), events = events[-20:]), args.pretty)
+    emit(envelope("status", port = port, target = public_target(page), state = state, launched = launched_summary(args.app, args.state_file), events = events[-20:]), args.pretty)
     return 0
 
 def _resolve_expression(args) -> str:
@@ -557,8 +712,7 @@ def _resolve_expression(args) -> str:
 
 def cmd_eval(args) -> int:
     expression = _resolve_expression(args)
-    port = resolve_attach_port(args)
-    client = cdp.cdp_client.connect(port, timeout = args.timeout)
+    port, _page, client = connect_page(args)
 
     try:
         result = client.evaluate(expression, await_promise = not args.no_await, return_by_value = True, user_gesture = not args.no_gesture)
@@ -570,18 +724,17 @@ def cmd_eval(args) -> int:
     if args.out:
         output = Path(args.out)
         output.parent.mkdir(parents = True, exist_ok = True)
-        output.write_text(json.dumps(value, indent = 2, ensure_ascii = False), encoding = "utf-8")
+        output.write_text(json.dumps(value, indent = 2, ensure_ascii = True), encoding = "utf-8")
 
     if args.raw:
-        print(json.dumps(value, ensure_ascii = False))
+        print(json.dumps(value, ensure_ascii = True))
         return 0
 
     emit(envelope("eval", port = port, type = result.get("type"), value = value, out = str(Path(args.out).resolve()) if args.out else None), args.pretty)
     return 0
 
 def cmd_shot(args) -> int:
-    port = resolve_attach_port(args)
-    client = cdp.cdp_client.connect(port, timeout = args.timeout)
+    port, _page, client = connect_page(args)
 
     try:
         data = client.screenshot(args.format, args.quality)
@@ -596,8 +749,7 @@ def cmd_shot(args) -> int:
     return 0
 
 def cmd_click(args) -> int:
-    port = resolve_attach_port(args)
-    client = cdp.cdp_client.connect(port, timeout = args.timeout)
+    port, _page, client = connect_page(args)
 
     try:
         probe = client.evaluate_value(element_probe_expression(args.selector))
@@ -626,8 +778,7 @@ def cmd_click(args) -> int:
     return 0
 
 def cmd_wait(args) -> int:
-    port = resolve_attach_port(args)
-    client = cdp.cdp_client.connect(port, timeout = args.timeout)
+    port, _page, client = connect_page(args)
     started = time.monotonic()
     samples = 0
     detail: dict = {}
@@ -667,13 +818,12 @@ def cmd_wait(args) -> int:
         client.close()
 
 def cmd_watch(args) -> int:
-    port = resolve_attach_port(args)
+    port, _page, client = connect_page(args)
     output_dir = Path(args.out)
     output_dir.mkdir(parents = True, exist_ok = True)
     timeline_path = output_dir / "timeline.jsonl"
     screenshots: list[str] = []
     transitions: list[dict] = []
-    client = cdp.cdp_client.connect(port, timeout = args.timeout)
     started = time.monotonic()
     samples = 0
     last_state: dict = {}
@@ -710,7 +860,7 @@ def cmd_watch(args) -> int:
                 if error_text is not None:
                     record["error"] = error_text
 
-                timeline.write(json.dumps(record, ensure_ascii = False) + chr(10))
+                timeline.write(json.dumps(record, ensure_ascii = True) + chr(10))
                 timeline.flush()
 
                 if changed and last_state:
@@ -748,131 +898,276 @@ def cmd_watch(args) -> int:
         client.close()
 
     summary = {"port": port, "reloaded": reloaded, "duration_ms": int((time.monotonic() - started) * 1000), "interval_ms": int(args.interval * 1000), "samples": samples, "stopped_reason": stopped_reason, "transitions": transitions, "screenshots": screenshots, "final_state": final_state, "timeline": str(timeline_path.resolve()), "summary_file": str((output_dir / "watch.json").resolve())}
-    (output_dir / "watch.json").write_text(json.dumps(summary, indent = 2, ensure_ascii = False), encoding = "utf-8")
+    (output_dir / "watch.json").write_text(json.dumps(summary, indent = 2, ensure_ascii = True), encoding = "utf-8")
     emit(envelope("watch", **summary), args.pretty)
     return 0
 
+def _open_launch_logs(app: str, log_dir: Optional[str], no_log: bool) -> tuple[Optional[Path], object, object]:
+    if no_log:
+        return None, subprocess.DEVNULL, subprocess.DEVNULL
+
+    directory = Path(log_dir) if log_dir else (state_root() / "logs" / (app_slug(app) + "-" + time.strftime("%Y%m%d-%H%M%S")))
+    directory.mkdir(parents = True, exist_ok = True)
+    return directory, open(directory / "stdout.log", "wb"), open(directory / "stderr.log", "wb")
+
+def _close_handles(*handles) -> None:
+    for handle in handles:
+        closing = getattr(handle, "close", None)
+
+        if callable(closing):
+            try:
+                closing()
+            except (OSError, ValueError):
+                pass
+
+def _spawn(command: list[str], environment: dict[str, str], cwd: Optional[str], stdout_target, stderr_target) -> subprocess.Popen:
+    kwargs: dict = {"env": environment, "cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": stdout_target, "stderr": stderr_target}
+
+    if os.name == "nt":
+        creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+        if creation_flags:
+            kwargs["creationflags"] = creation_flags
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        return subprocess.Popen(command, **kwargs)
+    except OSError as exc:
+        raise cdp.cdp_error("launch-failed", "cannot start " + str(command[0]) + ": " + str(exc)) from exc
+
+def _cleanup_note(cleanup: dict) -> str:
+    if cleanup.get("terminated"):
+        return "; the spawned app was terminated and its state/claim removed"
+
+    if cleanup.get("state_kept"):
+        return "; WARNING: the spawned app could not be terminated - state kept at " + str(cleanup.get("state_file")) + " (retry with app-drive close --app " + str(cleanup.get("app")) + "; pid " + str(cleanup.get("pid")) + ")"
+
+    return "; cleanup of the spawned app is incomplete (pid " + str(cleanup.get("pid")) + ")"
+
+def _abort_launch(child: Optional[subprocess.Popen], state_path: Path, app: str, state: Optional[dict], grace: float) -> dict:
+    result: dict = {"pid": None, "terminated": False, "state_kept": False, "claims_released": False, "app": app, "state_file": str(state_path.resolve())}
+
+    if child is not None:
+        result["pid"] = child.pid
+
+        try:
+            terminate_tree(child.pid, grace = grace)
+            result["terminated"] = True
+        except cdp.cdp_error as exc:
+            result["terminate_error"] = str(exc)
+
+    if result["terminated"] or (child is None):
+        result["state_removed"] = remove_state(state_path)
+        result["claims_released"] = release_ports(app)
+        return result
+
+    if state is not None:
+        try:
+            write_state(state, state_path)
+            result["state_kept"] = True
+        except (OSError, ValueError) as exc:
+            result["state_write_error"] = str(exc)
+
+        try:
+            claim_cdp_port(app, int(state.get("cdp_port") or 0), int(state.get("pid") or 0))
+        except cdp.cdp_error as exc:
+            result["claim_error"] = str(exc)
+    else:
+        try:
+            partial = {"schema": STATE_SCHEMA, "protocol": PROTOCOL_VERSION, "app": app, "pid": child.pid, "exe": "", "create_token": "", "create_kind": "", "cdp_port": 0, "cwd": str(Path.cwd()), "launched_at": timestamp_utc(), "log_dir": None, "command": []}
+            write_state(partial, state_path)
+            result["state_kept"] = True
+        except (OSError, ValueError) as exc:
+            result["state_write_error"] = str(exc)
+
+    return result
+
+def _replace_existing(app: str, existing: dict, requested_exe: str, state_path: Path, grace: float) -> None:
+    recorded_exe = str(existing.get("exe") or "")
+
+    if (not recorded_exe) or (not same_image_path(recorded_exe, requested_exe)):
+        raise cdp.cdp_error("replace-exe-mismatch", "the live app-drive instance for " + repr(app) + " runs " + repr(recorded_exe) + ", but --replace was asked to launch " + repr(requested_exe) + "; refusing to kill it (run app-drive close --app " + app + " yourself if that is really the instance you mean)")
+
+    pid = int(existing.get("pid") or 0)
+    terminate_verified(existing, pid, grace)
+    remove_state(state_path)
+    release_ports(app)
+
+def _build_launch_state(app: str, child_pid: int, executable: str, identity: dict, port: int, cwd: Optional[str], log_dir: Optional[Path], command: list[str]) -> dict:
+    return {"schema": STATE_SCHEMA, "protocol": PROTOCOL_VERSION, "app": app, "pid": child_pid, "exe": executable, "create_token": str(identity.get("create_token") or ""), "create_kind": str(identity.get("create_kind") or ""), "cdp_port": int(port), "cwd": cwd or str(Path.cwd()), "launched_at": timestamp_utc(), "log_dir": str(log_dir.resolve()) if log_dir is not None else None, "command": command}
+
 def cmd_launch(args) -> int:
+    if (args.wait_timeout <= 0) or (args.grace < 0):
+        raise cdp.cdp_error("bad-timeout", "--wait-timeout must be positive and --grace must not be negative")
+
     executable = resolve_executable(args.exe)
-    app = str(args.app or default_app_name(executable))
+    app = str(args.app or default_app_key(executable))
     state_path = state_file_path(app, args.state_file)
     existing = read_state(app, args.state_file)
 
     if (existing is not None) and pid_alive(existing.get("pid")):
         if not args.replace:
-            raise cdp.cdp_error("already-running", "app '" + app + "' was already launched (pid " + str(existing.get("pid")) + ", CDP port " + str(existing.get("port")) + "); run app-drive close --app " + app + " or pass --replace")
+            raise cdp.cdp_error("already-running", "app " + repr(app) + " was already launched (pid " + str(existing.get("pid")) + ", CDP port " + str(existing.get("cdp_port")) + "); run app-drive close --app " + app + " or pass --replace")
 
-        _verify_launched_process(existing, int(existing.get("pid") or 0))
-        terminate_tree(int(existing.get("pid") or 0), grace = args.grace)
+        _replace_existing(app, existing, executable, state_path, args.grace)
 
-    port = int(args.port) if args.port is not None else int(ports.acquire(app, "cdp"))
-    vite_port = int(args.vite_port) if args.vite_port is not None else int(ports.acquire(app, "vite"))
-    environment = build_launch_env(os.environ, port, vite_port, args.env)
+    port = int(args.port) if args.port is not None else acquire_cdp_port(app)
+    environment = build_launch_env(os.environ, port, args.env)
     command = build_launch_command(executable, args.extra)
     log_dir, stdout_target, stderr_target = _open_launch_logs(app, args.log_dir, args.no_log)
+    child: Optional[subprocess.Popen] = None
+    state: Optional[dict] = None
     started = time.monotonic()
-    child = _spawn(command, environment, args.cwd, stdout_target, stderr_target)
-    _close_handles(stdout_target, stderr_target)
+
+    try:
+        try:
+            child = _spawn(command, environment, args.cwd, stdout_target, stderr_target)
+        finally:
+            _close_handles(stdout_target, stderr_target)
+
+        identity = read_process_identity(child.pid)
+
+        if identity is None:
+            exit_code = child.poll()
+            suffix = (" (app exit code " + str(exit_code) + ")") if exit_code is not None else ""
+            raise cdp.cdp_error("identity-unavailable", "cannot read the creation time and full path of the spawned process (pid " + str(child.pid) + ")" + suffix + "; refusing to manage a process it cannot verify (fail closed)")
+
+        state = _build_launch_state(app, child.pid, executable, identity, port, args.cwd, log_dir, command)
+        write_state(state, state_path)
+        claim_cdp_port(app, port, child.pid)
+    except KeyboardInterrupt:
+        cleanup = _abort_launch(child, state_path, app, state, args.grace)
+        emit(failure("launch", "interrupted", "launch interrupted" + _cleanup_note(cleanup), cleanup = cleanup), args.pretty)
+        return 130
+    except cdp.cdp_error as exc:
+        cleanup = _abort_launch(child, state_path, app, state, args.grace)
+        details = dict(exc.details)
+        details.update({"cleanup": cleanup, "app": app, "pid": (child.pid if child is not None else None), "state_file": str(state_path.resolve())})
+        raise cdp.cdp_error(exc.code, str(exc) + _cleanup_note(cleanup), details) from exc
+    except (OSError, ValueError, RuntimeError) as exc:
+        cleanup = _abort_launch(child, state_path, app, state, args.grace)
+        raise cdp.cdp_error("launch-failed", str(exc) + _cleanup_note(cleanup), {"cleanup": cleanup, "app": app, "pid": (child.pid if child is not None else None), "state_file": str(state_path.resolve())}) from exc
+
     launch_ms = int((time.monotonic() - started) * 1000)
-    state = {"protocol": PROTOCOL_VERSION, "app": app, "pid": child.pid, "port": port, "vite_port": vite_port, "exe": executable, "cwd": args.cwd or str(Path.cwd()), "launched_at": timestamp_utc(), "log_dir": str(log_dir.resolve()) if log_dir is not None else None, "command": command}
-    write_state(state, state_path)
-    ports.claim(app, "cdp", port, child.pid)
-    ports.claim(app, "vite", vite_port, child.pid)
 
     if args.no_wait:
-        emit(envelope("launch", app = app, pid = child.pid, port = port, vite_port = vite_port, page = None, waited = False, launch_ms = launch_ms, state_file = str(state_path.resolve()), log_dir = state["log_dir"]), args.pretty)
+        emit(envelope("launch", app = app, pid = child.pid, cdp_port = port, page = None, waited = False, launch_ms = launch_ms, state_file = str(state_path.resolve()), log_dir = state["log_dir"], exe = executable), args.pretty)
         return 0
 
     try:
-        page, cdp_ms = cdp.wait_for_page(port, timeout = args.wait_timeout, prefer_url = args.prefer_url)
+        page, cdp_ms = cdp.wait_for_page(port, timeout = args.wait_timeout, prefer_url = args.prefer_url, target_id = args.target or "")
+    except KeyboardInterrupt:
+        cleanup = _abort_launch(child, state_path, app, state, args.grace)
+        emit(failure("launch", "interrupted", "launch interrupted while waiting for CDP" + _cleanup_note(cleanup), cleanup = cleanup), args.pretty)
+        return 130
     except cdp.cdp_error as exc:
         exit_code = child.poll()
-
-        try:
-            terminate_tree(child.pid, grace = args.grace)
-        except cdp.cdp_error:
-            pass
-
-        remove_state(state_path)
-        ports.release(app, None)
+        cleanup = _abort_launch(child, state_path, app, state, args.grace)
         suffix = (" (app exit code " + str(exit_code) + ")") if exit_code is not None else ""
-        raise cdp.cdp_error(exc.code, str(exc) + suffix, exc.details) from exc
+        details = dict(exc.details)
+        details.update({"cleanup": cleanup, "app": app, "pid": child.pid, "state_file": str(state_path.resolve())})
+        raise cdp.cdp_error(exc.code, str(exc) + suffix + _cleanup_note(cleanup), details) from exc
 
-    emit(envelope("launch", app = app, pid = child.pid, port = port, vite_port = vite_port, page = public_target(page), waited = True, launch_ms = launch_ms, cdp_ms = cdp_ms, state_file = str(state_path.resolve()), log_dir = state["log_dir"]), args.pretty)
+    emit(envelope("launch", app = app, pid = child.pid, cdp_port = port, page = public_target(page), waited = True, launch_ms = launch_ms, cdp_ms = cdp_ms, state_file = str(state_path.resolve()), log_dir = state["log_dir"], exe = executable), args.pretty)
     return 0
 
-def _verify_launched_process(state: dict, pid: int) -> None:
-    recorded = str(state.get("exe") or "")
-    current = process_image(pid)
+def _close_app_key(args) -> Optional[str]:
+    if args.app:
+        return str(args.app)
 
-    if (not recorded) or (not current):
-        return
+    if args.exe:
+        return default_app_key(resolve_executable(args.exe))
 
-    if Path(recorded).name.lower() != Path(current).name.lower():
-        raise cdp.cdp_error("pid-mismatch", "pid " + str(pid) + " now belongs to " + str(current) + ", not the launched " + str(recorded) + "; refusing to close it (use --pid " + str(pid) + " --force only if you are sure)")
+    return None
 
 def cmd_close(args) -> int:
-    app = getattr(args, "app", None)
-    state_path: Optional[Path] = None
-    state: Optional[dict] = None
+    if args.grace < 0:
+        raise cdp.cdp_error("bad-timeout", "--grace must not be negative")
 
     if args.pid is not None:
         if not args.force:
-            raise cdp.cdp_error("unsafe-close", "closing an arbitrary pid needs --force; prefer --app so app-drive only closes the process it launched")
+            raise cdp.cdp_error("unsafe-close", "closing an arbitrary pid needs --force; prefer --app/--exe so app-drive only closes the process it launched and can verify")
 
-        pid = int(args.pid)
-    else:
-        if not app:
-            raise cdp.cdp_error("no-app", "no application name: pass --app (or --pid N --force)")
+        result = terminate_tree(int(args.pid), args.grace)
+        payload = {"app": None, "pid": int(args.pid), "verified": False}
+        payload.update(result)
+        emit(envelope("close", **payload, state_file_removed = False, ports_released = False), args.pretty)
+        return 0
 
-        state_path = state_file_path(str(app), args.state_file)
-        state = read_state(str(app), args.state_file)
+    app = _close_app_key(args)
+    state: Optional[dict] = None
 
-        if state is None:
-            raise cdp.cdp_error("no-state", "no launch state for app '" + str(app) + "' at " + str(state_path) + "; app-drive only closes apps it launched (break-glass: --pid N --force)")
+    if (not app) and args.state_file:
+        state = read_state(None, args.state_file)
 
-        recorded_pid = state.get("pid")
+        if state is not None:
+            app = str(state.get("app") or "")
 
-        if not recorded_pid:
-            raise cdp.cdp_error("bad-state", "the launch state " + str(state_path) + " carries no pid")
+    if not app:
+        raise cdp.cdp_error("no-app", "no application key: pass --app, --exe (the launched executable), or --state-file")
 
-        pid = int(recorded_pid)
-        app = str(state.get("app") or app)
+    state_path = state_file_path(app, args.state_file)
 
-        if pid_alive(pid):
-            _verify_launched_process(state, pid)
+    if state is None:
+        state = read_state(app, args.state_file)
 
-    result = terminate_tree(pid, args.grace)
-    removed = remove_state(state_path) if state_path is not None else False
-    released = False
+    if state is None:
+        raise cdp.cdp_error("no-state", "no launch state for app " + repr(app) + " at " + str(state_path) + "; app-drive only closes apps it launched (break-glass: --pid N --force)")
 
-    if (state is not None) and app:
-        ports.release(str(app), None)
-        released = True
+    recorded_pid = state.get("pid")
 
-    payload = {"app": app, "pid": pid}
+    if not recorded_pid:
+        raise cdp.cdp_error("bad-state", "the launch state " + str(state_path) + " carries no pid")
+
+    pid = int(recorded_pid)
+
+    if not pid_alive(pid):
+        removed = remove_state(state_path)
+        released = release_ports(app)
+        emit(envelope("close", app = app, pid = pid, closed = True, forced = False, waited_ms = 0, reason = "not-running", verified = True, state_file_removed = removed, ports_released = released), args.pretty)
+        return 0
+
+    try:
+        result = terminate_verified(state, pid, args.grace)
+    except cdp.cdp_error as exc:
+        details = dict(exc.details)
+        details.update({"app": app, "pid": pid, "state_file": str(state_path.resolve())})
+        raise cdp.cdp_error(exc.code, str(exc) + "; the launch state and port claim were kept so this process stays retryable (pid " + str(pid) + ")", details) from exc
+
+    removed = remove_state(state_path)
+    released = release_ports(app)
+    payload = {"app": app, "pid": pid, "verified": True}
     payload.update(result)
     emit(envelope("close", **payload, state_file_removed = removed, ports_released = released), args.pretty)
     return 0
 
 HANDLERS = {"targets": cmd_targets, "status": cmd_status, "eval": cmd_eval, "shot": cmd_shot, "click": cmd_click, "wait": cmd_wait, "watch": cmd_watch, "launch": cmd_launch, "close": cmd_close}
 
+def _add_attach_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--app", default = None, help = "application key from app-drive launch (reads its state file; attach never allocates a port)")
+    parser.add_argument("--state-file", default = None, help = "override the launch state file")
+    parser.add_argument("--port", type = int, default = None, help = "CDP port to attach to (overrides --app/--state-file/CELESTIA_CDP_PORT)")
+    parser.add_argument("--prefer-url", default = "", help = "prefer the page target whose URL starts with this prefix")
+    parser.add_argument("--target", default = None, help = "CDP target id to drive (default: the app page target)")
+    parser.add_argument("--timeout", type = float, default = DEFAULT_TIMEOUT, metavar = "SECONDS", help = "connect/response budget; for wait it is also the condition deadline (default 15)")
+    parser.add_argument("--pretty", action = "store_true", help = "indent the JSON envelope")
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog = "app-drive", description = "Drive a Tauri desktop debug build over the WebView2 CDP channel.", epilog = PROTOCOL_EPILOG, formatter_class = argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(prog = "app-drive", description = "Drive a Tauri desktop debug build over the WebView2 CDP channel (CDP only; no vite allocation).", epilog = PROTOCOL_EPILOG, formatter_class = argparse.RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest = "command", required = True, metavar = "COMMAND")
     targets = subparsers.add_parser("targets", help = "list the CDP targets (/json/list)")
     _add_attach_arguments(targets)
-    status = subparsers.add_parser("status", help = "page target + boot-chrome/page state as JSON")
+    status = subparsers.add_parser("status", help = "selected target + boot-chrome/page state as JSON")
     _add_attach_arguments(status)
-    status.add_argument("--prefer-url", default = "", help = "prefer the page target whose URL starts with this prefix")
     eval_parser = subparsers.add_parser("eval", help = "evaluate JavaScript and print the JSON value")
     _add_attach_arguments(eval_parser)
     eval_parser.add_argument("expression", nargs = "*", help = "JavaScript expression (awaitPromise/returnByValue are on by default)")
     eval_parser.add_argument("--file", default = None, help = "read the expression from a file instead")
     eval_parser.add_argument("--no-await", action = "store_true", help = "do not await a returned promise")
     eval_parser.add_argument("--no-gesture", action = "store_true", help = "do not mark the evaluation as user-gesture")
-    eval_parser.add_argument("--out", default = None, help = "write the JSON value to this file")
-    eval_parser.add_argument("--raw", action = "store_true", help = "print only the bare JSON value (for piping)")
+    eval_parser.add_argument("--out", default = None, help = "write the ASCII JSON value to this file")
+    eval_parser.add_argument("--raw", action = "store_true", help = "print only the bare ASCII JSON value instead of the envelope")
     shot = subparsers.add_parser("shot", help = "capture a screenshot to a file")
     _add_attach_arguments(shot)
     shot.add_argument("out", help = "output image path")
@@ -901,43 +1196,36 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--stop-selector", default = None, help = "stop early once this CSS selector matches")
     launch = subparsers.add_parser("launch", help = "launch a debug build with the CDP environment and wait for its page")
     launch.add_argument("exe", help = "path to the desktop debug executable")
-    _add_attach_arguments(launch, with_app = False)
-    launch.add_argument("--app", default = None, help = "application name for the port/state keys (default: the exe stem)")
+    launch.add_argument("--app", default = None, help = "application key for the state/port keys (default: a hash of the resolved exe path)")
     launch.add_argument("--cwd", default = None, help = "working directory for the app process")
-    launch.add_argument("--vite-port", type = int, default = None, help = "override the allocated vite port")
+    launch.add_argument("--port", type = int, default = None, help = "force a specific CDP port instead of allocating one")
+    launch.add_argument("--prefer-url", default = "", help = "prefer the page target whose URL starts with this prefix")
+    launch.add_argument("--target", default = None, help = "wait for this CDP target id instead of the first page target")
     launch.add_argument("--wait-timeout", type = float, default = DEFAULT_LAUNCH_TIMEOUT, metavar = "SECONDS", help = "how long to wait for the CDP page target (default 30)")
     launch.add_argument("--no-wait", action = "store_true", help = "return right after spawning, do not wait for CDP")
-    launch.add_argument("--replace", action = "store_true", help = "replace a live app-drive-launched instance of this app")
+    launch.add_argument("--replace", action = "store_true", help = "replace the live app-drive instance of this app (verifies its identity and exe first)")
     launch.add_argument("--env", action = "append", default = [], metavar = "KEY=VALUE", help = "extra environment variable for the app (repeatable; use WEBVIEW2_USER_DATA_FOLDER for a second instance of a WebView2 app)")
     launch.add_argument("--log-dir", default = None, help = "directory for stdout.log/stderr.log (default: state-dir/logs/<app>-<stamp>)")
     launch.add_argument("--no-log", action = "store_true", help = "discard the app stdout/stderr instead of writing log files")
-    launch.add_argument("--grace", type = float, default = DEFAULT_CLOSE_GRACE, metavar = "SECONDS", help = "graceful-close budget before a forced kill (default 5)")
-    launch.add_argument("--prefer-url", default = "", help = "prefer the page target whose URL starts with this prefix")
+    launch.add_argument("--state-file", default = None, help = "override the launch state file")
+    launch.add_argument("--grace", type = float, default = DEFAULT_CLOSE_GRACE, metavar = "SECONDS", help = "graceful-termination budget before a forced kill (default 5)")
+    launch.add_argument("--pretty", action = "store_true", help = "indent the JSON envelope")
     launch.add_argument("extra", nargs = "*", help = "extra app arguments (pass them after --)")
-    close = subparsers.add_parser("close", help = "close the app instance that app-drive launched")
-    close.add_argument("--app", default = None, help = "application name of a previous launch")
+    close = subparsers.add_parser("close", help = "close the app instance that app-drive launched (identity-verified)")
+    close.add_argument("--app", default = None, help = "application key from app-drive launch")
+    close.add_argument("--exe", default = None, help = "derive the application key from this executable path")
     close.add_argument("--state-file", default = None, help = "override the launch state file")
-    close.add_argument("--pid", type = int, default = None, help = "break-glass: close this pid (requires --force)")
-    close.add_argument("--force", action = "store_true", help = "required with --pid; also skips the executable identity check")
-    close.add_argument("--grace", type = float, default = DEFAULT_CLOSE_GRACE, metavar = "SECONDS", help = "graceful-close budget before a forced kill (default 5)")
+    close.add_argument("--pid", type = int, default = None, help = "break-glass: close this pid without verification (requires --force)")
+    close.add_argument("--force", action = "store_true", help = "required with --pid; explicitly accepts an unverified kill")
+    close.add_argument("--grace", type = float, default = DEFAULT_CLOSE_GRACE, metavar = "SECONDS", help = "graceful-termination budget before a forced kill (default 5)")
     close.add_argument("--pretty", action = "store_true", help = "indent the JSON envelope")
     return parser
-
-def _add_attach_arguments(parser: argparse.ArgumentParser, with_app: bool = True, with_state_file: bool = True) -> None:
-    if with_app:
-        parser.add_argument("--app", default = None, help = "application name recorded by app-drive launch")
-
-    if with_state_file:
-        parser.add_argument("--state-file", default = None, help = "override the launch state file for --app")
-
-    parser.add_argument("--port", type = int, default = None, help = "attach to this CDP port directly (overrides --app and CELESTIA_CDP_PORT)")
-    parser.add_argument("--timeout", type = float, default = DEFAULT_TIMEOUT, metavar = "SECONDS", help = "CDP connect/response timeout (default 15)")
-    parser.add_argument("--pretty", action = "store_true", help = "indent the JSON envelope")
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     arguments = list(argv if argv is not None else sys.argv[1:])
     parsed = parser.parse_args(arguments)
+    pretty = bool(getattr(parsed, "pretty", False))
     handler = HANDLERS.get(parsed.command)
 
     if handler is None:
@@ -946,14 +1234,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         return int(handler(parsed) or 0)
-    except cdp.cdp_error as exc:
-        emit(failure(parsed.command, exc.code, str(exc), **exc.details), getattr(parsed, "pretty", False))
-        return 1
     except KeyboardInterrupt:
-        print("app-drive: interrupted", file = sys.stderr)
+        emit(failure(parsed.command, "interrupted", "interrupted; a launched app keeps its state file and port claim so app-drive close can finish the job"), pretty)
         return 130
+    except cdp.cdp_error as exc:
+        emit(failure(parsed.command, exc.code, str(exc), **exc.details), pretty)
+        return 1
+    except SystemExit as exc:
+        emit(failure(parsed.command, "error", str(exc) or "aborted"), pretty)
+        return 1
     except (OSError, ValueError, RuntimeError) as exc:
-        emit(failure(parsed.command, "error", type(exc).__name__ + ": " + str(exc)), getattr(parsed, "pretty", False))
+        emit(failure(parsed.command, "error", type(exc).__name__ + ": " + str(exc)), pretty)
         return 1
 
 if __name__ == "__main__":

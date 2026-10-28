@@ -11,10 +11,18 @@ that never changes. The subset is pinned by unit tests instead: the RFC 6455
 handshake accept vector, client masking, the 7/16/64-bit length forms, and
 ping/pong/fragmentation are all exercised without a real app.
 
-What this module deliberately does NOT implement: permessage-deflate, TLS
-client certificates, subprotocol negotiation, or a public websocket server.
-CDP over WebView2 is plain ws://127.0.0.1 with plain JSON text frames, so the
-subset is the whole contract.
+Server frames are validated rather than trusted: an unmasked flag, reserved
+bits, an unknown opcode, a fragmented or oversized control frame, a stray
+continuation and a data frame inside an unfinished fragmented message are all
+protocol errors. Fragmented data messages are reassembled with a running byte
+total, so a peer cannot make the client buffer unbounded data.
+
+wss:// is rejected on purpose: WebView2 CDP is plain ws:// on loopback, and
+this client deliberately carries no TLS/certificate surface (a TLS-wrapped
+websocket would need trust policy this tool has no business inventing).
+
+What this module deliberately does NOT implement: permessage-deflate, TLS,
+subprotocol negotiation, or a public websocket server.
 
 Discovery uses http.client rather than urllib.request on purpose: urllib
 honors HTTP_PROXY, and a proxy that swallows a loopback CDP request turns a
@@ -39,7 +47,11 @@ OPCODE_BINARY = 0x2
 OPCODE_CLOSE = 0x8
 OPCODE_PING = 0x9
 OPCODE_PONG = 0xA
+DATA_OPCODES = (OPCODE_CONTINUATION, OPCODE_TEXT, OPCODE_BINARY)
+CONTROL_OPCODES = (OPCODE_CLOSE, OPCODE_PING, OPCODE_PONG)
+KNOWN_OPCODES = DATA_OPCODES + CONTROL_OPCODES
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+MAX_CONTROL_PAYLOAD = 125
 DEFAULT_TIMEOUT = 15.0
 CR = chr(13)
 LF = chr(10)
@@ -49,8 +61,9 @@ class cdp_error(Exception):
     """A runtime failure the CLI renders as an ok:false envelope.
 
     The code attribute is the stable machine-readable discriminant
-    (cdp-unreachable, cdp-timeout, js-exception, ...); details are extra
-    envelope fields (the raw CDP error object, the JS exception payload).
+    (cdp-unreachable, cdp-timeout, cdp-protocol, js-exception, ...); details
+    are extra envelope fields (the raw CDP error object, the JS exception
+    payload).
     """
 
     def __init__(self, code: str, message: str, details: Optional[dict] = None):
@@ -104,27 +117,48 @@ def _read_exact(reader, size: int) -> bytes:
     return b"".join(chunks)
 
 def read_server_frame(reader) -> tuple[bool, int, bytes]:
-    """Read one server-to-client frame as (fin, opcode, payload)."""
+    """Read and validate one server-to-client frame as (fin, opcode, payload).
+
+    Every rule here is an RFC 6455 MUST for a server frame; anything else is a
+    protocol error, never a value we try to interpret.
+    """
     first, second = _read_exact(reader, 2)
+
+    if first & 0x70:
+        raise cdp_error("cdp-protocol", "the CDP websocket sent a frame with reserved bits set")
+
     fin = bool(first & 0x80)
     opcode = first & 0x0F
-    masked = bool(second & 0x80)
+
+    if opcode not in KNOWN_OPCODES:
+        raise cdp_error("cdp-protocol", "the CDP websocket sent an unknown opcode " + str(opcode))
+
+    if second & 0x80:
+        raise cdp_error("cdp-protocol", "the CDP websocket sent a masked server frame (RFC 6455 forbids masking server-to-client frames)")
+
     length = second & 0x7F
 
     if length == 126:
-        length = struct.unpack("!H", _read_exact(reader, 2))[0]
+        length = int.from_bytes(_read_exact(reader, 2), "big")
     elif length == 127:
-        length = struct.unpack("!Q", _read_exact(reader, 8))[0]
+        extended = _read_exact(reader, 8)
+
+        if extended[0] & 0x80:
+            raise cdp_error("cdp-protocol", "the CDP websocket sent a 64-bit frame length with the high bit set")
+
+        length = int.from_bytes(extended, "big")
+
+    if opcode in CONTROL_OPCODES:
+        if not fin:
+            raise cdp_error("cdp-protocol", "the CDP websocket sent a fragmented control frame")
+
+        if length > MAX_CONTROL_PAYLOAD:
+            raise cdp_error("cdp-protocol", "the CDP websocket sent a control frame larger than 125 bytes")
 
     if length > MAX_MESSAGE_BYTES:
         raise cdp_error("cdp-protocol", "the CDP websocket frame is too large (" + str(length) + " bytes)")
 
-    mask = _read_exact(reader, 4) if masked else b""
     payload = _read_exact(reader, length) if length else b""
-
-    if masked:
-        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-
     return fin, opcode, payload
 
 def _read_http_headers(reader) -> dict[str, str]:
@@ -165,11 +199,14 @@ class websocket_connection:
     def connect(cls, url: str, timeout: float = DEFAULT_TIMEOUT) -> "websocket_connection":
         parts = urlsplit(str(url))
 
-        if parts.scheme not in ("ws", "wss"):
+        if parts.scheme == "wss":
+            raise cdp_error("cdp-unsupported", "wss:// CDP endpoints are not supported: WebView2 CDP is loopback ws:// and this client carries no TLS trust policy")
+
+        if parts.scheme != "ws":
             raise cdp_error("cdp-protocol", "not a websocket URL: " + repr(url))
 
         host = parts.hostname or "127.0.0.1"
-        port = parts.port or (443 if parts.scheme == "wss" else 80)
+        port = parts.port or 80
         path = parts.path or "/"
 
         if parts.query:
@@ -215,7 +252,10 @@ class websocket_connection:
         self.send_frame(text.encode("utf-8"), OPCODE_TEXT)
 
     def recv_text(self) -> str:
-        parts: list[bytes] = []
+        """Read one complete text message, answering pings on the way."""
+        fragments: list[bytes] = []
+        total = 0
+        in_message = False
 
         while True:
             try:
@@ -237,17 +277,36 @@ class websocket_connection:
                 self.closed = True
                 raise cdp_error("cdp-disconnected", "the app closed the CDP websocket")
 
-            if opcode in (OPCODE_TEXT, OPCODE_BINARY, OPCODE_CONTINUATION):
-                parts.append(payload)
+            if opcode == OPCODE_BINARY:
+                raise cdp_error("cdp-protocol", "the CDP websocket sent a binary frame; CDP messages must be text")
 
-                if sum(len(part) for part in parts) > MAX_MESSAGE_BYTES:
+            if opcode == OPCODE_CONTINUATION:
+                if not in_message:
+                    raise cdp_error("cdp-protocol", "the CDP websocket sent a continuation frame without a started message")
+
+                fragments.append(payload)
+                total += len(payload)
+
+                if total > MAX_MESSAGE_BYTES:
                     raise cdp_error("cdp-protocol", "the CDP websocket message exceeds the size limit")
 
                 if not fin:
                     continue
 
-                message = b"".join(parts)
+                message = b"".join(fragments)
                 return message.decode("utf-8", "replace")
+
+            if opcode == OPCODE_TEXT:
+                if in_message:
+                    raise cdp_error("cdp-protocol", "the CDP websocket started a new data frame inside a fragmented message")
+
+                if fin:
+                    return payload.decode("utf-8", "replace")
+
+                in_message = True
+                fragments = [payload]
+                total = len(payload)
+                continue
 
             raise cdp_error("cdp-protocol", "the CDP websocket sent an unsupported opcode " + str(opcode))
 
@@ -278,7 +337,12 @@ class websocket_connection:
 
 def http_json(port: int, path: str, timeout: float = 5.0) -> object:
     """GET a JSON document from the local CDP HTTP endpoint (proxy-free)."""
-    connection = http.client.HTTPConnection("127.0.0.1", int(port), timeout = timeout)
+    port = int(port)
+
+    if (port < 1) or (port > 65535):
+        raise cdp_error("bad-port", "CDP port out of range: " + str(port))
+
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout = timeout)
     status = 0
     body = ""
 
@@ -287,8 +351,8 @@ def http_json(port: int, path: str, timeout: float = 5.0) -> object:
         response = connection.getresponse()
         status = response.status
         body = response.read().decode("utf-8", "replace")
-    except OSError as exc:
-        raise cdp_error("cdp-unreachable", "cannot reach the CDP endpoint on 127.0.0.1:" + str(int(port)) + " (" + str(exc) + "); is the app running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=" + str(int(port)) + "?") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise cdp_error("cdp-unreachable", "cannot reach the CDP endpoint on 127.0.0.1:" + str(port) + " (" + str(exc) + "); is the app running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=" + str(port) + "?") from exc
     finally:
         connection.close()
 
@@ -309,12 +373,21 @@ def list_targets(port: int, timeout: float = 5.0) -> list[dict]:
 
     return [item for item in data if isinstance(item, dict)]
 
-def select_page_target(targets: list[dict], prefer_url: str = "") -> Optional[dict]:
-    """Pick the app page: devtools:// and non-page targets never win.
+def select_page_target(targets: list[dict], prefer_url: str = "", target_id: str = "") -> Optional[dict]:
+    """Pick the target to drive.
 
-    prefer_url (a URL prefix) is honoured first, so a script can pin the app
-    window when several page targets exist.
+    An explicit target_id wins (whatever its type); otherwise devtools:// and
+    non-page targets never win, a prefer_url prefix is honoured first, and an
+    http(s)/tauri/file page is preferred over about:blank style placeholders.
     """
+
+    if target_id:
+        for item in targets:
+            if str(item.get("id", "")) == str(target_id):
+                return item
+
+        return None
+
     pages = [item for item in targets if (item.get("type") == "page") and not str(item.get("url", "")).startswith("devtools://")]
 
     if prefer_url:
@@ -328,14 +401,14 @@ def select_page_target(targets: list[dict], prefer_url: str = "") -> Optional[di
 
     return pages[0] if pages else None
 
-def wait_for_page(port: int, timeout: float = DEFAULT_TIMEOUT, interval: float = 0.1, prefer_url: str = "") -> tuple[dict, int]:
+def wait_for_page(port: int, timeout: float = DEFAULT_TIMEOUT, interval: float = 0.1, prefer_url: str = "", target_id: str = "") -> tuple[dict, int]:
     """Poll /json/list until a page target exists; return (page, elapsed_ms)."""
     started = time.monotonic()
     last_error: Optional[cdp_error] = None
 
     while True:
         try:
-            page = select_page_target(list_targets(port), prefer_url)
+            page = select_page_target(list_targets(port), prefer_url, target_id)
         except cdp_error as exc:
             page = None
             last_error = exc
@@ -345,7 +418,8 @@ def wait_for_page(port: int, timeout: float = DEFAULT_TIMEOUT, interval: float =
 
         if (time.monotonic() - started) >= timeout:
             suffix = (" (last error: " + str(last_error) + ")") if last_error is not None else ""
-            raise cdp_error("cdp-timeout", "no CDP page target appeared on 127.0.0.1:" + str(int(port)) + " within " + format(timeout, "g") + "s" + suffix)
+            wanted = (" target " + repr(target_id)) if target_id else " page target"
+            raise cdp_error("cdp-timeout", "no CDP" + wanted + " appeared on 127.0.0.1:" + str(int(port)) + " within " + format(timeout, "g") + "s" + suffix)
 
         time.sleep(interval)
 

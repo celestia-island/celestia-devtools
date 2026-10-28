@@ -3,10 +3,9 @@
 
 No real desktop app is needed. The server answers /json/list and the CDP
 methods app-drive uses, records every request for shape assertions, and can
-run scripted responses (values, protocol errors, JS exceptions). The client
-of this helper must not import production decoding helpers: the frame codec
-here is written independently so a bug in the production codec cannot make
-the test agree with the implementation.
+run scripted responses (values, protocol errors, JS exceptions). The frame
+codec here is written independently of the production codec so a bug in one
+cannot make the other agree with it.
 """
 from __future__ import annotations
 import base64
@@ -18,6 +17,7 @@ import threading
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 CRLF = (chr(13) + chr(10)).encode("ascii")
+CONNECTED_CLIENTS = 8
 
 def page_target(target_id = "page-1", url = "http://127.0.0.1:5173/", target_type = "page", title = "Fake Chest") -> dict:
     return {"id": target_id, "type": target_type, "title": title, "url": url, "webSocketDebuggerUrl": None}
@@ -52,8 +52,9 @@ def read_client_frame(reader):
 
     return fin, opcode, payload
 
-def encode_server_frame(payload: bytes, opcode: int = 0x1) -> bytes:
-    header = bytearray([0x80 | opcode])
+def encode_server_frame(payload: bytes, opcode: int = 0x1, fin: bool = True) -> bytes:
+    """Server frames are unmasked (RFC 6455), with an optional FIN bit."""
+    header = bytearray([(0x80 if fin else 0x00) | opcode])
     length = len(payload)
 
     if length < 126:
@@ -69,6 +70,15 @@ def encode_server_frame(payload: bytes, opcode: int = 0x1) -> bytes:
 
 def websocket_accept(key: str) -> str:
     return base64.b64encode(hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+
+def websocket_handshake_response(key: str) -> bytes:
+    accept = websocket_accept(key)
+    return b"HTTP/1.1 101 Switching Protocols" + CRLF + b"Upgrade: websocket" + CRLF + b"Connection: Upgrade" + CRLF + b"Sec-WebSocket-Accept: " + accept.encode("ascii") + CRLF + CRLF
+
+def remote_object_reply(value) -> dict:
+    """The top-level spec for a successful Runtime.evaluate reply."""
+    remote = {"type": "object" if isinstance(value, dict) else "string", "value": value}
+    return {"result": {"result": remote}}
 
 DEFAULT_PAGE_STATE = {"ready_state": "complete", "title": "Fake Chest", "url": "http://127.0.0.1:5173/", "boot_chrome": "claimed", "has_bar": False, "bar_driver": None, "degraded": None, "body_text_len": 5, "body_text_head": "login", "tauri": True, "tauri_internals": True, "root_children": 1}
 
@@ -123,9 +133,7 @@ class _fake_handler(socketserver.StreamRequestHandler):
         self.wfile.flush()
 
     def _websocket(self, server, headers) -> None:
-        accept = websocket_accept(headers.get("sec-websocket-key", ""))
-        response = b"HTTP/1.1 101 Switching Protocols" + CRLF + b"Upgrade: websocket" + CRLF + b"Connection: Upgrade" + CRLF + b"Sec-WebSocket-Accept: " + accept.encode("ascii") + CRLF + CRLF
-        self.wfile.write(response)
+        self.wfile.write(websocket_handshake_response(headers.get("sec-websocket-key", "")))
         self.wfile.flush()
 
         while True:
@@ -134,7 +142,7 @@ class _fake_handler(socketserver.StreamRequestHandler):
             if frame is None:
                 return
 
-            fin, opcode, payload = frame
+            _fin, opcode, payload = frame
             server.received_opcodes.append(opcode)
 
             if opcode == 0x8:
@@ -167,7 +175,7 @@ class fake_cdp_server:
         self.screenshot_bytes = fake_png(8, 4)
         self.send_ping_first = False
         self._targets = list(targets) if targets is not None else [page_target()]
-        self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _fake_handler)
+        self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _fake_handler, bind_and_activate = True)
         self.httpd.daemon_threads = True
         self.httpd.fake = self
         self.port = int(self.httpd.server_address[1])
@@ -230,12 +238,3 @@ class fake_cdp_server:
             return {"result": {"data": base64.b64encode(self.screenshot_bytes).decode("ascii")}}
 
         return {"result": {}}
-
-def remote_object_reply(value) -> dict:
-    """The top-level spec for a successful Runtime.evaluate reply."""
-
-    if isinstance(value, dict) and value.get("__raw__"):
-        return {"result": value["__raw__"]}
-
-    remote = {"type": "object" if isinstance(value, dict) else "string", "value": value}
-    return {"result": {"result": remote}}
