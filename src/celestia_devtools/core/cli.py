@@ -65,7 +65,7 @@ Commands::
                       vite/CDP ports per app so two debug shells never
                       cross-wire (acquire | env | list | release)
     app-drive         Drive a Tauri desktop debug build over WebView2 CDP:
-                      identity-verified launch/close plus status/eval/shot/
+                      identity-verified close plus launch/status/eval/shot/
                       click/wait/watch; one ASCII JSON envelope protocol,
                       CDP-only scope, Windows-first with an attach fallback
                       for Chromium/Edge on Linux and macOS

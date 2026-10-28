@@ -201,7 +201,7 @@ class test_websocket_connection:
         with pytest.raises(cdp.cdp_error) as caught:
             cdp.websocket_connection.connect("wss://127.0.0.1:1/x", timeout = 2)
 
-        assert caught.value.code in ("cdp-unsupported", "cdp-protocol")
+        assert caught.value.code == "cdp-unsupported"
 
     def test_unreachable_websocket_is_reported(self):
         port = _free_port()
@@ -330,6 +330,42 @@ class test_cdp_client:
                 assert "not allowed" in str(caught.value)
             finally:
                 client.close()
+
+class test_resource_limits:
+    def test_oversized_single_frame_is_rejected(self, monkeypatch):
+        monkeypatch.setattr(cdp, "MAX_MESSAGE_BYTES", 10)
+        frame = bytes([0x81, 20]) + (b"x" * 20)
+
+        with pytest.raises(cdp.cdp_error) as caught:
+            cdp.read_server_frame(io.BytesIO(frame))
+
+        assert "too large" in str(caught.value)
+
+    def test_cumulative_fragments_are_capped(self, monkeypatch):
+        monkeypatch.setattr(cdp, "MAX_MESSAGE_BYTES", 10)
+        server_port = _scripted_ws_server(encode_server_frame(b"123456", cdp.OPCODE_TEXT, fin = False) + encode_server_frame(b"789012", cdp.OPCODE_CONTINUATION, fin = True))
+        connection = cdp.websocket_connection.connect("ws://127.0.0.1:" + str(server_port) + "/x", timeout = 2)
+
+        try:
+            with pytest.raises(cdp.cdp_error) as caught:
+                connection.recv_text()
+
+            assert "size limit" in str(caught.value)
+        finally:
+            connection.close()
+
+class test_close_frame:
+    def test_server_close_frame_reports_disconnect(self):
+        server_port = _scripted_ws_server(encode_server_frame(b"", cdp.OPCODE_CLOSE, fin = True))
+        connection = cdp.websocket_connection.connect("ws://127.0.0.1:" + str(server_port) + "/x", timeout = 2)
+
+        try:
+            with pytest.raises(cdp.cdp_error) as caught:
+                connection.recv_text()
+
+            assert caught.value.code == "cdp-disconnected"
+        finally:
+            connection.close()
 
 def _free_port() -> int:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

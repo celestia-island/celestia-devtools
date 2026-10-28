@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 import pytest
@@ -759,9 +760,10 @@ class test_launch:
         assert app_drive.wait_pid_exit(spawned["child"].pid, 10) is not None
         assert ports.list_entries() == {}
 
-    def test_identity_unavailable_after_spawn_reclaims_the_child(self, drive_state, capsys, monkeypatch):
+    def test_identity_unavailable_after_spawn_refuses_blind_kill(self, drive_state, capsys, monkeypatch):
         spawned: dict = {}
         original_spawn = app_drive._spawn
+        real_identity = app_drive.read_process_identity
 
         def recording_spawn(command, environment, cwd, stdout_target, stderr_target):
             child = original_spawn(command, environment, cwd, stdout_target, stderr_target)
@@ -771,11 +773,30 @@ class test_launch:
         monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: None)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
-        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "ident-demo", "--no-log", "--no-wait")
-        assert code == 1
-        assert payload["error"]["code"] == "identity-unavailable"
-        assert app_drive.wait_pid_exit(spawned["child"].pid, 10) is not None
-        assert app_drive.read_state("ident-demo") is None
+
+        try:
+            code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "ident-demo", "--no-log", "--no-wait")
+            assert code == 1
+            assert payload["error"]["code"] == "identity-unavailable"
+            assert payload["cleanup"]["blind_kill_refused"] is True
+            assert payload["cleanup"]["terminated"] is False
+            assert payload["cleanup"]["state_kept"] is True
+            state = app_drive.read_state("ident-demo")
+            assert state is not None
+            assert state["unverified"] is True
+            assert spawned["child"].poll() is None  # a bare pid must NOT be blind-killed
+            # The unverified state is closable only through explicit force.
+            monkeypatch.setattr(app_drive, "read_process_identity", real_identity)
+            code, payload, _out = run_cli(capsys, "close", "--app", "ident-demo", "--force")
+            assert code == 0
+            assert payload["verified"] is False
+            assert payload["explicit_force"] is True
+            assert spawned["child"].poll() is not None
+            assert app_drive.read_state("ident-demo") is None
+        finally:
+            stop_child(spawned["child"])
+            app_drive.remove_state(app_drive.state_file_path("ident-demo"))
+            ports.release("ident-demo", "cdp")
 
 class test_close:
     def test_closes_a_matching_identity(self, drive_state, capsys):
@@ -931,13 +952,20 @@ class test_close:
             app_drive.remove_state(app_drive.state_file_path("demo"))
             ports.release("demo", None)
 
-    def test_not_running_state_is_cleaned_up(self, drive_state, capsys):
+    def test_not_running_state_fails_closed_unless_forced(self, drive_state, capsys):
         child = spawn_sleeper()
         stop_child(child)
         record_state(state_for(child.pid))
+        # pid_alive False + unreadable identity is ambiguous (EPERM on a live
+        # process looks identical): fail closed and KEEP the state.
         code, payload, _out = run_cli(capsys, "close", "--app", "demo")
+        assert code == 1
+        assert payload["error"]["code"] == "process-unconfirmed"
+        assert app_drive.read_state("demo") is not None
+        # Explicit break-glass drops the handle without touching anything.
+        code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--force")
         assert code == 0
-        assert payload["reason"] == "not-running"
+        assert payload["reason"] == "state-discarded-unconfirmed"
         assert app_drive.read_state("demo") is None
 
 class test_ports_registry:
@@ -954,3 +982,268 @@ class test_ports_registry:
         assert ports.list_entries()["demo:cdp"]["port"] == 9444
         ports.claim("ghost", "cdp", 9445, 4_000_000)
         assert "ghost:cdp" not in ports.list_entries()
+
+class test_launch_cleanup_safety:
+    def test_abort_skips_the_kill_when_the_child_already_exited(self, drive_state, monkeypatch):
+        state_path = app_drive.state_file_path("demo")
+        killed = []
+
+        def bomb(*args, **kwargs):
+            killed.append(args)
+            raise AssertionError("an already-reaped child must not be killed")
+
+        child = types.SimpleNamespace(pid = os.getpid(), poll = lambda: 7)
+        monkeypatch.setattr(app_drive, "terminate_tree", bomb)
+        result = app_drive._abort_launch(child, state_path, "demo", None, 1, 9444)
+        assert result["already_exited"] is True
+        assert result["exit_code"] == 7
+        assert result["terminated"] is False
+        assert killed == []
+
+    def test_abort_refuses_to_blind_kill_without_identity(self, drive_state, monkeypatch):
+        state_path = app_drive.state_file_path("demo")
+        killed = []
+
+        def bomb(*args, **kwargs):
+            killed.append(args)
+            raise AssertionError("a bare pid must never be blind-killed")
+
+        monkeypatch.setattr(app_drive, "terminate_tree", bomb)
+        monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: None)
+        child = types.SimpleNamespace(pid = os.getpid(), poll = lambda: None)
+        result = app_drive._abort_launch(child, state_path, "demo", None, 1, 9444)
+        kept = app_drive.read_state("demo")
+
+        try:
+            assert result["blind_kill_refused"] is True
+            assert result["terminated"] is False
+            assert result["state_kept"] is True
+            assert killed == []
+            assert kept is not None
+            assert kept["unverified"] is True
+            assert kept["cdp_port"] == 9444
+        finally:
+            app_drive.remove_state(state_path)
+            ports.release("demo", "cdp")
+
+    def test_abort_uses_verified_termination_when_identity_exists(self, drive_state, monkeypatch):
+        child = spawn_sleeper()
+        state_path = app_drive.state_file_path("demo")
+        record_state(state_for(child.pid))
+        state = app_drive.read_state("demo")
+        calls = []
+
+        def fake_terminate_verified(record, pid, grace):
+            calls.append((record, pid, grace))
+            return {"closed": True, "forced": False, "waited_ms": 1, "reason": "terminated"}
+
+        monkeypatch.setattr(app_drive, "terminate_verified", fake_terminate_verified)
+
+        try:
+            result = app_drive._abort_launch(types.SimpleNamespace(pid = child.pid, poll = lambda: None), state_path, "demo", state, 1, 9444)
+            assert result["terminated"] is True
+            assert result["state_verified"] is True
+            assert calls and (calls[0][1] == child.pid)
+            assert app_drive.read_state("demo") is None
+        finally:
+            stop_child(child)
+            app_drive.remove_state(state_path)
+            ports.release("demo", "cdp")
+
+    def test_launch_port_range_is_validated_before_acquiring(self, drive_state, capsys, monkeypatch):
+        def bomb(app, kind):
+            raise AssertionError("an invalid --port must be rejected before ports.acquire")
+
+        monkeypatch.setattr(ports, "acquire", bomb)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--port", "70000")
+        assert code == 1
+        assert payload["error"]["code"] == "bad-port"
+        assert not (drive_state.parent / "ports.json").exists()
+
+    def test_reserved_env_keys_are_rejected_before_acquiring(self, drive_state, capsys, monkeypatch):
+        def bomb(app, kind):
+            raise AssertionError("a rejected --env must not allocate a port")
+
+        monkeypatch.setattr(ports, "acquire", bomb)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--env", "CELESTIA_CDP_PORT=1")
+        assert code == 1
+        assert payload["error"]["code"] == "bad-env"
+        assert not (drive_state.parent / "ports.json").exists()
+
+    def test_bad_log_dir_is_rejected_before_acquiring(self, drive_state, capsys, monkeypatch, tmp_path):
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("x", encoding = "utf-8")
+
+        def bomb(app, kind):
+            raise AssertionError("a bad --log-dir must not allocate a port")
+
+        monkeypatch.setattr(ports, "acquire", bomb)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--log-dir", str(blocker))
+        assert code == 1
+        assert payload["error"]["code"] == "log-dir-failed"
+        assert not (drive_state.parent / "ports.json").exists()
+
+    def test_immediate_exit_is_detected_before_identity_read(self, drive_state, capsys, monkeypatch):
+        def fake_spawn(command, environment, cwd, stdout_target, stderr_target):
+            return types.SimpleNamespace(pid = os.getpid(), poll = lambda: 3)
+
+        def identity_bomb(pid):
+            raise AssertionError("identity must not be read after the child already exited")
+
+        monkeypatch.setattr(app_drive, "_spawn", fake_spawn)
+        monkeypatch.setattr(app_drive, "read_process_identity", identity_bomb)
+        monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--no-log", "--no-wait")
+        assert code == 1
+        assert payload["error"]["code"] == "launch-failed"
+        assert "exited before" in payload["error"]["message"]
+        assert app_drive.read_state("demo") is None
+
+class test_identity_matrix:
+    def test_token_kind_mismatch_is_refused_and_claim_kept(self, drive_state, capsys):
+        child = spawn_sleeper()
+
+        try:
+            state = state_for(child.pid)
+            state["create_kind"] = "proc-starttime" if state["create_kind"] == "windows-filetime" else "windows-filetime"
+            record_state(state)
+            ports.claim("demo", "cdp", 9444, child.pid)
+            code, payload, _out = run_cli(capsys, "close", "--app", "demo")
+            assert code == 1
+            assert payload["error"]["code"] == "pid-mismatch"
+            assert child.poll() is None
+            assert ports.list_entries()["demo:cdp"]["pid"] == child.pid
+        finally:
+            stop_child(child)
+            app_drive.remove_state(app_drive.state_file_path("demo"))
+            ports.release("demo", "cdp")
+
+    def test_replace_token_mismatch_is_refused(self, drive_state, capsys):
+        child = spawn_sleeper()
+
+        try:
+            record_state(state_for(child.pid, token = "0"))
+            code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--replace", "--no-log", "--no-wait")
+            assert code == 1
+            assert payload["error"]["code"] == "pid-mismatch"
+            assert child.poll() is None
+        finally:
+            stop_child(child)
+            app_drive.remove_state(app_drive.state_file_path("demo"))
+
+    def test_same_image_path_follows_symlinks(self, tmp_path):
+        target = tmp_path / "real.exe"
+        target.write_text("x", encoding = "utf-8")
+        link = tmp_path / "link.exe"
+
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are unavailable on this host")
+
+        assert app_drive.same_image_path(str(target), str(link))
+        assert not app_drive.same_image_path(str(target), str(tmp_path / "other.exe"))
+
+    def test_state_app_mismatch_is_refused(self, drive_state, capsys):
+        state = state_for(os.getpid())
+        state["app"] = "someone-else"
+        app_drive.write_state(state, app_drive.state_file_path("demo"))
+        code, payload, _out = run_cli(capsys, "close", "--app", "demo")
+        assert code == 1
+        assert payload["error"]["code"] == "state-app-mismatch"
+
+    def test_discard_outdated_state(self, drive_state, capsys):
+        path = app_drive.state_file_path("demo")
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps({"app": "demo", "pid": 1, "port": 9333}), encoding = "utf-8")
+        ports.claim("demo", "cdp", 9444, os.getpid())
+        code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--discard-state")
+        assert code == 0
+        assert payload["discarded_state"] is True
+        assert not path.exists()
+        assert "demo:cdp" not in ports.list_entries()
+
+    def test_launch_discards_an_outdated_state(self, drive_state, capsys, monkeypatch):
+        path = app_drive.state_file_path("demo")
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps({"app": "demo", "pid": 1, "port": 9333}), encoding = "utf-8")
+
+        def fake_spawn(command, environment, cwd, stdout_target, stderr_target):
+            return types.SimpleNamespace(pid = os.getpid(), poll = lambda: None)
+
+        monkeypatch.setattr(app_drive, "_spawn", fake_spawn)
+        monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
+
+        try:
+            code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--discard-state", "--no-log", "--no-wait")
+            assert code == 0
+            assert payload["discarded_outdated_state"] is True
+            assert app_drive.read_state("demo")["schema"] == app_drive.STATE_SCHEMA
+        finally:
+            app_drive.remove_state(path)
+            ports.release("demo", "cdp")
+
+    def test_status_with_state_file_reports_launched(self, drive_state, capsys, tmp_path):
+        child = spawn_sleeper()
+        custom = tmp_path / "custom-state.json"
+
+        try:
+            with fake_cdp_server() as server:
+                app_drive.write_state(state_for(child.pid, port = server.port), custom)
+                code, payload, _out = run_cli(capsys, "status", "--state-file", str(custom), "--port", str(server.port))
+
+            assert code == 0
+            assert payload["launched"] is not None
+            assert payload["launched"]["app"] == "demo"
+            assert payload["launched"]["cdp_port"] == server.port
+        finally:
+            stop_child(child)
+
+class test_ports_hardening:
+    def test_registry_sanitizes_corrupt_entries(self, drive_state):
+        registry = drive_state.parent / "ports.json"
+        registry.parent.mkdir(parents = True, exist_ok = True)
+        payload = {"bad:cdp": {"port": "x", "pid": 1}, "ghost:cdp": {"port": 9444, "pid": 4_000_000}, "ok:cdp": {"port": 9445, "pid": os.getpid()}, "notdict": 3}
+        registry.write_text(json.dumps(payload), encoding = "utf-8")
+        entries = ports.list_entries()
+        assert "bad:cdp" not in entries
+        assert "ghost:cdp" not in entries
+        assert entries["ok:cdp"]["port"] == 9445
+        assert ports.acquire("fresh", "cdp") >= 9222
+
+    def test_release_only_drops_the_exact_app_and_kind(self, drive_state):
+        ports.claim("demo", "cdp", 9444, os.getpid())
+        ports.claim("demo", "vite", 5444, os.getpid())
+        ports.claim("demo2", "cdp", 9446, os.getpid())
+        ports.release("demo", "cdp")
+        entries = ports.list_entries()
+        assert "demo:cdp" not in entries
+        assert "demo:vite" in entries
+        assert "demo2:cdp" in entries
+        ports.release("demo", None)
+        assert "demo2:cdp" in ports.list_entries()
+
+    def test_stale_lock_with_a_live_holder_is_not_stolen(self, drive_state, monkeypatch):
+        registry = drive_state.parent / "ports.json"
+        registry.parent.mkdir(parents = True, exist_ok = True)
+        lock = registry.with_name("ports.json.lock")
+        lock.write_text(str(os.getpid()), encoding = "utf-8")
+        os.utime(lock, (time.time() - 999, time.time() - 999))
+        monkeypatch.setattr(ports, "LOCK_TIMEOUT", 0.3)
+        monkeypatch.setattr(ports, "LOCK_STALE", 0.0)
+
+        with pytest.raises(SystemExit):
+            ports.acquire("demo", "cdp")
+
+        assert lock.exists()
+
+    def test_stale_lock_with_a_dead_holder_is_reclaimed(self, drive_state, monkeypatch):
+        registry = drive_state.parent / "ports.json"
+        registry.parent.mkdir(parents = True, exist_ok = True)
+        lock = registry.with_name("ports.json.lock")
+        lock.write_text("4000000", encoding = "utf-8")
+        os.utime(lock, (time.time() - 999, time.time() - 999))
+        monkeypatch.setattr(ports, "LOCK_TIMEOUT", 2.0)
+        monkeypatch.setattr(ports, "LOCK_STALE", 0.0)
+        assert ports.acquire("demo", "cdp") >= 9222
+        assert not lock.exists()

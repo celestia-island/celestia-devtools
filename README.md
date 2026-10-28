@@ -123,7 +123,7 @@ Same app → same ports across runs (URLs and CDP targets feel permanent); diffe
 
 ## Driving a desktop debug build (`app-drive`)
 
-The desktop debug loop used to be hand-written CDP scripts per investigation: launch the Tauri debug binary with `--remote-debugging-port`, poll `/json/list`, evaluate JavaScript, capture screenshots, click through settings, record the boot-chrome lifecycle, and hope the window and its child processes got closed. `app-drive` standardizes that channel: one command group, one JSON protocol, and a close path that only ever touches a process it launched and can prove it launched.
+The desktop debug loop used to be hand-written CDP scripts per investigation: launch the Tauri debug binary with `--remote-debugging-port`, poll `/json/list`, evaluate JavaScript, capture screenshots, click through settings, record the boot-chrome lifecycle, and hope the window and its child processes got closed. `app-drive` standardizes that channel: one command group, one JSON protocol, and a close path that only ever touches a process it launched and can prove it launched. `close` and `--replace` are the only subcommands that terminate anything, and `launch` never blind-kills a process it cannot verify.
 
 The CDP port comes from the ports facility above, so a debug shell never collides with another app's:
 
@@ -134,11 +134,11 @@ $ celestia-devtools app-drive launch target/debug/shittim_chest_tauri
 
 `launch` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<cdp port>` (pre-existing flags are preserved), waits for its target page, records the process identity, and writes a per-app state file under `%LOCALAPPDATA%/celestia/app-drive` (the XDG twin on POSIX). The app key is `--app` when given, otherwise a hash of the resolved executable path, so two same-stem executables never share a state file.
 
-Scope: **CDP only.** `app-drive` allocates and claims the CDP port; it does not allocate a vite port and does not start or verify the frontend server. A compiled debug build keeps the `devUrl` baked in at build time, so exporting a vite port it never reads would only pretend to prevent cross-wiring. Serve the frontend with `vite-serve`/`ports` and point the build at it at build time.
+Scope: **CDP only.** `app-drive` allocates and claims the CDP port; it does not allocate a vite port and does not start or verify the frontend server. A compiled debug build keeps the `devUrl` baked in at build time, so exporting a vite port it never reads would only pretend to prevent cross-wiring. Serve the frontend with `vite-serve`/`ports` and point the build at it at build time. `--env` refuses to override `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` / `CELESTIA_CDP_PORT` (app-drive derives those from the allocated port).
 
 ### Safe close: the identity contract
 
-`close` and `--replace` are the only subcommands that terminate a process, and they have to justify it. `launch` records the resolved full executable path, the process creation token (Windows `GetProcessTimes` FILETIME, Linux `/proc/<pid>` starttime) and the token kind. Both are re-read and compared before killing - once on entry and again immediately before the kill. When any piece is missing, unreadable or different, the command **fails closed**: exit 1, state file and port claim kept, and no signal sent to the process. A state file from an older schema is refused as `state-outdated`. `--pid N --force` is the single explicit break-glass and is documented as unverified. Platforms without `/proc` (macOS) cannot expose the identity, so `close`/`--replace` fail closed there. `--replace` also refuses when the recorded executable differs from the one being launched (`replace-exe-mismatch`).
+`close` and `--replace` are the only subcommands that terminate a process, and they have to justify it. `launch` records the resolved full executable path, the process creation token (Windows `GetProcessTimes` FILETIME, Linux `/proc/<pid>` starttime) and the token kind. Both are re-read and compared before killing - once on entry and again immediately before the kill. When any piece is missing, unreadable or different, the command **fails closed**: exit 1, state file and port claim kept, and no signal sent to the process. A state file from an older schema is refused as `state-outdated`; recover that wedged handle with `close --app <key> --discard-state` (drops the state and CDP claim without touching the process - close the old process manually), and pass `--discard-state` to `launch` instead of refusing to start. When the recorded pid cannot be confirmed alive (exit status unavailable AND identity unreadable, e.g. access-denied), `close` fails closed and keeps the state; `--force` is the explicit unverified break-glass - it kills the recorded pid without verification, or drops an unconfirmable state without touching it. The Windows recorded path comes from Python's `resolve()` while the live path comes from `QueryFullProcessImageNameW`, so a symlinked or 8.3-short launch path can differ textually: comparison also tries `realpath` and still fails closed when equality cannot be proven (relaunch through the canonical path). Platforms without `/proc` (macOS) cannot expose the identity, so `close`/`--replace` fail closed there. `--replace` also refuses when the recorded executable differs from the one being launched (`replace-exe-mismatch`).
 
 A launch state file (schema 2) looks like this:
 
@@ -146,7 +146,7 @@ A launch state file (schema 2) looks like this:
 {"schema": 2, "protocol": 2, "app": "exe-3f9a1c7d2e4b", "pid": 41992, "exe": "C:/work/chest/target/debug/shittim_chest_tauri.exe", "create_token": "133670000000000000", "create_kind": "windows-filetime", "cdp_port": 9222, "cwd": "C:/work/chest", "launched_at": "2026-10-28T15:00:00Z", "log_dir": "...", "command": ["..."]}
 ```
 
-Launch hygiene: if writing the state or the port claim fails, `launch` terminates the child it just spawned; if that termination itself fails, it **keeps** the state file and claim and reports the pid, so the process never becomes unmanageable. Ctrl+C goes through the same path, prints the envelope and exits 130.
+Launch hygiene: `--env` and the log directory are validated before a port is acquired, so a bad value cannot leak a CLI-owned claim. If writing the state or the port claim fails, `launch` terminates the child it just spawned through its recorded identity; if the child had already exited it sends no kill at all, and if no identity was ever recorded it refuses to blind-kill a bare pid (a reused pid could belong to anything) - it keeps a closable state file and reports the pid instead. Ctrl+C before the spawn leaves nothing to clean; after it, the same cleanup path runs, prints the envelope and exits 130.
 
 ### Protocol
 
@@ -161,7 +161,7 @@ Every subcommand prints exactly one ASCII JSON object to stdout and exits `0` on
 
 | Command | What it does |
 | --- | --- |
-| `app-drive targets` | list the `/json/list` targets (`--prefer-url` / `--target` select one) |
+| `app-drive targets` | list the `/json/list` targets even when no page target exists (`--prefer-url` / `--target` select one) |
 | `app-drive status` | selected target + boot-chrome/page state |
 | `app-drive eval "JS"` | evaluate JS (promises awaited, result by value); `--raw` prints the bare value, `--out FILE` saves it |
 | `app-drive shot out.png` | capture a PNG/JPEG screenshot |
@@ -169,7 +169,7 @@ Every subcommand prints exactly one ASCII JSON object to stdout and exits `0` on
 | `app-drive wait --selector/--expr/--boot-chrome` | poll until a condition matches; `--timeout` is the condition deadline, `--shot FILE` captures on match |
 | `app-drive watch --out DIR` | record state transitions and screenshots; `--reload` captures a fresh boot-chrome lifecycle |
 | `app-drive launch <exe>` | allocate the CDP port, launch with the CDP environment, wait for the page |
-| `app-drive close` | identity-verified graceful then forced close of the launched pid only |
+| `app-drive close` | identity-verified graceful then forced close of the launched pid only; `--force` = explicit unverified break-glass, `--discard-state` drops a stale/outdated handle |
 
 ### Typical desktop verification loop
 

@@ -107,11 +107,40 @@ def _listening(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 def _load(path: Path) -> dict:
+    """Load and sanitize the registry.
+
+    A hand-edited/corrupt registry must never crash a caller with a bare
+    ValueError/TypeError: bad entries are dropped, valid ones normalized to
+    int port/pid, so every later int() use is safe.
+    """
+
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    cleaned: dict = {}
+
+    for key, value in data.items():
+        if (not isinstance(key, str)) or (not isinstance(value, dict)):
+            continue
+
+        try:
+            port = int(value.get("port"))
+            pid = int(value.get("pid"))
+            stamp = int(value.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        if (port < 1) or (port > 65535) or (pid <= 0):
+            continue
+
+        cleaned[key] = {"port": port, "pid": pid, "ts": stamp}
+
+    return cleaned
 
 def _gc(entries: dict) -> int:
     """Drop claims whose owning pid is gone. Returns the number reclaimed."""
@@ -126,8 +155,17 @@ def _save(path: Path, entries: dict) -> None:
     """Write the registry atomically (same-directory tmp file + os.replace)."""
     path.parent.mkdir(parents = True, exist_ok = True)
     temporary = path.with_name(path.name + ".tmp-" + str(os.getpid()))
-    temporary.write_text(json.dumps(entries, indent = 2), encoding = "utf-8")
-    os.replace(temporary, path)
+
+    try:
+        temporary.write_text(json.dumps(entries, indent = 2), encoding = "utf-8")
+        os.replace(temporary, path)
+    except OSError as exc:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+
+        raise SystemExit(f"error: cannot write the ports registry {path}: {exc}") from exc
 
 LOCK_TIMEOUT = 30.0
 LOCK_STALE = 60.0
@@ -153,12 +191,21 @@ def registry_lock(path: Path):
             handle.write(str(os.getpid()))
             handle.flush()
         except FileExistsError:
+            # Reclaim only a lock whose holder is provably gone; a LIVE holder
+            # that merely ran longer than LOCK_STALE must never be unlinked.
+            try:
+                holder = int(lock_path.read_text(encoding = "utf-8").strip() or 0)
+            except (OSError, ValueError):
+                holder = 0
+
+            holder_alive = bool(holder) and pid_alive(holder)
+
             try:
                 age = time.time() - lock_path.stat().st_mtime
             except OSError:
                 age = 0.0
 
-            if age > LOCK_STALE:
+            if (age > LOCK_STALE) and (not holder_alive):
                 try:
                     lock_path.unlink()
                 except OSError:
@@ -246,7 +293,18 @@ def release(app: str, kind: Optional[str]) -> int:
     with registry_lock(path):
         entries = _load(path)
         _gc(entries)
-        keys = [k for k in entries if k.startswith(f"{app}:") and ((kind is None) or k.endswith(f":{kind}"))]
+        keys = []
+
+        for key in entries:
+            owner, separator, key_kind = key.rpartition(":")
+
+            if (not separator) or (owner != str(app)):
+                continue
+
+            if (kind is not None) and (key_kind != kind):
+                continue
+
+            keys.append(key)
 
         for k in keys:
             entries.pop(k, None)
