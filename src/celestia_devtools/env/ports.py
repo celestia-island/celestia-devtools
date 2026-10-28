@@ -78,7 +78,30 @@ def _preferred(app: str, kind: str) -> int:
     offset = int.from_bytes(hashlib.sha256(app.encode("utf-8")).digest()[: 2], "big") % (SCAN_WINDOW // 2)
     return KINDS[kind] + offset
 
+def _posix_process_state(pid: int) -> Optional[str]:
+    """One-letter /proc/<pid>/stat state (Z = zombie), or None when unreadable."""
+
+    try:
+        stat_text = Path("/proc/" + str(int(pid)) + "/stat").read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+
+    closing = stat_text.rfind(")")
+
+    if closing < 0:
+        return None
+
+    fields = stat_text[closing + 2:].split()
+    return fields[0] if fields else None
+
 def pid_alive(pid: Optional[int]) -> bool:
+    """Is the process running (not merely present as an unreaped zombie)?
+
+    POSIX: os.kill(pid, 0) succeeds for a ZOMBIE too, so an exited-but-unreaped
+    direct child would look alive forever and make termination loops wait for
+    the whole grace budget. Zombies are therefore reported as not alive.
+    """
+
     if not pid or (pid <= 0):
         return False
 
@@ -97,9 +120,15 @@ def pid_alive(pid: Optional[int]) -> bool:
 
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+
+    state = _posix_process_state(pid)
+
+    if state is None:
+        return True  # no /proc entry despite a successful signal: stay conservative
+
+    return state not in ("Z", "X", "x")
 
 def _listening(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

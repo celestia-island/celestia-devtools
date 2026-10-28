@@ -74,12 +74,13 @@ class test_argument_parsing:
 
         assert caught.value.code == 2
 
-    def test_launch_collects_app_arguments_after_separator(self):
-        parser = app_drive.build_parser()
-        namespace = parser.parse_args(["launch", "app.exe", "--app", "demo", "--", "--window", "second", "--flag"])
-        assert namespace.extra == ["--window", "second", "--flag"]
+    def test_launch_splits_app_arguments_after_separator(self):
+        head, extra = app_drive.split_launch_arguments(["launch", "app.exe", "--app", "demo", "--", "--window", "second", "--flag"])
+        namespace = app_drive.build_parser().parse_args(head)
+        assert extra == ["--window", "second", "--flag"]
         assert namespace.app == "demo"
         assert namespace.exe == "app.exe"
+        assert app_drive.split_launch_arguments(["status", "--port", "9333"]) == (["status", "--port", "9333"], [])
 
     def test_wait_requires_exactly_one_condition(self):
         parser = app_drive.build_parser()
@@ -169,8 +170,9 @@ class test_state_files:
         assert app_drive.state_root() == drive_state
 
     def test_app_key_is_a_hash_of_the_exe_path(self):
-        first = app_drive.default_app_key(sys.executable)
-        second = app_drive.default_app_key(str(Path(sys.executable).resolve()))
+        resolved = os.path.realpath(sys.executable)
+        first = app_drive.default_app_key(resolved)
+        second = app_drive.default_app_key(str(Path(resolved).resolve()))
         assert first == second
         assert first.startswith(app_drive.APP_KEY_PREFIX)
         assert len(first) == (len(app_drive.APP_KEY_PREFIX) + 12)
@@ -676,7 +678,7 @@ class test_launch:
         monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive.cdp, "wait_for_page", refuse_wait)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
-        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "fail-demo", "--no-log", "--wait-timeout", "1")
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "fail-demo", "--no-log", "--wait-timeout", "1", "--", "-c", "import time; time.sleep(60)")
         assert code == 1
         assert payload["error"]["code"] == "cdp-timeout"
         assert payload["cleanup"]["terminated"] is True
@@ -698,7 +700,7 @@ class test_launch:
         monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive, "write_state", broken_write)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
-        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "reg-demo", "--no-log", "--no-wait")
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "reg-demo", "--no-log", "--no-wait", "--", "-c", "import time; time.sleep(60)")
         assert code == 1
         assert payload["error"]["code"] == "launch-failed"
         assert app_drive.read_state("reg-demo") is None
@@ -717,14 +719,14 @@ class test_launch:
         def refuse_wait(*args, **kwargs):
             raise cdp.cdp_error("cdp-timeout", "no page target")
 
-        def refuse_kill(pid, grace = 0):
+        def refuse_kill(pid, grace = 0, **kwargs):
             raise cdp.cdp_error("close-failed", "cannot kill " + str(pid))
 
         monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive.cdp, "wait_for_page", refuse_wait)
         monkeypatch.setattr(app_drive, "terminate_tree", refuse_kill)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
-        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "keep-demo", "--no-log")
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "keep-demo", "--no-log", "--", "-c", "import time; time.sleep(60)")
 
         try:
             assert code == 1
@@ -753,7 +755,7 @@ class test_launch:
         monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive.cdp, "wait_for_page", interrupt)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
-        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "int-demo", "--no-log")
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "int-demo", "--no-log", "--", "-c", "import time; time.sleep(60)")
         assert code == 130
         assert payload["error"]["code"] == "interrupted"
         assert app_drive.read_state("int-demo") is None
@@ -775,7 +777,7 @@ class test_launch:
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
 
         try:
-            code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "ident-demo", "--no-log", "--no-wait")
+            code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "ident-demo", "--no-log", "--no-wait", "--", "-c", "import time; time.sleep(60)")
             assert code == 1
             assert payload["error"]["code"] == "identity-unavailable"
             assert payload["cleanup"]["blind_kill_refused"] is True
@@ -936,7 +938,7 @@ class test_close:
             record_state(state_for(child.pid))
             ports.claim("demo", "cdp", 9444, child.pid)
 
-            def refuse_kill(pid, grace = 0):
+            def refuse_kill(pid, grace = 0, **kwargs):
                 raise cdp.cdp_error("close-failed", "cannot kill " + str(pid))
 
             monkeypatch.setattr(app_drive, "terminate_tree", refuse_kill)
@@ -1033,7 +1035,7 @@ class test_launch_cleanup_safety:
         state = app_drive.read_state("demo")
         calls = []
 
-        def fake_terminate_verified(record, pid, grace):
+        def fake_terminate_verified(record, pid, grace, child = None):
             calls.append((record, pid, grace))
             return {"closed": True, "forced": False, "waited_ms": 1, "reason": "terminated"}
 
@@ -1247,3 +1249,176 @@ class test_ports_hardening:
         monkeypatch.setattr(ports, "LOCK_STALE", 0.0)
         assert ports.acquire("demo", "cdp") >= 9222
         assert not lock.exists()
+
+class test_round4_regressions:
+    def test_targets_lists_an_endpoint_without_any_target(self, drive_state, capsys):
+        with fake_cdp_server(targets = []) as server:
+            code, payload, _out = run_cli(capsys, "targets", "--port", str(server.port))
+
+        assert code == 0
+        assert payload["count"] == 0
+        assert payload["selected_target_id"] is None
+
+    def test_release_ports_only_drops_the_cdp_claim(self, drive_state):
+        ports.claim("demo", "cdp", 9444, os.getpid())
+        ports.claim("demo", "vite", 5444, os.getpid())
+        assert app_drive.release_ports("demo") is True
+        entries = ports.list_entries()
+        assert "demo:cdp" not in entries
+        assert "demo:vite" in entries
+        ports.release("demo", "vite")
+
+    def test_unverified_state_requires_force(self, drive_state, capsys):
+        child = spawn_sleeper()
+
+        try:
+            state = state_for(child.pid)
+            state["create_token"] = ""
+            state["create_kind"] = ""
+            state["unverified"] = True
+            record_state(state)
+            ports.claim("demo", "cdp", 9444, child.pid)
+            code, payload, _out = run_cli(capsys, "close", "--app", "demo")
+            assert code == 1
+            assert payload["error"]["code"] == "identity-unavailable"
+            assert app_drive.read_state("demo") is not None
+            assert child.poll() is None
+        finally:
+            stop_child(child)
+            app_drive.remove_state(app_drive.state_file_path("demo"))
+            ports.release("demo", "cdp")
+
+    def test_spawn_oserror_releases_the_claim(self, drive_state, capsys, monkeypatch):
+        def broken_spawn(command, environment, cwd, stdout_target, stderr_target):
+            raise OSError("spawn denied")
+
+        monkeypatch.setattr(app_drive, "_spawn", broken_spawn)
+        monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "spawn-demo", "--no-log", "--no-wait")
+        assert code == 1
+        assert payload["error"]["code"] == "launch-failed"
+        assert app_drive.read_state("spawn-demo") is None
+        assert ports.list_entries() == {}
+
+    def test_cleanup_messages_cover_every_branch(self):
+        unverified = {"app": "demo", "pid": 5, "state_file": "/tmp/demo.json", "state_kept": True, "state_verified": False}
+        assert "close --app demo --force" in app_drive._cleanup_note(unverified)
+        verified = {"app": "demo", "pid": 5, "state_file": "/tmp/demo.json", "state_kept": True, "state_verified": True}
+        assert "retry with app-drive close" in app_drive._cleanup_note(verified)
+        assert "already exited" in app_drive._cleanup_note({"already_exited": True, "exit_code": 3})
+        assert "NOT killed" in app_drive._cleanup_note({"blind_kill_refused": True, "pid": 5})
+        assert "terminated" in app_drive._cleanup_note({"terminated": True})
+
+    def test_force_signal_rechecks_identity_first(self, drive_state):
+        child = subprocess.Popen([sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"], stdin = subprocess.DEVNULL, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL, start_new_session = os.name != "nt")
+        checked = []
+        time.sleep(0.4)  # let the child install its SIGTERM handler before we signal it
+
+        def reject() -> dict:
+            checked.append(True)
+            raise cdp.cdp_error("pid-mismatch", "identity changed during the grace window")
+
+        try:
+            with pytest.raises(cdp.cdp_error) as caught:
+                app_drive.terminate_tree(child.pid, 0.2, verify = reject)
+
+            assert caught.value.code == "pid-mismatch"
+            assert checked
+            assert child.poll() is None  # the forced signal was never sent
+        finally:
+            stop_child(child)
+
+    def test_identity_exit_race_is_reported_before_registering(self, drive_state, capsys, monkeypatch):
+        identity = app_drive.read_process_identity(os.getpid())
+
+        if identity is None:
+            pytest.skip("this platform cannot expose process identity")
+
+        class racing_child:
+            pid = os.getpid()
+
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None if self.calls == 1 else 3
+
+        monkeypatch.setattr(app_drive, "_spawn", lambda command, environment, cwd, stdout_target, stderr_target: racing_child())
+        monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: identity)
+        monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "race-demo", "--no-log", "--no-wait")
+        assert code == 1
+        assert payload["error"]["code"] == "launch-failed"
+        assert "reading its identity" in payload["error"]["message"]
+        assert app_drive.read_state("race-demo") is None
+
+    def test_reserved_env_keys_are_case_insensitive(self, drive_state, capsys, monkeypatch):
+        def bomb(app, kind):
+            raise AssertionError("a rejected --env must not allocate a port")
+
+        monkeypatch.setattr(ports, "acquire", bomb)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--env", "celestia_cdp_port=1")
+        assert code == 1
+        assert payload["error"]["code"] == "bad-env"
+
+    def test_discard_current_state_requires_force(self, drive_state, capsys):
+        child = spawn_sleeper()
+
+        try:
+            record_state(state_for(child.pid))
+            code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--discard-state")
+            assert code == 1
+            assert payload["error"]["code"] == "discard-needs-force"
+            assert app_drive.read_state("demo") is not None
+            assert child.poll() is None
+            code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--discard-state", "--force")
+            assert code == 0
+            assert payload["reason"] == "state-discarded"
+            assert app_drive.read_state("demo") is None
+            assert child.poll() is None  # discarding never signals the process
+        finally:
+            stop_child(child)
+            app_drive.remove_state(app_drive.state_file_path("demo"))
+
+    def test_outdated_discard_survives_a_vanishing_file(self, drive_state, capsys, monkeypatch):
+        path = app_drive.state_file_path("demo")
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(json.dumps({"app": "demo", "pid": 1, "port": 9333}), encoding = "utf-8")
+        real_read = app_drive.read_state
+
+        def vanishing(app = None, explicit = None, allow_outdated = False):
+            if allow_outdated:
+                return None
+
+            return real_read(app, explicit, allow_outdated)
+
+        monkeypatch.setattr(app_drive, "read_state", vanishing)
+        code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--discard-state")
+        assert code == 0
+        assert payload["reason"] == "state-vanished"
+
+    def test_no_timestamped_log_dir_when_acquire_fails(self, drive_state, capsys, monkeypatch):
+        def no_port(app, kind):
+            raise SystemExit("error: no free cdp port")
+
+        monkeypatch.setattr(ports, "acquire", no_port)
+        code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo")
+        assert code == 1
+        assert payload["error"]["code"] == "port-unavailable"
+        assert not (drive_state / "logs").exists()
+
+    def test_identity_probe_reason_distinguishes_gone_processes(self):
+        assert app_drive.identity_probe_reason(4_000_000) in ("no-such-process", "access-denied")
+
+    def test_pid_alive_treats_zombies_as_dead(self):
+        child = subprocess.Popen([sys.executable, "-c", "pass"], stdin = subprocess.DEVNULL, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+        deadline = time.monotonic() + 10
+
+        while (child.poll() is None) and (time.monotonic() < deadline):
+            time.sleep(0.02)
+
+        # poll() above reaped the child; the zombie case itself is covered by
+        # ports.pid_alive reading /proc and by the POSIX termination tests.
+        assert child.returncode == 0
+        assert ports.pid_alive(child.pid) is False

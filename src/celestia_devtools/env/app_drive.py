@@ -36,15 +36,24 @@ Process identity (the safety contract): launch records the resolved full exe
 path, the process creation token (Windows GetProcessTimes FILETIME, Linux
 /proc starttime) and the observable kind. close/--replace require ALL of it
 to match the live process; when any piece is missing or unreadable they FAIL
-CLOSED and refuse to touch the process. The token is re-checked immediately
-before the kill. A state file written by an older schema (no token) is
-refused as state-outdated. --pid N --force is the single explicit
-break-glass; it is unverified by construction and documented as such.
+CLOSED and refuse to touch the process. The token is re-checked before the
+graceful signal and AGAIN inside the grace window, immediately before any
+forced kill. A state file written by an older schema (no token) is refused as
+state-outdated; recover it with close --discard-state (or pass
+--discard-state to launch). --force is the explicit unverified break-glass for
+close: --pid N --force kills by pid, --app <key> --force kills the recorded
+pid without verification or drops an unconfirmable handle, and
+close --force --discard-state drops a current-schema handle without touching
+the process. An app that exited normally leaves its state behind; close then
+fails closed (process-unconfirmed) and needs --force to clear the handle.
 
 Launch hygiene: registration failures (state write, port claim) terminate the
-spawned child; a cleanup that cannot terminate the child KEEPS the state file
-and port claim and reports the pid so nothing becomes unmanageable; Ctrl+C
-goes through the same cleanup path and exits 130 with a JSON envelope.
+spawned child through its recorded identity; an already-exited child is never
+signalled and a child whose identity was never recorded is never blind-killed
+(state+claim kept, pid reported). Ctrl+C before the spawn leaves nothing to
+clean; after it, the same cleanup path runs and exits 130 with an envelope.
+A direct Popen child is observed through wait()/poll() (POSIX zombies reaped)
+rather than pid liveness.
 
 Platforms: WebView2 on Windows is the primary CDP transport. Linux
 (WebKitGTK) and macOS (WKWebView) do not expose CDP, so use the frontend
@@ -127,12 +136,16 @@ exit codes:
   130  interrupted (Ctrl+C); cleanup ran and the envelope was printed
 
 terminating commands:
-  close and --replace are the ONLY subcommands that terminate a process.
-  launch never blind-kills: a failed launch whose child cannot be terminated
-  through its recorded identity keeps the state file and reports the pid
-  instead of sending a bare-pid kill that a reused pid could absorb. Ctrl+C
-  before the spawn leaves nothing to clean; after it, the same cleanup path
-  runs and the envelope is printed.
+  close and --replace are the only USER-FACING subcommands that terminate a
+  process; launch's failure cleanup may also terminate the child it just
+  spawned, but only through the identity it recorded (an already-exited child
+  is never signalled, and a child with no recorded identity is never
+  blind-killed). close re-checks the identity before the graceful signal and
+  again inside the grace window, immediately before any forced kill. A direct
+  Popen child is observed through wait()/poll() so POSIX zombies are reaped
+  rather than mistaken for running processes. Ctrl+C before the spawn leaves
+  nothing to clean; after it, the same cleanup path runs and the envelope is
+  printed.
 
 safe-close contract:
   launch records the resolved exe path + process creation token + token kind
@@ -140,13 +153,17 @@ safe-close contract:
   to match the live process, re-check immediately before the kill, and fail
   closed (state kept, exit 1) when anything is missing, unreadable or
   different. A schema-1 state file is refused (state-outdated); recover the
-  handle with close --discard-state (the old process then has to be closed
-  manually). When the recorded pid cannot be confirmed alive (exit status
+  handle with close --discard-state (or --state-file ... --discard-state) and
+  pass --discard-state to launch instead of refusing to start; the old process
+  then has to be closed manually. Discarding a CURRENT-schema handle also
+  needs --force. When the recorded pid cannot be confirmed alive (exit status
   unavailable AND identity unreadable, e.g. access-denied), close fails
-  closed, keeps the state, and names --force as the explicit unverified
-  break-glass (--pid N --force kills by pid; --app <key> --force kills the
-  recorded pid without verification, or drops an unconfirmable state).
-  Windows path note: the recorded path comes from Python resolve() while the
+  closed, keeps the state, and reports the probe reason (access-denied vs
+  no-such-process); --force is the explicit unverified break-glass (--pid N
+  --force kills by pid; --app <key> --force kills the recorded pid without
+  verification, or drops an unconfirmable state). An app that exited normally
+  also leaves its state behind: close reports process-unconfirmed and needs
+  --force before the handle is removed. Windows path note: the recorded path comes from Python resolve() while the
   live path comes from QueryFullProcessImageNameW, so a symlinked or
   8.3-short launch path can differ textually; comparison also tries realpath
   and still fails closed when equality cannot be proven (relaunch through the
@@ -230,7 +247,9 @@ def read_state(app: Optional[str] = None, explicit: Optional[str] = None, allow_
     schema = data.get("schema")
 
     if (not allow_outdated) and (schema != STATE_SCHEMA):
-        raise cdp.cdp_error("state-outdated", "the launch state " + str(path) + " was written by an older app-drive (schema " + str(schema) + ", expected " + str(STATE_SCHEMA) + "); it carries no process creation token, so app-drive will not touch that process (fail closed). Relaunch with the current app-drive, or drop the stale handle with app-drive close --app " + str(app or "<key>") + " --discard-state (the old process then has to be closed manually).")
+        recovery = ("app-drive close --state-file " + str(path) + " --discard-state") if explicit else ("app-drive close --app " + str(app or "<key>") + " --discard-state")
+
+        raise cdp.cdp_error("state-outdated", "the launch state " + str(path) + " was written by an older app-drive (schema " + str(schema) + ", expected " + str(STATE_SCHEMA) + "); it carries no process creation token, so app-drive will not touch that process (fail closed). Recover the stale handle with " + recovery + ", or pass --discard-state to a launch of the same app; the old process then has to be closed manually.")
 
     if (app is not None) and (str(data.get("app") or "") != str(app)):
         raise cdp.cdp_error("state-app-mismatch", "the launch state " + str(path) + " belongs to app " + repr(data.get("app")) + ", not " + repr(str(app)) + "; refusing to use it (state-file slug collision?)")
@@ -342,6 +361,49 @@ def read_process_identity(pid: int) -> Optional[dict]:
 
     return _posix_process_identity(int(pid))
 
+def identity_probe_reason(pid: int) -> str:
+    """Why an identity probe failed, distinguishing access-denied from gone.
+
+    Windows: OpenProcess error 5 (ACCESS_DENIED) means the process may well be
+    alive but unreadable (e.g. elevated); error 87 (INVALID_PARAMETER) means no
+    such pid. POSIX: /proc missing -> no-such-process; EACCES -> access-denied;
+    otherwise unreadable. The reason is surfaced in fail-closed messages so an
+    operator can tell "gone" from "I cannot see it".
+    """
+    pid = int(pid)
+
+    if os.name == "nt":
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+
+        if handle:
+            kernel32.CloseHandle(handle)
+            return "readable"
+
+        code = int(kernel32.GetLastError())
+
+        if code == 5:
+            return "access-denied"
+
+        if code == 87:
+            return "no-such-process"
+
+        return "winerror-" + str(code)
+
+    proc_dir = Path("/proc/" + str(pid))
+
+    if not proc_dir.is_dir():
+        return "no-such-process"
+
+    try:
+        os.readlink("/proc/" + str(pid) + "/exe")
+    except PermissionError:
+        return "access-denied"
+    except OSError as exc:
+        return "unreadable-" + (exc.strerror or "error").replace(" ", "-")
+
+    return "readable"
+
 def _normalized_image_path(path: str) -> str:
     return os.path.normcase(os.path.abspath(str(path)))
 
@@ -443,6 +505,7 @@ def _signal_tree(pid: int, signal_number: int) -> None:
         pass
 
 def wait_pid_exit(pid: int, timeout: float) -> Optional[int]:
+    """Watch an EXTERNAL pid (no Popen handle) via liveness; zombies count dead."""
     started = time.monotonic()
 
     while (time.monotonic() - started) <= timeout:
@@ -453,8 +516,70 @@ def wait_pid_exit(pid: int, timeout: float) -> Optional[int]:
 
     return None
 
-def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
+def wait_child_exit(child: subprocess.Popen, timeout: float) -> Optional[int]:
+    """Watch OUR OWN child through its Popen handle and reap it on exit.
+
+    A Popen child that has exited but is not reaped is a zombie: on POSIX it
+    still answers os.kill(pid, 0), so a pid-liveness loop would wait for the
+    whole grace budget even though the process is dead. wait()/poll() reaps and
+    reports the real exit.
+    """
+    started = time.monotonic()
+
+    try:
+        child.wait(timeout = max(timeout, 0.0))
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    if child.poll() is None:
+        return None
+
+    return int((time.monotonic() - started) * 1000)
+
+def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: Optional[subprocess.Popen] = None, verify = None) -> dict:
+    """Graceful-then-forced termination.
+
+    child: the Popen handle when the target is OUR direct child (launch
+    cleanup / in-process callers); observed via wait()/poll() so POSIX zombies
+    are reaped and never mistaken for running processes.
+    verify: re-validation callback invoked immediately BEFORE the forced signal
+    (the identity could have been recycled during the grace window).
+    """
     pid = int(pid)
+
+    if child is not None:
+        if child.poll() is not None:
+            return {"closed": True, "forced": False, "waited_ms": 0, "reason": "not-running"}
+
+        forced = False
+
+        if os.name == "nt":
+            _taskkill(pid, False)
+            waited = wait_child_exit(child, grace)
+
+            if waited is None:
+                if verify is not None:
+                    verify()
+
+                _taskkill(pid, True)
+                forced = True
+                waited = wait_child_exit(child, grace)
+        else:
+            _signal_tree(pid, signal.SIGTERM)
+            waited = wait_child_exit(child, grace)
+
+            if waited is None:
+                if verify is not None:
+                    verify()
+
+                _signal_tree(pid, signal.SIGKILL)
+                forced = True
+                waited = wait_child_exit(child, grace)
+
+        if waited is None:
+            raise cdp.cdp_error("close-failed", "the process " + str(pid) + " did not exit within " + format(grace, "g") + "s" + (" (forced kill sent)" if forced else ""))
+
+        return {"closed": True, "forced": forced, "waited_ms": waited, "reason": "terminated"}
 
     if not pid_alive(pid):
         return {"closed": True, "forced": False, "waited_ms": 0, "reason": "not-running"}
@@ -466,6 +591,9 @@ def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
         waited = wait_pid_exit(pid, grace)
 
         if waited is None:
+            if verify is not None:
+                verify()
+
             _taskkill(pid, True)
             forced = True
             waited = wait_pid_exit(pid, grace)
@@ -474,6 +602,9 @@ def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
         waited = wait_pid_exit(pid, grace)
 
         if waited is None:
+            if verify is not None:
+                verify()
+
             _signal_tree(pid, signal.SIGKILL)
             forced = True
             waited = wait_pid_exit(pid, grace)
@@ -483,11 +614,15 @@ def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
 
     return {"closed": True, "forced": forced, "waited_ms": waited, "reason": "terminated"}
 
-def terminate_verified(state: dict, pid: int, grace: float = DEFAULT_CLOSE_GRACE) -> dict:
-    """Verify identity, then verify AGAIN immediately before the kill."""
+def terminate_verified(state: dict, pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: Optional[subprocess.Popen] = None) -> dict:
+    """Verify identity, verify again, and re-verify immediately before force."""
     verify_process_identity(state, pid)
     verify_process_identity(state, pid)
-    return terminate_tree(pid, grace)
+
+    def recheck() -> dict:
+        return verify_process_identity(state, pid)
+
+    return terminate_tree(pid, grace, child = child, verify = recheck)
 
 def merge_webview2_arguments(existing: str, cdp_port: int) -> str:
     tokens = [token for token in str(existing or "").split() if token and not token.startswith("--remote-debugging-port=")]
@@ -503,8 +638,8 @@ def parse_env_overrides(overrides: Sequence[str]) -> dict[str, str]:
         if (not separator) or (not key):
             raise cdp.cdp_error("bad-env", "--env expects KEY=VALUE, got " + repr(item))
 
-        if key in RESERVED_ENV_KEYS:
-            raise cdp.cdp_error("bad-env", "--env must not override " + key + ": app-drive owns that variable (the CDP port/WebView2 arguments are derived from the allocated port)")
+        if key.strip().upper() in RESERVED_ENV_KEYS:
+            raise cdp.cdp_error("bad-env", "--env must not override " + key + ": app-drive owns that variable (the CDP port/WebView2 arguments are derived from the allocated port; Windows environment names are case-insensitive)")
 
         parsed[key] = value
 
@@ -961,13 +1096,17 @@ def cmd_watch(args) -> int:
     emit(envelope("watch", **summary), args.pretty)
     return 0
 
-def _prepare_launch_log_dir(app: str, log_dir: Optional[str], no_log: bool) -> Optional[Path]:
-    """Resolve/create the log directory BEFORE a port is acquired (no leaked claim)."""
+def _validate_log_dir(log_dir: Optional[str]) -> Optional[Path]:
+    """Validate an EXPLICIT --log-dir before a port is acquired (no leaked claim).
 
-    if no_log:
+    The timestamped default directory is created only after a port has been
+    acquired, so a failed launch cannot leave empty log directories behind.
+    """
+
+    if not log_dir:
         return None
 
-    directory = Path(log_dir) if log_dir else (state_root() / "logs" / (app_slug(app) + "-" + time.strftime("%Y%m%d-%H%M%S")))
+    directory = Path(log_dir)
 
     try:
         directory.mkdir(parents = True, exist_ok = True)
@@ -976,6 +1115,16 @@ def _prepare_launch_log_dir(app: str, log_dir: Optional[str], no_log: bool) -> O
 
     if not directory.is_dir():
         raise cdp.cdp_error("log-dir-failed", "the launch log path is not a directory: " + str(directory))
+
+    return directory
+
+def _new_default_log_dir(app: str) -> Path:
+    directory = state_root() / "logs" / (app_slug(app) + "-" + time.strftime("%Y%m%d-%H%M%S"))
+
+    try:
+        directory.mkdir(parents = True, exist_ok = True)
+    except OSError as exc:
+        raise cdp.cdp_error("log-dir-failed", "cannot create the launch log directory " + str(directory) + ": " + str(exc)) from exc
 
     return directory
 
@@ -1027,9 +1176,6 @@ def _cleanup_note(cleanup: dict) -> str:
     if cleanup.get("already_exited"):
         return "; the spawned app had already exited (exit code " + str(cleanup.get("exit_code")) + "), no kill was sent"
 
-    if cleanup.get("blind_kill_refused"):
-        return "; the spawned app was NOT killed because no recorded identity could be verified (a blind pid kill could hit a reused pid); pid " + str(cleanup.get("pid")) + " was left for a manual check"
-
     if cleanup.get("state_kept"):
         app = str(cleanup.get("app"))
         state_file = str(cleanup.get("state_file"))
@@ -1038,6 +1184,9 @@ def _cleanup_note(cleanup: dict) -> str:
             return "; WARNING: the spawned app could not be terminated - state kept at " + state_file + " (retry with app-drive close --app " + app + "; pid " + str(cleanup.get("pid")) + ")"
 
         return "; WARNING: the spawned app could not be terminated and its identity is unrecorded - state kept at " + state_file + "; finish explicitly with app-drive close --app " + app + " --force (unverified kill)"
+
+    if cleanup.get("blind_kill_refused"):
+        return "; the spawned app was NOT killed because no recorded identity could be verified (a blind pid kill could hit a reused pid); pid " + str(cleanup.get("pid")) + " was left for a manual check"
 
     return "; cleanup of the spawned app is incomplete (pid " + str(cleanup.get("pid")) + ")"
 
@@ -1080,7 +1229,7 @@ def _abort_launch(child: Optional[subprocess.Popen], state_path: Path, app: str,
 
     if _state_has_identity(state):
         try:
-            terminate_verified(state, child.pid, grace)
+            terminate_verified(state, child.pid, grace, child = child)
             result["terminated"] = True
             result["state_verified"] = True
         except cdp.cdp_error as exc:
@@ -1097,6 +1246,15 @@ def _abort_launch(child: Optional[subprocess.Popen], state_path: Path, app: str,
 
     if keep is None:
         identity = read_process_identity(child.pid)
+
+        if child.poll() is not None:
+            # Exited while we probed: never inspect/keep a possibly reused pid.
+            result["already_exited"] = True
+            result["exit_code"] = child.returncode
+            result["state_removed"] = remove_state(state_path)
+            result["claims_released"] = release_ports(app)
+            return result
+
         keep = _launch_state_from_identity(app, child.pid, identity, port)
         result["state_verified"] = identity is not None
     else:
@@ -1168,10 +1326,13 @@ def cmd_launch(args) -> int:
 
         _replace_existing(app, existing, executable, state_path, args.grace)
 
-    log_directory = _prepare_launch_log_dir(app, args.log_dir, args.no_log)
+    explicit_log_dir = _validate_log_dir(args.log_dir)
     port = int(args.port) if args.port is not None else acquire_cdp_port(app)
 
     try:
+        # The timestamped default directory is created only now, so a failed
+        # acquisition leaves no empty log directory behind.
+        log_directory = None if args.no_log else (explicit_log_dir if explicit_log_dir is not None else _new_default_log_dir(app))
         environment = build_launch_env(os.environ, port, args.env)
         command = build_launch_command(executable, args.extra)
         stdout_target, stderr_target = _open_launch_logs(log_directory)
@@ -1195,6 +1356,10 @@ def cmd_launch(args) -> int:
             raise cdp.cdp_error("launch-failed", "the app exited before app-drive could record its identity (exit code " + str(exit_code) + ")")
 
         identity = read_process_identity(child.pid)
+        exit_after_probe = child.poll()
+
+        if exit_after_probe is not None:
+            raise cdp.cdp_error("launch-failed", "the app exited while app-drive was reading its identity (exit code " + str(exit_after_probe) + ")")
 
         if identity is None:
             raise cdp.cdp_error("identity-unavailable", "cannot read the creation time and full path of the spawned process (pid " + str(child.pid) + "); refusing to manage a process it cannot verify (fail closed)")
@@ -1272,6 +1437,12 @@ def cmd_close(args) -> int:
             raise
 
         raw = read_state(app, args.state_file, allow_outdated = True)
+
+        if raw is None:
+            # The file vanished between the two reads: report it, never crash.
+            emit(envelope("close", app = app or None, pid = None, closed = False, verified = False, discarded_state = False, state_file_removed = False, ports_released = False, reason = "state-vanished"), args.pretty)
+            return 0
+
         app = str(raw.get("app") or app or "")
         state_path = state_file_path(app or None, args.state_file)
         discarded = remove_state(state_path)
@@ -1301,6 +1472,9 @@ def cmd_close(args) -> int:
     pid = int(recorded_pid)
 
     if args.discard_state:
+        if not args.force:
+            raise cdp.cdp_error("discard-needs-force", "refusing to discard a current-schema launch state without --force: it records the live process identity (pid " + str(pid) + "). Use close --force --discard-state only if you accept dropping the handle without touching the process")
+
         removed = remove_state(state_path)
         released = release_ports(app)
         emit(envelope("close", app = app, pid = pid, closed = False, verified = False, discarded_state = True, state_file_removed = removed, ports_released = released, reason = "state-discarded"), args.pretty)
@@ -1326,8 +1500,11 @@ def cmd_close(args) -> int:
     if not pid_alive(pid):
         # pid_alive() returns False for access-denied live processes too: only
         # drop the state when the process is gone BEYOND doubt (no identity).
+        # A normally-exited app lands here as well (state left behind): that is
+        # intentional - app-drive only drops a state through --force.
         if read_process_identity(pid) is None:
-            raise cdp.cdp_error("process-unconfirmed", "cannot confirm whether pid " + str(pid) + " is still running (exit status unavailable and its identity unreadable; possibly access-denied). Refusing to drop the launch state (fail closed); pass --force to discard it or kill by the recorded pid explicitly, or close the app manually", {"app": app, "pid": pid, "state_file": str(state_path.resolve())})
+            reason = identity_probe_reason(pid)
+            raise cdp.cdp_error("process-unconfirmed", "cannot confirm whether pid " + str(pid) + " is still running (probe: " + reason + "). Refusing to drop the launch state (fail closed); pass --force to discard the handle or to kill the recorded pid explicitly, or close the app manually. Note: an app that exited normally also needs --force before its leftover state is removed", {"app": app, "pid": pid, "state_file": str(state_path.resolve()), "probe": reason})
 
     try:
         result = terminate_verified(state, pid, args.grace)
@@ -1412,7 +1589,6 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--state-file", default = None, help = "override the launch state file")
     launch.add_argument("--grace", type = float, default = DEFAULT_CLOSE_GRACE, metavar = "SECONDS", help = "graceful-termination budget before a forced kill (default 5)")
     launch.add_argument("--pretty", action = "store_true", help = "indent the JSON envelope")
-    launch.add_argument("extra", nargs = "*", help = "extra app arguments (pass them after --)")
     close = subparsers.add_parser("close", help = "close the app instance that app-drive launched (identity-verified)")
     close.add_argument("--app", default = None, help = "application key from app-drive launch")
     close.add_argument("--exe", default = None, help = "derive the application key from this executable path")
@@ -1424,10 +1600,31 @@ def build_parser() -> argparse.ArgumentParser:
     close.add_argument("--pretty", action = "store_true", help = "indent the JSON envelope")
     return parser
 
+def split_launch_arguments(argv: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Split launch's trailing app arguments at the first bare -- separator.
+
+    argparse's handling of "--" with a trailing nargs="*" positional differs
+    between supported Python versions (3.12 rejects the segment that 3.13
+    accepts), so the separator is consumed here instead of relying on it.
+    """
+    tokens = list(argv)
+
+    if tokens and (tokens[0] == "launch") and ("--" in tokens):
+        separator = tokens.index("--")
+        return tokens[:separator], tokens[separator + 1:]
+
+    return tokens, []
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     arguments = list(argv if argv is not None else sys.argv[1:])
+    arguments, extra_arguments = split_launch_arguments(arguments)
     parsed = parser.parse_args(arguments)
+
+    if extra_arguments and (parsed.command != "launch"):
+        parser.error("-- app arguments are only supported by launch")
+
+    parsed.extra = list(extra_arguments)
     pretty = bool(getattr(parsed, "pretty", False))
     handler = HANDLERS.get(parsed.command)
 

@@ -17,7 +17,6 @@ import threading
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 CRLF = (chr(13) + chr(10)).encode("ascii")
-CONNECTED_CLIENTS = 8
 
 def page_target(target_id = "page-1", url = "http://127.0.0.1:5173/", target_type = "page", title = "Fake Chest") -> dict:
     return {"id": target_id, "type": target_type, "title": title, "url": url, "webSocketDebuggerUrl": None}
