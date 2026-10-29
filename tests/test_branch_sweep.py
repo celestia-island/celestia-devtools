@@ -13,7 +13,13 @@ def _git(repo: Path, *args: str) -> str:
     # Same UTF-8 pin the tool itself uses: git speaks UTF-8 and the CJK
     # branch-name test would otherwise trip the test helper's own
     # locale-codec decode on a cp936 console.
-    r = subprocess.run(["git", "-C", str(repo), *args], check = True, capture_output = True, text = True, encoding = "utf-8", errors = "replace")
+    # `-c core.hooksPath=`: this machine's GLOBAL core.hooksPath points at the
+    # workspace org commit-msg hook, which rejects the fixture's `base` commit
+    # and turned every test in this module red for a fixture reason (not
+    # hermetic). Other modules here disarm it four ways (`-c core.hooksPath=`,
+    # `--no-verify`, `$CELESTIA_COMMIT_MSG_SKIP`, `$GIT_CONFIG_GLOBAL=/dev/null`);
+    # this one had none.
+    r = subprocess.run(["git", "-c", "core.hooksPath=", "-C", str(repo), *args], check = True, capture_output = True, text = True, encoding = "utf-8", errors = "replace")
     return r.stdout.strip()
 
 def _commit(repo: Path, msg: str) -> None:
@@ -168,7 +174,9 @@ def test_root_skips_repo_without_base(tmp_path: Path, capsys):
     git_init(ok, "master")
     (ok / "a.txt").write_text("a\n", encoding = "utf-8")
     sp.run(["git", "-C", str(ok), "add", "-A"], check = True, capture_output = True)
-    sp.run(["git", "-C", str(ok), "commit", "-m", "base"], check = True, capture_output = True)
+    # `-c core.hooksPath=`: keep the fixture commit away from this machine's
+    # global org commit-msg hook (see the note in _git).
+    sp.run(["git", "-c", "core.hooksPath=", "-C", str(ok), "commit", "-m", "base"], check = True, capture_output = True)
 
     stray = tmp_path / "stray"
     git_init(stray, "trunk")

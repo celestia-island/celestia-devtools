@@ -186,3 +186,35 @@ class test_module_main_guard:
         result = self._run_module("definitely-not-a-command")
         assert result.returncode == 2, result.stderr
         assert "unknown command" in result.stderr, result.stderr
+
+class test_lazy_dispatch:
+    """Module scope must not import a command package before dispatch.
+
+    `core/cli.py` opens with a file-level exemption stating that this module is
+    a deliberate lazy plugin loader. Nothing asserted it, so it stopped being
+    one: a module-scope ``from celestia_devtools.repo.init import
+    common_just_path`` — needed by the single ``include-path`` command — pulled
+    that package's PyYAML dependency into every invocation, 42.6 ms even for
+    ``--version``. The comment stayed green while the behaviour drifted.
+    """
+
+    def test_module_scope_imports_no_command_package(self):
+        src = Path(__file__).resolve().parents[1] / "src"
+        # The probe reports whether the dispatcher itself loaded, so an import
+        # failure cannot masquerade as "nothing extra was imported".
+        # Guard derived from the registry, not a hand-typed prefix: COMMANDS is
+        # the exact set the dispatcher promises not to import eagerly, so a new
+        # command package is covered the day it is registered.
+        guard = " or ".join("m == %r" % module for module in sorted(set(COMMANDS.values())))
+        script = "\n".join(["import sys, celestia_devtools, celestia_devtools.core.cli", "cli = 'celestia_devtools.core.cli' in sys.modules", "extra = ','.join(sorted(m for m in sys.modules if %s or m == 'yaml'))" % guard, "print(cli, celestia_devtools.__file__, extra, sep = '|')"])
+        env = dict(os.environ)
+        env["PYTHONPATH"] = f"{src}{os.pathsep}{env['PYTHONPATH']}" if env.get("PYTHONPATH") else str(src)
+        result = subprocess.run([sys.executable, "-c", script], capture_output = True, text = True, timeout = 60, env = env)
+        assert result.returncode == 0, result.stderr
+        # Fields: the probe ran, WHICH COPY it imported, and what leaked. The
+        # middle field keeps the last assertion from passing vacuously when the
+        # probe silently resolves to the installed package instead of the tree.
+        loaded, module_file, extra = result.stdout.strip().split("|", 2)
+        assert loaded == "True", f"the probe never imported the dispatcher: stdout={result.stdout!r}"
+        assert Path(module_file).resolve().is_relative_to(src.resolve()), f"the probe imported {module_file}, not this checkout"
+        assert extra == "", f"module scope pulled command packages back in: {extra}"
