@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+import pytest
 from celestia_devtools.repo.fleet_audit import GATE_FILES, main
 from celestia_devtools.repo.init import PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, _ensure_workflows, render_caller
 
@@ -255,3 +256,144 @@ def test_mixed_repo_counts_as_master(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     (item,) = payload["repositories"]
     assert item["ref_state"] == "master"
+
+def floating_repo(workspace: Path, name: str) -> Path:
+    """A canonical repository whose callers float on ``@master``.
+
+    That is the fleet's current stock: generator-owned bytes, only the ref is
+    wrong, which is why it reports as a warning instead of a drift problem.
+    """
+    repo = make_repo(workspace, name)
+    _ensure_workflows(repo, force = True, ref = "master")
+    return repo
+
+def extra_lane(repo: Path, uses_line: str) -> None:
+    """Add a non-template caller so a hand-written ``uses:`` form can be probed.
+
+    Job-level `uses:` with a pull_request trigger: a real reusable-workflow call
+    that no template owns (a `workflow_call` header would make it a callee
+    definition and the audit would skip it, which is how an earlier revision of
+    these tests ended up not exercising the path they claimed to).
+    """
+    body = "name: Extra lane\non:\n  pull_request:\n    branches: [master]\njobs:\n  call:\n    " + uses_line + "\n"
+    write_workflow(repo, "extra-lane.yml", body)
+
+CALLEE = "celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml"
+
+def test_floating_callers_warn_without_failing(tmp_path, capsys):
+    floating_repo(tmp_path, "app")
+    assert main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "floating callers in 1 repositories" in captured.err
+    assert "init --with-workflows --force" in captured.err
+    assert "  app" in captured.err.splitlines()
+
+def test_strict_pins_fails_on_floating_callers(tmp_path, capsys):
+    floating_repo(tmp_path, "app")
+    assert main([str(tmp_path), "--strict-pins"]) == 1
+    assert "floating callers in 1 repositories" in capsys.readouterr().err
+
+def test_strict_pins_passes_when_every_caller_is_pinned(tmp_path):
+    canonical_repo(tmp_path, "app")
+    assert main([str(tmp_path), "--strict-pins"]) == 0
+
+def test_strict_pins_accepts_an_older_or_a_sha_pin(tmp_path):
+    # A tag or a SHA is a pin by definition (init.py's contract), so neither is a
+    # failure: an older pin is an upgrade candidate, not a broken gate.
+    older = make_repo(tmp_path, "older")
+    _ensure_workflows(older, force = True, ref = "v2026.09")
+    sha = make_repo(tmp_path, "sha-pinned")
+    _ensure_workflows(sha, force = True, ref = "079e14090f7417a62cc4939b568f9eb88d97c1d0")
+    assert main([str(tmp_path), "--strict-pins"]) == 0
+
+def test_strict_pins_does_not_count_repositories_without_callers(tmp_path, capsys):
+    # A checkout that never adopted a devtools gate has no ref to pin; the
+    # mandatory-caller problems report it, the pin verdict must stay clean.
+    canonical_repo(tmp_path, "app")
+    make_repo(tmp_path, "bare")
+    assert main([str(tmp_path), "--strict-pins", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["floating_repositories"] == 0
+    assert payload["summary"]["pins_ok"] is True
+
+def test_json_reports_the_pin_verdict(tmp_path, capsys):
+    floating_repo(tmp_path, "app")
+    assert main([str(tmp_path), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["current_pin"] == PINNED_DEVTOOLS_REF
+    assert payload["summary"]["floating_repositories"] == 1
+    assert payload["summary"]["pins_ok"] is False
+
+def test_quoted_uses_line_still_counts_as_floating(tmp_path, capsys):
+    # A quoting style change used to yield no ref at all, which read as "this
+    # repository pins nothing" -- a fail-open on the check the pin exists for.
+    repo = canonical_repo(tmp_path, "app")
+    extra_lane(repo, 'uses: "' + CALLEE + '@master"')
+    assert main([str(tmp_path), "--strict-pins"]) == 1
+    payload = capsys.readouterr()
+    assert "floating callers in 1 repositories" in payload.err
+
+def test_uses_line_with_a_trailing_comment_still_counts(tmp_path, capsys):
+    repo = canonical_repo(tmp_path, "app")
+    extra_lane(repo, "uses: " + CALLEE + "@master  # break-glass")
+    assert main([str(tmp_path), "--strict-pins"]) == 1
+    assert "floating callers in 1 repositories" in capsys.readouterr().err
+
+def test_callee_line_without_a_ref_is_a_problem(tmp_path, capsys):
+    # Unreadable is not the same as absent: it must fail closed, not read clean.
+    repo = canonical_repo(tmp_path, "app")
+    extra_lane(repo, "uses: " + CALLEE)
+    assert main([str(tmp_path), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert any("yields no ref" in problem for problem in payload["repositories"][0]["problems"])
+
+def test_strict_pins_flags_a_main_branch(tmp_path, capsys):
+    # `main` floats exactly like `master`; nothing else in the census knows it.
+    repo = make_repo(tmp_path, "app")
+    _ensure_workflows(repo, force = True, ref = "main")
+    assert main([str(tmp_path), "--strict-pins"]) == 1
+    assert "floating callers in 1 repositories" in capsys.readouterr().err
+
+def test_quoted_uses_key_is_still_read(tmp_path, capsys):
+    repo = canonical_repo(tmp_path, "app")
+    extra_lane(repo, '"uses": "' + CALLEE + '@master"')
+    assert main([str(tmp_path), "--strict-pins"]) == 1
+    assert "floating callers in 1 repositories" in capsys.readouterr().err
+
+def test_flow_map_caller_is_a_problem_not_a_silent_pass(tmp_path, capsys):
+    # A spelling the line scan cannot see at all: the YAML-aware gate detection
+    # still reports adoption, so extracting no ref anywhere must fail closed.
+    repo = canonical_repo(tmp_path, "app")
+    body = "name: Extra lane\non: {pull_request: {}}\njobs:\n  call: {uses: " + CALLEE + "@master}\n"
+    write_workflow(repo, "extra-lane.yml", body)
+    assert main([str(tmp_path), "--strict-pins", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    app = next(item for item in payload["repositories"] if item["name"] == "app")
+    assert app["pin_unreadable"] is True
+    assert payload["summary"]["pins_ok"] is False
+
+def test_pinned_uses_with_a_floating_tool_input_is_flagged(tmp_path, capsys):
+    # The README's two-layer commitment: pinning the workflow file while letting
+    # the callee install the tool from master is a cosmetic pin.
+    repo = canonical_repo(tmp_path, "app")
+    path = repo / ".github" / "workflows" / "commit-msg-lint.yml"
+    text = path.read_text(encoding = "utf-8")
+    path.write_text(text.replace("devtools-ref: " + PINNED_DEVTOOLS_REF, "devtools-ref: master"), encoding = "utf-8")
+    assert main([str(tmp_path), "--strict-pins"]) == 1
+    assert "floating callers in 1 repositories" in capsys.readouterr().err
+
+def test_warn_only_and_strict_pins_are_mutually_exclusive(tmp_path):
+    canonical_repo(tmp_path, "app")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main([str(tmp_path), "--warn-only", "--strict-pins"])
+
+    assert excinfo.value.code == 2
+
+def test_error_payload_does_not_claim_pins_are_fine(tmp_path, capsys):
+    # A scan that never finished cannot establish the property; a consumer
+    # reading pins_ok must not see True for a run that did not look.
+    assert main([str(tmp_path / "nope"), "--json"]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["summary"]["pins_ok"] is False
+    assert payload["summary"]["floating_repositories"] is None

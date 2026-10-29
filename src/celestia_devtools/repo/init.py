@@ -233,6 +233,10 @@ def main() -> int:
 #: reports every ``@master`` caller as a warning while the migration runs.
 PINNED_DEVTOOLS_REF = "v2026.10"
 
+#: Rolling baseline tag shape. Used to order a caller's ref against the
+#: baseline; anything that does not match is a custom pin (a SHA is legal).
+_CALVER_RE = re.compile(r"^v(\d{4})\.(\d{2})$")
+
 #: Marker for the callee ref on a template's ``uses:`` line (rendered to
 #: ``@<ref>``); never present in a rendered caller.
 _REF_MARKER = "@__DEVTOOLS_REF__"
@@ -594,15 +598,65 @@ TEMPLATE_SOURCES: dict[str, str] = {"commit-msg-lint.yml": _T_COMMIT_LINT, "ci-c
 #: added in one place and forgotten in the other.
 REQUIRED_WORKFLOWS: tuple[tuple[str, str, str], ...] = (("commit-msg-lint.yml", WORKFLOW_COMMIT_LINT, "commit-msg lint"), ("ci-cache.yml", WORKFLOW_CI_CACHE, "CI cache policy"), ("pr-title-check.yml", WORKFLOW_PR_TITLE_CHECK, "PR title check"))
 
+#: The substring every devtools caller line carries. Kept separate so the
+#: fail-closed companion below can find lines the extractor cannot read.
+_DEVTOOLS_CALLEE_HINT = "celestia-island/celestia-devtools/.github/workflows/"
+
 #: A ``uses:`` line invoking any celestia-devtools reusable workflow, with the
-#: ref captured. ``(?m)^`` + non-comment body keeps commented-out examples
-#: (README snippets pasted into a file header) from counting as consumption.
-_DEVTOOLS_USES_RE = re.compile(r"(?m)^\s*uses:\s*celestia-island/celestia-devtools/\.github/workflows/[^\s@]+@(\S+)\s*$")
+#: ref captured. Deliberately tolerant on the edges: a quoted ref
+#: (``uses: "…@master"``) or a trailing comment (``…@master  # break-glass``)
+#: used to yield no ref at all, which the pin audit then read as "this
+#: repository pins nothing" — a fail-open on exactly the check the pin exists
+#: for. ``(?m)^`` still keeps commented-out examples (README snippets pasted
+#: into a file header) from counting as consumption.
+#: A line whose first token is a ``uses:`` key (optionally a list item, and
+#: optionally a quoted key -- ``"uses":`` is the same YAML key).
+_USES_KEY_RE = re.compile(r"""(?m)^\s*(?:-\s*)?["']?uses["']?\s*:""")
+
+_DEVTOOLS_USES_RE = re.compile(r"""(?m)^\s*(?:-\s*)?["']?uses["']?\s*:\s*[\"']?celestia-island/celestia-devtools/\.github/workflows/[^\s\"'@]+@([^\s\"'#]+)""")
 
 def devtools_refs_in(text: str) -> list[str]:
     """Refs this workflow file invokes devtools callees at (comments excluded)."""
 
     return [match.group(1) for match in _DEVTOOLS_USES_RE.finditer(text)]
+
+#: The ``devtools-ref`` input a caller passes inside its ``with:`` block.
+_DEVTOOLS_REF_INPUT_RE = re.compile(r"""(?m)^\s+["']?devtools-ref["']?\s*:\s*["']?([^\s\"'#]+)""")
+
+def devtools_ref_inputs_in(text: str) -> list[str]:
+    """Values of the ``devtools-ref`` input a workflow passes to the callee.
+
+    The README's commitment is that the pin freezes *both* layers: the ``uses:``
+    ref chooses the workflow file, and ``devtools-ref`` chooses the tool the
+    callee installs. Pinning only the first is cosmetic.
+    """
+
+    return [match.group(1) for match in _DEVTOOLS_REF_INPUT_RE.finditer(text)]
+
+def unparsed_devtools_uses(text: str) -> list[str]:
+    """Non-comment lines that name a devtools callee but yield no ref.
+
+    The fail-closed companion to :func:`devtools_refs_in`: a caller line the
+    extractor cannot read must surface as such, because the alternative is that
+    it reads as "this repository has no devtools callers" — clean.
+    """
+
+    leftovers: list[str] = []
+
+    for line in text.splitlines():
+        # Only a real key counts: a ``run:`` scalar that merely echoes the hint
+        # (a heredoc, a shell script) is text, not a job call — the same
+        # distinction `references_callee` makes, and the reason this check must
+        # not simply grep for the hint substring.
+        if _USES_KEY_RE.match(line) is None:
+            continue
+
+        if (_DEVTOOLS_CALLEE_HINT not in line) or (_DEVTOOLS_USES_RE.match(line) is not None):
+            continue
+
+        leftovers.append(line.strip())
+
+    return leftovers
 
 def caller_render_state(text: str, template: str) -> tuple[str, str]:
     """Classify *text* against a caller *template* by the ref it renders at.
@@ -639,11 +693,40 @@ def caller_render_state(text: str, template: str) -> tuple[str, str]:
 
     return "drifted", (refs[0] if refs else "?")
 
+def pin_position(ref: str) -> str:
+    """Where *ref* sits relative to :data:`PINNED_DEVTOOLS_REF`.
+
+    ``baseline`` | ``older`` | ``newer`` | ``custom``. Only ``older`` may be told
+    to regenerate at the baseline: a repository that already advanced to a newer
+    CalVer tag would be *downgraded* by that advice, and regenerating is exactly
+    what the printed command does.
+    """
+
+    baseline = _CALVER_RE.match(PINNED_DEVTOOLS_REF)
+    match = _CALVER_RE.match(ref or "")
+
+    if (baseline is None) or (match is None):
+        return "custom"
+
+    if match.group(0) == baseline.group(0):
+        return "baseline"
+
+    ahead = (int(match.group(1)), int(match.group(2))) > (int(baseline.group(1)), int(baseline.group(2)))
+    return "newer" if ahead else "older"
+
 def _pin_warning(rel: str, state: str, ref: str, regenerate: str) -> str:
     """The warning line for a caller that is not at the current pin."""
 
     if state == "master":
         return f"{rel} pins nothing: it invokes the devtools callee at @master, so any master commit instantly redefines this gate's semantics (P2-3) — regenerate with: {regenerate}"
+
+    position = pin_position(ref)
+
+    if position == "newer":
+        return f"{rel} is pinned to @{ref}, which is AHEAD of the baseline @{PINNED_DEVTOOLS_REF} — advance PINNED_DEVTOOLS_REF, do not regenerate this caller downwards"
+
+    if position == "custom":
+        return f"{rel} is pinned to @{ref}, which is not a CalVer baseline (a tag or a commit is legal) — the audit cannot order it against @{PINNED_DEVTOOLS_REF}"
 
     return f"{rel} is pinned to @{ref} (current pin @{PINNED_DEVTOOLS_REF}) — regenerate with: {regenerate} to advance"
 
