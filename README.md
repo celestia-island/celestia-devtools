@@ -263,10 +263,17 @@ Semantics:
   the current pin. Never hand-edit the ref.
 - **Escape hatch.** `celestia-devtools init --with-workflows --ref master`
   writes the floating form for break-glass consumption of an unmerged fix.
-- **Migration status is auditable.** `celestia-ci-audit` reports every
-  `@master` caller as a `devtools-ref-not-pinned` warning (not an error, while
-  the fleet migrates), and `celestia-devtools fleet-audit` prints a census:
+- **Migration status is auditable, and enforceable.** `celestia-ci-audit`
+  reports every `@master` caller as a `devtools-ref-not-pinned` warning (not an
+  error, while the fleet migrates), and `celestia-devtools fleet-audit` prints a
+  census plus the offending repository list:
   `devtools refs (pin @v2026.10): pinned=N master=M stale=K none=J`.
+  `fleet-audit --strict-pins` fails on the **floating** half of that census (a
+  tag or a SHA is a pin — older or newer pins stay warnings, never a
+  downgrade), which is what a migration wave (or a future required check) runs:
+  the pin buys nothing until something enforces it. It also fails a caller whose
+  `uses:` ref is pinned while its `devtools-ref` input still floats, because the
+  pin only freezes both layers when both move together.
 
 One honest limit: on the self-hosted farm the preinstalled CLI wins over the
 bootstrap fetch (a forced reinstall there has proven unreliable), so the
