@@ -3,9 +3,11 @@
 # This is the single documented exception to the static-import rule. Importing
 # all ~60 command modules eagerly would make every CLI invocation pay their
 # import cost, and several are POSIX-only (they fail at import time on Windows),
-# so the module-level import_module(...) call below stays. Every other import in
-# this module is static; the two local imports this file used to carry are
-# hoisted at module scope.
+# so the module-level import_module(...) call below stays. The one function-scoped
+# import (`include-path` -> repo.init) belongs to the same contract and carries a
+# line-level exemption rather than widening this file's: that module drags in
+# PyYAML through its template machinery, so a module-scope import made `--version`
+# pay 42 ms for a command it never runs. Every other import here is static.
 """Unified CLI dispatch for celestia-devtools.
 
 Usage::
@@ -84,7 +86,6 @@ import sys
 from importlib import import_module
 from typing import Sequence
 from celestia_devtools import __version__
-from celestia_devtools.repo.init import common_just_path
 
 # Registered entry points that had no dispatcher command until 2026-09-20. The gap went
 # unnoticed because the only test that notices (`test_all_commands_registered`) was
@@ -110,6 +111,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if cmd == "include-path":
+        # Imported here, not at module scope: `repo.init` pulls in PyYAML through
+        # its template machinery, which made every invocation (including
+        # `--version`) pay 42 ms for a command that is not being run.
+        # py-style-ok: no-block-imports: the lazy-dispatch contract, see the file header
+        from celestia_devtools.repo.init import common_just_path
         print(common_just_path())
         return 0
 
