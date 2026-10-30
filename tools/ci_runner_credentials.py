@@ -129,6 +129,14 @@ def insteadof_rules() -> list[tuple[str, str]]:
     """The gitconfig rewrite rules (key, value) pairs, one per repo."""
     return [(f"url.gh-ci-{repo}:celestia-island/{repo}.git.insteadOf", f"https://github.com/celestia-island/{repo}.git") for repo in REPOS]
 
+#: Settings that keep a flaky egress path from turning a checkout red; see the
+#: emitter below for the evidence and `_ledger/known-live-issues.md` H7/H8.
+GIT_EGRESS_RESILIENCE = (
+    ("http.version", "HTTP/1.1"),
+    ("http.lowSpeedLimit", "1000"),
+    ("http.lowSpeedTime", "20"),
+)
+
 def patch_cargo_net_config(text: str) -> str:
     """Ensure ``[net] git-fetch-with-cli = true`` in ~/.cargo/config.toml.
 
@@ -281,6 +289,16 @@ def ssh_config_emitter() -> str:
     lines+= ['  printf \'%s\\n\' "$END"', '} >> "$CFG"', "", "# --- 3. ~/.gitconfig: the insteadOf rules, nothing global -------------------"]
 
     for key, value in insteadof_rules():
+        lines.append("git config --global " + shlex.quote(key) + " " + shlex.quote(value))
+
+    # Egress resilience (known-live-issues H7/H8). The farm reaches github.com
+    # through the daemon proxy, and that path intermittently kills HTTP/2
+    # streams (`RPC failed; curl 16 Error in the HTTP2 framing layer`,
+    # `GnuTLS recv error (-110)`), while a stalled CONNECT otherwise sits for
+    # ~129s before failing — long enough that the checkout step is simply red.
+    # HTTP/1.1 removes the framing class; the low-speed pair turns a stalled
+    # transfer into a fast failure that actions/checkout can retry.
+    for key, value in GIT_EGRESS_RESILIENCE:
         lines.append("git config --global " + shlex.quote(key) + " " + shlex.quote(value))
 
     return "\n".join(lines) + "\n"
