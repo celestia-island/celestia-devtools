@@ -6,7 +6,7 @@
 
 Несколько Rust-крейтов (`aoba`, `noa`, `scriptum`, `tairitsu`, `arona` и любые другие, использующие `rustls` с провайдером TLS по умолчанию) завершаются ошибкой в Windows:
 
-```
+```text
 error: failed to run custom build command for `aws-lc-sys v0.42.0`
   thread 'main' panicked at ...nasm_builder.rs:107:17:
   NASM failed for .../aws-lc/generated-src/win-x86_64/crypto/chacha/chacha-x86_64.asm:
@@ -20,7 +20,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
 1. **Выполните кросс-компиляцию для `*-linux-musl`** вместо нативной сборки в Windows. Большинство этих крейтов всё равно предназначены для Linux-серверов, и цели musl собирают `aws-lc-sys` с помощью Linux-ассемблера, который не сталкивается с этой ошибкой. Обратитесь к `justfile` / `.cargo/config.toml` каждого крейта для получения информации о настроенной цели кросс-компиляции.
 
-2. **Переключите провайдер TLS на `ring`** (для каждого крейта, опционально), отключив `aws_lc_rs` и включив `ring` в зависимости `rustls`:
+1. **Переключите провайдер TLS на `ring`** (для каждого крейта, опционально), отключив `aws_lc_rs` и включив `ring` в зависимости `rustls`:
 
    ```toml
    rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
@@ -28,7 +28,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
    Делайте это только в том случае, если крейт не полагается на специфическое поведение AWS-LC; это изменение зависимости должно быть проверено для каждого проекта.
 
-3. **Собирайте внутри WSL** (Ubuntu), где `aws-lc-sys` ассемблируется чисто с системной цепочкой инструментов.
+1. **Собирайте внутри WSL** (Ubuntu), где `aws-lc-sys` ассемблируется чисто с системной цепочкой инструментов.
 
 ### Статус
 

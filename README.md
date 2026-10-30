@@ -283,7 +283,7 @@ ops-controlled supply line that the mirror sync advances.
 ### All commands
 
 | Command | Purpose |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | Stage justfiles + install commit-msg hook |
 | `celestia-devtools init --with-workflows` | Also generate CI workflow (opt-in) |
 | `celestia-devtools commit-msg-lint check --subject "..."` | Validate a message string |
@@ -557,6 +557,5 @@ stage that belongs to a later slice — `artifact`, `verify`, `backup`,
 their own slices and fail loudly until then.
 
 ## License
-
 
 Licensed under the [Synthetic Source License (SySL), Version 1.0](./LICENSE).

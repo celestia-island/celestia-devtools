@@ -132,7 +132,7 @@ celestia-devtools init --with-workflows
 ### جميع الأوامر
 
 | الأمر | الغرض |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | تجهيز justfiles + تثبيت خطّاف commit-msg |
 | `celestia-devtools init --with-workflows` | أيضًا إنشاء CI workflow (تفعيل يدوي) |
 | `celestia-devtools commit-msg-lint check --subject "..."` | التحقق من سلسلة رسالة |

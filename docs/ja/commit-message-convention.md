@@ -6,12 +6,12 @@
 
 すべてのコミットの件名（コミットメッセージの最初の行）は以下の形式に従う必要があります：
 
-```
+```text
 <gitmoji> <大文字で始まる英語の概要。>
 ```
 
 | 要件 | 例（合格） | 例（不合格） |
-|---|---|---|
+| --- | --- | --- |
 | gitmoji で始まる | `🐛 Fix...` | `Fix...` |
 | Conventional Commits プレフィックスなし | `🐛 Fix...` | `🐛 fix: ...` |
 | emoji 後の最初の文字は大文字 | `🐛 Fix...` | `🐛 fix...` |
@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # just recipe 経由
    ```
 
-2. **CI チェック（PR）** — 再利用可能なワークフロー `commit-msg-lint.yml` がプルリクエスト内のすべてのコミットを検証します。このジョブは標準ファイル `.github/workflows/commit-msg-lint.yml`（`celestia-devtools init --with-workflows` が生成）に置いてください。監査はこのパスをバイト単位で比較し、別名の複製を検出します：
+1. **CI チェック（PR）** — 再利用可能なワークフロー `commit-msg-lint.yml` がプルリクエスト内のすべてのコミットを検証します。このジョブは標準ファイル `.github/workflows/commit-msg-lint.yml`（`celestia-devtools init --with-workflows` が生成）に置いてください。監査はこのパスをバイト単位で比較し、別名の複製を検出します：
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **ブランチ保護** — GitHub リポジトリ設定で、`lint-commits / Lint commit messages` ステータスチェックを `master` ブランチの必須チェックとして設定します。
+1. **ブランチ保護** — GitHub リポジトリ設定で、`lint-commits / Lint commit messages` ステータスチェックを `master` ブランチの必須チェックとして設定します。
 
 ## ボットリポジトリ
 
@@ -64,7 +64,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 ## クイックリファレンス
 
 | Gitmoji | 意味 | 使用タイミング |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | 新機能 |
 | 🐛 | Bug | バグ修正 |
 | 📝 | Memo | ドキュメント |

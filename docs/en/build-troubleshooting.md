@@ -9,7 +9,7 @@ Several Rust crates (`aoba`, `noa`, `scriptum`, `tairitsu`, `arona`, and
 anything else that pulls in `rustls` with the default TLS provider) fail on
 Windows with:
 
-```
+```text
 error: failed to run custom build command for `aws-lc-sys v0.42.0`
   thread 'main' panicked at ...nasm_builder.rs:107:17:
   NASM failed for .../aws-lc/generated-src/win-x86_64/crypto/chacha/chacha-x86_64.asm:
@@ -31,7 +31,7 @@ not complete cleanly under the MSVC toolchain on this host.
    bug. See each crate's `justfile` / `.cargo/config.toml` for the configured
    cross target.
 
-2. **Switch the TLS provider to `ring`** (per-crate, opt-in) by disabling
+1. **Switch the TLS provider to `ring`** (per-crate, opt-in) by disabling
    `aws_lc_rs` and enabling `ring` on the `rustls` dependency:
 
    ```toml
@@ -41,7 +41,7 @@ not complete cleanly under the MSVC toolchain on this host.
    Only do this if the crate does not rely on AWS-LC-specific behavior; this
    is a dependency change and must be validated per project.
 
-3. **Build inside WSL** (Ubuntu), where `aws-lc-sys` assembles cleanly with
+1. **Build inside WSL** (Ubuntu), where `aws-lc-sys` assembles cleanly with
    the system toolchain.
 
 ### Status

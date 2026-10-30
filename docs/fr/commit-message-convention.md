@@ -6,12 +6,12 @@ Tous les dépôts Celestia Island appliquent une convention de message de commit
 
 Chaque sujet de commit (première ligne du message de commit) doit respecter le format suivant :
 
-```
+```text
 <gitmoji> <Résumé en anglais commençant par une majuscule.>
 ```
 
 | Exigence | Exemple (réussi) | Exemple (échoué) |
-|---|---|---|
+| --- | --- | --- |
 | Commence par un gitmoji | `🐛 Fix...` | `Fix...` |
 | Pas de préfixe Conventional Commits | `🐛 Fix...` | `🐛 fix: ...` |
 | Première lettre après l'emoji en majuscule | `🐛 Fix...` | `🐛 fix...` |
@@ -44,14 +44,14 @@ La convention est appliquée à trois niveaux :
    just commit-msg-hook-install             # via la recette just
    ```
 
-2. **Vérification CI (PR)** — le workflow réutilisable `commit-msg-lint.yml` valide chaque commit dans une pull request. Placez ce job dans le fichier standard `.github/workflows/commit-msg-lint.yml` (créé par `celestia-devtools init --with-workflows`) ; l'audit compare ce chemin octet par octet et signale toute copie portant un autre nom :
+1. **Vérification CI (PR)** — le workflow réutilisable `commit-msg-lint.yml` valide chaque commit dans une pull request. Placez ce job dans le fichier standard `.github/workflows/commit-msg-lint.yml` (créé par `celestia-devtools init --with-workflows`) ; l'audit compare ce chemin octet par octet et signale toute copie portant un autre nom :
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Protection de branche** — configurez la vérification de statut `lint-commits / Lint commit messages` comme requise sur la branche `master` dans les paramètres de votre dépôt GitHub.
+1. **Protection de branche** — configurez la vérification de statut `lint-commits / Lint commit messages` comme requise sur la branche `master` dans les paramètres de votre dépôt GitHub.
 
 ## Dépôts de bots
 
@@ -64,7 +64,7 @@ Les commits existants dans l'historique du dépôt ne sont pas validés rétroac
 ## Référence rapide
 
 | Gitmoji | Signification | Quand l'utiliser |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | Nouvelle fonctionnalité |
 | 🐛 | Bug | Correction de bug |
 | 📝 | Memo | Documentation |

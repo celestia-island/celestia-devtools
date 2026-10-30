@@ -130,7 +130,7 @@ celestia-devtools init --with-workflows
 ### すべてのコマンド
 
 | コマンド | 目的 |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | justfile のステージング + commit-msg フックのインストール |
 | `celestia-devtools init --with-workflows` | CI ワークフローも生成（オプトイン） |
 | `celestia-devtools commit-msg-lint check --subject "..."` | メッセージ文字列の検証 |

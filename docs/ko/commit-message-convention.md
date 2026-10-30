@@ -6,12 +6,12 @@
 
 모든 커밋의 제목(커밋 메시지의 첫 번째 줄)은 다음 형식을 따라야 합니다:
 
-```
+```text
 <gitmoji> <대문자로 시작하는 영어 요약.>
 ```
 
 | 요구 사항 | 예시(통과) | 예시(실패) |
-|---|---|---|
+| --- | --- | --- |
 | gitmoji로 시작 | `🐛 Fix...` | `Fix...` |
 | Conventional Commits 접두사 없음 | `🐛 Fix...` | `🐛 fix: ...` |
 | 이모지 후 첫 글자는 대문자 | `🐛 Fix...` | `🐛 fix...` |
@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # just recipe를 통해
    ```
 
-2. **CI 검사(PR)** — 재사용 가능한 워크플로 `commit-msg-lint.yml`이 풀 리퀘스트의 모든 커밋을 검증합니다. 이 작업은 표준 파일 `.github/workflows/commit-msg-lint.yml`(`celestia-devtools init --with-workflows`가 생성)에 두세요. 감사는 이 경로를 바이트 단위로 비교하고 다른 이름의 복사본을 적발합니다:
+1. **CI 검사(PR)** — 재사용 가능한 워크플로 `commit-msg-lint.yml`이 풀 리퀘스트의 모든 커밋을 검증합니다. 이 작업은 표준 파일 `.github/workflows/commit-msg-lint.yml`(`celestia-devtools init --with-workflows`가 생성)에 두세요. 감사는 이 경로를 바이트 단위로 비교하고 다른 이름의 복사본을 적발합니다:
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **브랜치 보호** — GitHub 저장소 설정에서 `lint-commits / Lint commit messages` 상태 검사를 `master` 브랜치의 필수 검사로 구성합니다.
+1. **브랜치 보호** — GitHub 저장소 설정에서 `lint-commits / Lint commit messages` 상태 검사를 `master` 브랜치의 필수 검사로 구성합니다.
 
 ## 봇 저장소
 
@@ -64,7 +64,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 ## 빠른 참조
 
 | Gitmoji | 의미 | 사용 시기 |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | 새 기능 |
 | 🐛 | Bug | 버그 수정 |
 | 📝 | Memo | 문서 |

@@ -130,7 +130,7 @@ Para hacerlo obligatorio, activa la protección de rama en tu rama por defecto m
 ### Todos los comandos
 
 | Comando | Propósito |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | Desplegar justfiles + instalar hook commit-msg |
 | `celestia-devtools init --with-workflows` | También genera workflow CI (opt-in) |
 | `celestia-devtools commit-msg-lint check --subject "..."` | Validar una cadena de mensaje |

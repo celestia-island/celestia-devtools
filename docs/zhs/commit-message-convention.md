@@ -6,12 +6,12 @@
 
 每条提交的主题行（提交信息的第一行）必须遵循以下格式：
 
-```
+```text
 <gitmoji> <大写英文摘要。>
 ```
 
 | 要求 | 示例（通过） | 示例（失败） |
-|---|---|---|
+| --- | --- | --- |
 | 以 gitmoji 开头 | `🐛 Fix...` | `Fix...` |
 | 无 Conventional Commits 前缀 | `🐛 Fix...` | `🐛 fix: ...` |
 | emoji 后首字母大写 | `🐛 Fix...` | `🐛 fix...` |
@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # 通过 just recipe
    ```
 
-2. **CI 检查（PR）** — 可复用工作流 `commit-msg-lint.yml` 验证拉取请求中的每条提交。请将此作业放在标准文件 `.github/workflows/commit-msg-lint.yml`（由 `celestia-devtools init --with-workflows` 生成）中；审计逐字节比对该路径，并报出任何换了文件名的副本：
+1. **CI 检查（PR）** — 可复用工作流 `commit-msg-lint.yml` 验证拉取请求中的每条提交。请将此作业放在标准文件 `.github/workflows/commit-msg-lint.yml`（由 `celestia-devtools init --with-workflows` 生成）中；审计逐字节比对该路径，并报出任何换了文件名的副本：
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **分支保护** — 在 GitHub 仓库设置中将 `lint-commits / Lint commit messages` 状态检查配置为 `master` 分支的必需检查。
+1. **分支保护** — 在 GitHub 仓库设置中将 `lint-commits / Lint commit messages` 状态检查配置为 `master` 分支的必需检查。
 
 ## 机器人仓库
 
@@ -64,7 +64,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 ## 快速参考
 
 | Gitmoji | 含义 | 使用时机 |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | 新功能 |
 | 🐛 | Bug | 修复 Bug |
 | 📝 | Memo | 文档 |

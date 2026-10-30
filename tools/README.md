@@ -21,7 +21,7 @@ affecting the running service.
 ## `engine.meta` schema
 
 | Section | Field | Type | Required | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `[pack]` | `name` | string | yes | pack id; used for the env dir name |
 | `[pack]` | `engine` | string | yes | free-form engine family tag |
 | `[pack]` | `version` | string | yes | pack version |

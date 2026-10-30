@@ -130,7 +130,7 @@ celestia-devtools init --with-workflows
 ### Все команды
 
 | Команда | Назначение |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | Размещение justfile + установка хука commit-msg |
 | `celestia-devtools init --with-workflows` | Также генерирует CI workflow (opt-in) |
 | `celestia-devtools commit-msg-lint check --subject "..."` | Проверка строки сообщения |

@@ -27,8 +27,8 @@ FENCE_RE = re.compile(r"^(\s*)(```+|~~~+)([^`]*)$")
 TABLE_RE = re.compile(r"^\|.*\|\s*$")
 TABLE_SEPARATOR_RE = re.compile(r"^\|[\s\-:|]+\|\s*$")
 BLOCKQUOTE_RE = re.compile(r"^>\s?")
-CAMEL_CODE_RE = re.compile(r"(?<![`\w])([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|[a-z]+(?:[A-Z][a-z0-9]+)+)(?![`\w])")
-SNAKE_CODE_RE = re.compile(r"(?<![`\w.])([a-z]+(?:_[a-z0-9]+)+)(?![`\w.])")
+CAMEL_CODE_RE = re.compile(r"(?<![`\w/])([A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+|[a-z]+(?:[A-Z][a-z0-9]+)+)(?![`\w/])")
+SNAKE_CODE_RE = re.compile(r"(?<![`\w./])([a-z]+(?:_[a-z0-9]+)+)(?![`\w./])")
 
 def is_excluded(path: Path) -> bool:
     return any(part in EXCLUDED_DIRS for part in path.parts)
@@ -108,24 +108,52 @@ def should_start_list_with_blank(previous: str | None) -> bool:
 
     return True
 
+#: Spans whose contents must never be code-wrapped: a wrapped path segment
+#: rewrites `.../version/2/1/code_of_conduct/` into
+#: `.../version/2/1/`code_of_conduct`/`, `mailto:some_one@x.io` into
+#: `mailto:`some_one`@x.io`, and a relative target `[x](/docs/get_started)`
+#: into `[x](/docs/`get_started`)`. So the whole construct is protected: any
+#: `scheme://` target, an autolink, `mailto:`, a bare address, a markdown link or
+#: image destination, and a reference definition's target.
+#:
+#: **The pattern must not contain a capture group**: :func:`_wrap_outside_urls`
+#: splits and findalls with it, so a group would duplicate every match.
+_URL_RE = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*://[^\s)>\]]+|<[^>\s]+>|mailto:[^\s)>\]]+|\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b|\]\([^)\s]*\)|^\[[^\]]+\]:[ \t]\S+)", re.M)
+
+def _replace_camel_token(match: re.Match[str]) -> str:
+    token = match.group(1)
+
+    if len(token) <= 10:
+        return token
+
+    return f"`{token}`"
+
+def _replace_snake_token(match: re.Match[str]) -> str:
+    token = match.group(1)
+    return f"`{token}`"
+
+def _wrap_tokens(text: str) -> str:
+    text = SNAKE_CODE_RE.sub(_replace_snake_token, text)
+    return CAMEL_CODE_RE.sub(_replace_camel_token, text)
+
+def _wrap_outside_urls(text: str) -> str:
+    pieces = _URL_RE.split(text)
+    urls = _URL_RE.findall(text)
+    output: List[str] = []
+
+    for index, piece in enumerate(pieces):
+        output.append(_wrap_tokens(piece))
+
+        if index < len(urls):
+            output.append(urls[index])
+
+    return "".join(output)
+
 def wrap_code_like_tokens(text: str) -> str:
-    def replace_camel_token(match: re.Match[str]) -> str:
-        token = match.group(1)
-
-        if len(token) <= 10:
-            return token
-
-        return f"`{token}`"
-
-    def replace_snake_token(match: re.Match[str]) -> str:
-        token = match.group(1)
-        return f"`{token}`"
-
     parts = text.split("`")
 
     for index in range(0, len(parts), 2):
-        parts[index] = SNAKE_CODE_RE.sub(replace_snake_token, parts[index])
-        parts[index] = CAMEL_CODE_RE.sub(replace_camel_token, parts[index])
+        parts[index] = _wrap_outside_urls(parts[index])
 
     return "`".join(parts)
 
@@ -153,9 +181,61 @@ def normalize_table_separator(line: str) -> str:
 
     return "| " + " | ".join(normalized_cells) + " |"
 
+#: A tab advances to the next multiple of this, like every markdown renderer.
+_TAB_WIDTH = 4
+
+def _leading_indent(line: str) -> int:
+    """Width of the line's leading whitespace in columns (tabs expand)."""
+    indent = 0
+
+    for character in line:
+        if character == " ":
+            indent += 1
+        elif character == "\t":
+            indent += _TAB_WIDTH - (indent % _TAB_WIDTH)
+        else:
+            break
+
+    return indent
+
+def _push_list_indent(stack: List[int], indent: int) -> None:
+    """Record that a list item at *indent* is open; drop any deeper ones.
+
+    A deeper entry belongs to an item that has just closed, so it cannot
+    continue the line being emitted.
+    """
+
+    while stack and (stack[-1] > indent):
+        stack.pop()
+
+    if (not stack) or (stack[-1] < indent):
+        stack.append(indent)
+
+def _continues_a_list(line: str, stack: Sequence[int]) -> bool:
+    """True when *line* is the indented rest of an open list item.
+
+    Markdown continues an item on any following line indented past its marker.
+    This formatter used to strip that indent and insert a blank line, so a
+    wrapped item (``... a safety interlock,`` / ``  or a write whitelist ...``)
+    came out as two paragraphs. Nested items, table rows and blockquotes have
+    their own branches and are excluded; ``--check`` cannot be turned on in a
+    repository full of wrapped items, which is why this matters.
+    """
+
+    if (not stack) or (classify_list(line) is not None):
+        return False
+
+    if not line.strip():
+        return False
+
+    indent = _leading_indent(line)
+    return any(indent >= (base + 2) for base in stack)
+
 def postprocess_lines(lines: Sequence[str]) -> List[str]:
     result: List[str] = []
     in_fence = False
+    #: Indents of the list items currently open, innermost last.
+    list_stack: List[int] = []
 
     for index, raw_line in enumerate(lines):
         line = raw_line.rstrip()
@@ -164,8 +244,21 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
         previous = result[-1] if result else None
 
         if FENCE_RE.match(line):
+            # A fence indented past an open item's marker is that item's content.
+            # Blanking around it (what a top-level fence needs) turned a tight
+            # list into a loose one, which renders differently.
+            # Same predicate `_continues_a_list` uses (`any`, not the innermost
+            # entry): after a nested item closes, an outer item's fence is still
+            # indented past *some* open marker, and the two must agree or the
+            # fence gets a blank on one path and not the other.
+            fence_indent = _leading_indent(line)
+            inside_item = any(fence_indent >= (base + 2) for base in list_stack)
+
             if not in_fence:
-                ensure_blank_line(result)
+                if not inside_item:
+                    ensure_blank_line(result)
+                    list_stack.clear()
+
                 result.append(line)
                 in_fence = True
             else:
@@ -173,7 +266,7 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
                 in_fence = False
                 next_non_empty = next((candidate.strip()for candidate in lines[index + 1:]if candidate.strip()), None)
 
-                if next_non_empty is not None:
+                if (next_non_empty is not None) and (not inside_item):
                     ensure_blank_line(result)
 
             continue
@@ -196,16 +289,29 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
 
             continue
 
+        # Before the heading/list/table branches: an indented line inside an open
+        # list item is that item's continuation text, and stripping it would both
+        # move it and lose its indentation.
+        if _continues_a_list(line, list_stack):
+            result.append(wrap_code_like_tokens(line.rstrip()))
+            continue
+
         if HEADING_RE.match(line):
             ensure_blank_line(result)
             result.append(stripped)
             ensure_blank_line(result)
+            list_stack.clear()
             continue
 
         list_kind = classify_list(line)
 
         if list_kind:
-            if should_start_list_with_blank(previous):
+            # `last` is the emitted previous line; for an open list the last
+            # emitted line may be a continuation (`  or a write whitelist ...`),
+            # which is not itself a list item -- so the "does a list start here"
+            # test has to consider the open list, not just that line. Missing
+            # this split a tight list into a loose one.
+            if (not list_stack) and should_start_list_with_blank(previous):
                 ensure_blank_line(result)
 
             normalized = wrap_code_like_tokens(normalize_ordered_marker(line))
@@ -213,6 +319,7 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
             if previous and classify_list(previous) and (classify_list(previous) != list_kind):
                 ensure_blank_line(result)
 
+            _push_list_indent(list_stack, _leading_indent(line))
             result.append(normalized)
             continue
 
@@ -220,6 +327,7 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
             if not previous or not TABLE_RE.match(previous):
                 ensure_blank_line(result)
 
+            list_stack.clear()
             result.append(normalize_table_separator(line.strip()))
             continue
 
@@ -232,12 +340,15 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
             if not previous or not BLOCKQUOTE_RE.match(previous):
                 ensure_blank_line(result)
 
+            list_stack.clear()
             result.append(wrap_code_like_tokens(line.strip()))
             continue
 
         if previous and classify_list(previous):
             ensure_blank_line(result)
 
+        # A plain paragraph ends any open list.
+        list_stack.clear()
         result.append(wrap_code_like_tokens(line.strip()))
 
     while result and (result[-1] == ""):
@@ -365,25 +476,40 @@ def main() -> int:
         print(f"Error: path does not exist: {target}", file = sys.stderr)
         return 1
 
-    paths: list[Path] = []
+    # `iter_markdown_files` owns the "is this a Markdown file" question. Passing a
+    # non-Markdown path used to bypass it and rewrite the file anyway.
+    paths = list(iter_markdown_files(target, args.pattern))
 
-    if target.is_dir():
-        paths = [p for p in target.rglob("*.md") if not is_excluded(p)]
-    else:
-        paths = [target]
+    if (not target.is_dir()) and (not paths):
+        print(f"Error: not a Markdown file: {target}", file = sys.stderr)
+        return 1
 
     # ── Format ──
     changed: list[Path] = []
+    unreadable: list[Path] = []
 
     for path in paths:
-        if process_file(path, args.check):
-            changed.append(path)
+        try:
+            if process_file(path, args.check):
+                changed.append(path)
+        except (OSError, UnicodeDecodeError) as exc:
+            # A file the formatter cannot read is a gate failure, not a traceback:
+            # `--check` has to be able to say "I could not verify this".
+            unreadable.append(path)
+            print(f"UNREADABLE: {path} ({exc.__class__.__name__}: {exc})", file = sys.stderr)
 
     if not args.check:
         for path in changed:
             print(f"Formatted: {path}")
 
         print(f"\nFormatted {len(changed)} file(s)")
+    elif changed:
+        # `--check` exists to be a gate: a CI job that prints counts but always
+        # exits 0 is a report, not a gate. Name the files and the fix.
+        for path in changed:
+            print(f"WOULD REFORMAT: {path}", file = sys.stderr)
+
+        print(f"\n{len(changed)} Markdown file(s) need formatting. Run `just fmt` to fix.", file = sys.stderr)
 
     if args.use_markdownlint:
         maybe_run_markdownlint(target, args.check)
@@ -407,6 +533,9 @@ def main() -> int:
 
         for w in dup_warnings:
             print(w, file = sys.stderr)
+
+    if args.check and (changed or unreadable):
+        return 1
 
     return 0
 
