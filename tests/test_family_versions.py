@@ -50,6 +50,37 @@ def test_kirino_at_the_family_floor_passes(tmp_path):
     _cargo(tmp_path, '[dependencies]\nkirino = { version = "^0.7", features = ["auth-jwt"] }\n')
     assert check(tmp_path) == []
 
+def _parked_family(monkeypatch, line, parked):
+    """Pretend the bundled baseline has already split: family on `line`, member on `parked`."""
+
+    import celestia_devtools.repo.family_versions as fv
+
+    major, minor = (int(part) for part in line.split("."))
+    lines = tuple((name, (major, minor, 0) if name == "kirino" else current, why) for name, current, why in fv.RUST_LAYERS)
+    monkeypatch.setattr(fv, "RUST_LAYERS", lines)
+    monkeypatch.setattr(fv, "RUST_OVERRIDES", {"kirino_session": ("kirino", (0, int(parked.split(".")[1]), 0), "parked")} if parked else {})
+
+def test_a_parked_family_member_keeps_its_own_line(tmp_path, monkeypatch):
+    # The real chest/arona shape during the 0.9 migration: the auth primitives
+    # moved, the session store deliberately stayed. Judging `kirino-session` by
+    # the family line reported a "different primitive" that does not exist.
+    _parked_family(monkeypatch, "0.9", "0.7")
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.9"\nkirino-session = "^0.7"\n')
+    assert check(tmp_path) == []
+
+def test_a_parked_family_member_below_its_own_line_is_a_violation(tmp_path, monkeypatch):
+    _parked_family(monkeypatch, "0.9", "0.7")
+    _cargo(tmp_path, '[dependencies]\nkirino-session = "^0.6"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "cannot resolve to the family's 0.7 line" in findings[0].message
+
+def test_an_unparked_member_follows_the_family_line(tmp_path, monkeypatch):
+    _parked_family(monkeypatch, "0.9", "0.7")
+    _cargo(tmp_path, '[dependencies]\nkirino-macro = "^0.7"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+
 def test_kirino_from_git_master_is_not_a_finding(tmp_path):
     # §3.3 prescribes git references on master for cross-repo Rust dependencies
     # (entelecheia consumes kirino that way on purpose); reporting it made
@@ -108,9 +139,11 @@ def test_plana_published_member_must_still_admit_the_family_line(tmp_path):
     assert "published 0.2 line" in findings[0].message
 
 def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_path):
-    # `plana-infra-utils` carries `publish = false`, so `plana-infra-utils = "0.2"`
-    # cannot resolve at all — this is the shape the ruling did NOT legalise.
-    _cargo(tmp_path, '[dependencies]\nplana-infra-utils = "0.2"\n')
+    # `plana-celestia-config` has no crates.io release, so declaring it with a
+    # version cannot resolve at all — this is the shape the ruling did NOT
+    # legalise. (`plana-infra-utils` used to be the example, until the 10-27 /
+    # 10-29 publishes made it a real registry member.)
+    _cargo(tmp_path, '[dependencies]\nplana-celestia-config = "0.2"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
     assert "not published" in findings[0].message
