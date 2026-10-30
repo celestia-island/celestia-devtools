@@ -179,4 +179,8 @@ def build(app_key: str, repo_root: Path | None = None, dry_run: bool = False) ->
         code = _run(app.frontend_prebuild, workspace, env)
         if code != 0:
             return code
-    return _run(app.build_command, workspace, env)
+    command = app.build_command
+    if app.kind == "harmony" and hvigor_bin and command[0] == "hvigorw":
+        # The gate accepted hvigorw OR hvigor; execute the one found.
+        command = (hvigor_bin, *command[1:])
+    return _run(command, workspace, env)
