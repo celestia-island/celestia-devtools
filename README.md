@@ -334,6 +334,15 @@ code exemption, and seven test modules exempt `imports-at-top` because
 `sys.path.insert` must precede the package import when tests run against a
 source checkout.
 
+Both checkers are **opt-in and currently unadopted**: no repository calls
+`style-lint.yml` — this repository's CI runs `py-style check` directly instead —
+and `cpp-style` has no consumer at all, because the family ships no C++ sources
+yet (the only `.cpp` files in the workspace are its own three test fixtures). `cpp-style` is therefore **frozen at its 8 rules**
+(`tests/test_cpp_style.py` pins the count so the freeze is a fact, not an
+intention): it keeps working and stays documented, but no new rules are added
+until a real target repository adopts it. Adopting either is one `uses:` line on
+`style-lint.yml@<pin>` with `tool: py-style` / `tool: cpp-style`.
+
 Repos that adopt the conventions opt in with the reusable workflow (sub-minute,
 stdlib-only, safe on hosted runners):
 
