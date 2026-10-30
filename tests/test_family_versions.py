@@ -36,7 +36,7 @@ def test_kirino_below_the_family_floor_is_a_violation(tmp_path):
     _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
-    assert "cannot resolve to the family's 0.7 line" in findings[0].message
+    assert "cannot resolve to the family's 0.9 line" in findings[0].message
 
 def test_a_hyphenated_family_crate_is_checked_too(tmp_path):
     # `kirino-session` is where the real split lives: evernight and
@@ -47,7 +47,7 @@ def test_a_hyphenated_family_crate_is_checked_too(tmp_path):
     assert findings[0].subject.startswith("kirino-session @")
 
 def test_kirino_at_the_family_floor_passes(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nkirino = { version = "^0.7", features = ["auth-jwt"] }\n')
+    _cargo(tmp_path, '[dependencies]\nkirino = { version = "^0.9", features = ["auth-jwt"] }\n')
     assert check(tmp_path) == []
 
 def _parked_family(monkeypatch, line, parked):
@@ -73,6 +73,7 @@ def test_a_parked_family_member_below_its_own_line_is_a_violation(tmp_path, monk
     _cargo(tmp_path, '[dependencies]\nkirino-session = "^0.6"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
+    # The parked member is judged against ITS line (0.7), not the family's 0.9.
     assert "cannot resolve to the family's 0.7 line" in findings[0].message
 
 def test_an_unparked_member_follows_the_family_line(tmp_path, monkeypatch):
@@ -222,7 +223,7 @@ def test_overrides_are_reported_too(tmp_path):
 # ── path dependencies and scanning rules ─────────────────────────────────────
 
 def test_workspace_inheritance_is_not_reported(tmp_path):
-    _cargo(tmp_path, '[workspace.dependencies]\nkirino = "^0.7"\n')
+    _cargo(tmp_path, '[workspace.dependencies]\nkirino = "^0.9"\n')
     _cargo(tmp_path, '[dependencies]\nkirino = { workspace = true }\n', path = "packages/core/Cargo.toml")
     assert check(tmp_path) == []
 
@@ -259,7 +260,7 @@ def test_non_family_crates_are_left_alone(tmp_path):
     assert check(tmp_path) == []
 
 def test_a_clean_repository_reports_nothing(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nkirino = "^0.7"\n')
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.9"\n')
     _webui(tmp_path, "^0.55.71")
     assert check(tmp_path) == []
 

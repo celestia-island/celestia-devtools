@@ -36,14 +36,12 @@ plana-llm-provider = "0.1"
 plana-dispatch-client = "0.1"
 
 [rust_layers.kirino]
-# Still 0.7 on purpose: chest already consumes `kirino ^0.9` (0.9.0 published
-# 2026-10-28) but arona / evernight / plana / celestia-erp / e.celestia.world
-# are still on 0.7, and 0.x carets do not overlap — flipping this line before
-# those consumers migrate turns every one of them red in a single commit. The
-# migration is tracked as 恒红清单 H3b (bump the consumers, then this line, then
-# tag the caller baseline). `crates` below is how a member parked across such a
-# split is described once that lands.
-line = "0.7"
+# 0.9.0 shipped on 2026-10-28. The line moved only after every consumer did
+# (arona / evernight / plana / celestia-erp / e.celestia.world on 2026-10-30),
+# because 0.x carets do not overlap: flipping it first would have marked the
+# whole fleet as a different primitive in one merge. `crates` below is the
+# member that stays parked on the previous line by ruling.
+line = "0.9"
 why = "auth primitives: JWT/RBAC/sessions (Layer 0)"
 crates = { kirino-session = "0.7" }
 

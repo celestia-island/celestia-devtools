@@ -13,7 +13,7 @@ def test_bundled_table_is_pinned():
     assert layers["source"].startswith("plana/.github/workflows/publish.yml")
     assert layers["plana_published"] == {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 1, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 1, 0), "plana-build-info": (0, 1, 0), "plana-infra-utils": (0, 1, 0), "plana-llm-provider": (0, 1, 0), "plana-dispatch-client": (0, 1, 0)}
     assert [entry[0] for entry in layers["rust_layers"]] == ["kirino", "plana", "hikari"]
-    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 7, 0), "plana": (0, 2, 0), "hikari": (0, 3, 0)}
+    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 2, 0), "hikari": (0, 3, 0)}
     assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 7, 0), layers["rust_overrides"]["kirino_session"][2])}
     assert load_family_layers()["rust_overrides"]["kirino_session"][:2] == ("kirino", (0, 7, 0))
     assert dict((name, line) for name, line, _why in layers["npm_layers"]) == {"@celestia-island/hikari": (0, 55, 0), "@celestia-island/kirino": (0, 7, 0), "@celestia-island/plana-types": (0, 1, 0), "@celestia-island/plana-rpc-client": (0, 1, 0)}
