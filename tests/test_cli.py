@@ -1,9 +1,11 @@
 """Tests for CLI dispatch (core/cli.py)."""
 
+import re
 import subprocess
 import sys
 from importlib import import_module
 import pytest
+from celestia_devtools.core import cli
 from celestia_devtools.core.cli import COMMANDS, main
 import tomllib
 from pathlib import Path
@@ -78,6 +80,53 @@ class test_command_registry:
         # py-style-ok: no-dynamic-imports: exercises the documented lazy-dispatcher exception (see core/cli.py)
         mod = import_module(module_path)
         assert callable(getattr(mod, "main", None)), f"{cmd} -> {module_path} has no main()"
+
+    _HELP_ENTRY = re.compile(r"^    ([a-z][a-z0-9-]*)\s{2,}\S")
+
+    def _doc_commands(self) -> set:
+        """Command names listed in the usage docstring.
+
+        Continuation lines are indented past the first four spaces, so the
+        anchored pattern only matches real `<name>  <description>` entries.
+        """
+
+        return {match.group(1) for match in (self._HELP_ENTRY.match(line) for line in (cli.__doc__ or "").splitlines()) if match}
+
+    def test_help_covers_the_registry(self):
+        """The usage docstring and COMMANDS must not drift apart.
+
+        Both halves of that drift had already happened by 2026-10-31: sixteen
+        registered commands (the whole mock/deploy group, every CI audit tool,
+        the version-string/toml-sort pair, four console-script spellings) had
+        no help entry, while `include-path` lived only in the docstring because
+        it is dispatched inline. `--help` is the only map a human ever sees and
+        no CI gate reads it, so the two lists are compared mechanically here:
+        every command must have exactly one help entry and vice versa.
+        """
+
+        # include-path is dispatched inline in main() (lazy import, see the
+        # file header) rather than through COMMANDS, so it belongs to the help
+        # surface without being a registry key.
+        expected = set(COMMANDS) | {"include-path"}
+        documented = self._doc_commands()
+
+        missing = expected - documented
+        unknown = documented - expected
+        assert not missing, f"registered commands with no --help entry: {sorted(missing)}"
+        assert not unknown, f"--help entries that match no registered command: {sorted(unknown)}"
+
+    def test_help_entries_are_single_line_names(self):
+        """Guard the guard: the parser must see the docstring it claims to parse.
+
+        An extraction that can never match anything passes vacuously (the
+        zero-yield trap), so the same regex is proven against a known-positive
+        snippet shaped exactly like a help entry.
+        """
+
+        assert self._HELP_ENTRY.match("    cache-guard        Manage cargo target/ disk usage")
+        assert self._HELP_ENTRY.match("    app-drive          Drive a Tauri desktop debug build over WebView2 CDP:")
+        assert not self._HELP_ENTRY.match("                       (check | fix | list-rules)")
+        assert not self._HELP_ENTRY.match("    celestia-devtools <command> [args...]")
 
 class test_version_help:
     def test_version(self, capsys):
