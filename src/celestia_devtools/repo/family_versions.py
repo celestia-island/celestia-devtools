@@ -144,7 +144,10 @@ def load_family_layers(path: Path | None = None) -> dict:
                 for member, member_line in per_crate.items():
                     normalized = str(member).replace("-", "_")
 
-                    if (normalized != key) and not normalized.startswith(f"{key}_"):
+                    if normalized == key:
+                        raise family_layers_error("%s: [%s.%s.crates.%s] overrides the family itself; set `line` instead" % (data_path, name, key, member))
+
+                    if not normalized.startswith(f"{key}_"):
                         raise family_layers_error("%s: [%s.%s.crates.%s] is not a member of the %r family" % (data_path, name, key, member, key))
 
                     overrides[normalized] = (key, parse_layer_line(member_line, "%s.%s.crates.%s" % (name, key, member)), entry["why"])

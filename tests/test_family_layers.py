@@ -13,8 +13,9 @@ def test_bundled_table_is_pinned():
     assert layers["source"].startswith("plana/.github/workflows/publish.yml")
     assert layers["plana_published"] == {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 1, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 1, 0), "plana-build-info": (0, 1, 0), "plana-infra-utils": (0, 1, 0), "plana-llm-provider": (0, 1, 0), "plana-dispatch-client": (0, 1, 0)}
     assert [entry[0] for entry in layers["rust_layers"]] == ["kirino", "plana", "hikari"]
-    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 2, 0), "hikari": (0, 3, 0)}
+    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 7, 0), "plana": (0, 2, 0), "hikari": (0, 3, 0)}
     assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 7, 0), layers["rust_overrides"]["kirino_session"][2])}
+    assert load_family_layers()["rust_overrides"]["kirino_session"][:2] == ("kirino", (0, 7, 0))
     assert dict((name, line) for name, line, _why in layers["npm_layers"]) == {"@celestia-island/hikari": (0, 55, 0), "@celestia-island/kirino": (0, 7, 0), "@celestia-island/plana-types": (0, 1, 0), "@celestia-island/plana-rpc-client": (0, 1, 0)}
 
 def test_module_constants_come_from_the_data_file():
@@ -65,6 +66,11 @@ def test_empty_published_table_fails_loudly(tmp_path):
     path = _write(tmp_path, BASE.replace('[plana_published]\nplana = "0.2"\n', '[plana_published]\n'))
 
     with pytest.raises(family_layers_error, match = "plana_published"):
+        load_family_layers(path)
+
+def test_a_family_cannot_override_itself(tmp_path):
+    path = _write(tmp_path, BASE.replace('[rust_layers.kirino]\nline = "0.7"', '[rust_layers.kirino]\nline = "0.7"\ncrates = { kirino = "0.2" }'))
+    with pytest.raises(family_layers_error):
         load_family_layers(path)
 
 def test_a_parked_member_must_belong_to_its_family(tmp_path):
