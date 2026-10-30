@@ -70,22 +70,26 @@ def test_empty_published_table_fails_loudly(tmp_path):
 
 def test_a_family_cannot_override_itself(tmp_path):
     path = _write(tmp_path, BASE.replace('[rust_layers.kirino]\nline = "0.7"', '[rust_layers.kirino]\nline = "0.7"\ncrates = { kirino = "0.2" }'))
+
     with pytest.raises(family_layers_error):
         load_family_layers(path)
 
 def test_a_parked_member_must_belong_to_its_family(tmp_path):
     path = _write(tmp_path, BASE.replace('[rust_layers.kirino]\nline = "0.7"', '[rust_layers.kirino]\nline = "0.7"\ncrates = { plana = "0.2" }'))
+
     with pytest.raises(family_layers_error):
         load_family_layers(path)
 
 def test_an_empty_parked_member_table_fails_loudly(tmp_path):
     path = _write(tmp_path, BASE.replace('[rust_layers.kirino]\nline = "0.7"', '[rust_layers.kirino]\nline = "0.7"\ncrates = {}'))
+
     with pytest.raises(family_layers_error):
         load_family_layers(path)
 
 def test_a_parked_member_on_the_npm_track_fails_loudly(tmp_path):
     body = BASE + '\n[npm_layers."@celestia-island/kirino"]\nline = "0.7"\nwhy = "ui"\ncrates = { kirino-session = "0.7" }\n'
     path = _write(tmp_path, body)
+
     with pytest.raises(family_layers_error):
         load_family_layers(path)
 

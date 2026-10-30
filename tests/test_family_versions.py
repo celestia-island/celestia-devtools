@@ -1,6 +1,7 @@
 """Tests for the family dependency-identity check (repo/family_versions.py)."""
 
 import json
+import celestia_devtools.repo.family_versions as fv
 from celestia_devtools.repo.family_versions import admits, check, main
 
 def _write(path, text):
@@ -52,8 +53,6 @@ def test_kirino_at_the_family_floor_passes(tmp_path):
 
 def _parked_family(monkeypatch, line, parked):
     """Pretend the bundled baseline has already split: family on `line`, member on `parked`."""
-
-    import celestia_devtools.repo.family_versions as fv
 
     major, minor = (int(part) for part in line.split("."))
     lines = tuple((name, (major, minor, 0) if name == "kirino" else current, why) for name, current, why in fv.RUST_LAYERS)
