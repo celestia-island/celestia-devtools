@@ -105,6 +105,7 @@ def load_family_layers(path: Path | None = None) -> dict:
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise family_layers_error("%s: [%s] must be a non-empty string" % (data_path, key))
 
+    overrides: dict[str, tuple[str, version, str]] = {}
     published_raw = data.get("plana_published")
 
     if not isinstance(published_raw, dict) or not published_raw:
@@ -128,15 +129,37 @@ def load_family_layers(path: Path | None = None) -> dict:
             if not isinstance(entry.get("why"), str) or not entry["why"].strip():
                 raise family_layers_error("%s: [%s.%s].why must be a non-empty string" % (data_path, name, key))
 
-            entries.append((key, parse_layer_line(entry.get("line"), "%s.%s.line" % (name, key)), entry["why"]))
+            line = parse_layer_line(entry.get("line"), "%s.%s.line" % (name, key))
+            entries.append((key, line, entry["why"]))
+
+            if "crates" in entry:
+                if table != "rust_layers":
+                    raise family_layers_error("%s: [%s.%s] cannot carry a `crates` column: only Rust families ship more than one live line per member" % (data_path, name, key))
+
+                per_crate = entry["crates"]
+
+                if not isinstance(per_crate, dict) or not per_crate:
+                    raise family_layers_error("%s: [%s.%s.crates] must be a non-empty table of member = line" % (data_path, name, key))
+
+                for member, member_line in per_crate.items():
+                    normalized = str(member).replace("-", "_")
+
+                    if (normalized != key) and not normalized.startswith(f"{key}_"):
+                        raise family_layers_error("%s: [%s.%s.crates.%s] is not a member of the %r family" % (data_path, name, key, member, key))
+
+                    overrides[normalized] = (key, parse_layer_line(member_line, "%s.%s.crates.%s" % (name, key, member)), entry["why"])
 
         layers[name] = tuple(entries)
+
+    layers["rust_overrides"] = dict(sorted(overrides.items()))
 
     return layers
 
 _FAMILY_LAYERS = load_family_layers()
 PLANA_PUBLISHED: dict[str, version] = _FAMILY_LAYERS["plana_published"]
 RUST_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["rust_layers"]
+#: ``crate → (family, line, why)`` for members deliberately parked on another line.
+RUST_OVERRIDES: dict[str, tuple[str, version, str]] = _FAMILY_LAYERS["rust_overrides"]
 NPM_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["npm_layers"]
 
 #: `crate family → repository` for the git-source check.
@@ -380,6 +403,13 @@ def _repo_name(root: Path) -> str:
 
 def _family_crate(name: str) -> tuple[str, version, str] | None:
     normalized = name.replace("-", "_")
+    # A parked member wins over its family: `kirino-session` stays on 0.7 while
+    # `kirino` itself moved to 0.9, and judging it by the family line would
+    # report a "different primitive" that does not exist.
+    parked = RUST_OVERRIDES.get(normalized)
+
+    if parked is not None:
+        return parked
 
     for prefix, canonical, why in RUST_LAYERS:
         if (normalized == prefix) or normalized.startswith(f"{prefix}_"):

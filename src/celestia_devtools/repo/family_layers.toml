@@ -10,7 +10,12 @@
 # Update rule: when plana's publish.yml adds/removes a published member, or an
 # npm binding changes its published line, edit this file in the same wave.
 # `source` names the authority; `updated_at` is the manual re-check date.
-updated_at = "2026-10-25"
+#
+# A family may ship more than one live line at once (`crates = { … }` under a
+# `[rust_layers.<family>]` table): a member deliberately parked on the previous
+# line must be listed there, otherwise the family's `line` is applied to it and
+# the gate reports a "different primitive" that does not exist.
+updated_at = "2026-10-30"
 source = "plana/.github/workflows/publish.yml + crates.io published lines; npm bindings published by their own repos"
 
 [plana_published]
@@ -23,10 +28,20 @@ plana-rpc-client = "0.2"
 plana-rpc-server = "0.1"
 plana-celestia-types = "0.1"
 plana-tauri = "0.1"
+# Released by the 2026-10-27 / 10-29 T1 publishes (crates.io max 0.1.52).
+plana-config = "0.1"
+plana-build-info = "0.1"
+plana-infra-utils = "0.1"
+plana-llm-provider = "0.1"
+plana-dispatch-client = "0.1"
 
 [rust_layers.kirino]
-line = "0.7"
-why = "auth primitives: JWT/RBAC/sessions (Layer 0)"
+line = "0.9"
+why = "auth primitives: JWT/RBAC/sessions (Layer 0); 0.9.0 published 2026-10-28"
+# kirino-session is parked on the previous line on purpose (2026-09-26 ruling):
+# the session store splits from the auth primitives, and chest/arona still pair
+# `kirino ^0.9` with `kirino-session ^0.7`.
+crates = { kirino-session = "0.7" }
 
 [rust_layers.plana]
 line = "0.2"

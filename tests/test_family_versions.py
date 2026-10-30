@@ -36,7 +36,7 @@ def test_kirino_below_the_family_floor_is_a_violation(tmp_path):
     _cargo(tmp_path, '[dependencies]\nkirino = "^0.6"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
-    assert "cannot resolve to the family's 0.7 line" in findings[0].message
+    assert "cannot resolve to the family's 0.9 line" in findings[0].message
 
 def test_a_hyphenated_family_crate_is_checked_too(tmp_path):
     # `kirino-session` is where the real split lives: evernight and
@@ -47,8 +47,22 @@ def test_a_hyphenated_family_crate_is_checked_too(tmp_path):
     assert findings[0].subject.startswith("kirino-session @")
 
 def test_kirino_at_the_family_floor_passes(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nkirino = { version = "^0.7", features = ["auth-jwt"] }\n')
+    _cargo(tmp_path, '[dependencies]\nkirino = { version = "^0.9", features = ["auth-jwt"] }\n')
     assert check(tmp_path) == []
+
+def test_a_parked_family_member_keeps_its_own_line(tmp_path):
+    # The real chest/arona shape after kirino 0.9: the auth primitives moved,
+    # the session store deliberately stayed. Judging `kirino-session` by the
+    # family line reported a "different primitive" that does not exist and
+    # would have forced a session-store migration nobody asked for.
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.9"\nkirino-session = "^0.7"\n')
+    assert check(tmp_path) == []
+
+def test_a_parked_family_member_below_its_own_line_is_a_violation(tmp_path):
+    _cargo(tmp_path, '[dependencies]\nkirino-session = "^0.6"\n')
+    findings = check(tmp_path)
+    assert _levels(findings) == ["violation"], findings
+    assert "cannot resolve to the family's 0.7 line" in findings[0].message
 
 def test_kirino_from_git_master_is_not_a_finding(tmp_path):
     # §3.3 prescribes git references on master for cross-repo Rust dependencies
@@ -108,9 +122,11 @@ def test_plana_published_member_must_still_admit_the_family_line(tmp_path):
     assert "published 0.2 line" in findings[0].message
 
 def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_path):
-    # `plana-infra-utils` carries `publish = false`, so `plana-infra-utils = "0.2"`
-    # cannot resolve at all — this is the shape the ruling did NOT legalise.
-    _cargo(tmp_path, '[dependencies]\nplana-infra-utils = "0.2"\n')
+    # `plana-celestia-config` has no crates.io release, so declaring it with a
+    # version cannot resolve at all — this is the shape the ruling did NOT
+    # legalise. (`plana-infra-utils` used to be the example, until the 10-27 /
+    # 10-29 publishes made it a real registry member.)
+    _cargo(tmp_path, '[dependencies]\nplana-celestia-config = "0.2"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
     assert "not published" in findings[0].message
@@ -189,7 +205,7 @@ def test_overrides_are_reported_too(tmp_path):
 # ── path dependencies and scanning rules ─────────────────────────────────────
 
 def test_workspace_inheritance_is_not_reported(tmp_path):
-    _cargo(tmp_path, '[workspace.dependencies]\nkirino = "^0.7"\n')
+    _cargo(tmp_path, '[workspace.dependencies]\nkirino = "^0.9"\n')
     _cargo(tmp_path, '[dependencies]\nkirino = { workspace = true }\n', path = "packages/core/Cargo.toml")
     assert check(tmp_path) == []
 
@@ -226,7 +242,7 @@ def test_non_family_crates_are_left_alone(tmp_path):
     assert check(tmp_path) == []
 
 def test_a_clean_repository_reports_nothing(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nkirino = "^0.7"\n')
+    _cargo(tmp_path, '[dependencies]\nkirino = "^0.9"\n')
     _webui(tmp_path, "^0.55.71")
     assert check(tmp_path) == []
 
@@ -253,7 +269,7 @@ def test_cli_json_report_shape(tmp_path, capsys):
 def test_cli_says_ok_on_a_clean_tree(tmp_path, capsys):
     # An EMPTY tree is not a clean tree any more: it exits 2, because an `ok`
     # for a path with nothing in it is the answer that gets cited as evidence.
-    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    _cargo(tmp_path, 'kirino = "^0.9"\n')
     assert main([str(tmp_path)]) == 0
     assert "ok:" in capsys.readouterr().out
 
@@ -514,7 +530,7 @@ def test_an_empty_root_is_an_error_not_a_clean_repository(tmp_path, capsys):
     assert "no manifest was found" in capsys.readouterr().err
 
 def test_the_summary_says_how_much_was_scanned(tmp_path, capsys):
-    _cargo(tmp_path, 'kirino = "^0.7"\n')
+    _cargo(tmp_path, 'kirino = "^0.9"\n')
     assert main([str(tmp_path)]) == 0
     out = capsys.readouterr().out
     assert "1 Cargo.toml" in out
