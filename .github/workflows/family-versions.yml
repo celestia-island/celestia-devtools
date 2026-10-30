@@ -4,7 +4,7 @@ name: Family dependency identity
 #
 #   family-versions:
 #     name: Family dependency identity
-#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@v2026.10
+#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@v2026.11
 #
 # to the repository's workflow. `with: strict: true` also fails on warnings.
 on:
