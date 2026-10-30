@@ -22,19 +22,16 @@ smuggled into a build tool.
 """
 
 from __future__ import annotations
-
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-
 from .ascii_path import resolve_ascii_cargo_target
 from .toolchain import doctor, format_report, ndk_trap_lines
 
-
-@dataclass(frozen=True)
-class MobileApp:
+@dataclass(frozen = True)
+class mobile_app:
     """One buildable mobile target and how to drive it."""
 
     key: str
@@ -46,79 +43,32 @@ class MobileApp:
     build_command: tuple[str, ...] = ()
     artifact_globs: tuple[str, ...] = ()
 
+APPS: dict[str, mobile_app] = {}
+APPS["wowsp-android"] = mobile_app(key = "wowsp-android", repo = "wowsp", workspace = "/mnt/codespace/wowsp", kind = "tauri-android", experimental = False, build_command = ("just", "build", "android-apk"), artifact_globs = ("packages/app/tauri/gen/android/app/build/outputs/apk/**/*.apk",))
+APPS["chest-android"] = mobile_app(key = "chest-android", repo = "shittim-chest", workspace = "/mnt/codespace/shittim-chest", kind = "tauri-android", experimental = True, frontend_prebuild = ("just", "_build-webui"), build_command = ("cargo", "tauri", "android", "build", "--apk", "--target", "aarch64"), artifact_globs = ("packages/app/tauri_mobile/gen/android/app/build/outputs/apk/**/*.apk",))
+APPS["chest-harmony"] = mobile_app(key = "chest-harmony", repo = "shittim-chest", workspace = "/mnt/codespace/shittim-chest", kind = "harmony", experimental = True, build_command = ("hvigorw", "assembleHap", "--mode", "module", "-p", "product=default"), artifact_globs = ("packages/app/harmony/entry/build/**/*.hap",))
 
-APPS: dict[str, MobileApp] = {
-    "wowsp-android": MobileApp(
-        key="wowsp-android",
-        repo="wowsp",
-        workspace="/mnt/codespace/wowsp",
-        kind="tauri-android",
-        experimental=False,
-        # The justfile's _build-android-apk recipe already runs
-        # fetch_models/extract_gameparams and sets WOWSP_MOBILE_BUNDLE; it
-        # ALSO re-resolves CARGO_TARGET_DIR from its own script inside the
-        # recipe (stomping any env we set). The wowsp resolver honors
-        # WOWSP_ANDROID_CARGO_TARGET first, so the adapter exports THAT —
-        # both resolvers then converge on the facility's choice.
-        build_command=("just", "build", "android-apk"),
-        artifact_globs=("packages/app/tauri/gen/android/app/build/outputs/apk/**/*.apk",),
-    ),
-    "chest-android": MobileApp(
-        key="chest-android",
-        repo="shittim-chest",
-        workspace="/mnt/codespace/shittim-chest",
-        kind="tauri-android",
-        experimental=True,
-        # No beforeBuildCommand in tauri_mobile's conf: the webui dist must
-        # be built the way the desktop flow does it.
-        frontend_prebuild=("just", "_build-webui"),
-        build_command=(
-            "cargo",
-            "tauri",
-            "android",
-            "build",
-            "--apk",
-            "--target",
-            "aarch64",
-        ),
-        artifact_globs=("packages/app/tauri_mobile/gen/android/app/build/outputs/apk/**/*.apk",),
-    ),
-    "chest-harmony": MobileApp(
-        key="chest-harmony",
-        repo="shittim-chest",
-        workspace="/mnt/codespace/shittim-chest",
-        kind="harmony",
-        experimental=True,
-        build_command=("hvigorw", "assembleHap", "--mode", "module", "-p", "product=default"),
-        artifact_globs=("packages/app/harmony/entry/build/**/*.hap",),
-    ),
-}
-
-
-def _scaffold_hint(app: MobileApp) -> str:
+def _scaffold_hint(app: mobile_app) -> str:
     if app.kind == "tauri-android":
-        return (
-            f"{app.repo}'s mobile package has no gen/android scaffold — run "
-            "`cargo tauri android init` inside packages/app/tauri_mobile "
-            "(or adopt the wowsp scaffold as the family template) first"
-        )
-    return f"{app.key}: toolchain scaffolding not present"
+        return f"{app.repo}'s mobile package has no gen/android scaffold — run " "`cargo tauri android init` inside packages/app/tauri_mobile " "(or adopt the wowsp scaffold as the family template) first"
 
+    return f"{app.key}: toolchain scaffolding not present"
 
 def _run(cmd: tuple[str, ...], cwd: Path, env: dict[str, str]) -> int:
     printable = " ".join(cmd)
     print(f"[mobile] {printable}  (cwd={cwd})")
-    return subprocess.call(cmd, cwd=str(cwd), env=env)
-
+    return subprocess.call(cmd, cwd = str(cwd), env = env)
 
 def build(app_key: str, repo_root: Path | None = None, dry_run: bool = False) -> int:
     """Drive one app's mobile build. Returns the process exit code."""
     app = APPS.get(app_key)
+
     if app is None:
         print(f"unknown app {app_key!r}; known: {', '.join(sorted(APPS))}")
         return 2
 
     workspace = Path(repo_root or app.workspace)
+
     if not workspace.is_dir():
         print(f"workspace not found: {workspace}")
         return 2
@@ -129,36 +79,39 @@ def build(app_key: str, repo_root: Path | None = None, dry_run: bool = False) ->
     # Every lane gets the audit (the ASCII problem class is toolchain-wide,
     # not android-only); the android-readiness gate applies to tauri only.
     report = doctor(workspace)
+
     if app.kind == "tauri-android":
         print(format_report(report))
+
         if ndk_trap_lines(report):
             print("[mobile] refusing to continue — see the NDK trap above")
             return 1
+
         if not report.ok_for_android():
             print("[mobile] toolchain not ready (see doctor output above)")
             return 1
     elif report.ascii_problems:
         for line in report.ascii_problems:
             print(f"[mobile] {line}")
+
         return 1
 
     if app.kind == "harmony":
         hvigor_bin = shutil.which("hvigorw") or shutil.which("hvigor")
+
         if not hvigor_bin:
             print(_scaffold_hint(app))
             return 1
 
     if app.kind == "tauri-android":
-        gen = (
-            workspace / "packages/app/tauri_mobile/gen/android"
-            if app.repo == "shittim-chest"
-            else workspace / "packages/app/tauri/gen/android"
-        )
+        gen = workspace / "packages/app/tauri_mobile/gen/android" if app.repo == "shittim-chest" else workspace / "packages/app/tauri/gen/android"
+
         if not gen.is_dir():
             print(_scaffold_hint(app))
             return 1
 
     env = dict(os.environ)
+
     if app.kind == "tauri-android":
         target_dir = resolve_ascii_cargo_target()
         # Direct cargo consumers (chest) read CARGO_TARGET_DIR; the wowsp
@@ -170,17 +123,23 @@ def build(app_key: str, repo_root: Path | None = None, dry_run: bool = False) ->
 
     if dry_run:
         print("[mobile] dry run — would run:")
+
         if app.frontend_prebuild:
             print("  pre: " + " ".join(app.frontend_prebuild))
+
         print("  build: " + " ".join(app.build_command))
         return 0
 
     if app.frontend_prebuild:
         code = _run(app.frontend_prebuild, workspace, env)
+
         if code != 0:
             return code
+
     command = app.build_command
-    if app.kind == "harmony" and hvigor_bin and command[0] == "hvigorw":
+
+    if (app.kind == "harmony") and hvigor_bin and (command[0] == "hvigorw"):
         # The gate accepted hvigorw OR hvigor; execute the one found.
         command = (hvigor_bin, *command[1:])
+
     return _run(command, workspace, env)

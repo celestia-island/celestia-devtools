@@ -19,49 +19,45 @@ Subcommands:
 """
 
 from __future__ import annotations
-
 import argparse
 import sys
 from pathlib import Path
-
 from .apps import APPS, build
-from .ascii_path import AsciiPathError, resolve_ascii_cargo_target
+from .ascii_path import ascii_path_error, resolve_ascii_cargo_target
 from .toolchain import doctor, format_report
 
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="celestia-devtools mobile",
-        description="Unified mobile-build facility (ASCII path infra, toolchain doctor, adapters).",
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(prog = "celestia-devtools mobile", description = "Unified mobile-build facility (ASCII path infra, toolchain doctor, adapters).")
+    sub = parser.add_subparsers(dest = "command", required = True)
 
-    p_doctor = sub.add_parser("doctor", help="probe the mobile toolchain surface")
-    p_doctor.add_argument("--repo", type=Path, default=None, help="repo root to audit")
+    p_doctor = sub.add_parser("doctor", help = "probe the mobile toolchain surface")
+    p_doctor.add_argument("--repo", type = Path, default = None, help = "repo root to audit")
 
-    sub.add_parser("ascii-target", help="print the resolved ASCII CARGO_TARGET_DIR")
+    sub.add_parser("ascii-target", help = "print the resolved ASCII CARGO_TARGET_DIR")
 
-    p_build = sub.add_parser("build", help="drive one app's mobile build")
-    p_build.add_argument("app", choices=sorted(APPS), help="which app to build")
-    p_build.add_argument("--repo", type=Path, default=None, help="override the workspace root")
-    p_build.add_argument("--dry-run", action="store_true", help="print the plan, run nothing")
+    p_build = sub.add_parser("build", help = "drive one app's mobile build")
+    p_build.add_argument("app", choices = sorted(APPS), help = "which app to build")
+    p_build.add_argument("--repo", type = Path, default = None, help = "override the workspace root")
+    p_build.add_argument("--dry-run", action = "store_true", help = "print the plan, run nothing")
 
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
         print(format_report(doctor(args.repo)))
         return 0
+
     if args.command == "ascii-target":
         try:
             print(resolve_ascii_cargo_target())
             return 0
-        except AsciiPathError as exc:
-            print(f"error: {exc}", file=sys.stderr)
+        except ascii_path_error as exc:
+            print(f"error: {exc}", file = sys.stderr)
             return 1
-    if args.command == "build":
-        return build(args.app, repo_root=args.repo, dry_run=args.dry_run)
-    return 2
 
+    if args.command == "build":
+        return build(args.app, repo_root = args.repo, dry_run = args.dry_run)
+
+    return 2
 
 if __name__ == "__main__":
     sys.exit(main())
