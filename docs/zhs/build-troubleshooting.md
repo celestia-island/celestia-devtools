@@ -6,7 +6,7 @@ Celestia 生态中常见的构建失败问题及其解决方法。
 
 多个 Rust crate（`aoba`、`noa`、`scriptum`、`tairitsu`、`arona` 以及其他依赖 `rustls` 默认 TLS 提供者的 crate）在 Windows 上构建失败，错误信息如下：
 
-```
+```text
 error: failed to run custom build command for `aws-lc-sys v0.42.0`
   thread 'main' panicked at ...nasm_builder.rs:107:17:
   NASM failed for .../aws-lc/generated-src/win-x86_64/crypto/chacha/chacha-x86_64.asm:
@@ -20,7 +20,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
 1. **交叉编译至 `*-linux-musl`**，而非在 Windows 上原生构建。这些 crate 大多部署在 Linux 服务器上，musl 目标使用不会触发此问题的 Linux 汇编器构建 `aws-lc-sys`。请参阅各 crate 的 `justfile` / `.cargo/config.toml` 了解已配置的交叉编译目标。
 
-2. **将 TLS 提供者切换为 `ring`**（按 crate 选择启用），在 `rustls` 依赖中禁用 `aws_lc_rs` 并启用 `ring`：
+1. **将 TLS 提供者切换为 `ring`**（按 crate 选择启用），在 `rustls` 依赖中禁用 `aws_lc_rs` 并启用 `ring`：
 
    ```toml
    rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
@@ -28,7 +28,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
    仅当 crate 不依赖 AWS-LC 特定行为时才可执行此操作；这是一个依赖项变更，需在每个项目中验证。
 
-3. **在 WSL（Ubuntu）中构建**，`aws-lc-sys` 可使用系统工具链正常汇编。
+1. **在 WSL（Ubuntu）中构建**，`aws-lc-sys` 可使用系统工具链正常汇编。
 
 ### 状态
 

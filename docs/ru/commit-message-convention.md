@@ -6,12 +6,12 @@
 
 Тема каждого коммита (первая строка сообщения коммита) должна соответствовать следующему формату:
 
-```
+```text
 <gitmoji> <Описание на английском с заглавной буквы.>
 ```
 
 | Требование | Пример (проходит) | Пример (не проходит) |
-|---|---|---|
+| --- | --- | --- |
 | Начинается с gitmoji | `🐛 Fix...` | `Fix...` |
 | Без префикса Conventional Commits | `🐛 Fix...` | `🐛 fix: ...` |
 | Первая буква после emoji заглавная | `🐛 Fix...` | `🐛 fix...` |
@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # через just recipe
    ```
 
-2. **Проверка CI (PR)** — повторно используемый рабочий процесс `commit-msg-lint.yml` проверяет каждый коммит в pull request. Поместите эту задачу в стандартный файл `.github/workflows/commit-msg-lint.yml` (создаётся `celestia-devtools init --with-workflows`); аудит сравнивает этот путь побайтово и отмечает копию под другим именем:
+1. **Проверка CI (PR)** — повторно используемый рабочий процесс `commit-msg-lint.yml` проверяет каждый коммит в pull request. Поместите эту задачу в стандартный файл `.github/workflows/commit-msg-lint.yml` (создаётся `celestia-devtools init --with-workflows`); аудит сравнивает этот путь побайтово и отмечает копию под другим именем:
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Защита ветки** — настройте проверку статуса `lint-commits / Lint commit messages` как обязательную для ветки `master` в настройках вашего репозитория GitHub.
+1. **Защита ветки** — настройте проверку статуса `lint-commits / Lint commit messages` как обязательную для ветки `master` в настройках вашего репозитория GitHub.
 
 ## Репозитории ботов
 
@@ -64,7 +64,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 ## Быстрая справка
 
 | Gitmoji | Значение | Когда использовать |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | Новая функциональность |
 | 🐛 | Bug | Исправление ошибки |
 | 📝 | Memo | Документация |

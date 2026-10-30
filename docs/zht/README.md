@@ -130,7 +130,7 @@ celestia-devtools init --with-workflows
 ### 所有指令
 
 | 指令 | 用途 |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | 部署 justfile + 安裝 commit-msg 掛鉤 |
 | `celestia-devtools init --with-workflows` | 同時產生 CI 工作流程（需主動啟用） |
 | `celestia-devtools commit-msg-lint check --subject "..."` | 校驗訊息字串 |

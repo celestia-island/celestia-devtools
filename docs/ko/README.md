@@ -130,7 +130,7 @@ celestia-devtools init --with-workflows
 ### 모든 명령
 
 | 명령 | 목적 |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | justfile 스테이징 + commit-msg 훅 설치 |
 | `celestia-devtools init --with-workflows` | CI 워크플로도 생성 (옵트인) |
 | `celestia-devtools commit-msg-lint check --subject "..."` | 메시지 문자열 검증 |

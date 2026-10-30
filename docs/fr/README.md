@@ -130,7 +130,7 @@ Pour l'appliquer, activez la protection de branche sur votre branche par défaut
 ### Toutes les commandes
 
 | Commande | Objectif |
-|---------|---------|
+| --- | --- |
 | `celestia-devtools init` | Mise en place des justfiles + installation du hook commit-msg |
 | `celestia-devtools init --with-workflows` | Génère également le workflow CI (opt-in) |
 | `celestia-devtools commit-msg-lint check --subject "..."` | Valide une chaîne de message |

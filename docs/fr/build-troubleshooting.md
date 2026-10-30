@@ -6,7 +6,7 @@
 
 Plusieurs crates Rust (`aoba`, `noa`, `scriptum`, `tairitsu`, `arona`, et tout autre crate qui utilise `rustls` avec le fournisseur TLS par défaut) échouent sous Windows avec :
 
-```
+```text
 error: failed to run custom build command for `aws-lc-sys v0.42.0`
   thread 'main' panicked at ...nasm_builder.rs:107:17:
   NASM failed for .../aws-lc/generated-src/win-x86_64/crypto/chacha/chacha-x86_64.asm:
@@ -20,7 +20,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
 1. **Compilez de manière croisée vers `*-linux-musl`** au lieu de compiler nativement sous Windows. La plupart de ces crates ciblent de toute façon des serveurs Linux, et les cibles musl construisent `aws-lc-sys` avec un assembleur Linux qui ne rencontre pas ce bug. Consultez le `justfile` / `.cargo/config.toml` de chaque crate pour la cible de compilation croisée configurée.
 
-2. **Basculez le fournisseur TLS vers `ring`** (par crate, optionnel) en désactivant `aws_lc_rs` et en activant `ring` sur la dépendance `rustls` :
+1. **Basculez le fournisseur TLS vers `ring`** (par crate, optionnel) en désactivant `aws_lc_rs` et en activant `ring` sur la dépendance `rustls` :
 
    ```toml
    rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
@@ -28,7 +28,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
    Ne faites cela que si le crate ne dépend pas d'un comportement spécifique à AWS-LC ; il s'agit d'un changement de dépendance et doit être validé par projet.
 
-3. **Construisez dans WSL** (Ubuntu), où `aws-lc-sys` s'assemble proprement avec la chaîne d'outils système.
+1. **Construisez dans WSL** (Ubuntu), où `aws-lc-sys` s'assemble proprement avec la chaîne d'outils système.
 
 ### Statut
 

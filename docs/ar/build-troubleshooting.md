@@ -6,7 +6,7 @@
 
 العديد من حزم Rust (`aoba`، `noa`، `scriptum`، `tairitsu`، `arona` وأي شيء آخر يسحب `rustls` مع موفر TLS الافتراضي) تفشل في البناء على نظام Windows مع:
 
-```
+```text
 error: failed to run custom build command for `aws-lc-sys v0.42.0`
   thread 'main' panicked at ...nasm_builder.rs:107:17:
   NASM failed for .../aws-lc/generated-src/win-x86_64/crypto/chacha/chacha-x86_64.asm:
@@ -20,7 +20,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
 1. **قم بالتجميع المتقاطع إلى `*-linux-musl`** بدلاً من البناء الأصلي على Windows. معظم هذه الحزم تستهدف خوادم Linux على أي حال، وأهداف musl تبني `aws-lc-sys` بمُجمّع Linux الذي لا يصادف هذا الخطأ. راجع `justfile` / `.cargo/config.toml` لكل حزمة للاطلاع على الهدف المتقاطع المُكوّن.
 
-2. **بدّل موفر TLS إلى `ring`** (لكل حزمة، اختياري) عن طريق تعطيل `aws_lc_rs` وتفعيل `ring` على تبعية `rustls`:
+1. **بدّل موفر TLS إلى `ring`** (لكل حزمة، اختياري) عن طريق تعطيل `aws_lc_rs` وتفعيل `ring` على تبعية `rustls`:
 
    ```toml
    rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
@@ -28,7 +28,7 @@ error: failed to run custom build command for `aws-lc-sys v0.42.0`
 
    افعل ذلك فقط إذا كانت الحزمة لا تعتمد على سلوك خاص بـ AWS-LC؛ هذا تغيير في التبعية ويجب التحقق منه لكل مشروع.
 
-3. **قم بالبناء داخل WSL** (أوبونتو)، حيث يقوم `aws-lc-sys` بالتجميع بشكل نظيف مع سلسلة أدوات النظام.
+1. **قم بالبناء داخل WSL** (أوبونتو)، حيث يقوم `aws-lc-sys` بالتجميع بشكل نظيف مع سلسلة أدوات النظام.
 
 ### الحالة
 

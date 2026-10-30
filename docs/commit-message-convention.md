@@ -6,12 +6,12 @@ All Celestia Island repositories enforce a commit-message convention based on [g
 
 Every commit subject (first line of the commit message) must follow this format:
 
-```
+```text
 <gitmoji> <Capitalized English summary.>
 ```
 
 | Requirement | Example (pass) | Example (fail) |
-|---|---|---|
+| --- | --- | --- |
 | Starts with a gitmoji | `🐛 Fix...` | `Fix...` |
 | No Conventional Commits prefix | `🐛 Fix...` | `🐛 fix: ...` |
 | First letter after emoji is uppercase | `🐛 Fix...` | `🐛 fix...` |
@@ -54,14 +54,14 @@ The convention is enforced at three layers:
    just commit-msg-hook-install             # via just recipe
    ```
 
-2. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Put this job in the org-standard `.github/workflows/commit-msg-lint.yml` (created by `celestia-devtools init --with-workflows`); the audit byte-compares that path and flags a copy parked under any other name:
+1. **CI check (PRs)** — the reusable workflow `commit-msg-lint.yml` validates every commit in a pull request. Put this job in the org-standard `.github/workflows/commit-msg-lint.yml` (created by `celestia-devtools init --with-workflows`); the audit byte-compares that path and flags a copy parked under any other name:
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **Branch protection** — configure the `lint-commits / Lint commit messages` status check as required on the `master` branch in your GitHub repository settings.
+1. **Branch protection** — configure the `lint-commits / Lint commit messages` status check as required on the `master` branch in your GitHub repository settings.
 
 ## Bot repositories
 
@@ -74,7 +74,7 @@ Existing commits in the repository history are not retroactively validated — t
 ## Quick reference
 
 | Gitmoji | Meaning | When to use |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | New feature |
 | 🐛 | Bug | Fix a bug |
 | 📝 | Memo | Documentation |

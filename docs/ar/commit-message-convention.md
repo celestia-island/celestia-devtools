@@ -6,12 +6,12 @@
 
 يجب أن يتبع موضوع كل التزام (السطر الأول من رسالة الالتزام) هذا التنسيق:
 
-```
+```text
 <gitmoji> <ملخص باللغة الإنجليزية يبدأ بحرف كبير.>
 ```
 
 | المتطلب | مثال (ناجح) | مثال (فاشل) |
-|---|---|---|
+| --- | --- | --- |
 | يبدأ بـ gitmoji | `🐛 Fix...` | `Fix...` |
 | لا بادئة Conventional Commits | `🐛 Fix...` | `🐛 fix: ...` |
 | الحرف الأول بعد الرمز التعبيري كبير | `🐛 Fix...` | `🐛 fix...` |
@@ -44,14 +44,14 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
    just commit-msg-hook-install             # عبر just recipe
    ```
 
-2. **فحص CI (طلبات السحب)** — سير العمل القابل لإعادة الاستخدام `commit-msg-lint.yml` يتحقق من صحة كل التزام في طلب السحب. ضع هذه المهمة في الملف القياسي `.github/workflows/commit-msg-lint.yml` (الذي ينشئه `celestia-devtools init --with-workflows`)؛ يقارن التدقيق ذلك المسار بايت-ببايت ويرصد أي نسخة باسم آخر:
+1. **فحص CI (طلبات السحب)** — سير العمل القابل لإعادة الاستخدام `commit-msg-lint.yml` يتحقق من صحة كل التزام في طلب السحب. ضع هذه المهمة في الملف القياسي `.github/workflows/commit-msg-lint.yml` (الذي ينشئه `celestia-devtools init --with-workflows`)؛ يقارن التدقيق ذلك المسار بايت-ببايت ويرصد أي نسخة باسم آخر:
 
    ```yaml
    lint-commits:
      uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@master
    ```
 
-3. **حماية الفرع** — قم بتكوين فحص الحالة `lint-commits / Lint commit messages` كشرط مطلوب على فرع `master` في إعدادات مستودع GitHub الخاص بك.
+1. **حماية الفرع** — قم بتكوين فحص الحالة `lint-commits / Lint commit messages` كشرط مطلوب على فرع `master` في إعدادات مستودع GitHub الخاص بك.
 
 ## مستودعات البوتات
 
@@ -64,7 +64,7 @@ CELESTIA_COMMIT_MSG_SKIP=1 git commit
 ## مرجع سريع
 
 | Gitmoji | المعنى | متى تستخدم |
-|---|---|---|
+| --- | --- | --- |
 | ✨ | Sparkles | ميزة جديدة |
 | 🐛 | Bug | إصلاح خطأ |
 | 📝 | Memo | توثيق |

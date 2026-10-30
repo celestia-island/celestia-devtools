@@ -29,7 +29,7 @@ organization apart from the repository name and licence class.
 ## Contribution tiers
 
 | Tier | Surface | Merge authority |
-|---|---|---|
+| --- | --- | --- |
 | 1 | documentation, translations, tests, CI hygiene | maintainers, low friction |
 | 2 | periphery: adapters, profiles, tooling, plugin packages | maintainers after review |
 | 3 | product logic | core team only; prior design discussion required |
@@ -58,12 +58,12 @@ see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 1. Branch from the default branch (`master`; a few repositories use `main`).
    The `dev` branch model is retired — do not open pull requests against it.
-2. Discuss large or behaviour-affecting changes in an issue first.
-3. Keep commits atomic; the message convention is enforced by
+1. Discuss large or behaviour-affecting changes in an issue first.
+1. Keep commits atomic; the message convention is enforced by
    `celestia-devtools commit-msg-lint`.
-4. Make the repository's own gates pass (format, lint, tests, version checks).
-5. Sign off every commit (see above).
-6. Rebase rather than merge. On your own feature branch a `--force-with-lease` is
+1. Make the repository's own gates pass (format, lint, tests, version checks).
+1. Sign off every commit (see above).
+1. Rebase rather than merge. On your own feature branch a `--force-with-lease` is
    acceptable; a plain force push is not.
 
 ## Licence
@@ -73,7 +73,6 @@ celestia-devtools is licensed under the **Synthetic Source License 1.0** — see
 SySL-1.0 grants a perpetual, worldwide, non-exclusive, royalty-free copyright and
 patent licence (Sections 3 and 4) and keeps only the disclosure obligations as
 synthetic copyleft (Section 8): it does not require you to publish source code.
-
 
 ## AI-generated contributions
 

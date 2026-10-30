@@ -9,6 +9,16 @@ import pytest
 from celestia_devtools.repo.fleet_audit import GATE_FILES, main
 from celestia_devtools.repo.init import PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, _ensure_workflows, render_caller
 
+#: A commit identity for fixtures. `git commit` refuses to run without one, and
+#: a CI runner has no global `user.name`/`user.email` -- two tests here went red
+#: on the farm for months on `Author identity unknown` (ledger: ci-state, runner
+#: `git commit` exit 128). Pinning it per command keeps the fixture hermetic.
+_GIT_IDENTITY = ["-c", "user.name=fixture", "-c", "user.email=fixture@example.com"]
+
+def git(*args: str, **kwargs) -> None:
+    """Run git with the fixture identity, whatever the host has configured."""
+    subprocess.run(["git", *_GIT_IDENTITY, *args], check = True, **kwargs)
+
 def make_repo(workspace: Path, name: str) -> Path:
     repo = workspace / name
     repo.mkdir(parents = True, exist_ok = True)
@@ -114,8 +124,8 @@ def test_origin_ref_wins_over_a_stale_worktree(tmp_path, capsys):
     source.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "master"], cwd = source, check = True)
     _ensure_workflows(source)
-    subprocess.run(["git", "add", "-A"], cwd = source, check = True)
-    subprocess.run(["git", "commit", "-q", "-m", "✨ Add canonical callers."], cwd = source, check = True)
+    git("add", "-A", cwd = source)
+    git("commit", "-q", "-m", "✨ Add canonical callers.", cwd = source)
     clone = tmp_path / "app"
     subprocess.run(["git", "clone", "-q", str(source), str(clone)], check = True)
     # The worktree loses the workflows (as if the checkout were stale behind a
@@ -143,8 +153,8 @@ def _clone_without_origin_head(tmp_path, branch: str):
     source.mkdir()
     subprocess.run(["git", "init", "-q", "-b", branch], cwd = source, check = True)
     _ensure_workflows(source)
-    subprocess.run(["git", "add", "-A"], cwd = source, check = True)
-    subprocess.run(["git", "commit", "-q", "-m", "✨ Add canonical callers."], cwd = source, check = True)
+    git("add", "-A", cwd = source)
+    git("commit", "-q", "-m", "✨ Add canonical callers.", cwd = source)
     clone = tmp_path / "app"
     subprocess.run(["git", "clone", "-q", str(source), str(clone)], check = True)
     subprocess.run(["git", "-C", str(clone), "symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], check = True)

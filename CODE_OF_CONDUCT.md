@@ -54,11 +54,11 @@ obligated to respect the privacy and security of the reporter of any incident.
 
 1. **Correction** — a private written warning, with clarity about the nature of the
    violation and an explanation of why the behaviour was inappropriate.
-2. **Warning** — a warning with consequences for continued behaviour, including a
+1. **Warning** — a warning with consequences for continued behaviour, including a
    specified period of no interaction with the people involved.
-3. **Temporary ban** — a temporary ban from any interaction or public communication
+1. **Temporary ban** — a temporary ban from any interaction or public communication
    with the project for a specified period.
-4. **Permanent ban** — a permanent ban from any public interaction within the project.
+1. **Permanent ban** — a permanent ban from any public interaction within the project.
 
 ## Attribution
 

@@ -25,7 +25,7 @@ irm https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/c
 执行后弹 UAC（点"是"），随后在**弹出的管理员窗口**里按提示输入：
 
 | 项 | 默认 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | Runner 名字 | `<主机名>-wsl` | 回车即可 |
 | Labels | `self-hosted,linux,x64,local,wsl` | 带 `local` 直接吃现有队列，`wsl` 留作定向抓手 |
 | **Registration token** | （必填，隐藏输入） | `https://github.com/organizations/celestia-island/settings/actions/runners` → New runner → 复制 `--token` 后那串，**1 小时内有效**，现取现用 |
@@ -36,7 +36,7 @@ irm https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/c
 ## 参数（免交互 / 自动化）
 
 | 参数 | 说明 |
-|---|---|
+| --- | --- |
 | `-Org` | GitHub org，默认 `celestia-island` |
 | `-RunnerName` | runner 名，默认 `<主机名>-wsl` |
 | `-Labels` | 默认 `self-hosted,linux,x64,local,wsl` |
@@ -49,7 +49,7 @@ irm https://raw.githubusercontent.com/celestia-island/celestia-devtools/master/c
 ## 网络（防火墙环境）怎么选
 
 | 场景 | 建议 |
-|---|---|
+| --- | --- |
 | 直连 GitHub 可用 | 什么都不填 |
 | github.com 被墙、代理可用 | `-Proxy http://<代理>:<端口>`（**必选**，runner 运行时轮询必须走它） |
 | 想加速大文件下载 | 追加 `-GHProxy <镜像前缀>`（镜像只管下载，救不了运行时连接） |
@@ -72,14 +72,14 @@ try { (Invoke-WebRequest -Proxy http://<代理主机>:<端口> -Uri https://gith
 ## 脚本行为（单文件 `bootstrap-ci.ps1`）
 
 1. 非管理员运行 → 自动 UAC 提权重启自己（iex 场景会重新取回脚本）；
-2. 阶段 1：启用 WSL2/VirtualMachinePlatform → 装 Ubuntu-22.04（免交互）→
+1. 阶段 1：启用 WSL2/`VirtualMachinePlatform` → 装 Ubuntu-22.04（免交互）→
    `/etc/wsl.conf` 开 systemd + 默认用户 runner → `.wslconfig` 自动配额
    （内存=物理一半 4–8GB、CPU 一半）；
-3. 阶段 2：内嵌 bash 安装器注入 distro 执行——基础件、node22+corepack、just、
+1. 阶段 2：内嵌 bash 安装器注入 distro 执行——基础件、node22+corepack、just、
    celestia-devtools 预装、runner 下载（`-GHProxy` 可加速）/ 注册（`--replace` 幂等）/
    systemd 常驻；
-4. 计划任务：`CIFleet-RunnerWatchdog`（10 分钟）/ `CIFleet-RunnerBoot`（开机）；
-5. token 仅经进程环境传递（WSLENV），不落盘、不进命令行历史。
+1. 计划任务：`CIFleet-RunnerWatchdog`（10 分钟）/ `CIFleet-RunnerBoot`（开机）；
+1. token 仅经进程环境传递（WSLENV），不落盘、不进命令行历史。
 
 ## 前提与边界
 
