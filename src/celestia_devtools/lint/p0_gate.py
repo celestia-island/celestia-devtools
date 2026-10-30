@@ -50,7 +50,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -152,7 +152,7 @@ def bundled_ledger_path() -> Path:
     """Path of the ledger shipped with the package."""
     return Path(__file__).resolve().with_name(LEDGER_BASENAME)
 
-def resolve_ledger_path(explicit: Optional[str] = None, repo_root: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> Path:
+def resolve_ledger_path(explicit: str | None = None, repo_root: Path | None = None, env: Dict[str, str] | None = None) -> Path:
     """Resolve the ledger to read: flag → env → repo-local → bundled copy."""
 
     if explicit:
@@ -312,7 +312,7 @@ def open_entries_for_repo(entries: Iterable[p0_entry], repo: str) -> List[p0_ent
     """Open entries whose scope covers *repo*."""
     return [entry for entry in entries_for_repo(entries, repo) if entry.is_open]
 
-def detect_repo_name(root: Path) -> Optional[str]:
+def detect_repo_name(root: Path) -> str | None:
     """Infer the repo name from ``origin``'s URL, or ``None``."""
 
     try:
@@ -325,7 +325,7 @@ def detect_repo_name(root: Path) -> Optional[str]:
 
     return repo_name_from_url(proc.stdout.strip())
 
-def repo_name_from_url(url: str) -> Optional[str]:
+def repo_name_from_url(url: str) -> str | None:
     """``https://github.com/org/repo.git`` → ``repo``."""
 
     if not url:
@@ -365,7 +365,7 @@ def parse_ack_markers(text: str, source: str) -> List[ack_record]:
 
     return acks
 
-def collect_acks(cli_acks: Sequence[str] = (), pr_bodies: Sequence[Tuple[str, str]] = (), env: Optional[Dict[str, str]] = None) -> List[ack_record]:
+def collect_acks(cli_acks: Sequence[str] = (), pr_bodies: Sequence[Tuple[str, str]] = (), env: Dict[str, str] | None = None) -> List[ack_record]:
     """Merge the three acknowledgment channels (CLI, env, PR body)."""
     environ = os.environ if env is None else env
     acks: List[ack_record] = []
@@ -447,7 +447,7 @@ def _read_pr_bodies(args: argparse.Namespace, env: Dict[str, str]) -> List[Tuple
 
     return bodies
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools p0-gate", description = "Fail a repo covered by an unresolved P0 finding in the org ledger.")
     parser.add_argument("--repo", action = "append", default = [], metavar = "NAME", help = "repo name to check (repeatable); accepts owner/repo, URLs and a trailing " ".git; default: the current checkout's origin name")
     parser.add_argument("--ack", action = "append", default = [], metavar = "ID", help = "explicitly acknowledge an open P0 id (repeatable); acknowledged ids may pass")

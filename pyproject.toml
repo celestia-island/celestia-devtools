@@ -90,8 +90,14 @@ src = ["src", "tests"]
 # always wants a final newline, W391 is preview-only). The list below is the
 # explicit ignore contract, kept even while preview is off, so accidentally
 # enabling preview cannot silently contradict the checker.
+#
+# UP007/UP045 (2026-10-31) pin the PEP 604 annotation style — `X | None`, never
+# `Optional[X]` — after the 179-site unification. They are stable (non-preview)
+# semantic checks, not whitespace, so they belong to ruff's half of the contract.
+# pyshim.py is exempt by grammar, not by config: it is held to Python 3.6 syntax
+# where `|` unions do not exist, and it uses no Optional annotations at all.
 [tool.ruff.lint]
-select = ["E", "F", "W", "B"]
+select = ["E", "F", "W", "B", "UP007", "UP045"]
 ignore = [
     "E501",
     "E111",

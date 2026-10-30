@@ -56,7 +56,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Sequence, Set, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Sequence, Set, Tuple
 from celestia_devtools.core import logger
 from celestia_devtools.core.scheduler import (FAIL, PASS, SKIP, SKIP_DEP, Step, run_dag)
 from celestia_devtools.vcs.commit_msg import EASY_HYDRO_REPOS, lint as lint_subject
@@ -169,7 +169,7 @@ _MAX_SWEEP_BYTES = 2 * 1024 * 1024
 #: UTF-16 byte-order marks — NUL bytes there mean text, not binary.
 _UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
 
-def _first_token(rest: str) -> Optional[str]:
+def _first_token(rest: str) -> str | None:
     """Extract the leading value token from the text after an assignment."""
     rest = rest.strip()
 
@@ -186,7 +186,7 @@ def _first_token(rest: str) -> Optional[str]:
 
     return re.split(r"[\s;#]+", rest, maxsplit = 1)[0] or None
 
-def _extract_assignment(line: str) -> Tuple[Optional[str], Optional[str], bool]:
+def _extract_assignment(line: str) -> Tuple[str | None, str | None, bool]:
     """Return ``(key, value, key_was_quoted)``, else ``(None, None, False)``.
 
     ``key_was_quoted`` marks the JSON/JS form (``"password": "…"``) — the shape
@@ -220,7 +220,7 @@ def _key_segments(key: str) -> List[str]:
 
     return [segment.lower() for segment in segments]
 
-def is_credential_key(key: Optional[str]) -> bool:
+def is_credential_key(key: str | None) -> bool:
     """True when *key* names a credential (``MP_JWT_SECRET``, ``api_key``, …).
 
     Segmentation is what separates a key name from a *value* that merely
@@ -242,7 +242,7 @@ def is_credential_key(key: Optional[str]) -> bool:
 def _is_quoted_value(line: str, value: str) -> bool:
     return any(('%s%s%s' % (quote, value, quote)) in line for quote in ('"', "'", "`"))
 
-def looks_like_literal(line: str, value: Optional[str]) -> bool:
+def looks_like_literal(line: str, value: str | None) -> bool:
     """True when *value* is a committed literal rather than a code reference.
 
     A credential is a *value*: ``token = path.strip()``, ``this.token = token``
@@ -384,11 +384,11 @@ class skipped_path:
 def _oserror_reason(exc: OSError) -> str:
     return "%s: %s" % (type(exc).__name__, exc.strerror or exc)
 
-def _record_skip(skipped: Optional[List[skipped_path]], path: Path, reason: str) -> None:
+def _record_skip(skipped: List[skipped_path] | None, path: Path, reason: str) -> None:
     if skipped is not None:
         skipped.append(skipped_path(path, reason))
 
-def git_dir(root: Path) -> Optional[Path]:
+def git_dir(root: Path) -> Path | None:
     """The ``.git`` directory for *root*, following a worktree ``gitdir:`` file."""
     dot = Path(root) / ".git"
 
@@ -413,7 +413,7 @@ def git_dir(root: Path) -> Optional[Path]:
 
     return None
 
-def git_config_paths(root: Path, skipped: Optional[List[skipped_path]] = None) -> List[Path]:
+def git_config_paths(root: Path, skipped: List[skipped_path] | None = None) -> List[Path]:
     """Existing git config files carrying *root*'s remotes.
 
     A checkout's ``.git/config`` holds the credential-bearing remote URL; a
@@ -455,7 +455,7 @@ def git_config_paths(root: Path, skipped: Optional[List[skipped_path]] = None) -
 
     return existing
 
-def repo_remote_urls(root: Path, skipped: Optional[List[skipped_path]] = None) -> List[str]:
+def repo_remote_urls(root: Path, skipped: List[skipped_path] | None = None) -> List[str]:
     """Remote URLs declared in *root*'s git config (text-level, no git call)."""
     urls: List[str] = []
 
@@ -471,7 +471,7 @@ def repo_remote_urls(root: Path, skipped: Optional[List[skipped_path]] = None) -
 
     return urls
 
-def is_langyo_repo(root: Path, skipped: Optional[List[skipped_path]] = None) -> bool:
+def is_langyo_repo(root: Path, skipped: List[skipped_path] | None = None) -> bool:
     """True for a business checkout of the ``langyo/*`` account.
 
     Detected from the origin URL (the remote may itself carry an embedded
@@ -483,7 +483,7 @@ def is_langyo_repo(root: Path, skipped: Optional[List[skipped_path]] = None) -> 
 
     return Path(root).name.startswith("easy-hydro-")
 
-def discover_langyo_repos(scan_root: Path, skipped: Optional[List[skipped_path]] = None) -> List[Path]:
+def discover_langyo_repos(scan_root: Path, skipped: List[skipped_path] | None = None) -> List[Path]:
     """Sibling checkouts under *scan_root* belonging to the langyo account.
 
     A sibling that cannot be probed (``lost+found`` on the NFS export is
@@ -517,7 +517,7 @@ def discover_langyo_repos(scan_root: Path, skipped: Optional[List[skipped_path]]
 
     return repos
 
-def _sweep_entry_verdict(path: Path) -> Optional[str]:
+def _sweep_entry_verdict(path: Path) -> str | None:
     """``None`` when *path* should be scanned, else the skip reason.
 
     Order matters: ``Path.exists()`` swallows ELOOP, so a symlink loop has to be
@@ -557,7 +557,7 @@ def _head_is_binary(path: Path) -> bool:
 
     return not any(head.startswith(bom) for bom in _UTF16_BOMS)
 
-def iter_sweep_files(root: Path, skipped: Optional[List[skipped_path]] = None, excluded: Optional[Set[str]] = None) -> Iterator[Path]:
+def iter_sweep_files(root: Path, skipped: List[skipped_path] | None = None, excluded: Set[str] | None = None) -> Iterator[Path]:
     """Text files under *root* worth scanning, streaming as they are found.
 
     ``os.walk`` with in-place directory pruning and an ``onerror`` hook, so an
@@ -625,7 +625,7 @@ def _decode_text(data: bytes) -> str:
 
     return data.decode("utf-8", errors = "replace")
 
-def scan_file_credentials(path: Path, skipped: Optional[List[skipped_path]] = None) -> List[credential_finding]:
+def scan_file_credentials(path: Path, skipped: List[skipped_path] | None = None) -> List[credential_finding]:
     """Classify every line of *path*, returning the non-clean findings.
 
     UTF-16 text is decoded rather than mistaken for binary; a file that is
@@ -650,7 +650,7 @@ def scan_file_credentials(path: Path, skipped: Optional[List[skipped_path]] = No
 
     return findings
 
-def credential_sweep(roots: Sequence[Path], include_git_config: bool = True, include_sources: bool = True, skipped: Optional[List[skipped_path]] = None, excluded: Optional[Set[str]] = None, stats: Optional[Dict[str, int]] = None) -> List[credential_finding]:
+def credential_sweep(roots: Sequence[Path], include_git_config: bool = True, include_sources: bool = True, skipped: List[skipped_path] | None = None, excluded: Set[str] | None = None, stats: Dict[str, int] | None = None) -> List[credential_finding]:
     """Sweep *.git/config* and source trees of *roots* for literal secrets.
 
     Unreadable paths land in *skipped* (with a reason) instead of raising or
@@ -822,7 +822,7 @@ def detect_modes(root: Path) -> List[str]:
 class usage_error(Exception):
     """Raised for CLI usage problems (mapped to exit code 2)."""
 
-def resolve_modes(root: Path, mode: Optional[str]) -> List[str]:
+def resolve_modes(root: Path, mode: str | None) -> List[str]:
     """Resolve the CLI mode argument to a concrete list of modes."""
 
     if mode in ("rust", "web", "python"):
@@ -845,7 +845,7 @@ def default_jobs() -> int:
 
 # ── Git helpers (internal steps) ──────────────────────────────────────────────
 
-def _git_output(args: List[str], root: Path) -> Optional[str]:
+def _git_output(args: List[str], root: Path) -> str | None:
     proc = subprocess.run(["git", *args], cwd = str(root), capture_output = True, text = True)
 
     if proc.returncode != 0:
@@ -853,7 +853,7 @@ def _git_output(args: List[str], root: Path) -> Optional[str]:
 
     return proc.stdout
 
-def _checkout_staleness(path: Path) -> Optional[str]:
+def _checkout_staleness(path: Path) -> str | None:
     """``None`` when *path* is identical to its remote default branch, else a description.
 
     Returns ``"ahead X / behind Y (origin/<ref>)"`` — note that a checkout can be BOTH
@@ -885,7 +885,7 @@ def _checkout_staleness(path: Path) -> Optional[str]:
 
     return None
 
-def _changed_files(root: Path) -> Optional[List[str]]:
+def _changed_files(root: Path) -> List[str] | None:
     """Files changed vs origin/master, or ``None`` when unavailable."""
     out = _git_output(["diff", "--name-only", "origin/master...HEAD"], root)
 
@@ -1006,7 +1006,7 @@ def build_rust_graph(root: Path, coverage: bool = False) -> List[Step]:
     steps: List[Step] = [Step("credential-scan", _credential_scan(root), (), str(root))]
     prev = "credential-scan"
 
-    def add(name: str, cmd: Optional[Union[List[str], Callable[[], str]]]) -> None:
+    def add(name: str, cmd: List[str] | Callable[[], str] | None) -> None:
         nonlocal prev
         steps.append(Step(name, cmd, (prev,), str(root)))
         prev = name
@@ -1048,7 +1048,7 @@ def build_web_graph(root: Path) -> List[Step]:
     steps: List[Step] = [Step("credential-scan", _credential_scan(root), (), str(root))]
     prev = "credential-scan"
 
-    def add(name: str, cmd: Optional[Union[List[str], Callable[[], str]]]) -> None:
+    def add(name: str, cmd: List[str] | Callable[[], str] | None) -> None:
         nonlocal prev
         steps.append(Step(name, cmd, (prev,), str(root)))
         prev = name
@@ -1172,7 +1172,7 @@ def _run(steps: List[Step], jobs: int) -> int:
 
 _NFS_FSTYPES = {"nfs", "nfs3", "nfs4"}
 
-def findmnt_mounts(findmnt_cmd: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+def findmnt_mounts(findmnt_cmd: List[str] | None = None) -> List[Tuple[str, str]]:
     """Return ``[(target, fstype), ...]`` from ``findmnt -rn -o TARGET,FSTYPE``.
 
     ``findmnt_cmd`` is injectable for tests. Returns ``[]`` when findmnt is
@@ -1268,7 +1268,7 @@ def precheck(root: Path) -> int:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools gate", description = "Run the local CI gate: modes + DAG ordering + job budget.")
     parser.add_argument("mode", nargs = "?", default = None, choices = list(MODES) + ["precheck", "credential-scan"], help = "gate mode (rust/web/python/all); omit to auto-detect; 'precheck' runs safety " "checks; 'credential-scan' sweeps .git/config + source trees for secrets")
     parser.add_argument("--list", action = "store_true", help = "print the resolved step graph without executing")

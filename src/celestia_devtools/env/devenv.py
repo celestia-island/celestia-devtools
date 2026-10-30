@@ -61,7 +61,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 from celestia_devtools.env.host import detect_host_kind
 import tomllib
 
@@ -83,7 +83,7 @@ PROFILE_PORTS: dict[str, dict[str, object]] = {"native": {"chest": 3000, "scepte
 
 _CONFIG_NAME = "devenv.toml"
 
-def config_file_path(explicit: Optional[str] = None) -> Optional[Path]:
+def config_file_path(explicit: str | None = None) -> Path | None:
     """First existing ``devenv.toml``: explicit → cwd → celestia config dir."""
 
     if explicit:
@@ -105,7 +105,7 @@ def config_file_path(explicit: Optional[str] = None) -> Optional[Path]:
 
     return None
 
-def load_profile_ports(config: Optional[str] = None, profile: Optional[str] = None) -> tuple[str, dict[str, tuple[str, int]], Optional[Path]]:
+def load_profile_ports(config: str | None = None, profile: str | None = None) -> tuple[str, dict[str, tuple[str, int]], Path | None]:
     """Resolve the active profile into ``{service: (host, port)}``.
 
     A ``devenv.toml`` may override ports per profile (int → 127.0.0.1 port,
@@ -178,7 +178,7 @@ def build_env(ports: dict[str, tuple[str, int]]) -> dict[str, str]:
     # arona outbound (.env.example: memory gateway = scepter WS)
     return {"DEBUG_CHEST_URL": u("chest", "http"), "DEBUG_SCEPTER_URL": u("scepter", "http"), "DEBUG_SCEPTER_WS_URL": u("scepter", "ws"), "DEBUG_ARONA_URL": u("arona", "http"), "DEBUG_EVERNIGHT_URL": u("evernight", "ws"), "SHITTIM_CHEST_URL": u("chest", "http"), "ENTELECHEIA_SCEPTER_URL": u("scepter", "http"), "ENTELECHEIA_SCEPTER_WS_URL": u("scepter", "ws"), "ARONA_MEMORY_URL": u("scepter", "ws", "/ws"), "ARONA_EVERNIGHT_URL": u("evernight", "ws")}
 
-def merge_env(base: dict[str, str], extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+def merge_env(base: dict[str, str], extra: dict[str, str] | None = None) -> dict[str, str]:
     """Caller-set variables always win — injection fills gaps, never clobbers."""
     env = dict(os.environ)
 
@@ -273,7 +273,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.set_defaults(fn = cmd_run)
     return p
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     command = getattr(args, "command", [])

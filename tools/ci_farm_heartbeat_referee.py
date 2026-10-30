@@ -45,7 +45,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 # ── 约定路径与默认值 ────────────────────────────────────────────────────────────
 def _require(name: str) -> str:
@@ -120,7 +120,7 @@ def _read_secret(path: str) -> str:
     with open(path, "r", encoding = "utf-8") as fh:
         return fh.read().strip()
 
-def run_esxi(command_key: str, vmid: int, remote_cmd: str, timeout: Optional[int] = None) -> Tuple[bool, str]:
+def run_esxi(command_key: str, vmid: int, remote_cmd: str, timeout: int | None = None) -> Tuple[bool, str]:
     """在 ESXi 上执行一条 vim-cmd 命令。fixture 模式读伪输出并记录 key。"""
 
     if FIXTURE_DIR:
@@ -143,7 +143,7 @@ def run_esxi(command_key: str, vmid: int, remote_cmd: str, timeout: Optional[int
         return False, ""
 
 # ── 采集 ────────────────────────────────────────────────────────────────────────
-def read_beat(name: str) -> Optional[str]:
+def read_beat(name: str) -> str | None:
     """beat 文件存在 → "green"（新鲜）/"red"（超时）；无文件 = None（未纳管，跳过）。
 
     ESXi 不可达时对 beat 判活无影响——beat 是 guest→node-1 的本地文件；但触发后的
@@ -161,7 +161,7 @@ def read_beat(name: str) -> Optional[str]:
 SNAP_NAME_RE = re.compile(r"Snapshot Name\s*:\s*(\S+)")
 SNAP_ID_RE = re.compile(r"Snapshot Id\s*:\s*(\d+)")
 
-def snapshot_baseline(vmid: int) -> Tuple[bool, str, Optional[int]]:
+def snapshot_baseline(vmid: int) -> Tuple[bool, str, int | None]:
     """快照不变量：恰好 1 个快照时返回 (True, 名称, id)；否则 (False, 原因, None)。"""
     ok, out = run_esxi(CMD_SNAPSHOTS, vmid, f"vim-cmd vmsvc/snapshot.get {vmid} 2>/dev/null")
 
@@ -176,7 +176,7 @@ def snapshot_baseline(vmid: int) -> Tuple[bool, str, Optional[int]]:
 
     return False, f"snapshot-count={len(names)}", None
 
-def recover_vm(vmid: int, snap_id: Optional[int]) -> Tuple[bool, str]:
+def recover_vm(vmid: int, snap_id: int | None) -> Tuple[bool, str]:
     """§8.1 恢复动作：power.off → snapshot.revert → power.on。fixture 模式只记录。"""
     snap_arg = str(snap_id if snap_id is not None else 1)
     remote = f"vim-cmd vmsvc/power.off {vmid} 2>/dev/null; " f"vim-cmd vmsvc/snapshot.revert {vmid} {snap_arg} 1; " f"sleep 5; vim-cmd vmsvc/power.on {vmid}; " f"vim-cmd vmsvc/power.getstate {vmid} | tail -1"
@@ -208,7 +208,7 @@ WantedBy=timers.target
 """
 NODE1_ADDR = _require("CI_HB_NODE1_ADDR")
 
-def run_guest(guest_ip: str, remote_cmd: str, stdin_payload: Optional[str] = None) -> Tuple[bool, str]:
+def run_guest(guest_ip: str, remote_cmd: str, stdin_payload: str | None = None) -> Tuple[bool, str]:
     """SSH 进 guest 执行命令（farm 标准参数；revert 会轮换 guest host key，
     故 known_hosts 必须 /dev/null）。"""
     password = _read_secret(GUEST_PASSWORD_FILE)
@@ -284,7 +284,7 @@ def rearm_guest(name: str, opts: Dict[str, Any]) -> None:
     log(f"{name}: ALERT — could not re-arm beat unit after revert; node silently unmonitored")
 
 # ── 纯决策函数（selftest 的主靶）──────────────────────────────────────────────
-def decide(hb: Optional[str], stale_polls: int, reverts_24h: int, last_action_ts: Optional[float], snap_ok: bool, snap_reason: str, now_ts_: float, stale_threshold: int = STALE_ROUNDS, budget: int = REVERT_BUDGET_24H, cooldown: int = COOLDOWN_SEC) -> Tuple[str, int, str]:
+def decide(hb: str | None, stale_polls: int, reverts_24h: int, last_action_ts: float | None, snap_ok: bool, snap_reason: str, now_ts_: float, stale_threshold: int = STALE_ROUNDS, budget: int = REVERT_BUDGET_24H, cooldown: int = COOLDOWN_SEC) -> Tuple[str, int, str]:
     """返回 (decision, new_stale_polls, reason)。
 
     decision ∈ {"ok", "stale", "trigger", "refused-budget", "refused-cooldown",
@@ -318,7 +318,7 @@ def reverts_in_last_24h(revert_ts_list: List[float], now_ts_: float) -> int:
     return sum(1 for ts in revert_ts_list if ts >= horizon)
 
 # ── 主流程 ──────────────────────────────────────────────────────────────────────
-def process_vm(name: str, vmid: int, state: Dict[str, Any], actions: List[Dict[str, Any]], opts: Dict[str, Any], guest_ip: Optional[str] = None) -> None:
+def process_vm(name: str, vmid: int, state: Dict[str, Any], actions: List[Dict[str, Any]], opts: Dict[str, Any], guest_ip: str | None = None) -> None:
     # 首跳注册制：从未打过心跳的节点 = 未部署 beat 单元 = 不受监管。
     # 绝不对它做任何判定/动作（防误伤未纳管节点）。
     if not os.path.isfile(os.path.join(BEAT_DIR, name)):

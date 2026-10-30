@@ -41,7 +41,7 @@ import fnmatch
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Sequence, Tuple
 from celestia_devtools.lint.cpp.rules import RULE_BY_ID
 
 DEFAULT_PLATFORM_HEADERS: Tuple[str, ...] = ("windows.h", "winsock2.h", "ws2tcpip.h", "d3d11.h", "d3d12.h", "dxgi.h", "d2d1.h", "dwrite.h", "d3dcompiler.h", "shlobj.h", "shellapi.h", "windowsx.h")
@@ -75,8 +75,8 @@ class config_record:
     """Fully validated configuration with built-in defaults filled in."""
 
     origin: str = "built-in defaults"
-    base_dir: Optional[Path] = None
-    select: Optional[Tuple[str, ...]] = None
+    base_dir: Path | None = None
+    select: Tuple[str, ...] | None = None
     ignore: Tuple[str, ...] = ()
     exempt: Tuple[exemption, ...] = ()
     exclude: Tuple[str, ...] = ()
@@ -92,7 +92,7 @@ class config_record:
     def effective_allow_space_before_paren(self) -> Tuple[str, ...]:
         return DEFAULT_ALLOW_SPACE_BEFORE_PAREN + self.allow_space_before_paren
 
-def find_repo_root(cwd: Path) -> Optional[Path]:
+def find_repo_root(cwd: Path) -> Path | None:
     """First directory at or above *cwd* that looks like a repository root."""
 
     for candidate in (cwd, *cwd.parents):
@@ -101,7 +101,7 @@ def find_repo_root(cwd: Path) -> Optional[Path]:
 
     return None
 
-def load_config(*, explicit: Optional[str], no_config: bool, cwd: Path) -> config_record:
+def load_config(*, explicit: str | None, no_config: bool, cwd: Path) -> config_record:
     """Load and validate the effective configuration for a check run."""
     cwd = Path(cwd).resolve()
 

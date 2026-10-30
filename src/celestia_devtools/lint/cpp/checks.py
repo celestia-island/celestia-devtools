@@ -12,7 +12,7 @@ what cpp-style list-rules prints.
 
 from __future__ import annotations
 import re
-from typing import Iterator, List, Optional, Sequence, Tuple
+from typing import Iterator, List, Sequence, Tuple
 from celestia_devtools.lint.cpp.config import config_record, matches_globs, path_variants
 from celestia_devtools.lint.cpp.rules import RULES
 from celestia_devtools.lint.cpp.structure import analyzed_file, finding_record
@@ -29,7 +29,7 @@ _LICENSE_MARKER = re.compile(r"license|spdx|copyright", re.IGNORECASE)
 _INCLUDE_DIRECTIVE = re.compile(r"^\s*#\s*include\b", re.IGNORECASE)
 _INCLUDE_TARGET = re.compile(r'^\s*#\s*include\s*(?:<([^>\n]*)>|"([^"\n]*)")', re.IGNORECASE)
 
-def iter_includes(af: analyzed_file) -> Iterator[Tuple[token_record, Optional[str]]]:
+def iter_includes(af: analyzed_file) -> Iterator[Tuple[token_record, str | None]]:
     """Yield each #include directive token and its header name (None for macro includes)."""
 
     for token in af.tokens:
@@ -47,7 +47,7 @@ def iter_includes(af: analyzed_file) -> Iterator[Tuple[token_record, Optional[st
 
         yield token, header
 
-def _paren_after(af: analyzed_file, position: int) -> Optional[int]:
+def _paren_after(af: analyzed_file, position: int) -> int | None:
     following = af.next_code(position)
 
     if following is None:
@@ -128,7 +128,7 @@ def _do_while_conditions(af: analyzed_file) -> set:
 
     return positions
 
-def _semicolon_adjacency(af: analyzed_file, position: int) -> Optional[bool]:
+def _semicolon_adjacency(af: analyzed_file, position: int) -> bool | None:
     """True when a for-header semicolon touches both neighbours; None if undecidable."""
     semicolon = af.code[position]
     previous = af.prev_code(position)

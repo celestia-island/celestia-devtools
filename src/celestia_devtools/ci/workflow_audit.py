@@ -110,7 +110,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 # canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
 # LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
@@ -250,7 +250,7 @@ def has_failure(findings: Sequence[finding_record], strict: bool = False) -> boo
 # YAML 结构（compose 出来的节点树，带真实行号）
 # ---------------------------------------------------------------------------
 
-def _scalar_text(node: Optional[Node]) -> Optional[str]:
+def _scalar_text(node: Node | None) -> str | None:
     """The text of a scalar node, or ``None`` for anything else.
 
     ``compose`` keeps the **raw** text (``on`` stays ``"on"`` rather than becoming the
@@ -263,7 +263,7 @@ def _scalar_text(node: Optional[Node]) -> Optional[str]:
 
     return None
 
-def _mapping_value(node: Optional[Node], name: str) -> Optional[Node]:
+def _mapping_value(node: Node | None, name: str) -> Node | None:
     """First value under mapping key *name*, or ``None``."""
 
     if not isinstance(node, MappingNode):
@@ -275,7 +275,7 @@ def _mapping_value(node: Optional[Node], name: str) -> Optional[Node]:
 
     return None
 
-def _scalar_labels(node: Optional[Node]) -> List[str]:
+def _scalar_labels(node: Node | None) -> List[str]:
     """Read a ``runs-on`` value as a label list (scalar, flow list and block list alike)."""
 
     if isinstance(node, ScalarNode):
@@ -286,7 +286,7 @@ def _scalar_labels(node: Optional[Node]) -> List[str]:
 
     return []
 
-def _triggers(on_node: Optional[Node], event: str) -> bool:
+def _triggers(on_node: Node | None, event: str) -> bool:
     """Whether the top-level ``on`` includes *event*.
 
     All three shapes GitHub accepts are covered::
@@ -308,11 +308,11 @@ def _triggers(on_node: Optional[Node], event: str) -> bool:
 
     return False
 
-def _declares_workflow_call(on_node: Optional[Node]) -> bool:
+def _declares_workflow_call(on_node: Node | None) -> bool:
     """Whether the top-level ``on`` includes ``workflow_call`` (a reusable-workflow callee)."""
     return _triggers(on_node, WORKFLOW_CALL_KEY)
 
-def _is_self_hosted(runs_on: Optional[Node]) -> bool:
+def _is_self_hosted(runs_on: Node | None) -> bool:
     """Whether a ``runs-on`` value puts the job on the org farm (rule 7's reading).
 
     Two things count, and the second is the interesting one:
@@ -805,7 +805,7 @@ def _display_path(path: Path, cwd: Path) -> str:
     except ValueError:
         return str(resolved)
 
-def collect_workflow_files(raw_paths: Sequence[str], cwd: Optional[Path] = None) -> Tuple[List[Tuple[Path, str]], Optional[int]]:
+def collect_workflow_files(raw_paths: Sequence[str], cwd: Path | None = None) -> Tuple[List[Tuple[Path, str]], int | None]:
     """Resolve PATHS into ``[(path, display_path)]``; a missing PATH is a usage error (exit 2).
 
     Duplicates (the same real file reached through two arguments) are collapsed, so a
@@ -945,7 +945,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow", action = "append", default = [], type = parse_allow, metavar = "RULE=GLOB", help = "suppress findings of RULE whose reported path matches GLOB " f"(RULE is one of {', '.join(RULE_NAMES)}, or *; repeatable)")
     return parser
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point; returns 0 clean / 1 findings / 2 usage or I/O error."""
     parser = _build_parser()
     args = parser.parse_args(argv)

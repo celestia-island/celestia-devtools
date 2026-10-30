@@ -66,7 +66,7 @@ import sys
 import time
 import unicodedata
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -106,7 +106,7 @@ def die(message: str) -> None:
     print(f"engine_drop: {message}", file = sys.stderr)
     raise SystemExit(EXIT_USAGE)
 
-def sh(cmd: Sequence[str], *, cwd: Optional[Path] = None, check: bool = True):
+def sh(cmd: Sequence[str], *, cwd: Path | None = None, check: bool = True):
     """Run a command; on failure raise with the captured output (4KiB，根因常在尾部)。"""
     proc = subprocess.run(list(cmd), cwd = str(cwd)if cwd else None, capture_output = True, text = True)
 
@@ -115,7 +115,7 @@ def sh(cmd: Sequence[str], *, cwd: Optional[Path] = None, check: bool = True):
 
     return proc
 
-def sh_ok(cmd: Sequence[str], *, cwd: Optional[Path] = None) -> bool:
+def sh_ok(cmd: Sequence[str], *, cwd: Path | None = None) -> bool:
     try:
         sh(cmd, cwd = cwd)
         return True
@@ -124,7 +124,7 @@ def sh_ok(cmd: Sequence[str], *, cwd: Optional[Path] = None) -> bool:
 
 # ── 门禁 ─────────────────────────────────────────────────────────────────────
 
-def forbidden_path(rel: str) -> Optional[str]:
+def forbidden_path(rel: str) -> str | None:
     """G3：禁区匹配——NFC 归一 + 大小写折叠 + 任意层级组件。返回违禁原因或 None。
 
     R3 实证过旧实现的绕过矩阵：``foo/AGENTS.md``（嵌套治理文件）、``AGENTS.MD``
@@ -312,7 +312,7 @@ def check_description(description: str) -> List[str]:
 
     return []
 
-def load_manifest(drop: Path) -> Tuple[Optional[dict], List[str]]:
+def load_manifest(drop: Path) -> Tuple[dict | None, List[str]]:
     """读 MANIFEST；畸形一律作为 violations 返回（要进审计，不能只 die）。"""
     path = drop / "MANIFEST.json"
 
@@ -348,7 +348,7 @@ def load_manifest(drop: Path) -> Tuple[Optional[dict], List[str]]:
 
     return manifest, violations
 
-def run_gates(drop: Path, repo_root: Path, drop_root: Path) -> Tuple[Optional[Path], Optional[dict], List[str]]:
+def run_gates(drop: Path, repo_root: Path, drop_root: Path) -> Tuple[Path | None, dict | None, List[str]]:
     """全部只读门禁。返回 (repo, manifest, violations)。"""
     manifest, violations = load_manifest(drop)
 
@@ -380,7 +380,7 @@ def _unquote(path: str) -> str:
 
     return path
 
-def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path, *, base: str = "origin/master", branch: Optional[str] = None, drop_id: Optional[str] = None, content_addressed: bool = False) -> Optional[Path]:
+def stage_worktree(worktree: Path, repo: str, description: str, drop_root: Path, *, base: str = "origin/master", branch: str | None = None, drop_id: str | None = None, content_addressed: bool = False) -> Path | None:
     """从一个脏 worktree 构造 drop，返回 drop 路径；无可搬运内容时返回 None。
 
     ``cmd_stage``（CLI）与 ``sweep`` 共用的内部实现。fail-closed 条件抛
@@ -566,7 +566,7 @@ def cmd_stage(args: argparse.Namespace) -> int:
 
 # ── apply ────────────────────────────────────────────────────────────────────
 
-def drop_digest(drop: Path) -> Optional[str]:
+def drop_digest(drop: Path) -> str | None:
     """MANIFEST + files 内容的 sha256（按排序路径钉住顺序，创建序无关）。"""
 
     if not (drop / "MANIFEST.json").is_file():
@@ -799,7 +799,7 @@ def _sweep_one(worktree: Path, args: argparse.Namespace) -> str:
 
     # 描述来源（绝不编造）：领先提交标题 → 工作区根 .drop-description 首行 →
     # 无来源即跳过。标题必须过 G6（与人类提交同一条规则）。
-    description: Optional[str] = None
+    description: str | None = None
 
     if has_ahead:
         subject = _git(worktree, "log", "--format=%s", "-1", "origin/master..HEAD")
@@ -957,7 +957,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit.set_defaults(func = cmd_audit)
     return parser
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(list(sys.argv[1:] if argv is None else argv))
     func = getattr(args, "func", None)
 

@@ -49,7 +49,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -94,7 +94,7 @@ class report:
     def to_dict(self) -> dict:
         return {"workspace": self.workspace, "ledger": self.ledger, "repositories": self.repositories, "checked": self.checked, "exempted": self.exempted, "findings": [finding.to_dict() for finding in self.findings], "errors": list(self.errors), "ok": self.ok}
 
-def ledger_path_for(workspace: Path, override: Optional[str] = None) -> Path:
+def ledger_path_for(workspace: Path, override: str | None = None) -> Path:
     """Resolve the ledger: explicit override, then ``<workspace>/_ledger/...``."""
 
     if override:
@@ -235,7 +235,7 @@ def workspace_scripts(workspace: Path) -> List[Tuple[str, str]]:
 
     return found
 
-def match_exempt(relative_path: str, repo_name: str, exempt: dict, exempt_repos: dict) -> Optional[str]:
+def match_exempt(relative_path: str, repo_name: str, exempt: dict, exempt_repos: dict) -> str | None:
     """The registered reason for *relative_path*, or ``None`` when unregistered."""
 
     if repo_name in exempt_repos:
@@ -247,7 +247,7 @@ def match_exempt(relative_path: str, repo_name: str, exempt: dict, exempt_repos:
 
     return None
 
-def audit(workspace: Path, ledger: Optional[str] = None) -> report:
+def audit(workspace: Path, ledger: str | None = None) -> report:
     """Scan the workspace and return a :class:`report` (raises on ledger errors)."""
     workspace = workspace.resolve()
     ledger_file = ledger_path_for(workspace, ledger)
@@ -282,7 +282,7 @@ def audit(workspace: Path, ledger: Optional[str] = None) -> report:
 
     return result
 
-def _error_payload(workspace: Path, message: str, ledger: Optional[str] = None) -> dict:
+def _error_payload(workspace: Path, message: str, ledger: str | None = None) -> dict:
     """The same eight keys as the success payload, for a gate error."""
     return {"workspace": str(workspace.absolute()), "ledger": str(ledger_path_for(workspace, ledger)), "repositories": 0, "checked": 0, "exempted": 0, "findings": [], "errors": [message], "ok": False}
 
@@ -298,7 +298,7 @@ def _render_text(report: report) -> str:
     lines.append("tool-audit: %d script(s) across %d repositories, %d exempted, %d unregistered" % (report.checked, report.repositories, report.exempted, len(report.findings)))
     return "\n".join(lines)
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools tool-audit", description = "Report tracked .sh/.ps1 scripts without a registered tool-exemption reason.")
     parser.add_argument("workspace", nargs = "?", default = ".", help = "workspace root holding _ledger/tool-exemptions.md (default: current directory)")
     parser.add_argument("--ledger", default = None, help = "override the ledger path, relative to the current directory (default: <workspace>/_ledger/tool-exemptions.md)")

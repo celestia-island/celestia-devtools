@@ -79,7 +79,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 from celestia_devtools.env import cdp
 from celestia_devtools.env import ports
 
@@ -98,7 +98,7 @@ DEFAULT_WATCH_DURATION = 30.0
 DEFAULT_CLOSE_GRACE = 5.0
 APP_KEY_PREFIX = "exe-"
 WATCH_FIELDS = ("boot_chrome", "has_bar", "bar_driver", "degraded", "ready_state", "url", "title")
-_TASKKILL_PATH: Optional[str] = None
+_TASKKILL_PATH: str | None = None
 STATE_EXPRESSION = """(() => {
   const root = document.documentElement;
   const bar = document.getElementById("hk-boot-chrome");
@@ -224,7 +224,7 @@ def default_app_key(executable: str) -> str:
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
     return APP_KEY_PREFIX + digest
 
-def state_file_path(app: Optional[str] = None, explicit: Optional[str] = None) -> Path:
+def state_file_path(app: str | None = None, explicit: str | None = None) -> Path:
     if explicit:
         return Path(explicit)
 
@@ -233,7 +233,7 @@ def state_file_path(app: Optional[str] = None, explicit: Optional[str] = None) -
 
     return state_root() / (app_slug(str(app)) + ".json")
 
-def read_state(app: Optional[str] = None, explicit: Optional[str] = None, allow_outdated: bool = False) -> Optional[dict]:
+def read_state(app: str | None = None, explicit: str | None = None, allow_outdated: bool = False) -> dict | None:
     path = state_file_path(app, explicit)
 
     if not path.is_file():
@@ -265,7 +265,7 @@ def write_state(state: dict, path: Path) -> None:
     temporary.write_text(json.dumps(state, indent = 2, ensure_ascii = True), encoding = "utf-8")
     os.replace(temporary, path)
 
-def remove_state(path: Optional[Path]) -> bool:
+def remove_state(path: Path | None) -> bool:
     if path is None:
         return False
 
@@ -277,7 +277,7 @@ def remove_state(path: Optional[Path]) -> bool:
     except OSError:
         return False
 
-def state_cdp_port(state: dict, path: Optional[Path] = None) -> int:
+def state_cdp_port(state: dict, path: Path | None = None) -> int:
     port = state.get("cdp_port")
 
     if (not isinstance(port, int)) or (port < 1) or (port > 65535):
@@ -285,19 +285,19 @@ def state_cdp_port(state: dict, path: Optional[Path] = None) -> int:
 
     return int(port)
 
-def state_port_for_attach(state: dict, path: Optional[Path] = None) -> int:
+def state_port_for_attach(state: dict, path: Path | None = None) -> int:
     if not pid_alive(state.get("pid")):
         raise cdp.cdp_error("app-not-running", "app " + repr(state.get("app")) + " from " + str(path) + " is not running; relaunch it with app-drive launch")
 
     return state_cdp_port(state, path)
 
-def pid_alive(pid: Optional[int]) -> bool:
+def pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
 
     return ports.pid_alive(int(pid))
 
-def _windows_process_identity(pid: int) -> Optional[dict]:
+def _windows_process_identity(pid: int) -> dict | None:
     kernel32 = ctypes.windll.kernel32
     handle = kernel32.OpenProcess(0x1000, False, int(pid))
 
@@ -323,7 +323,7 @@ def _windows_process_identity(pid: int) -> Optional[dict]:
     finally:
         kernel32.CloseHandle(handle)
 
-def _posix_process_identity(pid: int) -> Optional[dict]:
+def _posix_process_identity(pid: int) -> dict | None:
     if not os.path.isdir("/proc"):
         return None
 
@@ -349,7 +349,7 @@ def _posix_process_identity(pid: int) -> Optional[dict]:
 
     return {"image": image, "create_token": fields[19], "create_kind": "proc-starttime"}
 
-def read_process_identity(pid: int) -> Optional[dict]:
+def read_process_identity(pid: int) -> dict | None:
     """Best-effort identity of a live process: full image path + creation token.
 
     Returns None when the platform or the process cannot be inspected; every
@@ -517,7 +517,7 @@ def _signal_tree(pid: int, signal_number: int) -> None:
     except OSError:
         pass
 
-def wait_pid_exit(pid: int, timeout: float) -> Optional[int]:
+def wait_pid_exit(pid: int, timeout: float) -> int | None:
     """Watch an EXTERNAL pid (no Popen handle) via liveness; zombies count dead."""
     started = time.monotonic()
 
@@ -529,7 +529,7 @@ def wait_pid_exit(pid: int, timeout: float) -> Optional[int]:
 
     return None
 
-def wait_child_exit(child: subprocess.Popen, timeout: float) -> Optional[int]:
+def wait_child_exit(child: subprocess.Popen, timeout: float) -> int | None:
     """Watch OUR OWN child through its Popen handle and reap it on exit.
 
     A Popen child that has exited but is not reaped is a zombie: on POSIX it
@@ -549,7 +549,7 @@ def wait_child_exit(child: subprocess.Popen, timeout: float) -> Optional[int]:
 
     return int((time.monotonic() - started) * 1000)
 
-def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: Optional[subprocess.Popen] = None, verify = None) -> dict:
+def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: subprocess.Popen | None = None, verify = None) -> dict:
     """Graceful-then-forced termination.
 
     child: the Popen handle when the target is OUR direct child (launch
@@ -627,7 +627,7 @@ def terminate_tree(pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: Optional
 
     return {"closed": True, "forced": forced, "waited_ms": waited, "reason": "terminated"}
 
-def terminate_verified(state: dict, pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: Optional[subprocess.Popen] = None) -> dict:
+def terminate_verified(state: dict, pid: int, grace: float = DEFAULT_CLOSE_GRACE, child: subprocess.Popen | None = None) -> dict:
     """Verify identity, verify again, and re-verify immediately before force."""
     verify_process_identity(state, pid)
     verify_process_identity(state, pid)
@@ -702,7 +702,7 @@ def claim_cdp_port(app: str, port: int, pid: int) -> None:
     except OSError as exc:
         raise cdp.cdp_error("port-registry", "cannot write the ports registry: " + str(exc)) from exc
 
-def release_ports(app: Optional[str]) -> bool:
+def release_ports(app: str | None) -> bool:
     """Release the CDP claim only (app-drive owns no other port kind)."""
 
     if not app:
@@ -826,7 +826,7 @@ def check_condition(client: cdp.cdp_client, args) -> tuple[bool, dict]:
     current = state.get("boot_chrome")
     return boot_chrome_matches(str(args.boot_chrome), current), {"boot_chrome": current, "state": state}
 
-def image_dimensions(data: bytes) -> tuple[Optional[int], Optional[int]]:
+def image_dimensions(data: bytes) -> tuple[int | None, int | None]:
     png_signature = bytes.fromhex("89504e470d0a1a0a")
 
     if data.startswith(png_signature) and (len(data) >= 24) and (data[12:16] == b"IHDR"):
@@ -849,7 +849,7 @@ def state_changes(previous: dict, current: dict) -> list[dict]:
 
     return changes
 
-def watch_stop_reason(args, client: cdp.cdp_client, state: dict) -> Optional[str]:
+def watch_stop_reason(args, client: cdp.cdp_client, state: dict) -> str | None:
     target = getattr(args, "stop_boot_chrome", None)
 
     if target is not None:
@@ -866,7 +866,7 @@ def watch_stop_reason(args, client: cdp.cdp_client, state: dict) -> Optional[str
 
     return None
 
-def launched_summary(app: Optional[str], state_file: Optional[str] = None) -> Optional[dict]:
+def launched_summary(app: str | None, state_file: str | None = None) -> dict | None:
     if (not app) and (not state_file):
         return None
 
@@ -1045,7 +1045,7 @@ def cmd_watch(args) -> int:
             while time.monotonic() < deadline:
                 samples += 1
                 elapsed_ms = int((time.monotonic() - started) * 1000)
-                error_text: Optional[str] = None
+                error_text: str | None = None
 
                 try:
                     state = read_page_state(client)
@@ -1104,7 +1104,7 @@ def cmd_watch(args) -> int:
     emit(envelope("watch", **summary), args.pretty)
     return 0
 
-def _validate_log_dir(log_dir: Optional[str]) -> Optional[Path]:
+def _validate_log_dir(log_dir: str | None) -> Path | None:
     """Validate an EXPLICIT --log-dir before a port is acquired (no leaked claim).
 
     The timestamped default directory is created only after a port has been
@@ -1136,7 +1136,7 @@ def _new_default_log_dir(app: str) -> Path:
 
     return directory
 
-def _open_launch_logs(directory: Optional[Path]) -> tuple[object, object]:
+def _open_launch_logs(directory: Path | None) -> tuple[object, object]:
     if directory is None:
         return subprocess.DEVNULL, subprocess.DEVNULL
 
@@ -1161,7 +1161,7 @@ def _close_handles(*handles) -> None:
             except (OSError, ValueError):
                 pass
 
-def _spawn(command: list[str], environment: dict[str, str], cwd: Optional[str], stdout_target, stderr_target) -> subprocess.Popen:
+def _spawn(command: list[str], environment: dict[str, str], cwd: str | None, stdout_target, stderr_target) -> subprocess.Popen:
     kwargs: dict = {"env": environment, "cwd": cwd, "stdin": subprocess.DEVNULL, "stdout": stdout_target, "stderr": stderr_target}
 
     if os.name == "nt":
@@ -1198,19 +1198,19 @@ def _cleanup_note(cleanup: dict) -> str:
 
     return "; cleanup of the spawned app is incomplete (pid " + str(cleanup.get("pid")) + ")"
 
-def _launch_state_from_identity(app: str, pid: int, identity: Optional[dict], port: Optional[int]) -> dict:
+def _launch_state_from_identity(app: str, pid: int, identity: dict | None, port: int | None) -> dict:
     if identity is None:
         return {"schema": STATE_SCHEMA, "protocol": PROTOCOL_VERSION, "app": app, "pid": int(pid), "exe": "", "create_token": "", "create_kind": "", "cdp_port": int(port or 0), "cwd": str(Path.cwd()), "launched_at": timestamp_utc(), "log_dir": None, "command": [], "unverified": True}
 
     return {"schema": STATE_SCHEMA, "protocol": PROTOCOL_VERSION, "app": app, "pid": int(pid), "exe": str(identity.get("image") or ""), "create_token": str(identity.get("create_token") or ""), "create_kind": str(identity.get("create_kind") or ""), "cdp_port": int(port or 0), "cwd": str(Path.cwd()), "launched_at": timestamp_utc(), "log_dir": None, "command": [], "unverified": False}
 
-def _state_has_identity(state: Optional[dict]) -> bool:
+def _state_has_identity(state: dict | None) -> bool:
     if not state:
         return False
 
     return bool(state.get("exe")) and bool(state.get("create_token")) and bool(state.get("create_kind"))
 
-def _abort_launch(child: Optional[subprocess.Popen], state_path: Path, app: str, state: Optional[dict], grace: float, port: Optional[int] = None) -> dict:
+def _abort_launch(child: subprocess.Popen | None, state_path: Path, app: str, state: dict | None, grace: float, port: int | None = None) -> dict:
     """Clean up a failed launch WITHOUT ever blind-killing a bare pid.
 
     - already-exited child (poll() returned): skip the kill entirely;
@@ -1293,7 +1293,7 @@ def _replace_existing(app: str, existing: dict, requested_exe: str, state_path: 
     remove_state(state_path)
     release_ports(app)
 
-def _build_launch_state(app: str, child_pid: int, executable: str, identity: dict, port: int, cwd: Optional[str], log_dir: Optional[Path], command: list[str]) -> dict:
+def _build_launch_state(app: str, child_pid: int, executable: str, identity: dict, port: int, cwd: str | None, log_dir: Path | None, command: list[str]) -> dict:
     return {"schema": STATE_SCHEMA, "protocol": PROTOCOL_VERSION, "app": app, "pid": child_pid, "exe": executable, "create_token": str(identity.get("create_token") or ""), "create_kind": str(identity.get("create_kind") or ""), "cdp_port": int(port), "cwd": cwd or str(Path.cwd()), "launched_at": timestamp_utc(), "log_dir": str(log_dir.resolve()) if log_dir is not None else None, "command": command}
 
 def _validate_launch_options(args) -> None:
@@ -1348,8 +1348,8 @@ def cmd_launch(args) -> int:
         release_ports(app)
         raise
 
-    child: Optional[subprocess.Popen] = None
-    state: Optional[dict] = None
+    child: subprocess.Popen | None = None
+    state: dict | None = None
     started = time.monotonic()
 
     try:
@@ -1412,7 +1412,7 @@ def cmd_launch(args) -> int:
     emit(envelope("launch", **base_fields, page = public_target(page), waited = True, launch_ms = launch_ms, cdp_ms = cdp_ms), args.pretty)
     return 0
 
-def _close_app_key(args) -> Optional[str]:
+def _close_app_key(args) -> str | None:
     if args.app:
         return str(args.app)
 
@@ -1436,7 +1436,7 @@ def cmd_close(args) -> int:
         return 0
 
     app = _close_app_key(args)
-    state: Optional[dict] = None
+    state: dict | None = None
 
     try:
         state = read_state(app, args.state_file)
@@ -1623,7 +1623,7 @@ def split_launch_arguments(argv: Sequence[str]) -> tuple[list[str], list[str]]:
 
     return tokens, []
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     arguments = list(argv if argv is not None else sys.argv[1:])
     arguments, extra_arguments = split_launch_arguments(arguments)

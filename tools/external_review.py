@@ -28,7 +28,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 import urllib.request
 
 EXIT_OK = 0
@@ -145,7 +145,7 @@ def die(message: str):
     print(f"external-review: {message}", file = sys.stderr)
     raise SystemExit(EXIT_USAGE)
 
-def git(*args: str, repo: Optional[Path] = None) -> Optional[str]:
+def git(*args: str, repo: Path | None = None) -> str | None:
     """Run git and return stripped stdout, or None on any failure."""
     cmd = ["git"]
 
@@ -215,7 +215,7 @@ def status_line(last_epoch: int, now_epoch: int, days: int) -> "tuple[str, int]"
 
     return (f"✅ 外部视角验证未到期：上次 {last_date}，还有 {days_left} 天", EXIT_OK)
 
-def latest_report(reports_dir: Path) -> "Optional[Path]":
+def latest_report(reports_dir: Path) -> "Path | None":
     """mtime 最新的 ``external-review-*.md``（与 last_review_epoch 同一判据）。"""
     best, best_epoch = None, 0
 
@@ -233,7 +233,7 @@ def latest_report(reports_dir: Path) -> "Optional[Path]":
 
     return best
 
-def latest_record_seal(reports_dir: Path) -> "tuple[Optional[Path], Optional[str]]":
+def latest_record_seal(reports_dir: Path) -> "tuple[Path | None, str | None]":
     """最近一次收录里戳的封印哈希；无戳 = legacy / 无封印收录。"""
     path = latest_report(reports_dir)
 
@@ -392,7 +392,7 @@ def write_recent_changes(ws: Path, out: Path) -> None:
     lines.append("```")
     (out / "02-recent-changes.md").write_text("\n".join(lines) + "\n", encoding = "utf-8")
 
-def origin_ref(repo: Path) -> "tuple[Optional[str], Optional[str]]":
+def origin_ref(repo: Path) -> "tuple[str | None, str | None]":
     for base in ("master", "main"):
         sha = git("rev-parse", "--verify", f"origin/{base}", repo = repo)
 
@@ -416,7 +416,7 @@ def write_code_sample(ws: Path, out: Path) -> None:
         repo_rel = rel.split("/", 1)[1]
         ref, sha = origin_ref(repo)
         (code_dir / rel).parent.mkdir(parents = True, exist_ok = True)
-        content: Optional[bytes] = None
+        content: bytes | None = None
 
         if sha:
             try:
@@ -506,7 +506,7 @@ def isolation_violations(out: Path) -> List[str]:
 
     return problems
 
-def write_manifest(out: Path, skipped: "Optional[List[str]]" = None) -> None:
+def write_manifest(out: Path, skipped: "List[str] | None" = None) -> None:
     code_files = sorted(str(p.relative_to(out))for p in (out / "code").rglob("*")if p.is_file())
     # 「只有提交标题」的仓必须**排除**已取源码的仓——否则 manifest 与自己的
     # code/ 清单自相矛盾（改 SAMPLE_FILES 而忘改这句话就会把读包人带偏）。
@@ -776,7 +776,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 KNOWN_COMMANDS = ("pack", "status", "due", "record", "verify", "help", "-h", "--help")
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     ws = Path(os.environ.get("WORKSPACE_ROOT", "/mnt/codespace"))
     ws = ws if ws.is_absolute() else Path.cwd() / ws
     argv = list(sys.argv[1:] if argv is None else argv)

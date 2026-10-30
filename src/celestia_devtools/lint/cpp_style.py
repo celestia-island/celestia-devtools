@@ -89,7 +89,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 from celestia_devtools.lint.cpp.checks import run_checks
 from celestia_devtools.lint.cpp.config import (config_record, config_error, load_config, matches_globs, path_variants)
 from celestia_devtools.lint.cpp.rules import RULE_BY_ID, RULE_IDS, RULES
@@ -225,7 +225,7 @@ def _walk_directory(root: Path, config: config_record) -> Tuple[List[Path], int]
 
     return files, skipped
 
-def _split_rule_values(values: Optional[Sequence[str]]) -> Tuple[str, ...]:
+def _split_rule_values(values: Sequence[str] | None) -> Tuple[str, ...]:
     if not values:
         return ()
 
@@ -249,7 +249,7 @@ def _require_rule(name: str, where: str) -> str:
 
     return name
 
-def resolve_selection(config: config_record, cli_select: Optional[Sequence[str]], cli_ignore: Optional[Sequence[str]]) -> frozenset:
+def resolve_selection(config: config_record, cli_select: Sequence[str] | None, cli_ignore: Sequence[str] | None) -> frozenset:
     """Effective rule set: CLI --select/--ignore override/extend the config."""
     requested = _split_rule_values(cli_select)
 
@@ -467,7 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
     list_rules.add_argument("--json", action = "store_true", help = "write the catalogue as JSON to stdout")
     return parser
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
 

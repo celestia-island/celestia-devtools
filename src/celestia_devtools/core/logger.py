@@ -29,7 +29,7 @@ import sys
 import textwrap
 import threading
 from datetime import datetime
-from typing import IO, Optional
+from typing import IO
 
 __all__ = ["logger", "SOURCE_WIDTH", "MODULE_WIDTH", "configure", "log", "debug", "info", "ok", "warn", "error", "section", "tag", "blank", "rule"]
 
@@ -142,7 +142,7 @@ class logger:
     """Columnar logger. Instantiate for a fixed source/module, or use the
     module-level functions (which share a process-wide default Logger)."""
 
-    def __init__(self, source: str = "dev", module: Optional[str] = None, *, source_width: int = SOURCE_WIDTH, module_width: int = MODULE_WIDTH, stream: Optional[IO] = None) -> None:
+    def __init__(self, source: str = "dev", module: str | None = None, *, source_width: int = SOURCE_WIDTH, module_width: int = MODULE_WIDTH, stream: IO | None = None) -> None:
         self.source = source if source is not None else "dev"
         self.module = module if module is not None else _script_module()
         self.source_width = source_width if isinstance(source_width, int) else SOURCE_WIDTH
@@ -150,7 +150,7 @@ class logger:
         self.stream: IO = stream if stream is not None else sys.stdout
         self._color = _color_enabled(self.stream)
 
-    def configure(self, *, source: Optional[str] = None, module: Optional[str] = None, source_width: Optional[int] = None, module_width: Optional[int] = None, stream: Optional[IO] = None) -> "logger":
+    def configure(self, *, source: str | None = None, module: str | None = None, source_width: int | None = None, module_width: int | None = None, stream: IO | None = None) -> "logger":
         if source is not None:
             self.source = source
 
@@ -213,7 +213,7 @@ class logger:
         else:
             self._emit(prefix + ("  " + body if body else ""), err = err)
 
-    def log(self, level: str, message: str, *, source: Optional[str] = None, module: Optional[str] = None) -> None:
+    def log(self, level: str, message: str, *, source: str | None = None, module: str | None = None) -> None:
         level = _safe_str(level if level is not None else "INFO").upper()
 
         if level not in _LEVELS:

@@ -49,7 +49,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Sequence
 
 try:  # PyYAML is a runtime dependency of this package; keep the failure loud.
     import yaml
@@ -194,7 +194,7 @@ def _cache_uses_lines(text: str) -> List[int]:
 
     return lines
 
-def scan_text(text: str, path: "Path | str" = "<memory>", rel: Optional[str] = None) -> List[dict]:
+def scan_text(text: str, path: "Path | str" = "<memory>", rel: str | None = None) -> List[dict]:
     """Return the findings for one workflow's text.
 
     Split out from :func:`scan_file` so tests can exercise the rules without touching
@@ -245,7 +245,7 @@ def scan_text(text: str, path: "Path | str" = "<memory>", rel: Optional[str] = N
 
     return findings
 
-def scan_file(path: Path, rel: Optional[str] = None) -> List[dict]:
+def scan_file(path: Path, rel: str | None = None) -> List[dict]:
     return scan_text(path.read_text(encoding = "utf-8", errors = "replace"), path, rel)
 
 def workflow_files(root: Path) -> List[Path]:
@@ -302,7 +302,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strict", action = "store_true", help = "also fail on warning-level findings (mirrors ci-audit --strict)")
     return parser
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     repos = _discover_repos(args.paths)
     findings = collect(repos)
