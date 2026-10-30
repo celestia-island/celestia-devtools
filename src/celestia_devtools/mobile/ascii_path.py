@@ -13,10 +13,12 @@ implementation of the second half plus the general audit, so every mobile
 consumer (wowsp, shittim-chest tauri_mobile, harmony) gets the same
 guarantees from one place.
 
-The candidate order intentionally mirrors wowsp's
-``scripts/android_cargo_target.py`` (env override → LOCALAPPDATA → TEMP →
-a Public directory → /tmp on POSIX) so the two resolvers cannot drift into
-incompatible choices on the same machine.
+The compat contract with wowsp's ``scripts/android_cargo_target.py`` is
+the OVERRIDE, not the fallback order: this resolver honors
+``WOWSP_ANDROID_CARGO_TARGET`` first (before the celestia alias), and the
+wowsp adapter exports that variable with OUR resolved path — so whenever
+this facility drives a wowsp build, both resolvers converge on one
+directory regardless of their differing fallback names.
 """
 
 from __future__ import annotations
@@ -54,9 +56,9 @@ def ascii_cargo_target_candidates() -> list[Path]:
     priority order (env override first — the resolver's contract is that
     the FIRST creatable pure-ASCII candidate wins)."""
     out: list[Path] = []
-    override = os.environ.get("WOWSP_ANDROID_CARGO_TARGET") or os.environ.get(
-        "CELESTIA_MOBILE_CARGO_TARGET"
-    )
+    override = (os.environ.get("WOWSP_ANDROID_CARGO_TARGET") or "").strip() or (
+        os.environ.get("CELESTIA_MOBILE_CARGO_TARGET") or ""
+    ).strip()
     if override:
         out.append(Path(override))
     localappdata = _windows_localappdata()
@@ -74,7 +76,7 @@ def ascii_cargo_target_candidates() -> list[Path]:
 
 
 def ensure_ascii_dir(path: Path, purpose: str) -> Path:
-    """Create ``path`` (0700) and verify it is ASCII.
+    """Create ``path`` and verify it is ASCII.
 
     Raises :class:`AsciiPathError` with an operator-usable message when the
     path contains non-ASCII characters — the caller must NOT fall back to
@@ -94,13 +96,18 @@ def ensure_ascii_dir(path: Path, purpose: str) -> Path:
 
 def resolve_ascii_cargo_target() -> Path:
     """First creatable ASCII candidate from :func:`ascii_cargo_target_candidates`."""
-    last_error: AsciiPathError | None = None
+    last_error: Exception | None = None
     for candidate in ascii_cargo_target_candidates():
         try:
             return ensure_ascii_dir(candidate, "mobile CARGO_TARGET_DIR")
-        except AsciiPathError as exc:
+        except (AsciiPathError, OSError) as exc:
+            # Non-ASCII or uncreatable (stale override, read-only parent):
+            # fall through to the next candidate — never abort while
+            # alternatives remain (wowsp's resolver does the same).
             last_error = exc
-    raise last_error or AsciiPathError("no ASCII CARGO_TARGET_DIR candidate available")
+    raise AsciiPathError(
+        f"no creatable ASCII CARGO_TARGET_DIR candidate — last failure: {last_error}"
+    )
 
 
 def audit_ascii(paths: dict[str, Path | str | None]) -> list[str]:

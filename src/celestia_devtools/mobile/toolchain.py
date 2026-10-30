@@ -36,7 +36,6 @@ class ToolchainReport:
     newest_ndk: str | None = None
     gradle_on_path: bool = False
     hvigor_on_path: bool = False
-    rust_targets_installed: list[str] = field(default_factory=list)
     ascii_problems: list[str] = field(default_factory=list)
 
     def ok_for_android(self) -> bool:
@@ -56,19 +55,6 @@ def _first_env(*names: str) -> str | None:
     return None
 
 
-def _installed_targets() -> list[str]:
-    out: list[str] = []
-    for target in (CANONICAL_RUST_TARGET, "armv7-linux-androideabi"):
-        probe = shutil.which(f"{target.replace('-unknown', '')}-unknown"[:0] or "rustc")
-        # rustup list is authoritative; fall back to rustc --print target-list?
-        # Keep it cheap: rustup component probing via `rustup target list
-        # --installed` is the supported surface but slow; the doctor reports
-        # intent, the adapter fails loudly if the target is missing.
-        _ = probe
-        out.append(target)
-    return []
-
-
 def doctor(repo_root: Path | None = None) -> ToolchainReport:
     """Probe the mobile toolchain surface and audit every path for ASCII.
 
@@ -84,8 +70,13 @@ def doctor(repo_root: Path | None = None) -> ToolchainReport:
     if report.android_home:
         ndk_root = Path(report.android_home) / "ndk"
         if ndk_root.is_dir():
+
+            def version_key(name: str) -> tuple[int, ...]:
+                return tuple(int(part) for part in name.split("."))
+
             versions = sorted(
                 (p.name for p in ndk_root.iterdir() if _NDK_VERSION_DIR.match(p.name)),
+                key=version_key,
             )
             report.ndk_versions = versions
             report.newest_ndk = versions[-1] if versions else None
@@ -105,7 +96,13 @@ def doctor(repo_root: Path | None = None) -> ToolchainReport:
 
 
 def ndk_trap_lines(report: ToolchainReport) -> list[str]:
-    """Operator-facing warnings derived from the report."""
+    """Operator-facing warnings derived from the report.
+
+    Only the REAL trap warns: a pinned NDK that is not the newest (a stray
+    newer NDK silently changes the build — wowsp's documented trap). A pin
+    that already selects the newest is deterministic even with older
+    leftovers installed, so multi-NDK alone is not a warning.
+    """
     lines: list[str] = []
     if report.newest_ndk and report.ndk_home:
         pinned = Path(report.ndk_home).name
@@ -115,12 +112,6 @@ def ndk_trap_lines(report: ToolchainReport) -> list[str]:
                 f"NDK under $ANDROID_HOME/ndk (found {report.newest_ndk}) — remove "
                 "the newer NDK or repin NDK_HOME, or your build silently changes"
             )
-    if report.ndk_versions and len(report.ndk_versions) > 1:
-        lines.append(
-            "multiple NDKs installed ("
-            + ", ".join(report.ndk_versions)
-            + ") — the newest one wins regardless of NDK_HOME (tauri-cli 2.11.x)"
-        )
     return lines
 
 

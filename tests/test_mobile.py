@@ -86,7 +86,8 @@ class TestDoctor:
         )
         lines = ndk_trap_lines(report)
         assert any("27.0.1" in line and "trap" in line for line in lines)
-        assert any("multiple NDKs" in line for line in lines)
+        # Multi-NDK alone is not a warning anymore — only the real trap is.
+        assert len(lines) == 1
 
     def test_no_trap_when_single_pinned(self):
         report = ToolchainReport(
@@ -123,9 +124,12 @@ class TestAdapters:
         ws.mkdir()
         assert build("wowsp-android", repo_root=ws) == 1
 
-    def test_wowsp_build_refuses_on_ndk_trap(self, tmp_path, monkeypatch):
+    def test_wowsp_build_refuses_on_ndk_trap(self, tmp_path, monkeypatch, capsys):
+        # The gen tree EXISTS here — without the refusal the build would
+        # proceed past the scaffold gate, so this pins the refusal itself
+        # (the R2 m2 mutation survived exactly this vacuity).
         ws = tmp_path / "wowsp"
-        ws.mkdir()
+        (ws / "packages/app/tauri/gen/android").mkdir(parents=True)
         monkeypatch.setenv("JAVA_HOME", "/opt/jdk")
         sdk = tmp_path / "sdk"
         ndk_root = sdk / "ndk"
@@ -134,6 +138,17 @@ class TestAdapters:
         monkeypatch.setenv("ANDROID_HOME", str(sdk))
         monkeypatch.setenv("NDK_HOME", str(ndk_root / "26.1.10909125"))
         assert build("wowsp-android", repo_root=ws) == 1
+        assert "refusing to continue" in capsys.readouterr().out
+
+    def test_no_trap_when_pin_selects_newest(self):
+        # An older leftover with the pin ON the newest is deterministic —
+        # not a warning (the R2 over-refusal finding).
+        report = ToolchainReport(
+            ndk_home="/sdk/ndk/26.1.10909125",
+            ndk_versions=["25.2.9519653", "26.1.10909125"],
+            newest_ndk="26.1.10909125",
+        )
+        assert ndk_trap_lines(report) == []
 
     def test_dry_run_prints_plan(self, tmp_path, monkeypatch, capsys):
         ws = tmp_path / "wowsp"
@@ -149,7 +164,8 @@ class TestAdapters:
         assert build("wowsp-android", repo_root=ws, dry_run=True) == 0
         out = capsys.readouterr().out
         assert "just build android-apk" in out
-        assert "CARGO_TARGET_DIR" in out
+        # The convergence contract: BOTH env names ride the adapter.
+        assert "cargo target dir pinned" in out
 
     def test_chest_android_requires_scaffold(self, tmp_path, monkeypatch):
         ws = tmp_path / "chest"

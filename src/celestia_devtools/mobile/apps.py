@@ -55,9 +55,11 @@ APPS: dict[str, MobileApp] = {
         kind="tauri-android",
         experimental=False,
         # The justfile's _build-android-apk recipe already runs
-        # fetch_models/extract_gameparams, sets WOWSP_MOBILE_BUNDLE and the
-        # ASCII CARGO_TARGET_DIR (its own resolver — same candidate order
-        # as ours); the adapter adds the shared audit + env on top.
+        # fetch_models/extract_gameparams and sets WOWSP_MOBILE_BUNDLE; it
+        # ALSO re-resolves CARGO_TARGET_DIR from its own script inside the
+        # recipe (stomping any env we set). The wowsp resolver honors
+        # WOWSP_ANDROID_CARGO_TARGET first, so the adapter exports THAT —
+        # both resolvers then converge on the facility's choice.
         build_command=("just", "build", "android-apk"),
         artifact_globs=("packages/app/tauri/gen/android/app/build/outputs/apk/**/*.apk",),
     ),
@@ -124,19 +126,27 @@ def build(app_key: str, repo_root: Path | None = None, dry_run: bool = False) ->
     if app.experimental:
         print(f"[mobile] {app.key} is EXPERIMENTAL — failures here are expected to be loud")
 
+    # Every lane gets the audit (the ASCII problem class is toolchain-wide,
+    # not android-only); the android-readiness gate applies to tauri only.
+    report = doctor(workspace)
     if app.kind == "tauri-android":
-        report = doctor(workspace)
         print(format_report(report))
-        for line in ndk_trap_lines(report):
-            print(f"[mobile] refusing to continue: {line}")
+        if ndk_trap_lines(report):
+            print("[mobile] refusing to continue — see the NDK trap above")
             return 1
         if not report.ok_for_android():
             print("[mobile] toolchain not ready (see doctor output above)")
             return 1
-
-    if app.kind == "harmony" and not shutil.which("hvigorw"):
-        print(_scaffold_hint(app))
+    elif report.ascii_problems:
+        for line in report.ascii_problems:
+            print(f"[mobile] {line}")
         return 1
+
+    if app.kind == "harmony":
+        hvigor_bin = shutil.which("hvigorw") or shutil.which("hvigor")
+        if not hvigor_bin:
+            print(_scaffold_hint(app))
+            return 1
 
     if app.kind == "tauri-android":
         gen = (
@@ -151,8 +161,12 @@ def build(app_key: str, repo_root: Path | None = None, dry_run: bool = False) ->
     env = dict(os.environ)
     if app.kind == "tauri-android":
         target_dir = resolve_ascii_cargo_target()
+        # Direct cargo consumers (chest) read CARGO_TARGET_DIR; the wowsp
+        # justfile re-resolves from its own script but honors the override
+        # first — exporting both converges every consumer on one dir.
         env["CARGO_TARGET_DIR"] = str(target_dir)
-        print(f"[mobile] CARGO_TARGET_DIR={target_dir} (ASCII-verified)")
+        env["WOWSP_ANDROID_CARGO_TARGET"] = str(target_dir)
+        print(f"[mobile] cargo target dir pinned to {target_dir} (ASCII-verified)")
 
     if dry_run:
         print("[mobile] dry run — would run:")

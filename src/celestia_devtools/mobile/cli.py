@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 from .apps import APPS, build
-from .ascii_path import resolve_ascii_cargo_target
+from .ascii_path import AsciiPathError, resolve_ascii_cargo_target
 from .toolchain import doctor, format_report
 
 
@@ -52,8 +52,12 @@ def main(argv: list[str] | None = None) -> int:
         print(format_report(doctor(args.repo)))
         return 0
     if args.command == "ascii-target":
-        print(resolve_ascii_cargo_target())
-        return 0
+        try:
+            print(resolve_ascii_cargo_target())
+            return 0
+        except AsciiPathError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if args.command == "build":
         return build(args.app, repo_root=args.repo, dry_run=args.dry_run)
     return 2
