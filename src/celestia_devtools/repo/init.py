@@ -54,7 +54,6 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
-from typing import Optional
 import yaml
 from celestia_devtools import __version__
 from celestia_devtools.core import logger
@@ -819,7 +818,7 @@ def _is_callee_definition(text: str) -> bool:
 
     return False
 
-def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Optional[Path]:
+def _canonical_alias(workflows_dir: Path, template: str, filename: str) -> Path | None:
     """A differently-named file carrying the canonical caller bytes.
 
     Eight repositories landed the byte-identical CI-cache caller as

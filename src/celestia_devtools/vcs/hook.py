@@ -16,7 +16,6 @@ import os
 import stat
 import sys
 from pathlib import Path
-from typing import Optional
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -58,7 +57,7 @@ NOA_SENTINEL = "noa-managed"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def _resolve_devtools_bin(requested: Optional[str] = None) -> str:
+def _resolve_devtools_bin(requested: str | None = None) -> str:
     """Return the best ``celestia-devtools`` invocation string.
 
     Precedence:
@@ -77,7 +76,7 @@ def _resolve_devtools_bin(requested: Optional[str] = None) -> str:
     # Fallback: use the running Python interpreter.
     return f"{sys.executable} -m celestia_devtools"
 
-def _which(name: str) -> Optional[str]:
+def _which(name: str) -> str | None:
     """Return the full path to *name* on PATH, or None."""
     path = os.environ.get("PATH", "")
 
@@ -120,7 +119,7 @@ def _cooked_template(devtools_bin: str) -> str:
     """Return the hook template with ``@DEVTOOLS_BIN@`` substituted."""
     return COMMIT_MSG_TEMPLATE.replace("@DEVTOOLS_BIN@", devtools_bin)
 
-def install_hook(hook_path: Path, devtools_bin: Optional[str] = None, force: bool = False) -> None:
+def install_hook(hook_path: Path, devtools_bin: str | None = None, force: bool = False) -> None:
     """Write the commit-msg hook to *hook_path*.
 
     Raises SystemExit(1) when *hook_path* exists and is not devtools-managed
@@ -164,11 +163,11 @@ def uninstall_hook(hook_path: Path, force: bool = False) -> None:
     hook_path.unlink()
     print(f"removed {hook_path}")
 
-def show_template(devtools_bin: Optional[str] = None) -> str:
+def show_template(devtools_bin: str | None = None) -> str:
     """Return the hook template that would be installed."""
     return _cooked_template(_resolve_devtools_bin(devtools_bin))
 
-def check_hook(hook_path: Path, devtools_bin: Optional[str] = None) -> int:
+def check_hook(hook_path: Path, devtools_bin: str | None = None) -> int:
     """CI drift-gate: exit 1 if the installed hook differs from the bundled one.
 
     Returns 0 when up-to-date, 1 when drifted or missing.

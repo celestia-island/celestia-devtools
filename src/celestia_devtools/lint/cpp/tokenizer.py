@@ -48,7 +48,7 @@ raw strings and conditionals are emitted with an entry in Tokenized.warnings.
 from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 IDENT = "IDENT"
 NUMBER = "NUMBER"
@@ -274,7 +274,7 @@ class _scanner:
         self._warn(quote_index, "unterminated character literal")
         return self.length
 
-    def _raw_string(self, start: int, quote_index: int) -> Optional[int]:
+    def _raw_string(self, start: int, quote_index: int) -> int | None:
         """Scan a raw string; return exclusive end, or None for a bad opener."""
         index = quote_index + 1
         delimiter_start = index

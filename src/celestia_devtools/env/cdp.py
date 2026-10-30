@@ -37,7 +37,6 @@ import os
 import socket
 import struct
 import time
-from typing import Optional
 from urllib.parse import urlsplit
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -66,7 +65,7 @@ class cdp_error(Exception):
     payload).
     """
 
-    def __init__(self, code: str, message: str, details: Optional[dict] = None):
+    def __init__(self, code: str, message: str, details: dict | None = None):
         super().__init__(message)
         self.code = code
         self.details = dict(details or {})
@@ -373,7 +372,7 @@ def list_targets(port: int, timeout: float = 5.0) -> list[dict]:
 
     return [item for item in data if isinstance(item, dict)]
 
-def select_page_target(targets: list[dict], prefer_url: str = "", target_id: str = "") -> Optional[dict]:
+def select_page_target(targets: list[dict], prefer_url: str = "", target_id: str = "") -> dict | None:
     """Pick the target to drive.
 
     An explicit target_id wins (whatever its type); otherwise devtools:// and
@@ -404,7 +403,7 @@ def select_page_target(targets: list[dict], prefer_url: str = "", target_id: str
 def wait_for_page(port: int, timeout: float = DEFAULT_TIMEOUT, interval: float = 0.1, prefer_url: str = "", target_id: str = "") -> tuple[dict, int]:
     """Poll /json/list until a page target exists; return (page, elapsed_ms)."""
     started = time.monotonic()
-    last_error: Optional[cdp_error] = None
+    last_error: cdp_error | None = None
 
     while True:
         try:
@@ -443,7 +442,7 @@ class cdp_client:
         self.events: list[dict] = []
 
     @classmethod
-    def connect(cls, port: int, target: Optional[dict] = None, timeout: float = DEFAULT_TIMEOUT) -> "cdp_client":
+    def connect(cls, port: int, target: dict | None = None, timeout: float = DEFAULT_TIMEOUT) -> "cdp_client":
         page = target if target is not None else wait_for_page(port, timeout = timeout)[0]
         url = str(page.get("webSocketDebuggerUrl", ""))
 
@@ -453,7 +452,7 @@ class cdp_client:
         connection = websocket_connection.connect(url, timeout = timeout)
         return cls(connection, page, port)
 
-    def request(self, method: str, params: Optional[dict] = None) -> dict:
+    def request(self, method: str, params: dict | None = None) -> dict:
         self.next_id += 1
         message_id = self.next_id
         self.connection.send_text(json.dumps({"id": message_id, "method": method, "params": params or {}}))
@@ -501,7 +500,7 @@ class cdp_client:
         result = self.evaluate(expression, await_promise = await_promise, return_by_value = return_by_value, user_gesture = user_gesture)
         return result.get("value")
 
-    def screenshot(self, image_format: str = "png", quality: Optional[int] = None) -> bytes:
+    def screenshot(self, image_format: str = "png", quality: int | None = None) -> bytes:
         """Page.captureScreenshot returned as raw image bytes."""
         self.request("Page.enable")
         params: dict = {"format": image_format}

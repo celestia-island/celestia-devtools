@@ -28,7 +28,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 from celestia_devtools.lint.cpp.tokenizer import (NEWLINE, OP, PREPROC, TRIVIA, directive, token_record, tokenized, split_lines, tokenize_bytes)
 
 _OPENERS = {"(": "(", "[": "[", "{": "{"}
@@ -69,7 +69,7 @@ class analyzed_file:
     brace_depth: List[int] = field(default_factory = list)
 
     # -- token navigation -------------------------------------------------
-    def next_code(self, position: int) -> Optional[Tuple[int, token_record]]:
+    def next_code(self, position: int) -> Tuple[int, token_record] | None:
         """The code token after *position*, as (position, token)."""
         following = position + 1
 
@@ -78,7 +78,7 @@ class analyzed_file:
 
         return following, self.code[following]
 
-    def prev_code(self, position: int) -> Optional[Tuple[int, token_record]]:
+    def prev_code(self, position: int) -> Tuple[int, token_record] | None:
         """The code token before *position*, as (position, token)."""
         previous = position - 1
 

@@ -70,7 +70,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Sequence, Tuple
 
 # ---------------------------------------------------------------------------
 # 策略表
@@ -101,7 +101,7 @@ _DEFAULT_TIMEOUT = 120
 # 自托管判定的关键字（出现在 runs-on 里即视为自托管）。
 _SELF_HOSTED_LABEL = "self-hosted"
 
-def suggest(job_name: str, runs_on: Union[str, Sequence[str], None], job_body_text: str) -> int:
+def suggest(job_name: str, runs_on: str | Sequence[str] | None, job_body_text: str) -> int:
     """Return the suggested ``timeout-minutes`` for a job.
 
     Match order (job names are case-insensitive; *job_body_text* is that job's own raw YAML
@@ -198,7 +198,7 @@ def _leading_ws(content: str) -> str:
     """Return the leading whitespace (spaces and tabs) of a line."""
     return content[: len(content) - len(content.lstrip(" \t"))]
 
-def _indent_of(content: str) -> Optional[int]:
+def _indent_of(content: str) -> int | None:
     """Return the indentation width of a line, or ``None`` for a blank line."""
     stripped = content.lstrip(" ")
 
@@ -212,7 +212,7 @@ def _is_blank_or_comment(content: str) -> bool:
     stripped = content.strip()
     return (stripped == "") or stripped.startswith("#")
 
-def _parse_key(content: str) -> Optional[Tuple[str, str]]:
+def _parse_key(content: str) -> Tuple[str, str] | None:
     """Split ``key: rest`` into ``(key, rest)``, or return ``None`` when it is not a key line.
 
     *key* is unquoted (``"test":`` becomes ``test``). *rest* is stripped and has its trailing
@@ -334,7 +334,7 @@ def _block_scalar_body_lines(lines: Sequence[str]) -> set:
 
     return opaque
 
-def _reject_tab_indentation(lines: Sequence[str], path: Path, opaque: Optional[set] = None) -> None:
+def _reject_tab_indentation(lines: Sequence[str], path: Path, opaque: set | None = None) -> None:
     """Fail on a tab in the leading whitespace: the indent width is unknowable, so do not guess.
 
     Tabs inside *opaque* (block scalar body) lines are content rather than indentation and
@@ -447,7 +447,7 @@ def _parse_scalar_list(rest: str, lines: Sequence[str], first: int, last: int) -
     raw = " ".join(_entry_continuation_text(lines, first, last)).strip()
     return [raw] if raw else []
 
-def _parse_timeout_value(rest: str, lines: Sequence[str], first: int, last: int) -> Union[int, str, None]:
+def _parse_timeout_value(rest: str, lines: Sequence[str], first: int, last: int) -> int | str | None:
     """Read an existing ``timeout-minutes`` value: ``int`` when possible, otherwise the raw string."""
 
     if _has_inline_value(rest):
@@ -473,14 +473,14 @@ class job_record:
         self.indent = indent
         self.body_text = body_text
         # 锚点：runs-on 优先，其次 uses（reusable workflow caller）。
-        self.anchor: Optional[str] = None
+        self.anchor: str | None = None
         self.anchor_line: int = -1
         self.anchor_text: str = ""
         self.insert_at: int = -1
         self.insert_indent: str = ""
-        self.runs_on: Optional[List[str]] = None
-        self.uses: Optional[str] = None
-        self.timeout_minutes: Union[int, str, None] = None
+        self.runs_on: List[str] | None = None
+        self.uses: str | None = None
+        self.timeout_minutes: int | str | None = None
         self.has_timeout = False
         self.self_hosted = False
         self.is_caller = False
@@ -618,7 +618,7 @@ def scan_workflow_text(text: str, path: Path, rel: str) -> workflow_scan:
 
     return workflow_scan(path, rel, lines, jobs)
 
-def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block_end: int, opaque: Optional[set] = None) -> job_record:
+def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block_end: int, opaque: set | None = None) -> job_record:
     """Scan one job block: locate job-level properties, the anchor and the insertion point."""
     skip = opaque or set()
     body_text = "".join(lines[key_line:block_end])
@@ -626,7 +626,7 @@ def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block
 
     # job 级属性的缩进 = 块内所有键行的最小缩进（步骤里的 ``- timeout-minutes`` 会更
     # 深，因此不会被误判成 job 级 timeout）。
-    property_indent: Optional[int] = None
+    property_indent: int | None = None
 
     for index in range(key_line + 1, block_end):
         if index in skip:
@@ -838,7 +838,7 @@ def _apply_insertions(lines: List[str], edits: Sequence[Tuple[int, str, int]], d
 # 子命令
 # ---------------------------------------------------------------------------
 
-def _repository_roots(raw_paths: Sequence[str]) -> Tuple[List[Path], Optional[int]]:
+def _repository_roots(raw_paths: Sequence[str]) -> Tuple[List[Path], int | None]:
     """Resolve the PATH arguments (default: current directory); a missing path is a usage error."""
 
     if not raw_paths:
@@ -888,8 +888,8 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
     hosted_missing = hosted_total = 0
     caller_missing = caller_total = 0
     lines_out: List[str] = []
-    current_root: Optional[Path] = None
-    current_rel: Optional[str] = None
+    current_root: Path | None = None
+    current_rel: str | None = None
     width = 0
 
     for root, scan in scanned:
@@ -1048,7 +1048,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     return parser
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point; returns the exit code (0 success / 1 missing timeout / 2 usage or parse error)."""
     parser = _build_parser()
     args = parser.parse_args(argv)

@@ -36,7 +36,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 try:  # PyYAML is already a hard dependency of this package.
     import yaml
@@ -195,7 +195,7 @@ def is_repo_local(path: Path, root: Path) -> bool:
 
     return False
 
-def split_frontmatter(text: str) -> Optional[Tuple[str, str]]:
+def split_frontmatter(text: str) -> Tuple[str, str] | None:
     if not text.startswith("---"):
         return None
 
@@ -421,7 +421,7 @@ def check_duplication(ctx: context, allowlist: Iterable[str] = (), include_repo_
             else:
                 seen[line] = (path, idx)
 
-def check_stale_paths(ctx: context, path_root: Optional[str] = None) -> None:
+def check_stale_paths(ctx: context, path_root: str | None = None) -> None:
     """Absolute paths quoted in an injected surface should exist.
 
     A tooling migration that renames scripts leaves the rules pointing at files that no
@@ -469,14 +469,14 @@ def check_secrets(ctx: context) -> None:
 
 RULES = (("skill-frontmatter", check_skill_frontmatter), ("pointer-target", check_pointers), ("dead-reference", check_dead_references), ("ledger-schema", check_ledger_schema), ("secret-in-injected-surface", check_secrets), ("duplicate-rule", check_duplication), ("stale-path", check_stale_paths))
 
-def find_root(start: Path) -> Optional[Path]:
+def find_root(start: Path) -> Path | None:
     for candidate in [start, *start.parents]:
         if (candidate / CORE_NAME).is_file():
             return candidate
 
     return None
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-rules-lint", description = "Lint a layered workspace-rules tree (core AGENTS.md + ledgers + skills).")
     parser.add_argument("root", nargs = "?", default = ".", help = "rules root (default: search upward for AGENTS.md)")
     parser.add_argument("--json", action = "store_true", help = "emit findings as JSON")

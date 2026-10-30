@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 from celestia_devtools.repo.register_patches import is_celestia_repo
 
 # ── Service definitions ──────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ SERVICE_DEFS: dict[str, dict] = {"shittim-chest": {"bin": "chest", "build_cmd": 
 DEFAULT_CONFIG_PATH = "/etc/malkuth/services.toml"
 DAEMON_PID_FILE = "/tmp/malkuth-daemon.pid"
 
-def detect_repo() -> Optional[str]:
+def detect_repo() -> str | None:
     d = Path.cwd()
 
     while d != d.parent:
@@ -47,7 +47,7 @@ def detect_repo() -> Optional[str]:
 
     return None
 
-def _find_sibling_dir(repo: str) -> Optional[Path]:
+def _find_sibling_dir(repo: str) -> Path | None:
     d = Path.cwd().parent / repo
 
     if d.is_dir() and (d / "Cargo.toml").exists():
@@ -217,7 +217,7 @@ def _daemon_running() -> bool:
     except OSError:
         return False
 
-def _read_pid() -> Optional[int]:
+def _read_pid() -> int | None:
     try:
         return int(Path(DAEMON_PID_FILE).read_text().strip())
     except (FileNotFoundError, ValueError):
@@ -225,7 +225,7 @@ def _read_pid() -> Optional[int]:
 
 # ── CLI dispatch ─────────────────────────────────────────────────────────────
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
 
     if not args:

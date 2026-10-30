@@ -58,7 +58,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 from celestia_devtools.vcs.commit_msg import GITMOJI_WHITELIST
 
 API_ROOT = "https://api.github.com"
@@ -105,14 +105,14 @@ def _normalize(emoji: str) -> str:
     """Drop the variation selector so both ⚡ and ⚡️ map to one key."""
     return emoji.replace("\ufe0f", "")
 
-def match_gitmoji(subject: str) -> Optional[str]:
+def match_gitmoji(subject: str) -> str | None:
     """Return the longest whitelisted gitmoji prefixing *subject*, if any.
 
     The whitelist pins the canonical VS16 spellings, but subjects in the wild
     sometimes drop the variation selector — match both forms so classification
     never hinges on an invisible codepoint.
     """
-    best: Optional[str] = None
+    best: str | None = None
 
     for emoji in GITMOJI_WHITELIST:
         for candidate in (emoji, _normalize(emoji)):
@@ -121,7 +121,7 @@ def match_gitmoji(subject: str) -> Optional[str]:
 
     return best
 
-def parse_subject(subject: str) -> Tuple[Optional[int], str]:
+def parse_subject(subject: str) -> Tuple[int | None, str]:
     """Split a squash subject into ``(pr_number_or_None, title)``."""
     m = _PR_SUFFIX_RE.match(subject.strip())
 
@@ -152,7 +152,7 @@ class git_hub_error(RuntimeError):
 class not_found_error(git_hub_error):
     """The requested resource does not exist (HTTP 404)."""
 
-def resolve_token() -> Optional[str]:
+def resolve_token() -> str | None:
     """Token from the environment, falling back to the local ``gh`` login."""
 
     for var in ("GH_TOKEN", "GITHUB_TOKEN"):
@@ -174,7 +174,7 @@ def resolve_token() -> Optional[str]:
 
     return None
 
-def _headers(token: Optional[str]) -> Dict[str, str]:
+def _headers(token: str | None) -> Dict[str, str]:
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "celestia-devtools"}
 
     if token:
@@ -182,7 +182,7 @@ def _headers(token: Optional[str]) -> Dict[str, str]:
 
     return headers
 
-def _request(method: str, url: str, token: Optional[str], payload: Optional[Dict[str, Any]] = None) -> Tuple[int, Any]:
+def _request(method: str, url: str, token: str | None, payload: Dict[str, Any] | None = None) -> Tuple[int, Any]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     req = urllib.request.Request(url, data = data, method = method, headers = _headers(token))
 
@@ -197,7 +197,7 @@ def _request(method: str, url: str, token: Optional[str], payload: Optional[Dict
         detail = exc.read().decode("utf-8", "replace")[:500]
         raise git_hub_error(f"{method} {url} failed: HTTP {exc.code}: {detail}") from exc
 
-def make_fetch(token: Optional[str]) -> fetch:
+def make_fetch(token: str | None) -> fetch:
     """Build a GET-and-parse-JSON function with all rate-limit handling inline."""
 
     def fetch(url: str) -> Any:
@@ -212,7 +212,7 @@ def make_fetch(token: Optional[str]) -> fetch:
 # v0.2.9, flasher-v1.2.3 … match; floating tags (fonts, res-latest) do not.
 _SEMVER_RE = re.compile(r"^(?:[A-Za-z0-9]+-)?v?(\d+)\.(\d+)(?:\.(\d+))?$")
 
-def parse_semver(tag: str) -> Optional[Tuple[int, int, int]]:
+def parse_semver(tag: str) -> Tuple[int, int, int] | None:
     m = _SEMVER_RE.match(tag.strip())
 
     if m is None:
@@ -220,7 +220,7 @@ def parse_semver(tag: str) -> Optional[Tuple[int, int, int]]:
 
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
 
-def resolve_previous_tag(repo: str, tag: str, fetch: fetch, max_pages: int = 50) -> Optional[str]:
+def resolve_previous_tag(repo: str, tag: str, fetch: fetch, max_pages: int = 50) -> str | None:
     """Highest semver tag below *tag*; ``None`` when *tag* is not semver-shaped."""
     current = parse_semver(tag)
 
@@ -241,8 +241,8 @@ def resolve_previous_tag(repo: str, tag: str, fetch: fetch, max_pages: int = 50)
         if len(batch) < 100:
             break
 
-    best_name: Optional[str] = None
-    best_version: Optional[Tuple[int, int, int]] = None
+    best_name: str | None = None
+    best_version: Tuple[int, int, int] | None = None
 
     for name in names:
         version = parse_semver(name)
@@ -266,7 +266,7 @@ def tag_commit_sha(repo: str, tag: str, fetch: fetch) -> str:
 
     return obj["sha"]
 
-def find_release(repo: str, tag: str, fetch: fetch, max_pages: int = 10) -> Optional[Dict[str, Any]]:
+def find_release(repo: str, tag: str, fetch: fetch, max_pages: int = 10) -> Dict[str, Any] | None:
     """The release object for *tag*, drafts included.
 
     ``GET /releases/tags/{tag}`` skips drafts, so fall back to paging the
@@ -315,7 +315,7 @@ def walk_head(repo: str, tag: str, fetch: fetch, on: str) -> str:
 
 # ── commit walking → categorized entries ─────────────────────────────────────
 
-def collect_entries(repo: str, tag: str, previous_tag: Optional[str], fetch: fetch, max_pages: int = 500) -> Tuple[List[Tuple[str, List[Tuple[int, str]]]], int]:
+def collect_entries(repo: str, tag: str, previous_tag: str | None, fetch: fetch, max_pages: int = 500) -> Tuple[List[Tuple[str, List[Tuple[int, str]]]], int]:
     """Walk commits from *tag* back to *previous_tag* and group PRs by section.
 
     Returns ``(sections, skipped)`` where *sections* preserves the fixed
@@ -323,7 +323,7 @@ def collect_entries(repo: str, tag: str, previous_tag: Optional[str], fetch: fet
     title)`` in chronological order; *skipped* counts commits without a
     ``(#N)`` reference.
     """
-    prev_sha: Optional[str] = None
+    prev_sha: str | None = None
 
     if previous_tag:
         try:
@@ -377,7 +377,7 @@ def collect_entries(repo: str, tag: str, previous_tag: Optional[str], fetch: fet
 
     return sections, skipped
 
-def build_body(repo: str, tag: str, previous_tag: Optional[str], sections: List[Tuple[str, List[Tuple[int, str]]]]) -> str:
+def build_body(repo: str, tag: str, previous_tag: str | None, sections: List[Tuple[str, List[Tuple[int, str]]]]) -> str:
     """Render the standard release body (matches GitHub's own voice)."""
     lines = ["## What's Changed", ""]
 
@@ -402,7 +402,7 @@ def build_body(repo: str, tag: str, previous_tag: Optional[str], sections: List[
 
 # ── release upsert ───────────────────────────────────────────────────────────
 
-def upsert_release(repo: str, tag: str, body: str, token: Optional[str], title: Optional[str] = None, publish: bool = False) -> str:
+def upsert_release(repo: str, tag: str, body: str, token: str | None, title: str | None = None, publish: bool = False) -> str:
     """Set the body on the tag's release, creating a draft when missing.
 
     An existing release keeps its draft/published state (only the body — and
@@ -427,7 +427,7 @@ def upsert_release(repo: str, tag: str, body: str, token: Optional[str], title: 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools release-notes", description = "Generate categorized GitHub release notes from squash-merged " "PR subjects (grouped by leading gitmoji).")
     parser.add_argument("--repo", default = os.environ.get("GITHUB_REPOSITORY"), help = "owner/name (default: $GITHUB_REPOSITORY)")
     parser.add_argument("--tag", default = os.environ.get("GITHUB_REF_NAME"), help = "tag to release (default: $GITHUB_REF_NAME, as on a tag push)")

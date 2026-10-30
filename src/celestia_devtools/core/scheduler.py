@@ -32,17 +32,17 @@ A :class:`Step` is a 4-tuple ``(name, cmd, deps, cwd)``:
 
 from __future__ import annotations
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Callable, Dict, List, NamedTuple, Tuple
 
 # A command is either an external argv list or an in-process callable that
 # returns a status string ("PASS" / "FAIL" / "SKIP").
-step_command = Union[List[str], Callable[[], str]]
+step_command = List[str] | Callable[[], str]
 
 class Step(NamedTuple):
     name: str
-    cmd: Optional[step_command]
+    cmd: step_command | None
     deps: Tuple[str, ...] = ()
-    cwd: Optional[str] = None
+    cwd: str | None = None
 
 # A runner executes one step and returns its status string.
 runner = Callable[[Step], str]
@@ -81,13 +81,13 @@ def validate_steps(steps: List[Step]) -> List[str]:
 
     return problems
 
-def _find_cycle(by_name: Dict[str, Step]) -> Optional[List[str]]:
+def _find_cycle(by_name: Dict[str, Step]) -> List[str] | None:
     """Return one dependency cycle as a list of step names, or ``None``."""
     WHITE, GRAY, BLACK = 0, 1, 2
     color: Dict[str, int] = {n: WHITE for n in by_name}
     path: List[str] = []
 
-    def dfs(node: str) -> Optional[List[str]]:
+    def dfs(node: str) -> List[str] | None:
         color[node] = GRAY
         path.append(node)
 
@@ -143,7 +143,7 @@ def run_dag(steps: List[Step], runner: runner, jobs: int = 1) -> Dict[str, str]:
     statuses: Dict[str, str] = {}
     remaining = set(by_name)
 
-    def ready(step: Step) -> Optional[bool]:
+    def ready(step: Step) -> bool | None:
         """Return True (run), False (skip — dep failed), or None (wait)."""
 
         for dep in step.deps:

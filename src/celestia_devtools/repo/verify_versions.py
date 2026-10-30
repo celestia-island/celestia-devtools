@@ -97,7 +97,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import List, Sequence
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -137,9 +137,9 @@ class verify_result:
     """Detection outcome for one repo (rendering is a separate concern)."""
 
     repo: str
-    cargo_base: Optional[str] = None
-    npm_base: Optional[str] = None
-    python_base: Optional[str] = None
+    cargo_base: str | None = None
+    npm_base: str | None = None
+    python_base: str | None = None
     drifts: List[drift] = field(default_factory = list)
     # Non-drift failures: a present track whose baseline could not be resolved.
     # These fail the gate exactly like drifts do (fail-closed, S1-1).
@@ -161,7 +161,7 @@ class verify_result:
 
 # ── Manifest helpers ─────────────────────────────────────────────────────────
 
-def _load_toml(path: Path) -> tuple[Optional[dict], Optional[str]]:
+def _load_toml(path: Path) -> tuple[dict | None, str | None]:
     """Parse a TOML file.
 
     Returns ``(data, None)`` on success, ``(None, None)`` when the file is
@@ -201,7 +201,7 @@ def _no_duplicate_keys(pairs):
 
     return dict(pairs)
 
-def _load_json(path: Path) -> tuple[Optional[dict], Optional[str]]:
+def _load_json(path: Path) -> tuple[dict | None, str | None]:
     """Parse a JSON object file; see :func:`_load_toml` for the contract
     (absent → ``(None, None)``; corrupt → ``(None, reason)``, with
     duplicate keys detected explicitly)."""
@@ -249,7 +249,7 @@ def _is_example_crate(repo: Path, manifest: Path) -> bool:
 
 # ── Track presence (fail-closed baselines, S1-1) ─────────────────────────────
 
-def cargo_track_present(repo: Path, errors: Optional[List[str]] = None) -> bool:
+def cargo_track_present(repo: Path, errors: List[str] | None = None) -> bool:
     """True when any gated Cargo.toml in the repo declares a version at all.
 
     Presence is what turns "no baseline" from an acceptable "track absent"
@@ -315,7 +315,7 @@ def npm_track_present(repo: Path) -> bool:
 
 # ── Exemption config (.versions.toml) ────────────────────────────────────────
 
-def load_versions_config(repo: Path, errors: Optional[List[str]] = None) -> dict:
+def load_versions_config(repo: Path, errors: List[str] | None = None) -> dict:
     """Load ``.versions.toml`` if present, else an empty config dict.
 
     A PRESENT but unparseable config is recorded into ``errors`` when a
@@ -372,7 +372,7 @@ def _is_exempt(package_id: str, patterns: set) -> bool:
 
 # ── cargo track ──────────────────────────────────────────────────────────────
 
-def detect_cargo_base(repo: Path, override: Optional[str], errors: Optional[List[str]] = None) -> Optional[str]:
+def detect_cargo_base(repo: Path, override: str | None, errors: List[str] | None = None) -> str | None:
     if override is not None:
         return _norm_version(override)
 
@@ -419,7 +419,7 @@ def detect_cargo_base(repo: Path, override: Optional[str], errors: Optional[List
 
     return None
 
-def collect_cargo_drifts(repo: Path, base: Optional[str], exempt: set[str], errors: Optional[List[str]] = None) -> List[drift]:
+def collect_cargo_drifts(repo: Path, base: str | None, exempt: set[str], errors: List[str] | None = None) -> List[drift]:
     if base is None:
         return []
 
@@ -464,7 +464,7 @@ def collect_cargo_drifts(repo: Path, base: Optional[str], exempt: set[str], erro
 
 # ── npm track ────────────────────────────────────────────────────────────────
 
-def detect_npm_base(repo: Path, override: Optional[str], errors: Optional[List[str]] = None) -> Optional[str]:
+def detect_npm_base(repo: Path, override: str | None, errors: List[str] | None = None) -> str | None:
     if override is not None:
         return _norm_version(override)
 
@@ -496,7 +496,7 @@ def detect_npm_base(repo: Path, override: Optional[str], errors: Optional[List[s
 
     return None
 
-def npm_baseline_source(repo: Path, override: Optional[str]) -> str:
+def npm_baseline_source(repo: Path, override: str | None) -> str:
     """Which declaration the npm baseline came from.
 
     ``"override"`` (a ``[track] npm`` pin), ``"root"`` (a public root
@@ -516,7 +516,7 @@ def npm_baseline_source(repo: Path, override: Optional[str]) -> str:
 
     return "majority"
 
-def collect_npm_drifts(repo: Path, base: Optional[str], exempt: set[str], errors: Optional[List[str]] = None, publishable_only: bool = False) -> List[drift]:
+def collect_npm_drifts(repo: Path, base: str | None, exempt: set[str], errors: List[str] | None = None, publishable_only: bool = False) -> List[drift]:
     if base is None:
         return []
 
@@ -556,7 +556,7 @@ def _is_python_helper(repo: Path, manifest: Path) -> bool:
     parts = manifest.parent.relative_to(repo).parts
     return any(part in _PY_HELPER_SEGMENTS for part in parts)
 
-def _python_version_field(data: dict) -> tuple[Optional[str], object]:
+def _python_version_field(data: dict) -> tuple[str | None, object]:
     """Return ``(source, raw_version)`` for a pyproject-shaped table.
 
     ``source`` is ``"project"`` (PEP 621), ``"poetry"`` or ``"dynamic"`` when
@@ -588,7 +588,7 @@ def _python_version_field(data: dict) -> tuple[Optional[str], object]:
 
     return None, None
 
-def _python_declared_version(data: dict) -> Optional[str]:
+def _python_declared_version(data: dict) -> str | None:
     """Static, non-empty string version from ``[project]`` or ``[tool.poetry]``."""
     _source, raw = _python_version_field(data)
 
@@ -598,7 +598,7 @@ def _python_declared_version(data: dict) -> Optional[str]:
     normalized = _norm_version(raw)
     return normalized or None
 
-def detect_python_base(repo: Path, override: Optional[str], errors: Optional[List[str]] = None) -> Optional[str]:
+def detect_python_base(repo: Path, override: str | None, errors: List[str] | None = None) -> str | None:
     if override is not None:
         return _norm_version(override)
 
@@ -635,7 +635,7 @@ def python_track_present(repo: Path) -> bool:
     source, _raw = _python_version_field(data)
     return (source is not None) and (source != "dynamic")
 
-def collect_python_drifts(repo: Path, base: Optional[str], exempt: set, errors: Optional[List[str]] = None) -> List[drift]:
+def collect_python_drifts(repo: Path, base: str | None, exempt: set, errors: List[str] | None = None) -> List[drift]:
     if base is None:
         return []
 
@@ -674,7 +674,7 @@ def collect_python_drifts(repo: Path, base: Optional[str], exempt: set, errors: 
 
     return drifts
 
-def _python_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = None) -> List[drift]:
+def _python_root_drifts(repo: Path, base: str, errors: List[str] | None = None) -> List[drift]:
     """Compare the root pyproject against a ``[track] python`` pin.
 
     The parse failure is reported here because :func:`detect_python_base`
@@ -708,7 +708,7 @@ def _python_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = Non
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
-def _cargo_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = None) -> List[drift]:
+def _cargo_root_drifts(repo: Path, base: str, errors: List[str] | None = None) -> List[drift]:
     """Compare the root manifest's own declared version against a pinned base.
 
     Only meaningful when the baseline came from a ``[track]`` override: with
@@ -730,7 +730,7 @@ def _cargo_root_drifts(repo: Path, base: str, errors: Optional[List[str]] = None
     if not root:
         return []
 
-    declared: Optional[str] = None
+    declared: str | None = None
     pkg = root.get("package")
 
     if isinstance(pkg, dict) and isinstance(pkg.get("version"), str):
@@ -849,7 +849,7 @@ def _render_json(result: verify_result, ok: bool) -> str:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools verify-versions", description = "Verify version consistency across cargo/npm/python tracks.")
     parser.add_argument("repo", nargs = "?", default = ".", help = "repository root to verify (default: current directory)")
     parser.add_argument("--json", action = "store_true", help = "emit a machine-readable JSON report instead of the drift table")

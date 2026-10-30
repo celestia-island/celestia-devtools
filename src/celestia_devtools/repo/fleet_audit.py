@@ -76,7 +76,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Sequence
 from celestia_devtools.repo.init import OPT_IN_GATES, PINNED_DEVTOOLS_REF, REQUIRED_WORKFLOWS, alias_warnings, devtools_ref_inputs_in, devtools_refs_in, opt_in_drift_warnings, unparsed_devtools_uses, unpinned_caller_warnings, workflow_drift_problems
 
 #: ``gate name → caller filename`` for the nine reusable workflows. The first
@@ -183,7 +183,7 @@ def discover_repositories(workspace: Path) -> List[Path]:
 
     return repositories
 
-def resolve_origin_ref(repo: Path) -> Optional[str]:
+def resolve_origin_ref(repo: Path) -> str | None:
     """The remote default-branch ref for *repo*, or ``None`` without a remote.
 
     Stale checkouts are the norm in this workspace (the 2026-10-24 audit found
@@ -467,7 +467,7 @@ def _render_error_json(workspace: Path, message: str) -> dict:
     # "true" for a run that never looked.
     return {"workspace": str(workspace.absolute()), "repositories": [], "summary": {"repositories": 0, "clean": 0, "with_problems": 0, "gates": gates, "pins_ok": False, "floating_repositories": None}, "errors": [message], "ok": False}
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools fleet-audit", description = "Report canonical-caller adoption across the workspace's git checkouts.")
     parser.add_argument("workspace", nargs = "?", default = ".", help = "workspace root holding the repositories (default: current directory)")
     parser.add_argument("--json", action = "store_true", help = "emit the machine-readable report on stdout")

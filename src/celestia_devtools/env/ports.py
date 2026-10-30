@@ -48,7 +48,7 @@ import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 from celestia_devtools.env.host import detect_host_kind
 import ctypes
 
@@ -78,7 +78,7 @@ def _preferred(app: str, kind: str) -> int:
     offset = int.from_bytes(hashlib.sha256(app.encode("utf-8")).digest()[: 2], "big") % (SCAN_WINDOW // 2)
     return KINDS[kind] + offset
 
-def _posix_process_state(pid: int) -> Optional[str]:
+def _posix_process_state(pid: int) -> str | None:
     """One-letter /proc/<pid>/stat state (Z = zombie), or None when unreadable."""
 
     try:
@@ -94,7 +94,7 @@ def _posix_process_state(pid: int) -> Optional[str]:
     fields = stat_text[closing + 2:].split()
     return fields[0] if fields else None
 
-def pid_alive(pid: Optional[int]) -> bool:
+def pid_alive(pid: int | None) -> bool:
     """Is the process running (not merely present as an unreaped zombie)?
 
     POSIX: os.kill(pid, 0) succeeds for a ZOMBIE too, so an exited-but-unreaped
@@ -316,7 +316,7 @@ def claim(app: str, kind: str, port: int, pid: int) -> None:
         entries[f"{app}:{kind}"] = {"port": int(port), "pid": int(pid), "ts": int(time.time())}
         _save(path, entries)
 
-def release(app: str, kind: Optional[str]) -> int:
+def release(app: str, kind: str | None) -> int:
     path = registry_path()
 
     with registry_lock(path):
@@ -367,7 +367,7 @@ def env_exports(app: str) -> dict[str, str]:
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "ports", description = __doc__.splitlines()[0])
     sub = parser.add_subparsers(dest = "cmd", required = True)
 

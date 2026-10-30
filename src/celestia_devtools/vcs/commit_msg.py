@@ -44,7 +44,7 @@ import argparse
 import re
 import subprocess
 import sys
-from typing import List, Optional
+from typing import List
 
 # ── gitmoji.dev canonical emoji set ───────────────────────────────────────────
 # Sourced from https://gitmoji.dev.  Each entry is the raw emoji character
@@ -184,13 +184,13 @@ def _trim_gitmoji(subject: str) -> str:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def repo_allows_cjk(repo: Optional[str]) -> bool:
+def repo_allows_cjk(repo: str | None) -> bool:
     """True when *repo* (bare name, e.g. ``easy-hydro-miniprogram``) is exempt
     from the English-only rule per the org decision.  ``None``/unknown repos
     keep the strict English convention."""
     return (repo or "") in EASY_HYDRO_REPOS
 
-def repo_name_from_gh_flag(args: List[str]) -> Optional[str]:
+def repo_name_from_gh_flag(args: List[str]) -> str | None:
     """Extract the bare repo name from a gh ``--repo owner/name`` / ``-R`` flag
     anywhere in *args*; ``None`` when the flag is absent."""
 
@@ -203,7 +203,7 @@ def repo_name_from_gh_flag(args: List[str]) -> Optional[str]:
 
     return None
 
-def repo_name_from_git_remote(cwd: Optional[str] = None) -> Optional[str]:
+def repo_name_from_git_remote(cwd: str | None = None) -> str | None:
     """Bare repo name from the ``origin`` remote URL of *cwd* (best effort;
     mirrors gate.py's ``_repo_name`` remote branch).  Falls back to the
     directory name, then ``None`` outside any repository."""

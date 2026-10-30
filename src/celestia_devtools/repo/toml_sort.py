@@ -14,7 +14,7 @@ import io
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Sequence
 
 # ── Known celestia-island packages published to crates.io ──────────────────
 CELESTIA_CRATES: frozenset[str] = frozenset({"kirino", "kirino-session", "kirino-macro", "yuuka"})
@@ -196,7 +196,7 @@ def sort_toml_deps(text: str) -> str:
 
     return "".join(result_lines)
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
 
     if not args or (args[0] in ("-h", "--help", "help")):
