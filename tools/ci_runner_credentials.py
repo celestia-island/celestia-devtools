@@ -131,11 +131,7 @@ def insteadof_rules() -> list[tuple[str, str]]:
 
 #: Settings that keep a flaky egress path from turning a checkout red; see the
 #: emitter below for the evidence and `_ledger/known-live-issues.md` H7/H8.
-GIT_EGRESS_RESILIENCE = (
-    ("http.version", "HTTP/1.1"),
-    ("http.lowSpeedLimit", "1000"),
-    ("http.lowSpeedTime", "20"),
-)
+GIT_EGRESS_RESILIENCE = (("http.version", "HTTP/1.1"), ("http.lowSpeedLimit", "1000"), ("http.lowSpeedTime", "20"))
 
 def patch_cargo_net_config(text: str) -> str:
     """Ensure ``[net] git-fetch-with-cli = true`` in ~/.cargo/config.toml.
