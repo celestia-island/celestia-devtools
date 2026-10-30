@@ -1014,7 +1014,7 @@ class test_cli:
         code, out, err = run_cli(capsys, ["list-rules"])
         assert code == 0
         assert err == ""
-        assert "8 rule(s)" in out
+        assert ("%d rule(s)" % len(RULES)) in out
 
         for rule in RULES:
             assert rule.id in out
@@ -1024,8 +1024,14 @@ class test_cli:
             for exception in rule.exceptions:
                 assert exception in out
 
-        assert len(RULES) == 8
-        assert RULE_IDS == ("no-space-before-paren", "for-semicolon-spacing", "control-braces", "one-statement-per-line", "line-comments-only", "include-block", "platform-header-allowlist", "platform-type-leak")
+        # Unfrozen 2026-10-31: the count may grow again. What stays pinned is
+        # catalog consistency -- unique ids, list-rules order == RULES order,
+        # and the module docstring's rule list (the operator-facing catalogue)
+        # cannot drift from the shipped rules.
+        assert len(RULES) == len(set(RULE_IDS))
+        assert [rule.id for rule in RULES] == list(RULE_IDS)
+        doc_lines = [line for line in cpp_style.__doc__.splitlines() if line.startswith("- ") and (" -- " in line)]
+        assert [line[2:].split(" -- ")[0] for line in doc_lines] == list(RULE_IDS)
 
     def test_list_rules_json(self, capsys):
         code, payload, err = run_json(capsys, ["list-rules", "--json"])
@@ -1176,7 +1182,23 @@ class test_fixtures:
         code, payload, _ = run_json(capsys, ["check", str(FIXTURES / "good"), "--no-config", "--json"])
         assert code == 0
         assert payload["issues"] == []
-        assert payload["summary"]["checked"] == 2
+        assert payload["summary"]["checked"] == 3
+
+    def test_c_sources_are_discovered(self, workspace, capsys):
+        # `.c` is scanned like any other source suffix (2026-10-31 ruling);
+        # the lexical rules apply to C apart from C++-only sugar.
+        write_files(workspace, {"src/main.c": "int run (int value);\n", "notes.txt": "not source\n"})
+        code, payload, _err = run_json(capsys, ["check", ".", "--no-config", "--json"])
+        assert code == 1
+        assert payload["summary"]["checked"] == 1
+        assert rule_ids(payload) == ["no-space-before-paren"]
+
+    def test_c_source_as_explicit_path_is_checked(self, workspace, capsys):
+        write_files(workspace, {"main.c": "int run (int value);\n"})
+        code, payload, _err = run_json(capsys, ["check", "main.c", "--no-config", "--json"])
+        assert code == 1
+        assert payload["summary"]["checked"] == 1
+        assert rule_ids(payload) == ["no-space-before-paren"]
 
     def test_bad_fixtures_report_expected_rules(self, capsys):
         code, payload, _ = run_json(capsys, ["check", str(FIXTURES / "bad"), "--no-config", "--json"])

@@ -294,12 +294,12 @@ ops-controlled supply line that the mirror sync advances.
 | `celestia-devtools p0-gate` | Fail a repo covered by an unresolved P0 (see below) |
 | `celestia-devtools py-style check .` | Check Python sources against the custom style rules (see below) |
 | `celestia-devtools py-style fix .` | Apply the safe auto-fixes in place (`--dry-run` previews) |
-| `celestia-devtools cpp-style check .` | Check C++ sources against the custom style rules (see below) |
+| `celestia-devtools cpp-style check .` | Check C and C++ sources against the custom style rules (see below) |
 | `celestia-devtools release-notes` | Generate categorized GitHub release notes for a tag (see below) |
 
 ## Style Checkers
 
-`py-style` and `cpp-style` enforce the org's custom Python/C++ layout rules
+`py-style` and `cpp-style` enforce the org's custom Python and C/C++ layout rules
 (keyword-argument spacing, single-line statements, block blank lines, import
 layout, naming, ...). Each module ships its rule catalog as data —
 `py-style list-rules` / `cpp-style list-rules` is the authoritative spec
@@ -309,7 +309,7 @@ layout, naming, ...). Each module ships its rule catalog as data —
 celestia-devtools py-style check src tests     # report violations (exit 1)
 celestia-devtools py-style fix src tests       # safe auto-fixes, AST-verified
 celestia-devtools py-style list-rules          # the rule catalog
-celestia-devtools cpp-style check src          # C++ subset (8 lexical checks)
+celestia-devtools cpp-style check src          # C and C++ lexical subset
 ```
 
 The division of labour is deliberate:
@@ -334,14 +334,16 @@ code exemption, and seven test modules exempt `imports-at-top` because
 `sys.path.insert` must precede the package import when tests run against a
 source checkout.
 
-Both checkers are **opt-in and currently unadopted**: no repository calls
-`style-lint.yml` — this repository's CI runs `py-style check` directly instead —
-and `cpp-style` has no consumer at all, because the family ships no C++ sources
-yet (the only `.cpp` files in the workspace are its own three test fixtures). `cpp-style` is therefore **frozen at its 8 rules**
-(`tests/test_cpp_style.py` pins the count so the freeze is a fact, not an
-intention): it keeps working and stays documented, but no new rules are added
-until a real target repository adopts it. Adopting either is one `uses:` line on
-`style-lint.yml@<pin>` with `tool: py-style` / `tool: cpp-style`.
+Both checkers are **opt-in**: no repository calls `style-lint.yml` yet — this
+repository's CI runs `py-style check` directly instead. `py-style` is the
+primary checker. `cpp-style` is **active but secondary** (2026-10-31 ruling,
+superseding the 2026-10-30 freeze): the family writes Rust, and this checker is
+the fallback layer for the native C/C++ pieces a service grows when it needs a
+lower-level high-performance path — not a first-class investment target, but no
+longer frozen either. It also checks **C** sources (`.c` is scanned): the rules
+are lexical and apply to C as-is apart from C++-only sugar. Adopting either is
+one `uses:` line on `style-lint.yml@<pin>` with `tool: py-style` /
+`tool: cpp-style`.
 
 Repos that adopt the conventions opt in with the reusable workflow (sub-minute,
 stdlib-only, safe on hosted runners):

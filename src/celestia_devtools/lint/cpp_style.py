@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Check C++ sources against the org's custom layout rules (check only, never writes).
+"""Check C and C++ sources against the org's custom layout rules (check only, never writes).
 
-The C++ style catalogue is deliberately a small lexical / lightweight-structural
-subset: eight rules that a stdlib-only scanner can decide without a compiler.
+The catalogue is deliberately a small lexical / lightweight-structural set of
+rules that a stdlib-only scanner can decide without a compiler. Positioning
+(2026-10-31 ruling): the family writes Rust and this checker is secondary but
+active -- the fallback layer for the native C/C++ pieces a service grows when
+it needs a lower-level high-performance path, and it checks C sources too,
+because the lexical rules apply to C as-is apart from C++-only sugar.
 The authoritative contract for each rule (source clause, severity, judgment and
 the exceptions that are deliberately not reported) is cpp-style list-rules.
 
@@ -96,8 +100,9 @@ from celestia_devtools.lint.cpp.rules import RULE_BY_ID, RULE_IDS, RULES
 from celestia_devtools.lint.cpp.structure import analyzed_file, finding_record, analyze
 from celestia_devtools.lint.cpp.tokenizer import COMMENT, token_record
 
-#: File suffixes the checker scans.
-SOURCE_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".inl"})
+#: File suffixes the checker scans. `.c` is deliberate (2026-10-31 ruling):
+#: the lexical rules apply to C as-is apart from C++-only sugar.
+SOURCE_SUFFIXES = frozenset({".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".inl"})
 
 #: Directories that are never scanned (the org rule exempts third-party code).
 DEFAULT_SKIP_DIRS = frozenset({".git", ".venv", "venv", "node_modules", "target", "build", "dist", "third_party", "vendor", "external", "generated", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache"})
