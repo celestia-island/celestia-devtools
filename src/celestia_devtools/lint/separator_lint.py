@@ -213,7 +213,7 @@ def main() -> int:
     parser.add_argument("paths", nargs = "+", help = "File or directory paths to scan")
     parser.add_argument("--fix", action = "store_true", help = "Apply fixes in-place (default: dry-run / check only)")
     parser.add_argument("--check-only", action = "store_true", help = "Alias for the default: report issues without modifying files")
-    parser.add_argument("--conflict-markers", action = "store_true", help = "Also flag (but cannot auto-fix) merge-conflict markers")
+    parser.add_argument("--conflict-markers", action = "store_true", help = "Fail on merge-conflict markers (default: report them without failing; they are never auto-fixed)")
 
     args = parser.parse_args()
 
@@ -243,7 +243,7 @@ def main() -> int:
                 for ln in sep_lines:
                     all_sep_lines.append(f"{tgt}:{ln}")
 
-            if conflict_lines and args.conflict_markers:
+            if conflict_lines:
                 for ln in conflict_lines:
                     all_conflict_lines.append(f"{tgt}:{ln}")
 
@@ -255,13 +255,19 @@ def main() -> int:
 
         returncode = 1
 
-    if all_conflict_lines:
+    if all_conflict_lines and args.conflict_markers:
         print("--- merge-conflict markers ---", file = sys.stderr)
 
         for item in all_conflict_lines:
             print(item, file = sys.stderr)
 
         returncode = 1
+    elif all_conflict_lines:
+        # Found but not failing. Every consumer runs this with no flags
+        # (`just lint-separators`), so defaulting to a failure would redden
+        # repositories because the tool was upgraded, not because they changed.
+        # Reporting the count keeps the gap visible; the failure needs the flag.
+        print(f"warning: {len(all_conflict_lines)} merge-conflict marker(s) found — pass --conflict-markers to fail on them", file = sys.stderr)
 
     if args.fix and all_sep_lines:
         fixed_count = 0

@@ -1,6 +1,9 @@
 """Tests for the Markdown formatting pipeline (doc/markdown.py)."""
 
+import sys
+import pytest
 from celestia_devtools.doc.markdown import (apply_fence_languages, format_markdown, normalize_table_separator, postprocess_lines, split_frontmatter, wrap_code_like_tokens)
+from celestia_devtools.doc.markdown import main as markdown_main
 
 class test_heading_spacing:
     def test_missing_space_after_hash(self):
@@ -101,3 +104,28 @@ class test_full_format:
     def test_strip_trailing_blanks(self):
         result = format_markdown("# Hello\n\n\n")
         assert not result.endswith("\n\n\n")
+
+class test_check_mode:
+    """`--check` is the CI gate; its exit code is the whole contract.
+
+    The `markdown-check` job runs `format-markdown . --check` and treats a
+    non-zero exit as the failure signal. `main()` only returns non-zero for a
+    missing target, so a file that would be rewritten never fails the job -- and
+    the tab and untranslated-paragraph warnings do not affect the exit code
+    either. The test below is marked `xfail(strict=True)` to keep that gap
+    executable instead of prose: whoever makes `--check` report its result will
+    turn this test green, and the strict marker will fail until it is removed.
+    """
+
+    @pytest.mark.xfail(strict = True, reason = "main() returns 0 unconditionally; --check cannot fail (see the PR that added this test)")
+    def test_unformatted_file_fails_the_check(self, tmp_path, monkeypatch):
+        (tmp_path / "doc.md").write_text("#Heading\n", encoding = "utf-8")
+        monkeypatch.setattr(sys, "argv", ["format-markdown", str(tmp_path), "--check"])
+        assert markdown_main() == 1
+
+    def test_check_mode_does_not_write(self, tmp_path, monkeypatch):
+        path = tmp_path / "doc.md"
+        path.write_text("#Heading\n", encoding = "utf-8")
+        monkeypatch.setattr(sys, "argv", ["format-markdown", str(tmp_path), "--check"])
+        markdown_main()
+        assert path.read_text(encoding = "utf-8") == "#Heading\n"
