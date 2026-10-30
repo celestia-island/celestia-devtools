@@ -74,6 +74,16 @@ def test_strip_block_idempotent():
 
 # ── gitconfig insteadOf rules ────────────────────────────────────────────────
 
+def test_egress_resilience_settings_are_emitted():
+    # H7/H8: the farm's proxy intermittently kills HTTP/2 streams and a stalled
+    # CONNECT otherwise waits ~129s before failing, so every checkout on that
+    # path eventually goes red for a reason unrelated to the tree.
+    body = crc.ssh_config_emitter()
+    assert "git config --global http.version HTTP/1.1" in body
+    assert "git config --global http.lowSpeedLimit 1000" in body
+    assert "git config --global http.lowSpeedTime 20" in body
+    assert dict(crc.GIT_EGRESS_RESILIENCE)["http.version"] == "HTTP/1.1"
+
 def test_insteadof_rules_cover_the_private_repos():
     rules = crc.insteadof_rules()
     assert len(rules) == len(REPOS)
