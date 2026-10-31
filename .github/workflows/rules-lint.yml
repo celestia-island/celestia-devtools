@@ -45,7 +45,7 @@ on:
         type: string
         default: "dead-reference"
       devtools-ref:
-        description: "celestia-devtools git ref installed when the CLI is absent (P2-3: pinned callers pass their baseline tag; floating callers keep master)."
+        description: "celestia-devtools git ref to lint with: any ref other than the master default is honored by installing that exact ref (H14 determinism; pinned callers pass their baseline tag)."
         required: false
         type: string
         default: "master"
@@ -75,14 +75,18 @@ jobs:
         # Self-hosted nodes preinstall the CLI; hosted runners start empty. Same
         # bootstrap shape as commit-msg-lint.yml, minus the pip-less fallback:
         # this tool needs PyYAML, so a package install is the only working path.
+        # Ref-determinism rule (H14, 2026-10): a pinned devtools-ref names the
+        # exact CLI that must judge the tree; a preinstalled CLI is only trusted
+        # for the master default and always on the install path otherwise.
         env:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
-          if command -v celestia-rules-lint >/dev/null 2>&1; then
-            echo "celestia-rules-lint already available: $(command -v celestia-rules-lint)"
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-rules-lint >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-rules-lint: $(command -v celestia-rules-lint)"
             echo "RULES_LINT=celestia-rules-lint" >> "$GITHUB_ENV"
             exit 0
           fi
+          echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; installing celestia-devtools at that ref"
           python3 -m venv "$RUNNER_TEMP/dt-venv"
           GIT_CONFIG_COUNT=0 "$RUNNER_TEMP/dt-venv/bin/pip" install --quiet \
             "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF:-master}"
