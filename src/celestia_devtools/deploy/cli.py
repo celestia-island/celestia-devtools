@@ -17,9 +17,9 @@ import sys
 from pathlib import Path
 from celestia_devtools.deploy import bootstrap, profile as profile_mod, wizard
 from celestia_devtools.deploy import stages_more
-import json
 from celestia_devtools.deploy import doctor
 from celestia_devtools.deploy import artifact
+from celestia_devtools.core import envelope
 
 PLANNED = ("backup / restore / upgrade / rollback — library landed (deploy.backup,", "   deploy.lifecycle), CLI subcommands land with a later slice", "secrets rotate|show-meta / uninstall            — later slice")
 
@@ -127,7 +127,7 @@ def _run_bootstrap_inner(argv: list[str]) -> int:
         sys.stdout = real_stdout
 
     if args.json:
-        print(json.dumps({"exit": code, "stages": [{"name": r.name, "status": r.status, "detail": r.detail, "changed": r.changed}for r in results]}, ensure_ascii = False, indent = 2))
+        envelope.emit({"exit": code, "stages": [{"name": r.name, "status": r.status, "detail": r.detail, "changed": r.changed}for r in results]})
 
     return code
 

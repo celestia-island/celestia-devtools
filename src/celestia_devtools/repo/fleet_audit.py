@@ -68,7 +68,6 @@ Usage::
 
 from __future__ import annotations
 import argparse
-import json
 import re
 import subprocess
 import yaml
@@ -78,6 +77,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Sequence
 from celestia_devtools.repo.init import OPT_IN_GATES, PINNED_DEVTOOLS_REF, REQUIRED_WORKFLOWS, alias_warnings, devtools_ref_inputs_in, devtools_refs_in, opt_in_drift_warnings, unparsed_devtools_uses, unpinned_caller_warnings, workflow_drift_problems
+from celestia_devtools.core import envelope
 
 #: ``gate name → caller filename`` for the nine reusable workflows. The first
 #: three are the mandatory trio; the rest are opt-in (scope decides adoption).
@@ -485,12 +485,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("fleet-audit: %s" % exc, file = sys.stderr)
 
         if args.json:
-            print(json.dumps(_render_error_json(workspace, str(exc)), indent = 2, sort_keys = True))
+            envelope.emit(_render_error_json(workspace, str(exc)), sort_keys = True)
 
         return 2
 
     if args.json:
-        print(json.dumps(report.to_dict(), indent = 2, sort_keys = True))
+        envelope.emit(report.to_dict(), sort_keys = True)
     else:
         print(_render_text(report), file = sys.stderr)
 

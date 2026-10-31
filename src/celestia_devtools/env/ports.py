@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Sequence
 from celestia_devtools.env.host import detect_host_kind
 import ctypes
+from celestia_devtools.core import envelope
 
 # kind → (base port, exclusive ceiling of the scan window)
 KINDS: dict[str, int] = {"vite": 5173, "cdp": 9222}
@@ -399,7 +400,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         exports = env_exports(args.app)
 
         if args.format == "json":
-            print(json.dumps(exports, indent = 2))
+            envelope.emit(exports)
         else:
             for key in sorted(exports):
                 print(f"export {key}='{exports[key]}'")
@@ -410,7 +411,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         entries = list_entries()
 
         if args.json:
-            print(json.dumps(entries, indent = 2))
+            envelope.emit(entries)
             return 0
 
         if not entries:

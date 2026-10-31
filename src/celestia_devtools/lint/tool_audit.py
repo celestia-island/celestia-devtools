@@ -44,12 +44,12 @@ Usage::
 from __future__ import annotations
 import argparse
 import fnmatch
-import json
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Sequence, Tuple
+from celestia_devtools.core import envelope
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -317,12 +317,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("tool-audit: %s" % exc, file = sys.stderr)
 
         if args.json:
-            print(json.dumps(_error_payload(workspace, str(exc), args.ledger), indent = 2, sort_keys = True))
+            envelope.emit(_error_payload(workspace, str(exc), args.ledger), sort_keys = True)
 
         return 2
 
     if args.json:
-        print(json.dumps(report.to_dict(), indent = 2, sort_keys = True))
+        envelope.emit(report.to_dict(), sort_keys = True)
     else:
         print(_render_text(report), file = sys.stderr)
 

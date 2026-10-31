@@ -55,7 +55,6 @@ NEVER overwritten — the caller's explicit value wins; use
 """
 from __future__ import annotations
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -64,6 +63,7 @@ from pathlib import Path
 from typing import Sequence
 from celestia_devtools.env.host import detect_host_kind
 import tomllib
+from celestia_devtools.core import envelope
 
 # ── Profiles ─────────────────────────────────────────────────────────────────
 
@@ -199,7 +199,7 @@ def cmd_print(args: argparse.Namespace) -> int:
     variables = build_env(ports)
 
     if args.format == "json":
-        print(json.dumps({"profile": profile, "vars": variables, "config": str(cfg)if cfg else None}, indent = 2))
+        envelope.emit({"profile": profile, "vars": variables, "config": str(cfg)if cfg else None})
         return 0
 
     if args.format == "plain":

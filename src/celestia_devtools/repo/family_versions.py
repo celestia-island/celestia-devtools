@@ -45,6 +45,7 @@ import yaml
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+from celestia_devtools.core import envelope
 
 version = tuple[int, int, int]
 
@@ -936,7 +937,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     warnings = [f for f in findings if f.level == "warning"]
 
     if args.json:
-        print(json.dumps({"repo": str(root), "scanned": scanned, "findings": [asdict(f)for f in findings], "violations": len(violations), "warnings": len(warnings)}, indent = 2, ensure_ascii = False))
+        envelope.emit({"repo": str(root), "scanned": scanned, "findings": [asdict(f)for f in findings], "violations": len(violations), "warnings": len(warnings)})
     else:
         for finding in findings:
             stream = sys.stderr if finding.level == "violation" else sys.stdout

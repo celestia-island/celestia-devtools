@@ -66,11 +66,11 @@ Boundaries worth knowing (both measured, 2026-09-15):
 
 from __future__ import annotations
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
+from celestia_devtools.core import envelope
 
 # ---------------------------------------------------------------------------
 # 策略表
@@ -944,7 +944,7 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
             lines_out.append(f"  {mark} {job.name:<{width}}  {state:<16} [{tag}]  {job.runs_on_text}")
 
     if args.as_json:
-        print(json.dumps(records, indent = 2, ensure_ascii = False))
+        envelope.emit(records)
     else:
         for line in lines_out:
             print(line)
