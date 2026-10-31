@@ -45,7 +45,7 @@ Usage::
 Generated callers pin the devtools git ref (default ``@v2026.10``, see
 :data:`PINNED_DEVTOOLS_REF`): a bad master commit cannot redefine this
 repository's gate semantics until the caller is regenerated onto a newer
-baseline tag. ``init --check`` and ``fleet-audit`` report ``@master`` (or
+anchor ref (a 40-hex SHA or a tag). ``init --check`` and ``fleet-audit`` report ``@master`` (or
 stale-pin) callers as **warnings** while the fleet migrates; the upgrade path
 is always regeneration, never hand-editing.
 """
@@ -231,9 +231,9 @@ def main() -> int:
 #: writes the floating form (break-glass consumption of an unmerged fix); the
 #: audit reports every ``@master`` caller as a warning while the migration
 #: runs.
-PINNED_DEVTOOLS_REF = "v2026.10"
+PINNED_DEVTOOLS_REF = "2e76d373762dc6b36c1ab7625c1c34842c28ad4a"
 
-#: Rolling baseline tag shape. Used to order a caller's ref against the
+#: Rolling baseline tag shape (historical scheme). Used to order a caller's ref against the
 #: baseline when both are CalVer tags; anything else (a SHA included) takes
 #: the exact-anchor or ``custom`` path in :func:`pin_position`.
 _CALVER_RE = re.compile(r"^v(\d{4})\.(\d{2})$")

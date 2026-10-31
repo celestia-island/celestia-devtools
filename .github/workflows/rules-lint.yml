@@ -45,7 +45,7 @@ on:
         type: string
         default: "dead-reference"
       devtools-ref:
-        description: "celestia-devtools git ref to lint with: any ref other than the master default is honored by installing that exact ref (H14 determinism; pinned callers pass their baseline tag)."
+        description: "celestia-devtools git ref to lint with: any ref other than the master default is honored by installing that exact ref (H14 determinism; pinned callers pass their anchor — a full 40-hex SHA or a tag)."
         required: false
         type: string
         default: "master"

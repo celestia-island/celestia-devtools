@@ -35,7 +35,7 @@ on:
         type: boolean
         default: false
       devtools-ref:
-        description: "celestia-devtools git ref checked out for the notes generator (P2-3: pinned callers pass their baseline tag)."
+        description: "celestia-devtools git ref checked out for the notes generator (P2-3: pinned callers pass their anchor — a full 40-hex SHA or a tag)."
         required: false
         type: string
         default: "master"

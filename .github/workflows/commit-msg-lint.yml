@@ -27,7 +27,7 @@ on:
         type: string
         default: ""
       # Which devtools snapshot the bootstrap installs when the CLI is absent.
-      # Callers pinned to a baseline tag pass that tag so the gate semantics and
+      # Callers pinned to an anchor pass that ref so the gate semantics and
       # the tool version move together (P2-3); floating callers keep master.
       devtools-ref:
         description: "celestia-devtools git ref the bootstrap installs when the CLI is absent"
@@ -186,7 +186,7 @@ jobs:
         # binary when present.
         #
         # P2-3: DEVTOOLS_REF defaults to master, so a floating caller behaves
-        # exactly as before; a pinned caller passes its baseline tag and the
+        # exactly as before; a pinned caller passes its anchor ref and the
         # tool moves with the pin instead of floating. Ref-determinism rule
         # (H14, 2026-10): the preinstalled CLI is only trusted on the master
         # default lane — a pinned ref names the exact CLI that must judge the

@@ -66,7 +66,7 @@ repository by repository instead of in one red wave):
     on half the fleet exactly this way (arch-review 2026-10-26 P2-3). Any tag or SHA
     is a pin and is not reported; only ``master`` floats. The commit-lint caller under
     its canonical filename is classified by the byte comparison instead, which also
-    knows stale pins (a caller pinned to an earlier baseline tag). Warning, not error,
+    knows stale pins (a caller pinned to an earlier anchor). Warning, not error,
     for as long as the fleet migration runs; a repository that must float records it
     with ``--allow devtools-ref-not-pinned=<glob>``.
 
@@ -601,7 +601,7 @@ def _devtools_unpinned_findings(jobs: MappingNode, path: str, lines: Sequence[st
 
         job_id = _scalar_text(key_node) or "<unnamed>"
         callee = value[len(SHARED_DEVTOOLS_PREFIX):].split("@", 1)[0]
-        message = f"job {job_id!r} invokes the devtools reusable workflow {callee!r} at " f"@{FLOATING_REF}: any master commit instantly redefines this gate's " f"semantics for every caller still floating (P2-3; the python-track " f"verify-versions vacuous-pass incident ran exactly this way). Pin the " f"caller — regenerate it with `celestia-devtools init --with-workflows " f"--force` (add `--gate <name>` for opt-in callers) or reference a devtools " f"baseline tag directly. A repository that must float records it with " f"--allow devtools-ref-not-pinned=<glob>"
+        message = f"job {job_id!r} invokes the devtools reusable workflow {callee!r} at " f"@{FLOATING_REF}: any master commit instantly redefines this gate's " f"semantics for every caller still floating (P2-3; the python-track " f"verify-versions vacuous-pass incident ran exactly this way). Pin the " f"caller — regenerate it with `celestia-devtools init --with-workflows " f"--force` (add `--gate <name>` for opt-in callers) or reference a devtools " f"anchor ref (a 40-hex SHA or a tag) directly. A repository that must float records it with " f"--allow devtools-ref-not-pinned=<glob>"
         findings.append(finding_record(path = path, line = _line_of(uses_key), rule = RULE_DEVTOOLS_REF_NOT_PINNED, severity = SEVERITY_WARNING, message = message, excerpt = _line_excerpt(lines, _line_of(uses_key))))
 
     return findings
