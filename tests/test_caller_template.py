@@ -610,3 +610,11 @@ def test_the_p0_gate_caller_cannot_collide_with_the_callee_concurrency_group():
     # dispatch entry is what lets an operator re-run the gate without a push.
     assert "synchronize" in caller[True]["pull_request"]["types"]
     assert "workflow_dispatch" in caller[True]
+
+def test_short_hex_ref_is_rejected_with_the_fix_in_the_message(monkeypatch, tmp_path):
+    """R2 F2: a 7/12-hex pin would hit `git clone --branch` at runtime and die
+    opaquely; the CLI rejects it and names the fix (use the full 40-hex SHA)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["init", "--with-workflows", "--ref", "0123456"])
+    assert init.main() == 2
+    assert not (tmp_path / ".github" / "workflows").exists()

@@ -95,12 +95,15 @@ def main() -> int:
         logger.error(f"--ref {args.ref!r} is not a valid git ref (letters, digits, '.', '_', '/', '-')")
         return 2
 
-    # 40-hex SHAs are the canonical caller pin since 2026-10-31 (user ruling):
-    # maximally deterministic, standard supply-chain practice, no moved-tag
-    # risk. The clone-based callees (verify-versions, family-versions) bootstrap
-    # a SHA ref by fetching the exact object, so generated callers may pin one.
+    if re.fullmatch(r"[0-9a-fA-F]+", args.ref or "") and not re.fullmatch(r"[0-9a-fA-F]{40}", args.ref or ""):
+        # A short-hex ref is a footgun: the callee clone lanes route only the
+        # full 40-hex form to the fetch-the-object lane, so a 7/12-char SHA
+        # would hit `git clone --branch` and die with an opaque "Remote branch
+        # not found" (R2 F2). Reject it here with the fix in the message.
+        logger.error(f"--ref {args.ref} is a short object name; use the full 40-hex SHA (git rev-parse <ref>)")
+        return 2
 
-    src = common_just_path()
+    src = common_just_path()  # 40-hex SHAs are the canonical pin since 2026-10-31; the clone lanes bootstrap them by fetching the exact object.
 
     if not src.is_file():
         logger.error(f"common.just not found at {src}")
@@ -733,8 +736,9 @@ def _pin_warning(rel: str, state: str, ref: str, regenerate: str) -> str:
 
     if position == "custom":
         if re.fullmatch(r"[0-9a-fA-F]{40}", ref or ""):
-            return f"{rel} is pinned to SHA @{ref[:12]}…, which is not the current anchor @{PINNED_DEVTOOLS_REF} — the audit cannot order two SHAs; regenerate with: {regenerate} to advance to the anchor"
-        return f"{rel} is pinned to @{ref}, which is not a CalVer baseline (a tag or a commit is legal) — the audit cannot order it against @{PINNED_DEVTOOLS_REF}"
+            return f"{rel} is pinned to SHA @{ref[:12]}…, which is not the current anchor @{PINNED_DEVTOOLS_REF} — the audit does not order a SHA against other anchor kinds; regenerate with: {regenerate} to advance to the anchor"
+
+        return f"{rel} is pinned to @{ref}, which is not the current baseline kind (a tag or a commit is legal) — the audit cannot order it against @{PINNED_DEVTOOLS_REF}"
 
     return f"{rel} is pinned to @{ref} (current pin @{PINNED_DEVTOOLS_REF}) — regenerate with: {regenerate} to advance"
 

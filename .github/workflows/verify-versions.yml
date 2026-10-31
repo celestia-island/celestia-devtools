@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       devtools-ref:
-        description: "celestia-devtools git ref to judge with: any ref other than the master default is honored by cloning that exact ref (H14 determinism; pinned callers pass their baseline tag)."
+        description: "celestia-devtools git ref to judge with: any ref other than the master default is honored by cloning that exact ref (H14 determinism; pinned callers pass their anchor — a full 40-hex SHA or a tag)."
         required: false
         type: string
         default: "master"

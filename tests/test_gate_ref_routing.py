@@ -145,3 +145,12 @@ def test_pip_lane_actually_executes_pip_at_the_ref(tmp_path: Path, filename: str
     """The venv stub must lay down bin/pip so the install line truly runs (R2 F3b)."""
     _rc, out, _err = _run_routing(tmp_path, filename, {"DEVTOOLS_REF": "v2026.11"})
     assert any(("STUB-PIP" in line) and ("git+https://github.com/celestia-island/celestia-devtools.git@v2026.11" in line) for line in out.splitlines()), (f"{filename}: the pip install at the pinned ref never executed. Output: {out!r}")
+
+def test_short_hex_ref_keeps_the_branch_lane_and_is_a_footgun(tmp_path: Path) -> None:
+    """R2 F2 boundary pin: only the FULL 40-hex form takes the fetch-the-object
+    lane — a short hex routes to --branch (and init rejects it with the fix in
+    the message; the workflow side keeps failing closed)."""
+    _rc, out, _err = _run_routing(tmp_path, "family-versions.yml", {"DEVTOOLS_REF": "0123456"})
+    lines = out.splitlines()
+    assert any(("STUB-CLONE" in line) and ("--branch" in line) and ("0123456" in line) for line in lines), (f"a short-hex ref must stay on the --branch lane; output: {out!r}")
+    assert not any("fetch" in line for line in lines), out

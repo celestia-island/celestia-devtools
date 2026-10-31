@@ -421,7 +421,7 @@ def test_pin_position_orders_sha_pins_without_downgrade_advice(monkeypatch):
     other = "fedcba9876543210fedcba9876543210fedcba98"
     assert init_mod.pin_position(other) == "custom"
     warning = init_mod._pin_warning("ci.yml", "pinned", other, "regen-cmd")
-    assert "cannot order two SHAs" in warning
+    assert "does not order a SHA" in warning
     assert "regenerate" in warning
 
 def test_sha_pins_get_local_cohort_labels(tmp_path, capsys):

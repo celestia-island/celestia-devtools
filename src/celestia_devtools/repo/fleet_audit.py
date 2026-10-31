@@ -479,6 +479,14 @@ def audit_workspace(workspace: Path) -> fleet_report:
 def _render_text(report: fleet_report) -> str:
     lines: List[str] = []
 
+    if report.sha_labels:
+        lines.append("SHA pin labels (nearest containing tag, from the local devtools checkout):")
+
+        for sha, label in sorted(report.sha_labels.items()):
+            lines.append("  %s -> %s" % (sha[:12], label))
+
+        lines.append("")
+
     for repo in report.repositories:
         if repo.canonical and not repo.warnings:
             continue
