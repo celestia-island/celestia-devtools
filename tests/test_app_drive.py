@@ -19,10 +19,23 @@ import time
 import types
 from pathlib import Path
 import pytest
-from celestia_devtools.env import app_drive
+from celestia_devtools.env import app_drive  # noqa: E402
+from celestia_devtools.env import app_drive_cdp, app_drive_cli, app_drive_proc, app_drive_state  # noqa: E402
 from celestia_devtools.env import cdp
 from celestia_devtools.env import ports
 from fake_cdp import fake_cdp_server, page_target
+
+def _patch_everywhere(monkeypatch, name, value):
+    """Set *name* on every split-module namespace that holds it.
+
+    app_drive was one module until the 2026-10-31 split; tests used to
+    monkeypatch its single namespace. With from-imports each consumer
+    module carries its own binding, so a seam patch must land on all of
+    them or a consumer would keep calling the real function."""
+
+    for mod in (app_drive, app_drive_cli, app_drive_proc, app_drive_cdp, app_drive_state):
+        if hasattr(mod, name):
+            monkeypatch.setattr(mod, name, value)
 
 @pytest.fixture()
 def drive_state(tmp_path, monkeypatch):
@@ -218,7 +231,7 @@ class test_process_identity:
 
     def test_unreadable_identity_fails_closed(self, monkeypatch):
         state = state_for(os.getpid())
-        monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: None)
+        _patch_everywhere(monkeypatch, "read_process_identity", lambda pid: None)
 
         with pytest.raises(cdp.cdp_error) as caught:
             app_drive.verify_process_identity(state, os.getpid())
@@ -332,7 +345,7 @@ class test_dropped_vite_scope:
             captured["environment"] = environment
             return types.SimpleNamespace(pid = os.getpid(), poll = lambda: None)
 
-        monkeypatch.setattr(app_drive, "_spawn", fake_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", fake_spawn)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--no-log", "--no-wait")
 
@@ -545,7 +558,7 @@ class test_launch:
 
     def test_launch_writes_state_and_applies_the_env(self, drive_state, capsys, monkeypatch):
         captured: dict = {}
-        monkeypatch.setattr(app_drive, "_spawn", self._fake_spawn(captured))
+        _patch_everywhere(monkeypatch, "_spawn", self._fake_spawn(captured))
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--no-log", "--no-wait")
         state = app_drive.read_state("demo")
@@ -572,7 +585,7 @@ class test_launch:
 
     def test_launch_without_app_uses_the_exe_path_hash(self, drive_state, capsys, monkeypatch):
         captured: dict = {}
-        monkeypatch.setattr(app_drive, "_spawn", self._fake_spawn(captured))
+        _patch_everywhere(monkeypatch, "_spawn", self._fake_spawn(captured))
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--no-log", "--no-wait")
         expected = app_drive.default_app_key(str(Path(sys.executable).resolve()))
@@ -595,7 +608,7 @@ class test_launch:
         def refuse(app, kind):
             raise AssertionError("--port must skip ports.acquire")
 
-        monkeypatch.setattr(app_drive, "_spawn", fake_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", fake_spawn)
         monkeypatch.setattr(ports, "acquire", refuse)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--port", "9555", "--no-log", "--no-wait")
 
@@ -644,7 +657,7 @@ class test_launch:
             spawned.append(child)
             return child
 
-        monkeypatch.setattr(app_drive, "_spawn", spawn_child)
+        _patch_everywhere(monkeypatch, "_spawn", spawn_child)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
 
         try:
@@ -675,7 +688,7 @@ class test_launch:
         def refuse_wait(*args, **kwargs):
             raise cdp.cdp_error("cdp-timeout", "no page target")
 
-        monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive.cdp, "wait_for_page", refuse_wait)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "fail-demo", "--no-log", "--wait-timeout", "1", "--", "-c", "import time; time.sleep(60)")
@@ -697,8 +710,8 @@ class test_launch:
         def broken_write(state, path):
             raise OSError("disk full")
 
-        monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
-        monkeypatch.setattr(app_drive, "write_state", broken_write)
+        _patch_everywhere(monkeypatch, "_spawn", recording_spawn)
+        _patch_everywhere(monkeypatch, "write_state", broken_write)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "reg-demo", "--no-log", "--no-wait", "--", "-c", "import time; time.sleep(60)")
         assert code == 1
@@ -722,9 +735,9 @@ class test_launch:
         def refuse_kill(pid, grace = 0, **kwargs):
             raise cdp.cdp_error("close-failed", "cannot kill " + str(pid))
 
-        monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive.cdp, "wait_for_page", refuse_wait)
-        monkeypatch.setattr(app_drive, "terminate_tree", refuse_kill)
+        _patch_everywhere(monkeypatch, "terminate_tree", refuse_kill)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "keep-demo", "--no-log", "--", "-c", "import time; time.sleep(60)")
 
@@ -752,7 +765,7 @@ class test_launch:
         def interrupt(*args, **kwargs):
             raise KeyboardInterrupt()
 
-        monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", recording_spawn)
         monkeypatch.setattr(app_drive.cdp, "wait_for_page", interrupt)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "int-demo", "--no-log", "--", "-c", "import time; time.sleep(60)")
@@ -772,8 +785,8 @@ class test_launch:
             spawned["child"] = child
             return child
 
-        monkeypatch.setattr(app_drive, "_spawn", recording_spawn)
-        monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: None)
+        _patch_everywhere(monkeypatch, "_spawn", recording_spawn)
+        _patch_everywhere(monkeypatch, "read_process_identity", lambda pid: None)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
 
         try:
@@ -788,7 +801,7 @@ class test_launch:
             assert state["unverified"] is True
             assert spawned["child"].poll() is None  # a bare pid must NOT be blind-killed
             # The unverified state is closable only through explicit force.
-            monkeypatch.setattr(app_drive, "read_process_identity", real_identity)
+            _patch_everywhere(monkeypatch, "read_process_identity", real_identity)
             code, payload, _out = run_cli(capsys, "close", "--app", "ident-demo", "--force")
             assert code == 0
             assert payload["verified"] is False
@@ -878,7 +891,7 @@ class test_close:
 
         try:
             record_state(state_for(child.pid))
-            monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: None)
+            _patch_everywhere(monkeypatch, "read_process_identity", lambda pid: None)
             code, payload, _out = run_cli(capsys, "close", "--app", "demo")
             assert code == 1
             assert payload["error"]["code"] == "identity-unavailable"
@@ -941,7 +954,7 @@ class test_close:
             def refuse_kill(pid, grace = 0, **kwargs):
                 raise cdp.cdp_error("close-failed", "cannot kill " + str(pid))
 
-            monkeypatch.setattr(app_drive, "terminate_tree", refuse_kill)
+            _patch_everywhere(monkeypatch, "terminate_tree", refuse_kill)
             code, payload, _out = run_cli(capsys, "close", "--app", "demo")
             assert code == 1
             assert payload["error"]["code"] == "close-failed"
@@ -995,7 +1008,7 @@ class test_launch_cleanup_safety:
             raise AssertionError("an already-reaped child must not be killed")
 
         child = types.SimpleNamespace(pid = os.getpid(), poll = lambda: 7)
-        monkeypatch.setattr(app_drive, "terminate_tree", bomb)
+        _patch_everywhere(monkeypatch, "terminate_tree", bomb)
         result = app_drive._abort_launch(child, state_path, "demo", None, 1, 9444)
         assert result["already_exited"] is True
         assert result["exit_code"] == 7
@@ -1010,8 +1023,8 @@ class test_launch_cleanup_safety:
             killed.append(args)
             raise AssertionError("a bare pid must never be blind-killed")
 
-        monkeypatch.setattr(app_drive, "terminate_tree", bomb)
-        monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: None)
+        _patch_everywhere(monkeypatch, "terminate_tree", bomb)
+        _patch_everywhere(monkeypatch, "read_process_identity", lambda pid: None)
         child = types.SimpleNamespace(pid = os.getpid(), poll = lambda: None)
         result = app_drive._abort_launch(child, state_path, "demo", None, 1, 9444)
         kept = app_drive.read_state("demo")
@@ -1039,7 +1052,7 @@ class test_launch_cleanup_safety:
             calls.append((record, pid, grace))
             return {"closed": True, "forced": False, "waited_ms": 1, "reason": "terminated"}
 
-        monkeypatch.setattr(app_drive, "terminate_verified", fake_terminate_verified)
+        _patch_everywhere(monkeypatch, "terminate_verified", fake_terminate_verified)
 
         try:
             result = app_drive._abort_launch(types.SimpleNamespace(pid = child.pid, poll = lambda: None), state_path, "demo", state, 1, 9444)
@@ -1092,8 +1105,8 @@ class test_launch_cleanup_safety:
         def identity_bomb(pid):
             raise AssertionError("identity must not be read after the child already exited")
 
-        monkeypatch.setattr(app_drive, "_spawn", fake_spawn)
-        monkeypatch.setattr(app_drive, "read_process_identity", identity_bomb)
+        _patch_everywhere(monkeypatch, "_spawn", fake_spawn)
+        _patch_everywhere(monkeypatch, "read_process_identity", identity_bomb)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "demo", "--no-log", "--no-wait")
         assert code == 1
@@ -1173,7 +1186,7 @@ class test_identity_matrix:
         def fake_spawn(command, environment, cwd, stdout_target, stderr_target):
             return types.SimpleNamespace(pid = os.getpid(), poll = lambda: None)
 
-        monkeypatch.setattr(app_drive, "_spawn", fake_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", fake_spawn)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
 
         try:
@@ -1292,7 +1305,7 @@ class test_round4_regressions:
         def broken_spawn(command, environment, cwd, stdout_target, stderr_target):
             raise OSError("spawn denied")
 
-        monkeypatch.setattr(app_drive, "_spawn", broken_spawn)
+        _patch_everywhere(monkeypatch, "_spawn", broken_spawn)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "spawn-demo", "--no-log", "--no-wait")
         assert code == 1
@@ -1344,8 +1357,8 @@ class test_round4_regressions:
                 self.calls += 1
                 return None if self.calls == 1 else 3
 
-        monkeypatch.setattr(app_drive, "_spawn", lambda command, environment, cwd, stdout_target, stderr_target: racing_child())
-        monkeypatch.setattr(app_drive, "read_process_identity", lambda pid: identity)
+        _patch_everywhere(monkeypatch, "_spawn", lambda command, environment, cwd, stdout_target, stderr_target: racing_child())
+        _patch_everywhere(monkeypatch, "read_process_identity", lambda pid: identity)
         monkeypatch.setattr(ports, "acquire", lambda app, kind: 9444)
         code, payload, _out = run_cli(capsys, "launch", sys.executable, "--app", "race-demo", "--no-log", "--no-wait")
         assert code == 1
@@ -1393,7 +1406,7 @@ class test_round4_regressions:
 
             return real_read(app, explicit, allow_outdated)
 
-        monkeypatch.setattr(app_drive, "read_state", vanishing)
+        _patch_everywhere(monkeypatch, "read_state", vanishing)
         code, payload, _out = run_cli(capsys, "close", "--app", "demo", "--discard-state")
         assert code == 0
         assert payload["reason"] == "state-vanished"
@@ -1509,3 +1522,13 @@ class test_round5_termination:
 
     def test_identity_probe_reason_reports_no_such_process(self):
         assert app_drive.identity_probe_reason(4_000_000) in ("no-such-process", "access-denied")
+
+def test_direct_module_invocation_still_runs_the_cli():
+    """R2 S2-1: `python -m celestia_devtools.env.app_drive` must run main.
+
+    The split moved the implementation (and its __main__ guard) into
+    app_drive_cli; without a facade guard the module invocation became a
+    silent exit-0 no-op while keeping the shebang - fake success."""
+    proc = subprocess.run([sys.executable, "-m", "celestia_devtools.env.app_drive", "--help"], capture_output = True, text = True, env = {**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", "") or "src"})
+    assert proc.returncode == 0
+    assert proc.stdout.strip(), "module invocation produced no output - the __main__ guard is missing from the facade"
