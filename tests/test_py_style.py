@@ -542,6 +542,14 @@ def test_naming_helper_defined_once():
     # duplicate-definition guard follows the owning module.
     assert inspect.getsource(py_style_checks).count("def _naming_issues") == 1
 
+def test_facade_all_pins_the_public_api_surface():
+    # R3 mutation M5 of the split: dropping a name from __all__ stayed green
+    # because no consumer star-imports the facade. Pin the 33-name contract
+    # so an accidental facade hole is at least visible to `import *` users.
+    assert len(py_style_rules.__all__) == 33
+    assert "line_edit" in py_style_rules.__all__
+    assert "string_token_texts" in py_style_rules.__all__
+
 def test_compound_word_bad(tmp_path):
     cfg = style_config(root = tmp_path, compound_words = ("textbox",))
     hits = rule_hits(tmp_path, "text_box = 1\n", "compound-word", cfg = cfg)
