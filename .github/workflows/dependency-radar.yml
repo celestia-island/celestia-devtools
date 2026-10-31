@@ -1,0 +1,30 @@
+name: Dependency radar
+
+# The self-hosted replacement for the retired dependabot (wowsp 2026-11-01):
+# detects dependency drift across the watch-list repos and reports it on the
+# rolling "Dependency radar" issue — it NEVER opens PRs or merges anything.
+# Upgrade points: dependency-radar.yml (targets), the cron below (cadence).
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC, off the top-of-hour crush
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  radar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Scan the watch-list and report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PYTHONPATH=src python3 -m celestia_devtools.radar.radar --config dependency-radar.yml
