@@ -187,9 +187,11 @@ jobs:
         #
         # P2-3: DEVTOOLS_REF defaults to master, so a floating caller behaves
         # exactly as before; a pinned caller passes its baseline tag and the
-        # tool moves with the pin instead of floating. Note the preinstall
-        # branch deliberately wins when present — the farm's image is an
-        # ops-controlled supply channel, not a per-run fetch.
+        # tool moves with the pin instead of floating. Ref-determinism rule
+        # (H14, 2026-10): the preinstalled CLI is only trusted on the master
+        # default lane — a pinned ref names the exact CLI that must judge the
+        # tree (on node-1 the preinstall tracks master, so the pin would
+        # otherwise be overridden by whatever master carried that day).
         #
         # Fallback chain, each step degrading instead of dying: pip (primary on
         # hosted runners, with the same mirror-rewrite bypass as checkout — a
@@ -200,8 +202,8 @@ jobs:
         env:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
-          if command -v celestia-devtools >/dev/null 2>&1; then
-            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools)"
             echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
             exit 0
           fi

@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       devtools-ref:
-        description: "celestia-devtools git ref cloned when the preinstalled CLI lacks the command (P2-3: pinned callers pass their baseline tag)."
+        description: "celestia-devtools git ref to judge with: any ref other than the master default is honored by cloning that exact ref (H14 determinism; pinned callers pass their baseline tag)."
         required: false
         type: string
         default: "master"
@@ -42,21 +42,24 @@ jobs:
       # shared runners) and runs straight from a shallow devtools clone.
 
       - name: Verify versions
-        # Prefer the preinstalled CLI (node-1 convention, kept fresh by the
-        # mirror sync) when it already knows the command. Otherwise clone
-        # celestia-devtools at the caller's ref (master default, P2-3) and run
-        # the module directly with PYTHONPATH=src — deterministic, no build
-        # dependencies. Drift always fails the job (CHANGELOG.md is
+        # Ref-determinism rule (H14, 2026-10): a caller that pins
+        # `devtools-ref` names the EXACT CLI whose rules judge this tree. The
+        # H14 incident was a stale preinstalled snapshot vs master on node-1
+        # (the editable install there was the remediation, and it still is
+        # not the CLI a tag pin names). Any ref other than the master default
+        # always runs from a fresh clone at that ref; the preinstalled fast
+        # path survives only for the master default, echoing which binary and
+        # version ran. Drift always fails the job (CHANGELOG.md is
         # deliberately not consulted: the org bans maintained changelogs,
         # squashed PRs are the changelog). The checked-out repo is the target.
         env:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
-          if command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
-            echo "Using preinstalled celestia-devtools: $(command -v celestia-devtools)"
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
             celestia-devtools verify-versions .
           else
-            echo "Preinstalled CLI lacks verify-versions; running from a fresh devtools clone"
+            echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the rules match the pin"
             # --branch takes a branch or tag ref (SHA pins are served by the
             # pip-based bootstraps in the other callees; this farm lane only
             # needs to honor tags).

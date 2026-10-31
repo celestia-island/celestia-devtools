@@ -54,7 +54,7 @@ on:
         type: string
         default: '["self-hosted","linux","x64","local"]'
       devtools-ref:
-        description: "celestia-devtools git ref installed when the CLI is absent."
+        description: "celestia-devtools git ref to lint with: any ref other than the master default is honored by installing that exact ref (H14 determinism)."
         required: false
         type: string
         default: "master"
@@ -84,15 +84,19 @@ jobs:
         # Self-hosted nodes preinstall the CLI; hosted runners start empty. Same
         # bootstrap shape as rules-lint.yml, minus the pip-less fallback: the
         # checker needs no third-party packages but the package must be importable.
+        # Ref-determinism rule (H14, 2026-10): a pinned devtools-ref names the
+        # exact CLI that must judge the tree; a preinstalled CLI is only trusted
+        # for the master default and always on the install path otherwise.
         run: |
-          if command -v celestia-devtools >/dev/null 2>&1; then
-            echo "celestia-devtools already available: $(command -v celestia-devtools)"
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
             echo "STYLE_LINT=$(command -v celestia-devtools)" >> "$GITHUB_ENV"
             exit 0
           fi
+          echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; installing celestia-devtools at that ref"
           python3 -m venv "$RUNNER_TEMP/dt-venv"
           GIT_CONFIG_COUNT=0 "$RUNNER_TEMP/dt-venv/bin/pip" install --quiet \
-            "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF}"
+            "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF:-master}"
           echo "STYLE_LINT=$RUNNER_TEMP/dt-venv/bin/celestia-devtools" >> "$GITHUB_ENV"
         env:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
