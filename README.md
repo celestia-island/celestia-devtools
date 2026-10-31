@@ -275,10 +275,12 @@ Semantics:
   `uses:` ref is pinned while its `devtools-ref` input still floats, because the
   pin only freezes both layers when both move together.
 
-One honest limit: on the self-hosted farm the preinstalled CLI wins over the
-bootstrap fetch (a forced reinstall there has proven unreliable), so the
-`devtools-ref` input governs the git-fetch channels; the farm image remains an
-ops-controlled supply line that the mirror sync advances.
+One honest limit, now scoped: the preinstalled CLI wins over the bootstrap
+fetch **only on the `master` default lane** (a forced reinstall on the farm has
+proven unreliable). A caller that pins `devtools-ref` to anything else always
+gets a fresh clone or install at exactly that ref — the H14 determinism rule:
+the pin names the CLI that must judge the tree, and the farm image (an
+ops-controlled supply line advanced by the mirror sync) must never override it.
 
 ### All commands
 

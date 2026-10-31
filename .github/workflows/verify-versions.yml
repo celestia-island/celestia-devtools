@@ -43,13 +43,13 @@ jobs:
 
       - name: Verify versions
         # Ref-determinism rule (H14, 2026-10): a caller that pins
-        # `devtools-ref` names the EXACT CLI whose rules judge this tree. A
-        # preinstalled CLI that "knows the command" is not that CLI (on node-1
-        # it is an editable install tracking master, whose behaviour can drift
-        # from the pinned tag between waves). Any ref other than the master
-        # default always runs from a fresh clone at that ref; the preinstalled
-        # fast path survives only for the master default and prints its
-        # version for diagnosis. Drift always fails the job (CHANGELOG.md is
+        # `devtools-ref` names the EXACT CLI whose rules judge this tree. The
+        # H14 incident was a stale preinstalled snapshot vs master on node-1
+        # (the editable install there was the remediation, and it still is
+        # not the CLI a tag pin names). Any ref other than the master default
+        # always runs from a fresh clone at that ref; the preinstalled fast
+        # path survives only for the master default, echoing which binary and
+        # version ran. Drift always fails the job (CHANGELOG.md is
         # deliberately not consulted: the org bans maintained changelogs,
         # squashed PRs are the changelog). The checked-out repo is the target.
         env:

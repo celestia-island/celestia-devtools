@@ -51,13 +51,16 @@ jobs:
       - name: Family versions
         # Ref-determinism rule (H14, 2026-10): a caller that pins
         # `devtools-ref` names the EXACT CLI whose baselines judge this tree.
-        # A preinstalled CLI that "knows the command" is not that CLI — on
-        # node-1 it is an editable install tracking master, and master's
-        # family baselines drift from the pinned tag between waves, so the
-        # same tree drew opposite conclusions from two CLIs (the H14
-        # incident). So: any ref other than the master default always runs
-        # from a fresh clone at that ref; the preinstalled fast path survives
-        # only for the master default and prints its version for diagnosis.
+        # The H14 incident: node-1's preinstall was a stale 0.14.2 snapshot
+        # whose family data lagged master, so one checkout drew opposite
+        # conclusions from two CLIs (the editable install now on node-1 was
+        # the remediation — a preinstall that tracks master still is NOT the
+        # CLI a tag pin names). So: any ref other than the master default
+        # always runs from a fresh clone at that ref; the preinstalled fast
+        # path survives only for the master default, echoing which binary and
+        # version ran (the version string alone did not distinguish the two
+        # CLIs in the incident — the stale baseline data did; the clone lane
+        # is the actual determinism guarantee).
         #
         # Violations fail the job; warnings (a lock linking two generations, an
         # unbounded npm range, a binding behind its crate) are printed and only
