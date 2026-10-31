@@ -1,6 +1,6 @@
 """Per-app mobile build adapters (the registry the CLI drives).
 
-v1 posture (2026-10-31):
+Current posture:
 
 * ``wowsp-android`` — WRAPS the repo's own ``just _build-android-apk`` flow
   (the one working Android pipeline in the family); the facility's value is
@@ -15,7 +15,7 @@ v1 posture (2026-10-31):
   the adapter locates ``hvigorw`` and runs ``assembleHap``; the
   command-line-tools version is unpinned upstream (recorded in the ledger).
 
-Signing is deliberately OUT of scope for v1: every repo's release signing
+Signing is deliberately OUT of scope here: every repo's release signing
 material is absent by design, and provisioning keystores/certs is a
 credential-handling decision (workspace red line) that must not be
 smuggled into a build tool.
