@@ -370,6 +370,12 @@ def load_versions_config(repo: Path, errors: List[str] | None = None) -> dict:
 
     if isinstance(cross, dict):
         result["cross"] = cross
+    elif cross is not None:
+        # R2 F2: a scalar `cross = "lockstep"` is a typo'd declaration, not an
+        # absent one — silently dropping it would run the gate undeclared while
+        # the author believes lockstep is enforced.
+        if errors is not None:
+            errors.append(f".versions.toml [cross] must be a table, got {type(cross).__name__} {cross!r}; " "the cross-track declaration is NOT active — fix the file (the intended " "form is '[cross]' on its own line, then 'cargo_npm = \"lockstep\"').")
 
     return result
 
@@ -742,18 +748,31 @@ def _cross_track_drifts(cross: dict, cargo_base: str | None, npm_base: str | Non
     IS the root manifest and every member inherits it, so a root-only revert
     sailed green while any package.json revert went red (ledger #19, measured
     2026-09-22).  ``[cross] cargo_npm = "lockstep"`` declares that the two
-    resolved baselines are one line; anything else — a typo'd key/value, or a
-    track that cannot resolve under the declaration — fails closed exactly
-    like an unresolvable baseline.
+    resolved baselines are one line; anything else — a typo'd key/value, a
+    non-string value, or a track that cannot resolve under the declaration —
+    fails closed exactly like an unresolvable baseline.  Every key is judged
+    before any decision is taken, so one drifting key cannot swallow the
+    diagnostics of another (R2 F4).
     """
 
     if not cross:
         return []
 
+    lockstep = False
+
     for key, value in cross.items():
         if key not in _CROSS_KEYS:
             if errors is not None:
                 errors.append(f"[cross] key {key!r} is unknown (known: {', '.join(sorted(_CROSS_KEYS))}); " "a typo here must fail, not silently disable the cross check.")
+
+            continue
+
+        if not isinstance(value, str):
+            # R2 F1: frozenset membership would hash the operand — an array or
+            # inline-table value (or the [cross.cargo_npm] nested-table typo)
+            # must fail with a diagnostic, not an unhashable-type traceback.
+            if errors is not None:
+                errors.append(f"[cross] {key} must be a string mode name, got {type(value).__name__} {value!r}.")
 
             continue
 
@@ -763,14 +782,19 @@ def _cross_track_drifts(cross: dict, cargo_base: str | None, npm_base: str | Non
 
             continue
 
-        if (cargo_base is None) or (npm_base is None):
-            if errors is not None:
-                errors.append("[cross] cargo_npm = \"lockstep\" is declared but a baseline did not resolve " f"(cargo={cargo_base!r}, npm={npm_base!r}). A lockstep repo must carry both " "tracks — fix the manifests, or drop the declaration if the lines are " "independent after all.")
+        lockstep = True
 
-            continue
+    if not lockstep:
+        return []
 
-        if cargo_base != npm_base:
-            return [drift(track = "cross", package = "Cargo.toml<->package.json", actual = cargo_base, expected = npm_base, suggestion = "the root Cargo.toml version and the npm baseline diverged — a release " "commit must move both slots together ([cross] cargo_npm = \"lockstep\" " "is declared in .versions.toml)")]
+    if (cargo_base is None) or (npm_base is None):
+        if errors is not None:
+            errors.append("[cross] cargo_npm = \"lockstep\" is declared but a baseline did not resolve " f"(cargo={cargo_base!r}, npm={npm_base!r}). A lockstep repo must carry both " "tracks — fix the manifests, or drop the declaration if the lines are " "independent after all.")
+
+        return []
+
+    if cargo_base != npm_base:
+        return [drift(track = "cross", package = "Cargo.toml<->package.json", actual = cargo_base, expected = npm_base, suggestion = "the root Cargo.toml version and the npm baseline diverged — a release " "commit must move both slots together ([cross] cargo_npm = \"lockstep\" " "is declared in .versions.toml)")]
 
     return []
 
@@ -869,7 +893,8 @@ def verify(repo: Path) -> verify_result:
     drifts.sort(key = lambda d: (d.track, d.package))
 
     cross_table = config.get("cross", {})
-    return verify_result(repo = str(repo), cargo_base = cargo_base, npm_base = npm_base, python_base = python_base, cross_declared = cross_table.get("cargo_npm") if isinstance(cross_table, dict) else None, drifts = drifts, errors = errors)
+    declared = cross_table.get("cargo_npm") if isinstance(cross_table, dict) else None
+    return verify_result(repo = str(repo), cargo_base = cargo_base, npm_base = npm_base, python_base = python_base, cross_declared = declared if isinstance(declared, str) else None, drifts = drifts, errors = errors)
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 

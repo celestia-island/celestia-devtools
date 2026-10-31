@@ -667,3 +667,43 @@ def test_cross_state_lands_in_json(tmp_path, capsys):
     assert cross_drifts[0]["actual"] == "0.1.223"
     assert cross_drifts[0]["expected"] == "0.1.224"
     assert "lockstep" in cross_drifts[0]["suggestion"]
+
+def test_cross_array_value_fails_with_a_diagnostic(tmp_path, capsys):
+    """R2 F1: an unhashable value must not escape as a TypeError traceback."""
+    _lockstep_repo(tmp_path)
+    _write(tmp_path / ".versions.toml", "[cross]\ncargo_npm = [\"lockstep\"]\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "must be a string mode name" in out
+    assert "Traceback" not in out
+
+def test_cross_nested_table_typo_fails_with_a_diagnostic(tmp_path, capsys):
+    """R2 F1: '[cross.cargo_npm]' makes the value a dict — diagnostic, not crash."""
+    _lockstep_repo(tmp_path)
+    _write(tmp_path / ".versions.toml", "[cross.cargo_npm]\nmode = \"lockstep\"\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "must be a string mode name" in out
+    assert "Traceback" not in out
+
+def test_scalar_cross_declaration_fails_closed(tmp_path, capsys):
+    """R2 F2: `cross = "lockstep"` is a typo'd declaration, not an absent one."""
+    _lockstep_repo(tmp_path)
+    _write(tmp_path / ".versions.toml", "cross = \"lockstep\"\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "must be a table" in out
+    assert "NOT active" in out
+
+def test_drifting_key_no_longer_swallows_later_key_diagnostics(tmp_path, capsys):
+    """R2 F4: every key is judged before any decision, order-independently."""
+    _lockstep_repo(tmp_path, version = "0.1.224", cargo_version = "0.1.223")
+    _write(tmp_path / ".versions.toml", "[cross]\ncargo_npm = \"lockstep\"\ncargo_mpm = \"lockstep\"\n")
+    rc = main([str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["cross"]["drifts"], "the lockstep drift must still fire"
+    assert any("cargo_mpm" in err for err in payload["errors"]), "the unknown-key diagnostic must survive the drift"
