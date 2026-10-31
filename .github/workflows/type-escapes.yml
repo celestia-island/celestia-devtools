@@ -57,9 +57,9 @@ jobs:
           FAIL_ON_DTS: ${{ inputs.fail-on-dts }}
         run: |
           set -- ${SCAN_PATHS:-.}
-          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools lint type-escapes --help >/dev/null 2>&1; then
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools type-escapes --help >/dev/null 2>&1; then
             echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
-            celestia-devtools lint type-escapes ${FAIL_ON_DTS:+--fail-on-dts} "$@"
+            celestia-devtools type-escapes ${FAIL_ON_DTS:+--fail-on-dts} "$@"
           else
             echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the rules match the pin"
             rm -rf /tmp/celestia-devtools
@@ -71,5 +71,5 @@ jobs:
             else
               git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools
             fi
-            cd /tmp/celestia-devtools && PYTHONPATH=src python3 -m celestia_devtools lint type-escapes ${FAIL_ON_DTS:+--fail-on-dts} "$GITHUB_WORKSPACE"
+            cd /tmp/celestia-devtools && PYTHONPATH=src python3 -m celestia_devtools type-escapes ${FAIL_ON_DTS:+--fail-on-dts} "$GITHUB_WORKSPACE"
           fi
