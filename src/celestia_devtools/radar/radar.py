@@ -36,9 +36,12 @@ Exit codes:
 
 Usage::
 
-    python -m celestia_devtools.radar.radar --config dependency-radar.yml
-    python -m celestia_devtools.radar.radar --config ... --stdout  # no issue write
+    python -m celestia_devtools.radar.radar --config dependency-radar.yml --stdout
     python -m celestia_devtools.radar.radar --self-test            # offline fixtures
+
+    Fully local since 2026-10-31 (user ruling): the workflow and the rolling
+    GitHub issue are GONE. --stdout is the only mode an operator needs; the
+    report lands in the workspace ledger where agents read it.
 """
 
 from __future__ import annotations
@@ -46,13 +49,11 @@ import argparse
 import datetime
 import ipaddress
 import json
-import os
 import re
 import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
@@ -425,40 +426,6 @@ def render_report(targets: list[dict], rows_by_repo: dict[str, list[dict[str, st
 
     return "\n".join(lines) + "\n"
 
-def upsert_issue(report: str) -> int:
-    """Create or update the rolling radar issue in the current repository."""
-    repo = os.environ.get("GITHUB_REPOSITORY", "")
-
-    if repo == "":
-        eprint("error: GITHUB_REPOSITORY is not set — use --stdout outside Actions")
-        raise SystemExit(EXIT_REPORT)
-
-    try:
-        found = gh_run("issue", "list", "-R", repo, "--search", f"{ISSUE_TITLE} in:title", "--state", "open", "--json", "number", "--jq", ".[0].number").strip()
-    except LookupError:
-        found = ""
-
-    with tempfile.NamedTemporaryFile("w", suffix = ".md", delete = False, encoding = "utf-8") as handle:
-        handle.write(report)
-        body_path = handle.name
-
-    try:
-        if found:
-            gh_run("issue", "edit", found, "-R", repo, "--body-file", body_path)
-            logger.ok(f"radar issue #{found} updated")
-        else:
-            gh_run("issue", "create", "-R", repo, "--title", ISSUE_TITLE, "--body-file", body_path)
-            logger.ok("radar issue created")
-    except LookupError as exc:
-        eprint(f"error: issue upsert failed: {exc}")
-        return EXIT_REPORT
-    finally:
-        Path(body_path).unlink(missing_ok = True)
-
-    return EXIT_OK
-
-# ── CLI ──────────────────────────────────────────────────────────────────────
-
 def load_targets(path: Path) -> list[dict]:
     payload = yaml.safe_load(path.read_text(encoding = "utf-8"))
 
@@ -543,7 +510,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
     parser.add_argument("--config", default = "dependency-radar.yml", help = "targets manifest path")
-    parser.add_argument("--stdout", action = "store_true", help = "print the report without touching the issue")
     parser.add_argument("--self-test", action = "store_true", help = "offline fixtures, no network")
     args = parser.parse_args(argv)
 
@@ -555,11 +521,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     today = datetime.date.today().isoformat()
     report = render_report(targets, rows_by_repo, today)
 
-    if args.stdout:
-        print(report)
-        return EXIT_OK
-
-    return upsert_issue(report)
+    print(report)
+    return EXIT_OK
 
 if __name__ == "__main__":
     sys.exit(main())
