@@ -888,3 +888,14 @@ class test_checkout_staleness:
         plain = tmp_path / "notarepo"
         plain.mkdir()
         assert _checkout_staleness(plain) is None
+
+def test_direct_module_invocation_still_runs_the_cli():
+    """R2 S2 of the split: `python -m celestia_devtools.build.gate` must run main.
+
+    The guard moved into gate_cli with the implementation; without a facade
+    guard the module invocation would be a silent exit-0 no-op (the class
+    that bit core.cli as chest #1028 and the app_drive split). Deleting the
+    guard turns this test red - verified during review."""
+    proc = subprocess.run([sys.executable, "-m", "celestia_devtools.build.gate", "--help"], capture_output = True, text = True, env = {**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", "") or "src"})
+    assert proc.returncode == 0
+    assert proc.stdout.startswith("usage:")

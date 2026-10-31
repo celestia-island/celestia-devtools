@@ -472,6 +472,8 @@ def credential_scan_cli(root: Path, args: argparse.Namespace) -> int:
     logger.ok("credential-scan: no literal secrets (%d placeholder/env hit(s) ignored, " "%d path(s) skipped)" % (len(reports), len(skipped)))
     return 0
 
+# ── Git probes (moved from the graph section; the sweep's staleness
+# reporting and the graph builders both consume them) ─────────────────────────
 def _git_output(args: List[str], root: Path) -> str | None:
     proc = subprocess.run(["git", *args], cwd = str(root), capture_output = True, text = True)
 

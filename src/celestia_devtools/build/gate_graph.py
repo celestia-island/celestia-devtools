@@ -62,7 +62,7 @@ def default_jobs() -> int:
     """Default concurrency budget: cpu count, capped at 4."""
     return max(1, min(os.cpu_count() or 1, 4))
 
-# ── Git helpers (internal steps) ──────────────────────────────────────────────
+# ── Credential / commit-lint step factories ───────────────────────────────────
 
 def _credential_scan(root: Path) -> Callable[[], str]:
     """Pre-step callable: scan changed files for non-placeholder secrets."""
