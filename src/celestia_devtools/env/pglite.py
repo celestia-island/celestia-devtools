@@ -411,10 +411,10 @@ def status(name: str = DEFAULT_INSTANCE, all_: bool = False) -> int:
     alive = _proc_alive(pid) if pid else False
 
     if alive:
-        print(json.dumps({"running": True, **sc}, indent = 2))
+        envelope.emit({"running": True, **sc})
         return 0
 
-    print(json.dumps({"running": False}))
+    envelope.emit({"running": False}, indent = None)
     return 1 if pid else 0
 
 def main() -> int:
