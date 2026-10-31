@@ -1,10 +1,12 @@
 """Guards for the data files the wheel force-includes.
 
-*Why this exists:* three files ship through Hatchling's ``force-include`` rather
+*Why this exists:* four files ship through Hatchling's ``force-include`` rather
 than through ``packages = [...]`` -- ``common.just`` (the just template every
-consumer stages), ``lint/p0_ledger.toml`` (the P0 gate's authoritative ledger)
-and ``repo/family_layers.toml`` (the family-layer baselines). Only the last one
-had a guard, added with it on 2026-10-25. Deleting a single line from
+consumer stages), ``lint/p0_ledger.toml`` (the P0 gate's authoritative ledger),
+``repo/family_layers.toml`` (the family-layer baselines) and
+``lint/ts_policy.toml`` (the TypeScript strictness catalog every ``ts-policy``
+caller reads). Only ``family_layers.toml`` had a guard when it landed on
+2026-10-25. Deleting a single line from
 ``pyproject.toml`` therefore ships a wheel where ``init`` stages a missing
 template and ``p0-gate`` fails closed for every caller -- and the 2,263-test
 suite stayed green, because nothing imported the files, only referenced them by
@@ -29,7 +31,7 @@ from celestia_devtools.repo.init import common_just_path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: (source path in the tree, wheel path the code resolves at runtime)
-FORCED_DATA = [("src/celestia_devtools/common.just", "celestia_devtools/common.just"), ("src/celestia_devtools/lint/p0_ledger.toml", "celestia_devtools/lint/p0_ledger.toml"), ("src/celestia_devtools/repo/family_layers.toml", "celestia_devtools/repo/family_layers.toml")]
+FORCED_DATA = [("src/celestia_devtools/common.just", "celestia_devtools/common.just"), ("src/celestia_devtools/lint/p0_ledger.toml", "celestia_devtools/lint/p0_ledger.toml"), ("src/celestia_devtools/repo/family_layers.toml", "celestia_devtools/repo/family_layers.toml"), ("src/celestia_devtools/lint/ts_policy.toml", "celestia_devtools/lint/ts_policy.toml")]
 
 def _force_include() -> dict:
     data = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))

@@ -41,6 +41,11 @@ lint:
     @# only be exercised through its controls here: the ten positive shapes, the
     @# false-positive corpus, the allowlist scoping and the known-positive file.
     {{python_cmd}} -m celestia_devtools type-escapes --selftest
+    @# Same reason for the strictness probes: their controls build throwaway
+    @# tsconfigs and fake checkers, so the policies stay honest without a node
+    @# toolchain in this package's own CI.
+    {{python_cmd}} -m celestia_devtools ts-policy --selftest
+    {{python_cmd}} -m celestia_devtools ts-surface --selftest
 
 # Format Markdown + verify the bundled common.just is valid just syntax.
 fmt:
