@@ -138,6 +138,12 @@ class fleet_report:
     workspace: str
     repositories: List[repo_report] = field(default_factory = list)
     errors: List[str] = field(default_factory = list)
+    #: Human labels for 40-hex SHA pins (nearest containing tag + commit date),
+    #: resolved against the devtools checkout inside the scanned workspace.
+    #: SHA pins are maximally deterministic but unreadable at a glance
+    #: ("are all repos in the same cohort?"); this restores the readability the
+    #: CalVer tags carried (scheme ruling 2026-10-31).
+    sha_labels: Dict[str, str] = field(default_factory = dict)
 
     @property
     def ok(self) -> bool:
@@ -148,7 +154,7 @@ class fleet_report:
         census = {state: sum(1 for repo in self.repositories if repo.ref_state == state) for state in ("pinned", "master", "stale", "none")}
         floating = floating_repositories(self)
         unreadable = any(repo.pin_unreadable for repo in self.repositories)
-        return {"workspace": self.workspace, "repositories": [repo.to_dict() for repo in self.repositories], "summary": {"repositories": len(self.repositories), "clean": sum(1 for repo in self.repositories if repo.canonical), "with_problems": sum(1 for repo in self.repositories if not repo.canonical), "gates": adoption, "devtools_ref_census": census, "current_pin": PINNED_DEVTOOLS_REF, "floating_repositories": len(floating), "pins_ok": (not floating) and (not unreadable)}, "errors": list(self.errors), "ok": self.ok}
+        return {"workspace": self.workspace, "repositories": [repo.to_dict() for repo in self.repositories], "summary": {"repositories": len(self.repositories), "clean": sum(1 for repo in self.repositories if repo.canonical), "with_problems": sum(1 for repo in self.repositories if not repo.canonical), "gates": adoption, "devtools_ref_census": census, "current_pin": PINNED_DEVTOOLS_REF, "sha_pin_labels": dict(self.sha_labels), "floating_repositories": len(floating), "pins_ok": (not floating) and (not unreadable)}, "errors": list(self.errors), "ok": self.ok}
 
 #: Refs that float. A tag or a SHA is a pin by definition (init.py's contract),
 #: so an older or newer pin is not a failure -- only a branch reference is, and
@@ -409,6 +415,46 @@ def scan_repository(repo: Path) -> repo_report:
 
     return report
 
+def resolve_sha_labels(workspace: Path, report: fleet_report) -> Dict[str, str]:
+    """Label every 40-hex pin ref with its nearest containing tag + commit date.
+
+    Resolution is local-only: the devtools checkout inside the scanned workspace
+    supplies ``git describe --tags --always`` (an ancestor tag reads like
+    ``v2026.11-3-g690ca27`` — "three commits past the v2026.11 wave anchor";
+    an untagged or absent object falls back to the short SHA or an explicit
+    unresolved marker). No network, no guessing: a label that cannot be
+    computed locally says so instead of inventing one.
+    """
+    shas = sorted({ref for repo in report.repositories for ref in repo.devtools_refs if re.fullmatch(r"[0-9a-fA-F]{40}", ref)})
+
+    if not shas:
+        return {}
+
+    devtools = workspace / "celestia-devtools"
+    labels: Dict[str, str] = {}
+
+    for sha in shas:
+        if not (devtools / ".git").exists():
+            labels[sha] = "sha (no local devtools checkout to resolve)"
+            continue
+
+        try:
+            desc = subprocess.run(["git", "-C", str(devtools), "describe", "--tags", "--always", sha], capture_output = True, text = True, timeout = 15)
+            date = subprocess.run(["git", "-C", str(devtools), "log", "-1", "--format=%cs", sha], capture_output = True, text = True, timeout = 15)
+        except Exception:
+            labels[sha] = "sha (resolution failed)"
+            continue
+
+        if desc.returncode != 0:
+            labels[sha] = "sha (not in local devtools object store)"
+            continue
+
+        label = desc.stdout.strip()
+        date_text = date.stdout.strip() if date.returncode == 0 else ""
+        labels[sha] = f"{label} ({date_text})" if date_text else label
+
+    return labels
+
 def audit_workspace(workspace: Path) -> fleet_report:
     """Scan every immediate git checkout under *workspace*."""
     workspace = workspace.resolve()
@@ -425,6 +471,8 @@ def audit_workspace(workspace: Path) -> fleet_report:
 
     for repo in repositories:
         result.repositories.append(scan_repository(repo))
+
+    result.sha_labels = resolve_sha_labels(workspace, result)
 
     return result
 

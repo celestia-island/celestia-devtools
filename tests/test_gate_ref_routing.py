@@ -74,7 +74,7 @@ def _run_routing(tmp_path: Path, filename: str, env_extra: dict[str, str]) -> tu
     stubs.mkdir()
     _write_stub(stubs, "celestia-devtools", 'echo "STUB-PREINSTALLED-USED $*"\nexit 0')
     _write_stub(stubs, "celestia-rules-lint", 'echo "STUB-PREINSTALLED-USED $*"\nexit 0')
-    _write_stub(stubs, "git", 'echo "STUB-CLONE $*"\nexit 1')
+    _write_stub(stubs, "git", 'echo "STUB-CLONE $*"\nexit 0')
     _write_stub(stubs, "rm", 'echo "STUB-RM $*"\nexit 0')
     _write_stub(stubs, "pip", 'echo "STUB-PIP $*"\nexit 0')
     _write_stub(stubs, "pip3", 'echo "STUB-PIP $*"\nexit 0')
@@ -97,13 +97,22 @@ def test_preinstalled_lane_is_gated_on_the_master_default(filename: str) -> None
     assert condition is not None, f"{filename}: routing script lost its if-condition"
     assert GUARD in condition.group(1), (f"{filename}: the preinstalled fast path is reachable for a pinned devtools-ref " f"(guard {GUARD!r} missing from the condition). A caller pinning a tag would be judged " "by the runner's own CLI — the same tree then draws opposite conclusions from " "two CLIs (H14).")
 
+PIN_REFS = ("v2026.11", "0123456789abcdef0123456789abcdef01234567")
+
+@pytest.mark.parametrize("ref", PIN_REFS)
 @pytest.mark.parametrize("filename", sorted(ROUTING_STEPS))
-def test_pinned_ref_routes_to_a_fresh_clone_or_install(tmp_path: Path, filename: str) -> None:
-    """DEVTOOLS_REF=v2026.11 must reach the clone/install COMMAND LINE, not just a log line."""
-    _rc, out, _err = _run_routing(tmp_path, filename, {"DEVTOOLS_REF": "v2026.11"})
+def test_pinned_ref_routes_to_a_fresh_clone_or_install(tmp_path: Path, filename: str, ref: str) -> None:
+    """A pinned ref (tag or SHA) must reach the clone/install COMMAND LINE, not just a log line.
+
+    The SHA case pins the 2026-10-31 scheme ruling: SHA pins are canonical, so
+    the clone lane must fetch-the-exact-object (git init/remote/fetch/checkout,
+    visible as STUB-CLONE fetch lines) and the pip lane must carry @<sha> in
+    the install URL.
+    """
+    _rc, out, _err = _run_routing(tmp_path, filename, {"DEVTOOLS_REF": ref})
     marker = "STUB-CLONE" if filename in CLONE_LANE else "STUB-PIP"
-    assert any((marker in line) and ("v2026.11" in line) for line in out.splitlines()), (f"{filename} with devtools-ref=v2026.11 did not run {marker} with the pinned ref on its " f"command line — the pin must reach the actual fetch, not an echo (R2 F3). Output was: {out!r}")
-    assert "STUB-PREINSTALLED-USED" not in out, (f"{filename} with devtools-ref=v2026.11 used the preinstalled CLI — " "the H14 regression: the pin names the CLI that must judge the tree, an " f"editable master install does not. Output: {out!r}")
+    assert any((marker in line) and (ref in line) for line in out.splitlines()), (f"{filename} with devtools-ref={ref} did not run {marker} with the pinned ref on its " f"command line — the pin must reach the actual fetch, not an echo (R2 F3). Output was: {out!r}")
+    assert "STUB-PREINSTALLED-USED" not in out, (f"{filename} with devtools-ref={ref} used the preinstalled CLI — " "the H14 regression: the pin names the CLI that must judge the tree, an " f"editable master install does not. Output: {out!r}")
 
 @pytest.mark.parametrize("filename", sorted(ROUTING_STEPS))
 def test_master_default_still_uses_the_preinstalled_cli(tmp_path: Path, filename: str) -> None:
@@ -120,6 +129,16 @@ def test_routing_tests_never_run_the_host_rm(tmp_path: Path, filename: str) -> N
     """The clone-lane scripts rm -rf fixed /tmp paths; the stub must swallow it (R2 F1)."""
     _rc, out, _err = _run_routing(tmp_path, filename, {"DEVTOOLS_REF": "v2026.11"})
     assert "STUB-RM" in out, f"{filename}: the rm stub did not intercept the script's rm -rf (destructive host path!)"
+
+@pytest.mark.parametrize("filename", sorted(CLONE_LANE))
+def test_sha_pin_takes_the_fetch_the_object_lane(tmp_path: Path, filename: str) -> None:
+    """A 40-hex ref cannot take `git clone --branch`; the script must run the
+    init/remote/fetch/checkout sequence instead (scheme ruling 2026-10-31)."""
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    _rc, out, _err = _run_routing(tmp_path, filename, {"DEVTOOLS_REF": sha})
+    lines = out.splitlines()
+    assert any(("STUB-CLONE" in line) and ("fetch" in line) and (sha in line) for line in lines), (f"{filename}: a SHA pin did not take the fetch-the-exact-object lane. Output: {out!r}")
+    assert not any("--branch" in line for line in lines), (f"{filename}: the SHA pin wrongly took the --branch clone lane. Output: {out!r}")
 
 @pytest.mark.parametrize("filename", sorted(set(ROUTING_STEPS) - CLONE_LANE))
 def test_pip_lane_actually_executes_pip_at_the_ref(tmp_path: Path, filename: str) -> None:

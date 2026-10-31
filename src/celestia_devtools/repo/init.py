@@ -88,22 +88,17 @@ def main() -> int:
     parser.add_argument("--no-hooks", action = "store_true", help = "skip automatic commit-msg hook install")
     parser.add_argument("--with-workflows", action = "store_true", help = "also generate the three required org workflows " "(commit-msg lint, CI cache policy, PR title check)")
     parser.add_argument("--gate", action = "append", choices = sorted(OPT_IN_GATES), metavar = "NAME", help = "also (re)generate one opt-in gate caller: " + ", ".join(sorted(OPT_IN_GATES)) + " (repeatable; requires --with-workflows)")
-    parser.add_argument("--ref", default = PINNED_DEVTOOLS_REF, metavar = "REF", help = f"devtools git ref (branch or tag) the generated callers pin (default: {PINNED_DEVTOOLS_REF}; 'master' is the escape hatch for break-glass consumption of an unmerged fix; a 40-hex SHA is rejected — the clone-based gates cannot bootstrap one)")
+    parser.add_argument("--ref", default = PINNED_DEVTOOLS_REF, metavar = "REF", help = f"devtools git ref (SHA, tag or branch) the generated callers pin (default: {PINNED_DEVTOOLS_REF}; 'master' is the escape hatch for break-glass consumption of an unmerged fix)")
     args = parser.parse_args()
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", args.ref or ""):
         logger.error(f"--ref {args.ref!r} is not a valid git ref (letters, digits, '.', '_', '/', '-')")
         return 2
 
-    if re.fullmatch(r"[0-9a-fA-F]{40}", args.ref or ""):
-        # R2 review F2: the clone-based callees (verify-versions,
-        # family-versions) bootstrap with `git clone --branch`, which accepts a
-        # branch or tag but not an arbitrary SHA — a caller generated at a SHA
-        # pin would fail those gates' bootstrap at runtime. Generated callers
-        # pin branches/tags only; hand-written SHA pins are still legal (the
-        # audit treats any non-master ref as a pin) and unaffected.
-        logger.error(f"--ref {args.ref[:8]}… looks like a commit SHA; generated callers pin a branch or tag (the clone-based gates cannot bootstrap a SHA ref)")
-        return 2
+    # 40-hex SHAs are the canonical caller pin since 2026-10-31 (user ruling):
+    # maximally deterministic, standard supply-chain practice, no moved-tag
+    # risk. The clone-based callees (verify-versions, family-versions) bootstrap
+    # a SHA ref by fetching the exact object, so generated callers may pin one.
 
     src = common_just_path()
 
@@ -215,25 +210,29 @@ def main() -> int:
 # 绕行 vs 模板合规」的互斥解除。旧 273B 字节保留为 LEGACY（audit 降级 warning，见
 # workflow_audit._canonical_caller_findings），存量仓用 `init --with-workflows --force` 渐进迁移。
 #: The devtools git ref generated callers pin by default (arch-review
-#: 2026-10-26 P2-3). A caller referencing ``@master`` lets any single master
-#: commit redefine gate semantics for the whole family at once — the python-track
-#: verify-versions "ok:true + null baseline" incident ran vacuously on half the
-#: fleet exactly this way. The pin is a **CalVer rolling baseline tag**: a new
-#: ``v<YYYY.MM>`` tag is cut on a verified-green master SHA each wave (or sooner
-#: when a gate change lands); tags are never moved — a moved tag is a force
-#: operation, and the CNB mirror syncs ``master`` + tags, so a mutation would
-#: race it — and callers advance by regeneration, not by tag movement. CalVer
-#: rather than the package version because the pin freezes *workflow files*,
-#: not the Python package: a per-version tag would couple the baseline to a
-#: manually bumped version line and demand a tag per release, while the monthly
-#: tag decouples "when the fleet re-pins" from "when devtools ships a lint
-#: tweak". Escape hatch: ``init --with-workflows --ref master`` writes the
-#: floating form (break-glass consumption of an unmerged fix); the audit
-#: reports every ``@master`` caller as a warning while the migration runs.
+#: 2026-10-26 P2-3; scheme ruling 2026-10-31). A caller referencing
+#: ``@master`` lets any single master commit redefine gate semantics for the
+#: whole family at once — the python-track verify-versions "ok:true + null
+#: baseline" incident ran vacuously on half the fleet exactly this way.
+#: **Since 2026-10-31 the canonical pin is a 40-hex SHA** (user ruling over
+#: the earlier CalVer-tag scheme): maximally deterministic, standard
+#: supply-chain practice, and immune to a moved tag. The anchor advances by
+#: regeneration, not by moving anything. The historical ``v<YYYY.MM>`` tags
+#: stay in the repo as wave markers and remain legal pins; a SHA anchor must
+#: point at a commit that can itself bootstrap SHA refs (the clone lanes
+#: fetch-the-exact-object since this change), so the first SHA anchor is the
+#: merge commit of the change that introduced that support. Not the package
+#: version (0.14.x): the pin freezes *workflow files*, never the Python
+#: package, and coupling them would let a lint-tweak release silently
+#: re-baseline the fleet. Escape hatch: ``init --with-workflows --ref master``
+#: writes the floating form (break-glass consumption of an unmerged fix); the
+#: audit reports every ``@master`` caller as a warning while the migration
+#: runs.
 PINNED_DEVTOOLS_REF = "v2026.10"
 
 #: Rolling baseline tag shape. Used to order a caller's ref against the
-#: baseline; anything that does not match is a custom pin (a SHA is legal).
+#: baseline when both are CalVer tags; anything else (a SHA included) takes
+#: the exact-anchor or ``custom`` path in :func:`pin_position`.
 _CALVER_RE = re.compile(r"^v(\d{4})\.(\d{2})$")
 
 #: Marker for the callee ref on a template's ``uses:`` line (rendered to
@@ -699,7 +698,15 @@ def pin_position(ref: str) -> str:
     to regenerate at the baseline: a repository that already advanced to a newer
     CalVer tag would be *downgraded* by that advice, and regenerating is exactly
     what the printed command does.
+
+    Exact-anchor equality is checked first so a SHA anchor (the canonical pin
+    since 2026-10-31) reads as ``baseline``; two DIFFERENT SHAs cannot be
+    ordered without git history, so a non-anchor SHA stays ``custom`` (its
+    warning says regenerate-to-advance, never downgrade).
     """
+
+    if (ref or "") == PINNED_DEVTOOLS_REF:
+        return "baseline"
 
     baseline = _CALVER_RE.match(PINNED_DEVTOOLS_REF)
     match = _CALVER_RE.match(ref or "")
@@ -725,6 +732,8 @@ def _pin_warning(rel: str, state: str, ref: str, regenerate: str) -> str:
         return f"{rel} is pinned to @{ref}, which is AHEAD of the baseline @{PINNED_DEVTOOLS_REF} — advance PINNED_DEVTOOLS_REF, do not regenerate this caller downwards"
 
     if position == "custom":
+        if re.fullmatch(r"[0-9a-fA-F]{40}", ref or ""):
+            return f"{rel} is pinned to SHA @{ref[:12]}…, which is not the current anchor @{PINNED_DEVTOOLS_REF} — the audit cannot order two SHAs; regenerate with: {regenerate} to advance to the anchor"
         return f"{rel} is pinned to @{ref}, which is not a CalVer baseline (a tag or a commit is legal) — the audit cannot order it against @{PINNED_DEVTOOLS_REF}"
 
     return f"{rel} is pinned to @{ref} (current pin @{PINNED_DEVTOOLS_REF}) — regenerate with: {regenerate} to advance"

@@ -90,7 +90,7 @@ class test_ref_rendering:
 
     def test_markers_never_leak_into_rendered_output(self):
         for source in TEMPLATE_SOURCES.values():
-            for ref in (PINNED_DEVTOOLS_REF, "master", "v2099.1", "0123456789abcdef"):
+            for ref in (PINNED_DEVTOOLS_REF, "master", "v2099.1", "0123456789abcdef0123456789abcdef01234567"):
                 assert "__DEVTOOLS_REF" not in render_caller(source, ref)
 
     def test_pinned_render_passes_the_ref_to_the_callee(self):
@@ -187,18 +187,24 @@ class test_ref_escape_hatch:
         assert body["uses"].endswith("@v2026.9")
         assert body["with"]["devtools-ref"] == "v2026.9"
 
-def test_sha_ref_is_rejected_at_the_cli(monkeypatch, tmp_path):
-    """R2 F2: the clone-based gates bootstrap with `git clone --branch`, which
-    cannot honor a SHA — generating a SHA-pinned caller would ship a gate whose
-    bootstrap deterministically fails at runtime."""
+def test_sha_ref_generates_sha_pinned_callers(monkeypatch, tmp_path):
+    """Since the 2026-10-31 scheme ruling a 40-hex SHA is the canonical pin:
+    the CLI accepts it and the generated callers carry it on BOTH layers
+    (`uses:@<sha>` and `devtools-ref: <sha>` where the template passes it)."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("sys.argv", ["init", "--with-workflows", "--ref", "0123456789abcdef0123456789abcdef01234567"])
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr("sys.argv", ["init", "--with-workflows", "--ref", sha])
 
     # Return-code assertion only: the shared logger emits through a worker
     # thread, so captured-stream assertions on it are racy by design
     # (see test_init_check.py).
-    assert init.main() == 2
-    assert not (tmp_path / ".github" / "workflows").exists(), "a rejected ref must not generate anything"
+    assert init.main() == 0
+    trio = tmp_path / ".github" / "workflows"
+    assert trio.exists(), "a SHA ref must generate callers (it used to be rejected before the clone lanes could bootstrap one)"
+
+    for filename in ("commit-msg-lint.yml", "ci-cache.yml", "pr-title-check.yml"):
+        body = next(iter(yaml.safe_load((trio / filename).read_text(encoding = "utf-8"))["jobs"].values()))
+        assert body["uses"].endswith("@" + sha), filename
 
 class test_legacy_bytes:
     """The pre-lane template: the audit's migration marker, frozen on purpose.

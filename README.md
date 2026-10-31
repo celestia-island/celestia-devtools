@@ -254,10 +254,15 @@ Semantics:
   devtools snapshot to install — pinning the YAML while the tool floats from
   master would be cosmetic. `p0-gate` is the deliberate exception: its P0
   ledger is live policy state and stays on master even from a pinned caller.
-- **The pin is a CalVer rolling baseline tag** (`v2026.10`). A new tag is cut
-  on a verified-green master SHA each migration wave (or sooner when a gate
-  change lands); tags are never moved. Advancing = regenerate the caller, not
-  mutate the tag.
+- **The pin is a commit SHA** (the canonical form since the 2026-10-31 scheme
+  ruling; the earlier CalVer tags `v<YYYY.MM>` remain in the repo as historical
+  wave markers and stay legal pins). A SHA is maximally deterministic, is the
+  standard supply-chain pin, and cannot be moved by anything. The anchor
+  advances by regeneration. `fleet-audit` labels every SHA pin with its
+  nearest containing tag + commit date (resolved against the local devtools
+  checkout), so the cohort census stays readable without tag ceremony. The
+  first SHA anchor must point at a commit whose own workflow files can
+  bootstrap a SHA (the clone lanes fetch-the-exact-object).
 - **Upgrading is regeneration.** `celestia-devtools init --with-workflows
   --force` (add `--gate <name>` for opt-in callers) rewrites the callers at
   the current pin. Never hand-edit the ref.

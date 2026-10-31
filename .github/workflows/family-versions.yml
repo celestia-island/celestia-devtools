@@ -75,9 +75,19 @@ jobs:
             celestia-devtools family-versions $STRICT "$GITHUB_WORKSPACE"
           else
             echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the baselines match the pin"
-            # --branch takes a branch or tag ref (SHA pins are served by the
-            # pip-based bootstraps in the other callees; this farm lane only
-            # needs to honor tags).
-            rm -rf /tmp/celestia-devtools-fv && git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
+            # Branch/tag refs clone with --branch; a 40-hex SHA pin cannot take
+            # that flag, so fetch the exact object instead (GitHub serves
+            # allow-anySHA1InWant) and check it out. SHA pins are the canonical
+            # caller pin since 2026-10-31 (user ruling; the CalVer tags remain
+            # as historical wave markers).
+            rm -rf /tmp/celestia-devtools-fv
+            if [[ "${DEVTOOLS_REF:-master}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              git init -q /tmp/celestia-devtools-fv
+              git -C /tmp/celestia-devtools-fv remote add origin https://github.com/celestia-island/celestia-devtools.git
+              git -C /tmp/celestia-devtools-fv fetch -q --depth 1 origin "${DEVTOOLS_REF}"
+              git -C /tmp/celestia-devtools-fv checkout -q FETCH_HEAD
+            else
+              git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
+            fi
             cd /tmp/celestia-devtools-fv && PYTHONPATH=src python3 -m celestia_devtools family-versions $STRICT "$GITHUB_WORKSPACE"
           fi
