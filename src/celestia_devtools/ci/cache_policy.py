@@ -45,11 +45,11 @@ to the real cargo home. See :func:`_resolves_to_cargo_home`.
 
 from __future__ import annotations
 import argparse
-import json
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Sequence
+from celestia_devtools.core import envelope
 
 try:  # PyYAML is a runtime dependency of this package; keep the failure loud.
     import yaml
@@ -308,7 +308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     findings = collect(repos)
 
     if args.json:
-        print(json.dumps(findings, ensure_ascii = False, indent = 2))
+        envelope.emit(findings)
     else:
         for finding in findings:
             print(f"{finding['path']}:{finding['line']}: {finding['rule']}: {finding['detail']}")

@@ -98,6 +98,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Sequence
+from celestia_devtools.core import envelope
 
 try:  # Python 3.11+
     import tomllib as _toml
@@ -845,7 +846,7 @@ def _render_text(result: verify_result) -> str:
 def _render_json(result: verify_result, ok: bool) -> str:
     payload = result.to_dict()
     payload["ok"] = ok
-    return json.dumps(payload, indent = 2, sort_keys = True)
+    return envelope.render(payload, sort_keys = True)
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 

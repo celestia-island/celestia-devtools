@@ -31,12 +31,12 @@ structural gates do not catch a rule that is well-formed and wrong.
 
 from __future__ import annotations
 import argparse
-import json
 import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
+from celestia_devtools.core import envelope
 
 try:  # PyYAML is already a hard dependency of this package.
     import yaml
@@ -516,7 +516,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     warnings = [f for f in ctx.findings if f.severity != "error"]
 
     if args.json:
-        print(json.dumps({"root": str(root), "checked": ctx.checked, "errors": [{"path": f.render(root), "rule": f.rule, "message": f.message}for f in errors], "warnings": [{"path": f.render(root), "rule": f.rule, "message": f.message}for f in warnings]}, ensure_ascii = False, indent = 2))
+        envelope.emit({"root": str(root), "checked": ctx.checked, "errors": [{"path": f.render(root), "rule": f.rule, "message": f.message}for f in errors], "warnings": [{"path": f.render(root), "rule": f.rule, "message": f.message}for f in warnings]})
     else:
         for finding in ctx.findings:
             print(finding.render(root), file = sys.stderr)

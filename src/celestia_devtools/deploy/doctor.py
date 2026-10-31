@@ -14,10 +14,10 @@ gate in automation.
 
 from __future__ import annotations
 import argparse
-import json
 import sys
 from celestia_devtools.core import deps, netproxy
 from celestia_devtools.deploy import probe
+from celestia_devtools.core import envelope
 
 def _collect() -> dict:
     cfg = netproxy.detect()
@@ -35,7 +35,7 @@ def main() -> int:
     data = _collect()
 
     if args.json:
-        print(json.dumps(data, ensure_ascii = False, indent = 2))
+        envelope.emit(data)
     else:
         cfg = data["proxy"]
         print("── 代理 ──")

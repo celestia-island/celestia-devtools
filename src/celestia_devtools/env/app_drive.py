@@ -79,6 +79,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from celestia_devtools.core import envelope as core_envelope
 from typing import Sequence
 from celestia_devtools.env import cdp
 from celestia_devtools.env import ports
@@ -185,18 +186,14 @@ state directory (override with CELESTIA_APP_DRIVE_STATE):
 """
 
 def envelope(command: str, **fields) -> dict:
-    payload = {"ok": True, "protocol": PROTOCOL_VERSION, "cmd": command}
-    payload.update(fields)
-    return payload
+    return core_envelope.ok_envelope(command, PROTOCOL_VERSION, **fields)
 
 def failure(command: str, code: str, message: str, **fields) -> dict:
-    payload = {"ok": False, "protocol": PROTOCOL_VERSION, "cmd": command, "error": {"code": code, "message": message}}
-    payload.update(fields)
-    return payload
+    return core_envelope.error_envelope(command, PROTOCOL_VERSION, code, message, **fields)
 
 def emit(payload: dict, pretty: bool = False) -> None:
     """Print the signed envelope as pure ASCII (gbk stdout cannot crash)."""
-    print(json.dumps(payload, ensure_ascii = True, indent = 2 if pretty else None))
+    core_envelope.emit_line(payload, pretty = pretty)
 
 def timestamp_utc() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

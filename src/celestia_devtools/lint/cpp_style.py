@@ -87,10 +87,10 @@ body braces, class design rules, and any auto-fix. No clang/LLVM dependency.
 
 from __future__ import annotations
 import argparse
-import json
 import os
 import re
 import sys
+from celestia_devtools.core import envelope
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Set, Tuple
@@ -406,7 +406,7 @@ def _run_check(args: argparse.Namespace) -> int:
 
     if args.json:
         payload = {"tool": "cpp-style", "config": config.origin, "summary": {"checked": len(discovery.files), "skipped": discovery.skipped, "findings": total, "errors": errors, "warnings": warnings, "exempted": exempted, "diagnostics": len(diagnostics), "truncated": truncated}, "issues": [_issue_payload(shown, finding)for shown, finding in reported], "warnings": diagnostics}
-        print(json.dumps(payload, indent = 2))
+        envelope.emit(payload)
     else:
         if not args.quiet:
             for shown, finding in reported:
@@ -431,7 +431,7 @@ def _run_check(args: argparse.Namespace) -> int:
 def _run_list_rules(args: argparse.Namespace) -> int:
     if args.json:
         payload = {"tool": "cpp-style", "rules": [{"id": rule.id, "title": rule.title, "source": rule.source, "severity": rule.severity, "autofix": rule.autofix, "judgment": rule.judgment, "exceptions": list(rule.exceptions)}for rule in RULES]}
-        print(json.dumps(payload, indent = 2))
+        envelope.emit(payload)
         return 0
 
     print("cpp-style: %d rule(s), check-only (no auto-fix)" % len(RULES))

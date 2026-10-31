@@ -14,7 +14,6 @@ Mock server hierarchy (bottom-up):
   arona (LLM) → entelecheia (scepter) → shittim-chest (webui agent activity)
 """
 from __future__ import annotations
-import json
 import os
 import subprocess
 import sys
@@ -22,6 +21,7 @@ import time
 from pathlib import Path
 from celestia_devtools.repo.register_patches import is_celestia_repo
 import socket
+from celestia_devtools.core import envelope
 
 # ── Repo discovery (shared with register_patches) ──────────────────────────
 
@@ -200,7 +200,7 @@ def registry() -> str:
         if name not in mocks:
             mocks[name] = {"name": name, "port": info["port"], "protocol": info["protocol"], "url": f"{info['protocol']}://127.0.0.1:{info['port']}"}
 
-    return json.dumps(mocks, indent = 2)
+    return envelope.render(mocks)
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
 

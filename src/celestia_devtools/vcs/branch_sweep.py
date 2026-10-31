@@ -27,11 +27,11 @@ unified patch of each into the backup directory (default:
 
 from __future__ import annotations
 import argparse
-import json
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from celestia_devtools.core import envelope
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     # UTF-8 is pinned: git speaks UTF-8, but a Windows console's locale
@@ -276,7 +276,7 @@ def main(argv: list[str] | None = None) -> int:
                 failed = True
 
     if args.json:
-        print(json.dumps(reports, ensure_ascii = False, indent = 2))
+        envelope.emit(reports)
 
     deletes = sum(1 for r in reports for v in r["verdicts"] if v["verdict"] == "DELETE")
     keeps = sum(1 for r in reports for v in r["verdicts"] if v["verdict"] == "KEEP")

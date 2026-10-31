@@ -104,13 +104,13 @@ Usage::
 from __future__ import annotations
 import argparse
 import fnmatch
-import json
 import os
 import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Set, Tuple
+from celestia_devtools.core import envelope
 # canonical caller 的**唯一来源**：生成器写出去的就是这个常量。
 # （2026-09-15 的 P1 教训：模板在两处各写一份，必然漂移——审计必须比对同一份字节。）
 # LEGACY = 2026-09-26 车道化之前的旧 canonical：只作迁移判据（warning），见
@@ -969,7 +969,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.as_json:
         report = build_report(reported, len(files), suppressed, args.strict)
-        print(json.dumps(report, indent = 2, ensure_ascii = False))
+        envelope.emit(report)
     else:
         for finding in reported:
             print(finding.render())

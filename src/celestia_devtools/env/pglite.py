@@ -54,6 +54,7 @@ import time
 from pathlib import Path
 from celestia_devtools.core import logger as _logger
 from celestia_devtools.env.preflight import require as _require_tools
+from celestia_devtools.core import envelope
 
 # Node packages — (name, version range) so scoped names (@electric-sql/…)
 # don't get mangled by naive split("@"). pglite-pgvector gives the `vector`
@@ -401,7 +402,7 @@ def status(name: str = DEFAULT_INSTANCE, all_: bool = False) -> int:
             if sc and _proc_alive(sc.get("pid", 0)):
                 live.append({"name": n, **{k: v for k, v in sc.items() if k != "name"}})
 
-        print(json.dumps({"running": bool(live), "instances": live}, indent = 2))
+        envelope.emit({"running": bool(live), "instances": live})
         return 0 if live else 1
 
     _validate_name(name)
@@ -410,10 +411,10 @@ def status(name: str = DEFAULT_INSTANCE, all_: bool = False) -> int:
     alive = _proc_alive(pid) if pid else False
 
     if alive:
-        print(json.dumps({"running": True, **sc}, indent = 2))
+        envelope.emit({"running": True, **sc})
         return 0
 
-    print(json.dumps({"running": False}))
+    envelope.emit({"running": False}, indent = None)
     return 1 if pid else 0
 
 def main() -> int:

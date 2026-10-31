@@ -64,12 +64,12 @@ multi-line f-strings never count as multi-line statements. This keeps 3.11 and
 from __future__ import annotations
 import argparse
 import ast
-import json
 import os
 import re
 import sys
 import textwrap
 import tokenize
+from celestia_devtools.core import envelope
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -692,8 +692,7 @@ def emit_check_report(result: check_result, *, json_output: bool, quiet: bool, m
 
     if json_output:
         payload = {"tool": "py-style", "config": result.config_origin, "summary": {"checked": result.checked, "skipped": result.skipped, "findings": total, "errors": errors, "warnings": warning_count, "exempted": result.exempted, "diagnostics": len(result.warnings), "truncated": truncated}, "issues": [_issue_payload(shown, issue, severities)for shown, issue in reported], "warnings": list(result.warnings)}
-        json.dump(payload, stream_out, ensure_ascii = False, indent = 2)
-        print("", file = stream_out)
+        envelope.emit(payload, stream = stream_out)
         return total, errors
 
     if not quiet:
@@ -943,8 +942,7 @@ def run_list_rules_command(args: argparse.Namespace) -> int:
 
     if args.json_output:
         payload = {"tool": "py-style", "rules": [{"id": rule.id, "title": rule.title, "p_refs": list(rule.p_refs), "severity": rule.severity, "fixable": rule.fixable, "description": rule.description}for rule in CHECK_RULES], "manual": [{"id": manual.id, "title": manual.title, "p_refs": list(manual.p_refs), "description": manual.description}for manual in MANUAL_RULES], "builtin": [{"id": rule.id, "title": rule.title, "severity": rule.severity, "fixable": rule.fixable, "description": rule.description}for rule in BUILTIN_RULES]}
-        json.dump(payload, sys.stdout, ensure_ascii = False, indent = 2)
-        print("", file = sys.stdout)
+        envelope.emit(payload)
         return EXIT_OK
 
     count = len(CHECK_RULES)
