@@ -15,10 +15,7 @@ import io
 import re
 import tokenize
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterator, Sequence
-
-if TYPE_CHECKING:  # pragma: no cover - import cycle guard, runtime import is unused
-    pass
+from typing import Iterator, Sequence
 
 class parse_failure(Exception):
     """Raised when a file cannot be tokenized or parsed."""

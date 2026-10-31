@@ -19,7 +19,7 @@ from celestia_devtools.lint.py_style_checks import CHECK_FUNCS, check_snake_case
 from celestia_devtools.lint.py_style_fixers import FIX_FUNCS, FIX_ORDER
 from celestia_devtools.lint.py_style_graph import check_import_cycles, graph_issue, import_edge, module_import_edges, module_info, module_name_for_path
 from celestia_devtools.lint.py_style_model import (file_context, is_compound_statement, is_docstring_statement, is_parenthesized, issue_record, line_edit, logical_line, module_docstring, operator_precedence, parse_failure, source_line_prefix_is_blank, string_token_texts, walk_with_parents)
-from celestia_devtools.lint.py_style_model import _delete_rows, _is_fstring_token  # noqa: F401 - facade re-export kept for the tests
+from celestia_devtools.lint.py_style_model import _is_fstring_token  # noqa: F401 - facade re-export kept for the tests
 
 # ---------------------------------------------------------------------------
 # Rule catalog

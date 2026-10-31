@@ -8,10 +8,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
-
-if TYPE_CHECKING:  # pragma: no cover - import cycle guard, runtime import is unused
-    pass
+from typing import Sequence
 
 @dataclass(frozen = True)
 class import_edge:
