@@ -34,9 +34,13 @@ test:
     {{ _devtools }} p0-gate --list
     {{python_cmd}} -m pytest tests/ -v
 
-# Lint with ruff.
+# Lint with ruff, plus the self-test of every scanner this package ships.
 lint:
     {{python_cmd}} -m ruff check src/ tests/
+    @# This repository has no TypeScript of its own, so the escape-hatch gate can
+    @# only be exercised through its controls here: the ten positive shapes, the
+    @# false-positive corpus, the allowlist scoping and the known-positive file.
+    {{python_cmd}} -m celestia_devtools type-escapes --selftest
 
 # Format Markdown + verify the bundled common.just is valid just syntax.
 fmt:
