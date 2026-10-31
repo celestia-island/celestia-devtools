@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 import pytest
+import celestia_devtools.repo.fleet_audit as fleet_audit_mod
+import celestia_devtools.repo.init as init_mod
 from celestia_devtools.repo.fleet_audit import GATE_FILES, main
 from celestia_devtools.repo.init import PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, _ensure_workflows, render_caller
 
@@ -407,3 +409,54 @@ def test_error_payload_does_not_claim_pins_are_fine(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["summary"]["pins_ok"] is False
     assert payload["summary"]["floating_repositories"] is None
+
+# ── SHA pins (scheme ruling 2026-10-31) ─────────────────────────────────────
+
+def test_pin_position_orders_sha_pins_without_downgrade_advice(monkeypatch):
+    """Exact-anchor SHA reads baseline; a different SHA reads custom with an
+    advance-to-anchor hint — never a downgrade path two CalVer tags would take."""
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setattr(init_mod, "PINNED_DEVTOOLS_REF", sha)
+    assert init_mod.pin_position(sha) == "baseline"
+    other = "fedcba9876543210fedcba9876543210fedcba98"
+    assert init_mod.pin_position(other) == "custom"
+    warning = init_mod._pin_warning("ci.yml", "pinned", other, "regen-cmd")
+    assert "does not order a SHA" in warning
+    assert "regenerate" in warning
+
+def test_sha_pins_get_local_cohort_labels(tmp_path, capsys):
+    """A 40-hex pin is labelled via the workspace's devtools checkout:
+    nearest containing tag + commit date, so the census stays readable."""
+    canonical_repo(tmp_path, "sha-pinned")
+
+    # A local devtools checkout whose history contains a tag and the pinned SHA.
+    devtools = make_repo(tmp_path, "celestia-devtools")
+    (devtools / "marker").write_text("initial\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(devtools), "add", "marker"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(devtools), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "✨ Add marker one."], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(devtools), "tag", "v2026.11"], check = True, capture_output = True)
+    (devtools / "marker").write_text("second\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(devtools), "add", "marker"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(devtools), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "✨ Add marker two."], check = True, capture_output = True)
+    real_sha = subprocess.run(["git", "-C", str(devtools), "rev-parse", "HEAD"], check = True, capture_output = True, text = True).stdout.strip()
+    _repin(tmp_path / "sha-pinned", real_sha)
+
+    assert main([str(tmp_path), "--json"]) in (0, 1)
+    payload = json.loads(capsys.readouterr().out)
+    labels = payload["summary"]["sha_pin_labels"]
+    assert real_sha in labels, labels
+    assert labels[real_sha].startswith("v2026.11-1-g"), labels
+    assert labels[real_sha] != real_sha, "the label must carry the cohort tag, not just the sha"
+
+def test_unknown_sha_pin_gets_an_honest_unresolved_label(tmp_path):
+    """Both unresolvable paths say so explicitly — no invented label."""
+    canonical_repo(tmp_path, "far-pinned")
+    ghost = "9999999999999999999999999999999999999999"
+    _repin(tmp_path / "far-pinned", ghost)
+    # No devtools checkout in the workspace at all:
+    report = fleet_audit_mod.audit_workspace(tmp_path)
+    assert report.sha_labels.get(ghost) == "sha (no local devtools checkout to resolve)", report.sha_labels
+    # A devtools checkout that simply lacks the object:
+    make_repo(tmp_path, "celestia-devtools")
+    report = fleet_audit_mod.audit_workspace(tmp_path)
+    assert report.sha_labels.get(ghost) == "sha (not in local devtools object store)", report.sha_labels

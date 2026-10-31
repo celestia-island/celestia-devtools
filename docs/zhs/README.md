@@ -129,16 +129,19 @@ celestia-devtools init --with-workflows
 
 ### 钉版的可复用工作流引用
 
-`init --with-workflows` 生成的 caller 以**钉版基准 tag**（如 `v2026.10`）引用
-可复用工作流，而非 `@master`：全家族约 46 仓共用这一条引用，浮动 `@master`
+`init --with-workflows` 生成的 caller 以**钉版提交**（2026-10-31 裁决起为
+40 位十六进制 SHA；CalVer tag 仍是合法钉版）引用可复用工作流，而非
+`@master`：全家族约 46 仓共用这一条引用，浮动 `@master`
 意味着一次坏提交即时重定义全家族的门禁语义（verify-versions 空转先例）。
 
 - **两层都钉**：`uses:` 的 ref 决定 GitHub 加载哪份 workflow 文件，
   `devtools-ref` 输入让 callee 运行时引导安装同一快照——只钉 YAML 而工具
   仍从 master 浮动是装饰性钉版。`p0-gate` 是刻意例外：P0 台账是活策略
   状态，钉版 caller 也照读 master。
-- **CalVer 滚动基准 tag**：每个迁移波次在验证绿的 master SHA 上切新 tag
-  （`v2026.10` → `v2026.11`），tag 永不移动；前进 = 重生成 caller。
+- **SHA 钉版为正典**：最大化确定性、供应链标准做法、任何操作都移动不了；
+  旧的 CalVer tag（`v2026.10` → `v2026.11`）留作历史波次标记。`fleet-audit`
+  会给每个 SHA 钉版标注最近包含 tag + 提交日期，梯队普查保持可读；前进 =
+  重生成 caller。
 - **升级路径**：`celestia-devtools init --with-workflows --force`（opt-in 门
   加 `--gate <name>`）按当前 pin 重写 caller；不要手改 ref。
 - **逃生口**：`celestia-devtools init --with-workflows --ref master` 生成浮动
