@@ -1522,3 +1522,13 @@ class test_round5_termination:
 
     def test_identity_probe_reason_reports_no_such_process(self):
         assert app_drive.identity_probe_reason(4_000_000) in ("no-such-process", "access-denied")
+
+def test_direct_module_invocation_still_runs_the_cli():
+    """R2 S2-1: `python -m celestia_devtools.env.app_drive` must run main.
+
+    The split moved the implementation (and its __main__ guard) into
+    app_drive_cli; without a facade guard the module invocation became a
+    silent exit-0 no-op while keeping the shebang - fake success."""
+    proc = subprocess.run([sys.executable, "-m", "celestia_devtools.env.app_drive", "--help"], capture_output = True, text = True, env = {**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", "") or "src"})
+    assert proc.returncode == 0
+    assert proc.stdout.strip(), "module invocation produced no output - the __main__ guard is missing from the facade"

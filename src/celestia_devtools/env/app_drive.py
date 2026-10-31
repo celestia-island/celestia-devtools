@@ -76,3 +76,9 @@ from celestia_devtools.env.app_drive_state import (PROTOCOL_VERSION, STATE_SCHEM
 from celestia_devtools.env.app_drive_proc import (pid_alive, _windows_process_identity, _posix_process_identity, read_process_identity, identity_probe_reason, _normalized_image_path, same_image_path, verify_process_identity, taskkill_path, _taskkill, _signal_tree, wait_pid_exit, wait_child_exit, terminate_tree, terminate_verified, merge_webview2_arguments, parse_env_overrides, build_launch_env, build_launch_command, resolve_executable, state_port_for_attach)  # noqa: F401 - facade re-export
 from celestia_devtools.env.app_drive_cdp import (acquire_cdp_port, claim_cdp_port, release_ports, resolve_attach_port, read_page_state, public_target, select_target, connect_page, element_probe_expression, element_click_expression, boot_chrome_matches, condition_description, check_condition, image_dimensions, state_signature, state_changes, watch_stop_reason, launched_summary)  # noqa: F401 - facade re-export
 from celestia_devtools.env.app_drive_cli import (cmd_targets, cmd_status, _resolve_expression, cmd_eval, cmd_shot, cmd_click, cmd_wait, cmd_watch, _validate_log_dir, _new_default_log_dir, _open_launch_logs, _close_handles, _spawn, _cleanup_note, _launch_state_from_identity, _state_has_identity, _abort_launch, _replace_existing, _build_launch_state, _validate_launch_options, cmd_launch, _close_app_key, cmd_close, HANDLERS, _add_attach_arguments, build_parser, split_launch_arguments, main)  # noqa: F401 - facade re-export
+
+if __name__ == "__main__":
+    # The split moved the implementation into app_drive_cli; direct module
+    # invocation (python -m celestia_devtools.env.app_drive) must still run
+    # the CLI, not silently exit 0 (R2 S2-1 of the split).
+    raise SystemExit(main())
