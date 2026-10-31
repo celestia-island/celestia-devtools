@@ -520,17 +520,18 @@ all. Four commands cover those:
 ```bash
 celestia-devtools type-escapes --ruleset strict --baseline .type-escapes-baseline.json
 celestia-devtools type-escapes --inventory          # per-rule, per-profile counts
-celestia-devtools ts-policy check --tsconfig packages/vue/tsconfig.json
-celestia-devtools ts-policy coverage --tsconfig packages/vue/tsconfig.json
-celestia-devtools ts-policy probe --tsconfig packages/vue/tsconfig.json
-celestia-devtools ts-surface emit-scan --tsconfig packages/bindings/tsconfig.json
+celestia-devtools ts-policy check --tsconfig tsconfig.json
+celestia-devtools ts-policy coverage --tsconfig tsconfig.json
+celestia-devtools ts-policy probe --tsconfig tsconfig.json
+celestia-devtools ts-surface emit-scan --tsconfig tsconfig.json
 ```
 
 Three conventions make the gate adoptable instead of all-or-nothing:
 
 - **Rulesets.** `core` is always-on; `strict` adds the shapes whose fix costs a
-  migration (`JSON.parse`/`.json()`, `: Function`, event-target casts,
-  `as never` in source). A repository opts in after paying it down.
+  migration (`JSON.parse`/`.json()`, `: Function`, event-target casts). A
+  repository opts in after paying it down. (`as never` is core but
+  profile-scoped: a lie in `src`, deliberately bad input in `tests`.)
 - **Profiles.** Every file is classified `src` / `test` / `generated` / `dts`.
   `as never` in a test is deliberate bad-input injection, not debt, and Vue's
   `emits: [...]` array form only matters in component sources.
@@ -560,7 +561,9 @@ type-gate:
     ruleset: core
     working-directory: packages/vue
     install-command: pnpm install --frozen-lockfile
-    tsconfig: packages/vue/tsconfig.json
+    # `tsconfig` resolves against `working-directory`; the escape scan's
+    # `paths`/`baseline` resolve against the workspace root.
+    tsconfig: tsconfig.json
     typecheck-command: pnpm --filter @celestia-island/hikari lint
 ```
 

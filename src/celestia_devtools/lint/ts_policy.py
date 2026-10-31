@@ -48,6 +48,7 @@ quiet pass: the same fail-closed shape every other gate in this package uses.
 from __future__ import annotations
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -166,6 +167,29 @@ def translate_glob(pattern: str) -> re.Pattern[str]:
         index += 1
 
     return re.compile("^" + "".join(translated) + "$")
+
+def expand_globs(patterns: Sequence[str], root: Path) -> list[str]:
+    """Normalise tsconfig globs: strip `./` and expand a bare directory name.
+
+    TypeScript accepts `"include": ["src"]` and reads it as `src/**/*`, and
+    `"exclude": ["dist"]` likewise. Treating those as literal paths made the
+    coverage audit silently claim nothing (or invent islands from build output).
+    """
+
+    expanded: list[str] = []
+
+    for pattern in patterns:
+        text = str(pattern).replace("\\", "/")
+
+        if text.startswith("./"):
+            text = text[2:]
+
+        if (not any(char in text for char in "*?")) and (root / text).is_dir():
+            text = text.rstrip("/") + "/**/*"
+
+        expanded.append(text)
+
+    return expanded
 
 def matches_any(relative: str, patterns: Sequence[str]) -> bool:
     """Whether `relative` (a posix path) matches any of the globs."""
@@ -305,13 +329,20 @@ def load_policy(path: Path) -> dict | None:
 
     return document
 
-def resolve_policy(explicit: str | None, root: Path) -> tuple[Path, dict] | None:
-    """Resolve the policy file: flag, environment, repository, bundled."""
+def resolve_decisions(explicit: str | None, root: Path) -> tuple[Path, dict] | None:
+    """Resolve the DECISIONS file: flag, environment, repository, bundled.
+
+    Only the decisions live here. The catalog (which flags exist and which are
+    mandatory) is always read from the bundled policy, so a repository file can
+    state its position but cannot shrink the list of questions it must answer.
+    """
 
     candidates: list[Path] = []
 
     if explicit:
         candidates.append(Path(explicit))
+    elif os.environ.get("CELESTIA_TS_POLICY"):
+        candidates.append(Path(str(os.environ["CELESTIA_TS_POLICY"])))
     elif Path(str(root) + "/ts-policy.toml").is_file():
         candidates.append(Path(str(root) + "/ts-policy.toml"))
     else:
@@ -333,6 +364,13 @@ def catalog_of(policy: dict) -> tuple[list[str], list[str]]:
 
     return list(tier_a.get("required") or []), list(tier_b.get("flags") or [])
 
+def strict_family_of(catalog: dict) -> list[str]:
+    """The flags `strict: true` implies, which a repository can switch back off."""
+
+    tier_a = catalog.get("tier_a") or {}
+
+    return list(tier_a.get("strict_family") or [])
+
 def decisions_of(policy: dict) -> tuple[list[str], dict[str, str]]:
     """The (on, off) tier B decisions declared by a policy document."""
 
@@ -345,11 +383,16 @@ def _expected_value(flag: str) -> bool:
 
     return flag not in INVERTED_FLAGS
 
-def check_tsconfig(config: dict, policy: dict, root: Path | None = None) -> list[dict]:
-    """Return the findings for one repository's tsconfig against the policy."""
+def check_tsconfig(config: dict, catalog: dict, decisions: dict, root: Path | None = None) -> list[dict]:
+    """Return the findings for one repository's tsconfig against the policy.
 
-    tier_a, tier_b = catalog_of(policy)
-    on, off = decisions_of(policy)
+    `catalog` is the bundled policy (mandatory flags + the tier B flag list) and
+    `decisions` is the repository's resolved file. Keeping them separate is the
+    whole point: a repository cannot delete a question by answering it.
+    """
+
+    tier_a, tier_b = catalog_of(catalog)
+    on, off = decisions_of(decisions)
     options = config["options"]
     findings: list[dict] = []
 
@@ -362,6 +405,11 @@ def check_tsconfig(config: dict, policy: dict, root: Path | None = None) -> list
 
         if actual is not expected:
             findings.append({"kind": "tier-a-missing", "severity": "error", "flag": flag, "detail": f"expected {flag} = {str(expected).lower()!r}, found {actual!r}"})
+
+    # `strict: true` does not stop a repository from turning one member back off.
+    for flag in strict_family_of(catalog):
+        if (flag in options) and (options[flag] is not True):
+            findings.append({"kind": "tier-a-strict-family", "severity": "error", "flag": flag, "detail": f"strict: true is set but {flag} is explicitly {options[flag]!r}"})
 
     catalog = set(tier_b)
     unknown = sorted((set(on) | set(off)) - catalog)
@@ -428,37 +476,39 @@ def in_scope_files(root: Path, config: dict) -> list[Path]:
     """The files the repository's own globs claim the checker covers."""
 
     out_dir = config["options"].get("outDir")
-    excluded = [str(item) for item in (config["exclude"] or [])]
+    excluded = expand_globs([str(item) for item in (config["exclude"] or [])], root)
 
     if out_dir:
         excluded.append(str(out_dir).rstrip("/") + "/**")
 
-    includes = [str(item) for item in (config["include"] or ["**/*"])]
-    candidates: list[Path] = []
+    includes = expand_globs([str(item) for item in (config["include"] or ["**/*"])], root)
+    found: set[Path] = set()
 
-    if config["files"]:
-        candidates = [root / str(item) for item in config["files"]]
-    else:
+    # `files` entries are explicit and TypeScript never applies `exclude` to them.
+    for item in config["files"] or []:
+        path = root / str(item)
+
+        if path.is_file():
+            found.add(path)
+
+    # `include` and `files` are a union, not a choice.
+    if config["include"] or not config["files"]:
         for suffix in SOURCE_SUFFIXES:
-            candidates.extend(root.rglob("*" + suffix))
+            for path in root.rglob("*" + suffix):
+                relative = path.relative_to(root)
 
-    found: list[Path] = []
+                if any(part in DEFAULT_EXCLUDED_DIRS for part in relative.parts):
+                    continue
 
-    for path in candidates:
-        relative = path.relative_to(root).as_posix()
+                text = relative.as_posix()
 
-        if any(part in DEFAULT_EXCLUDED_DIRS for part in path.parts):
-            continue
+                if excluded and matches_any(text, excluded):
+                    continue
 
-        if excluded and matches_any(relative, excluded):
-            continue
+                if matches_any(text, includes):
+                    found.add(path)
 
-        if not matches_any(relative, includes):
-            continue
-
-        found.append(path)
-
-    return sorted(set(found))
+    return sorted(found)
 
 def coverage_findings(root: Path, config: dict, program: set[str]) -> dict:
     """Compare the claimed include set with the compiler's program.
@@ -619,21 +669,21 @@ def selftest() -> int:
         policy_path = tmp / "policy.toml"
         policy_path.write_text(SELFTEST_POLICY, encoding = "utf-8")
         policy = load_policy(policy_path)
-        clean = check_tsconfig({"options": dict(SELFTEST_TSCONFIG), "warnings": []}, policy, tmp)
+        clean = check_tsconfig({"options": dict(SELFTEST_TSCONFIG), "warnings": []}, policy, policy, tmp)
 
         if clean:
             failures.append(f"check: a compliant config produced {clean}")
 
         missing = dict(SELFTEST_TSCONFIG)
         del missing["noImplicitOverride"]
-        missing_findings = check_tsconfig({"options": missing, "warnings": []}, policy, tmp)
+        missing_findings = check_tsconfig({"options": missing, "warnings": []}, policy, policy, tmp)
 
         if [item["kind"] for item in missing_findings] != ["tier-a-missing"]:
             failures.append(f"check: missing tier A flag not reported alone: {missing_findings}")
 
         wrong_strict = dict(SELFTEST_TSCONFIG)
         wrong_strict["allowUnreachableCode"] = True
-        inverted = [item for item in check_tsconfig({"options": wrong_strict, "warnings": []}, policy, tmp) if item["kind"] == "tier-a-missing"]
+        inverted = [item for item in check_tsconfig({"options": wrong_strict, "warnings": []}, policy, policy, tmp) if item["kind"] == "tier-a-missing"]
 
         if not inverted:
             failures.append("check: the inverted flag (allowUnreachableCode) accepted its non-strict value")
@@ -641,23 +691,27 @@ def selftest() -> int:
         stale = dict(SELFTEST_TSCONFIG)
         stale["noUncheckedIndexedAccess"] = True
 
-        if not [item for item in check_tsconfig({"options": stale, "warnings": []}, policy, tmp) if item["kind"] == "tier-b-stale-off"]:
+        if not [item for item in check_tsconfig({"options": stale, "warnings": []}, policy, policy, tmp) if item["kind"] == "tier-b-stale-off"]:
             failures.append("check: a tier B 'off' decision that the tsconfig contradicts was accepted")
 
-        undecided = """
-version = 1
+        empty_path = tmp / "empty-decisions.toml"
+        empty_path.write_text("version = 1\n", encoding = "utf-8")
+        empty_decisions = check_tsconfig({"options": dict(SELFTEST_TSCONFIG), "warnings": []}, policy, load_policy(empty_path), tmp)
 
-[tier_b]
-flags = ["exactOptionalPropertyTypes"]
-on = []
+        if len([item for item in empty_decisions if item["kind"] == "tier-b-undecided"]) != len(catalog_of(policy)[1]):
+            failures.append("check: a repository file that states no decisions deleted the catalog (it must only undecide, never shrink)")
 
-[tier_b.off]
-"""
-        undecided_path = tmp / "undecided.toml"
-        undecided_path.write_text(undecided, encoding = "utf-8")
+        for flag in catalog_of(policy)[0]:
+            if not [item for item in empty_decisions if (item["kind"] == "tier-a-missing") and (item["flag"] == flag) and (flag not in SELFTEST_TSCONFIG)]:
+                continue
 
-        if not [item for item in check_tsconfig({"options": dict(SELFTEST_TSCONFIG), "warnings": []}, load_policy(undecided_path), tmp) if item["kind"] == "tier-b-undecided"]:
-            failures.append("check: an undecided tier B flag was accepted (silence must not read as a decision)")
+        (tmp / "src").mkdir(exist_ok = True)
+
+        if expand_globs(["src"], tmp) != ["src/**/*"]:
+            failures.append(f"globs: a bare directory name was not expanded: {expand_globs(['src'], tmp)}")
+
+        if expand_globs(["./src/**/*.ts"], tmp) != ["src/**/*.ts"]:
+            failures.append(f"globs: a ./ prefix was not stripped: {expand_globs(['./src/**/*.ts'], tmp)}")
 
         extend_root = tmp / "extends"
         extend_root.mkdir()
@@ -723,6 +777,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--command", default = None, metavar = "CMD", help = "checker command for probe/coverage (default: node_modules/.bin/vue-tsc when a .vue file exists, else node_modules/.bin/tsc).")
     parser.add_argument("--flag", action = "append", default = [], metavar = "NAME", help = "probe: a compiler flag to cost out (repeatable; default: every undecided tier B flag).")
     parser.add_argument("--allow-islands", action = "append", default = [], metavar = "GLOB", help = "coverage: exempt an unchecked-island glob (say why in the caller).")
+    parser.add_argument("--allow-nocheck", action = "store_true", help = "coverage: tolerate @ts-nocheck files (the default fails: a silenced file enters the program only to be skipped).")
     parser.add_argument("--json", action = "store_true", help = "Machine-readable output.")
     parser.add_argument("--selftest", action = "store_true", help = "Verify the tool against its own controls.")
     args = parser.parse_args(argv)
@@ -738,25 +793,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     config = load_tsconfig(config_path)
     root = Path(args.root) if args.root else config_path.parent.resolve()
-    resolved = resolve_policy(args.policy, root)
+    catalog = load_policy(BUNDLED_POLICY)
+    resolved = resolve_decisions(args.policy, root)
 
-    if resolved is None:
+    if (catalog is None) or (resolved is None):
         return 2
 
-    policy_path, policy = resolved
+    policy_path, decisions = resolved
 
     if args.action == "list":
-        document = {"policy": str(policy_path), "tier_a": catalog_of(policy)[0], "tier_b": catalog_of(policy)[1], "on": decisions_of(policy)[0], "off": decisions_of(policy)[1], "options": config["options"]}
+        document = {"policy": str(policy_path), "tier_a": catalog_of(catalog)[0], "tier_b": catalog_of(catalog)[1], "on": decisions_of(decisions)[0], "off": decisions_of(decisions)[1], "options": config["options"]}
 
         if args.json:
             envelope.emit(document)
         else:
-            _print_list(catalog_of(policy), decisions_of(policy), config["options"])
+            _print_list(catalog_of(catalog), decisions_of(decisions), config["options"])
 
         return 0
 
     if args.action == "check":
-        findings = check_tsconfig(config, policy, root)
+        findings = check_tsconfig(config, catalog, decisions, root)
         errors = [item for item in findings if item["severity"] == "error"]
 
         if args.json:
@@ -775,7 +831,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.action == "coverage":
         return _run_coverage(args, root, config, config_path, command)
 
-    return _run_probe(args, root, policy, command)
+    return _run_probe(args, root, decisions, command, config_path)
 
 def default_checker(root: Path) -> str | None:
     """Pick the repository's checker: vue-tsc when SFCs exist, else tsc."""
@@ -804,18 +860,19 @@ def _run_coverage(args: argparse.Namespace, root: Path, config: dict, config_pat
     document = coverage_findings(root, config, program_from_listing(output))
     allowed = [item for item in document["islands"] if matches_any(item, args.allow_islands)]
     islands = [item for item in document["islands"] if item not in allowed]
+    silenced = [] if args.allow_nocheck else document["silenced"]
 
     if args.json:
-        envelope.emit({"islands": islands, "exempted": allowed, "silenced": document["silenced"], "claimed": document["claimed"], "program": document["program"], "tsconfig": str(config_path)})
+        envelope.emit({"islands": islands, "exempted": allowed, "silenced": silenced, "count": len(islands) + len(silenced), "claimed": document["claimed"], "program": document["program"], "tsconfig": str(config_path)})
     else:
-        _print_coverage({"islands": islands, "silenced": document["silenced"], "claimed": document["claimed"], "program": document["program"]})
+        _print_coverage({"islands": islands, "silenced": silenced, "claimed": document["claimed"], "program": document["program"]})
 
-    return 1 if islands else 0
+    return 1 if (islands or silenced) else 0
 
-def _run_probe(args: argparse.Namespace, root: Path, policy: dict, command: str) -> int:
+def _run_probe(args: argparse.Namespace, root: Path, policy: dict, command: str, config_path: Path) -> int:
     """Cost out candidate flags against the repository's own checker."""
 
-    status, baseline_output = run_checker(command, root)
+    status, baseline_output = run_checker(command, root, ["-p", str(config_path.resolve())])
 
     if status not in (0, 1, 2):
         print(f"ts-policy: checker failed with {status}: {baseline_output.strip()[:400]}", file = sys.stderr)
@@ -832,7 +889,7 @@ def _run_probe(args: argparse.Namespace, root: Path, policy: dict, command: str)
             print(f"ts-policy: {flag} is tier A (mandatory); probing it is meaningless", file = sys.stderr)
             return 2
 
-        _status, output = run_checker(command, root, ["--" + flag])
+        _status, output = run_checker(command, root, ["-p", str(config_path.resolve()), "--" + flag])
         runs.append((flag, count_errors(output)))
 
     rows = probe_report(baseline_errors, runs)

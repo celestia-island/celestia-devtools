@@ -16,12 +16,13 @@ laundering every `any` in a file, nothing caught the `any` that arrives with no
 lane the gate runs on. The redesign adds three axes.
 
 *Rulesets.* ``core`` is the always-on set (the original seven rules plus the
-laundering and ambient shapes). ``strict`` adds the shapes whose fix costs a
-migration, so a repository opts in only after paying it down: ``any-source``
-(untyped-by-construction APIs), ``function-type`` (an erased callable is an
-``any`` with better manners), ``event-target-cast`` (the DOM's own
-``EventTarget`` widening) and ``cast-never`` (a src-only lie; the same token is
-legitimate inside tests as deliberate bad-input injection).
+laundering, ambient and component-contract shapes, and ``cast-never`` in
+sources — the same token is legitimate inside tests as deliberate bad-input
+injection, so that rule is profile-scoped rather than ruleset-scoped).
+``strict`` adds the shapes whose fix costs a migration, so a repository opts in
+only after paying it down: ``any-source`` (untyped-by-construction APIs),
+``function-type`` (an erased callable is an ``any`` with better manners) and
+``event-target-cast`` (the DOM's own ``EventTarget`` widening).
 
 *Profiles.* A finding is not equally alarming everywhere, so the scan labels
 each file ``src`` / ``test`` / ``generated`` / ``dts`` from its path and header
@@ -90,8 +91,12 @@ from celestia_devtools.core import envelope
 #: File suffixes scanned (TypeScript family, incl. Vue SFC script blocks).
 INCLUDE = ("*.ts", "*.tsx", "*.vue", "*.mts", "*.cts")
 
-#: Path segments never scanned (build output, dependencies, VCS internals).
-SKIP_SEGMENTS = ("/node_modules/", "/dist/", "/target/", "/.git/", "/coverage/", "/build/")
+#: Directory names never scanned (build output, dependencies, VCS internals).
+#: Matched as path COMPONENTS relative to the scan root: the first version
+#: compared a slash-anchored substring against the raw path string, so a
+#: relative root (`type-escapes .`, the reusable workflow's default) matched
+#: nothing and happily scanned node_modules and dist.
+SKIP_DIRS = ("node_modules", "dist", "target", ".git", "coverage", "build")
 
 #: Every declaration-file suffix. The first version only knew `.d.ts`, so
 #: hikari's hand-written `.d.mts` plugin shims silently counted as source.
@@ -125,7 +130,7 @@ PROFILE_DTS = "dts"
 #: `(name, pattern, tier, profiles)`; profiles is a frozenset or None for
 #: "every profile". Every literal stays on one physical line: the org's
 #: py-style checker forbids multi-line logical lines.
-RULES: Sequence[tuple[str, re.Pattern[str], str, frozenset[str] | None]] = [("double-cast", re.compile(r"\bas\s+unknown\s+as\b"), TIER_CORE, None), ("paren-dbl-cast", re.compile(r"\bas\s+unknown\s*\)\s*as\b"), TIER_CORE, None), ("cast-any", re.compile(r"\bas\s+any\b|\bas\s+any\s*\[\s*\]"), TIER_CORE, None), ("any-annot", re.compile(r":\s*any\b"), TIER_CORE, None), ("any-generic", re.compile(r"(?:[<\[(,]\s*any\s*[>\]),;]|Promise\s*<\s*any\s*>|Record\s*<[^<>]*,?\s*any\s*>|Array\s*<\s*any\s*>|\bany\s*\[\s*\])"), TIER_CORE, None), ("any-return", re.compile(r"=>\s*any\b"), TIER_CORE, None), ("type-alias-any", re.compile(r"\btype\s+[A-Za-z_$][\w$]*(?:\s*<[^<>]*>)?\s*=\s*(?:any\b|[^\n]*?\bany\b)"), TIER_CORE, None), ("eslint-type-disable", re.compile(r"eslint-disable(?:-next-line|-line)?\b[^\n]*(?:@typescript-eslint/no-explicit-any|@typescript-eslint/no-unsafe-)"), TIER_CORE, None), ("emits-array-form", re.compile(r"\bemits\s*:\s*\["), TIER_CORE, frozenset({PROFILE_SRC})), ("cast-never", re.compile(r"\bas\s+never\b"), TIER_CORE, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("any-source", re.compile(r"\bJSON\.parse\s*\(|\.json\s*\(\s*\)|\bnew\s+Function\s*\(|\beval\s*\(|\bObject\.create\s*\(|\bReflect\.get\s*\("), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("function-type", re.compile(r":\s*Function\b|=>\s*Function\b"), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("event-target-cast", re.compile(r"\.target\s+as\s+[\w<(]"), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("suppress", re.compile(r"@ts-(?:nocheck|ignore|expect-error)\b"), TIER_CORE, None), ("as-assert", re.compile(r"\bas\s+(?!const\b)(?!never\b)[A-Z]"), TIER_COUNT, None), ("nonnull-assert", re.compile(r"[\w\)\]]!(?=[.\)\[,;\s])"), TIER_COUNT, None)]
+RULES: Sequence[tuple[str, re.Pattern[str], str, frozenset[str] | None]] = [("double-cast", re.compile(r"\bas\s+unknown\s+as\b"), TIER_CORE, None), ("paren-dbl-cast", re.compile(r"\bas\s+unknown\s*\)\s*as\b"), TIER_CORE, None), ("cast-any", re.compile(r"\bas\s+any\b|\bas\s+any\s*\[\s*\]"), TIER_CORE, None), ("any-annot", re.compile(r":\s*any\b"), TIER_CORE, None), ("any-generic", re.compile(r"(?:[<\[(,]\s*any\s*[>\]),;]|Promise\s*<\s*any\s*>|Record\s*<[^<>]*,?\s*any\s*>|Array\s*<\s*any\s*>|\bany\s*\[\s*\])"), TIER_CORE, None), ("any-return", re.compile(r"=>\s*any\b"), TIER_CORE, None), ("any-union", re.compile(r"\bany\s*\||\|\s*any\b"), TIER_CORE, None), ("type-alias-any", re.compile(r"\btype\s+[A-Za-z_$][\w$]*(?:\s*<[^<>]*>)?\s*=\s*(?:any\b(?!\s*[?:(])|[^\n]*?\bany\b(?!\s*[?:(]))"), TIER_CORE, None), ("eslint-type-disable", re.compile(r"eslint-disable(?:-next-line|-line)?\b[^\n]*(?:@typescript-eslint/no-explicit-any|@typescript-eslint/no-unsafe-)"), TIER_CORE, None), ("emits-array-form", re.compile(r"\bemits\s*:\s*\[|\bdefineEmits\s*\(\s*\["), TIER_CORE, frozenset({PROFILE_SRC})), ("cast-never", re.compile(r"\bas\s+never\b"), TIER_CORE, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("any-source", re.compile(r"\bJSON\.parse\s*\(|\.json\s*\(\s*\)|\bnew\s+Function\s*\(|\beval\s*\(|\bObject\.create\s*\(|\bReflect\.get\s*\("), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("function-type", re.compile(r":\s*Function\b|=>\s*Function\b"), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("event-target-cast", re.compile(r"\.target\s+as\s+[\w<(]"), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("suppress", re.compile(r"@ts-(?:nocheck|ignore|expect-error)\b"), TIER_CORE, None), ("as-assert", re.compile(r"\bas\s+(?!const\b)(?!never\b)(?!unknown\b)(?!any\b)(?:[A-Za-z_$][\w$]*|<|\{)"), TIER_COUNT, None), ("nonnull-assert", re.compile(r"[\w\)\]]!(?=[.\)\[,;\s]|$)"), TIER_COUNT, None)]
 
 #: Rules that live in a comment by construction: they must be matched before
 #: the comment-line filter, or they would never fire at all.
@@ -151,6 +156,13 @@ STRING_LIT = re.compile(r"""(?:"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)""")
 
 #: `expect.any(String)` / `arr.any()` are member calls, not the any type.
 METHOD_ANY = re.compile(r"\.\s*any\b")
+
+#: Block comments are blanked (newlines kept) before the whole-text rule pass:
+#: `as /* widened */ any` is one assertion, not code plus prose.
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+#: Line comments are blanked for the same reason.
+LINE_COMMENT = re.compile(r"//[^\n]*")
 
 #: An ambient module/global block header; the block body is scanned as a unit
 #: because a shim can erase an entire dependency in one line.
@@ -179,6 +191,23 @@ def _default_root() -> Path:
         return Path(top)
 
     return Path.cwd()
+
+def _git_root(path: Path) -> Path | None:
+    """The git top level containing `path`, or None outside a repository."""
+
+    probe_root = path if path.is_dir() else path.parent
+
+    try:
+        probe = subprocess.run(["git", "-C", str(probe_root), "rev-parse", "--show-toplevel"], capture_output = True, text = True, check = False)
+    except OSError:
+        return None
+
+    top = probe.stdout.strip()
+
+    if (probe.returncode == 0) and top:
+        return Path(top)
+
+    return None
 
 def _relative(path: Path, base: Path) -> str:
     """Render `path` relative to `base` so findings are repo-relative in CI."""
@@ -241,7 +270,15 @@ def iter_files(root: Path) -> Iterable[Path]:
         for path in root.rglob(include):
             shown = str(path)
 
-            if (shown in seen) or any(segment in shown for segment in SKIP_SEGMENTS):
+            if shown in seen:
+                continue
+
+            try:
+                inside = path.relative_to(root).parts
+            except ValueError:
+                inside = path.parts
+
+            if any(part in SKIP_DIRS for part in inside):
                 continue
 
             seen.add(shown)
@@ -251,6 +288,29 @@ def _strip_strings(line: str) -> str:
     """Replace string literals with empty pairs so prose cannot match a rule."""
 
     return STRING_LIT.sub('""', line)
+
+def _blank(match: re.Match) -> str:
+    """Replace a comment with spaces, keeping its newlines so line numbers hold."""
+
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+def code_text(text: str) -> str:
+    r"""Return the file's code with strings and comments blanked, newlines kept.
+
+    The per-line pass cannot see a construct the formatter broke across lines
+    (`new Map<\n string,\n any\n>()`), and TypeScript's `\s` happily spans
+    newlines, so a second pass runs over this joined view and maps each match
+    back to its line by counting newlines before it.
+    """
+
+    lines: list[str] = []
+
+    for line in text.splitlines():
+        lines.append("" if is_comment_line(line) else _strip_strings(line))
+
+    joined = "\n".join(lines)
+
+    return LINE_COMMENT.sub(_blank, BLOCK_COMMENT.sub(_blank, joined))
 
 def _brace_delta(line: str) -> int:
     """Open minus close braces on one already string-stripped line."""
@@ -294,6 +354,13 @@ def ambient_findings(text: str) -> list[tuple[int, str]]:
 
     return found
 
+ALIAS_LINE = re.compile(r"^\s*(?:import|export)\s*(?:type\s+)?(?:\{[^}]*\}|\*(?:\s+as\s+\w+)?|\w+\s+as\s+\w+)")
+
+def _is_alias_line(probe: str) -> bool:
+    """True for `import { x as Y }` / `export { x as Y }`, which is not an assertion."""
+
+    return bool(ALIAS_LINE.search(probe))
+
 def _allowed_file(text: str) -> bool:
     """Whether the file-level marker exempts this file.
 
@@ -308,8 +375,16 @@ def _hit(relpath: str, lineno: int, rule: str, match: str, source: str, profile:
 
     return {"file": relpath, "line": lineno, "rule": rule, "match": match, "source": source.strip()[:200], "profile": profile}
 
+#: Rules whose findings are produced outside the per-line loop and therefore
+#: have no `RULES` entry of their own. Without this table they fell through to
+#: the counted tier, which made the ambient-shim rule unenforceable.
+TIER_OVERRIDES = {"ambient-any": TIER_CORE}
+
 def tier_of(rule_name: str) -> str:
     """Look up a rule's tier by name (used by the ratchet and the report)."""
+
+    if rule_name in TIER_OVERRIDES:
+        return TIER_OVERRIDES[rule_name]
 
     for name, _pattern, tier, _profiles in RULES:
         if name == rule_name:
@@ -340,13 +415,21 @@ def scan_text(text: str, relpath: str, ruleset: str = "core") -> list[dict]:
         return found
 
     profile = profile_of(relpath, text)
+    # The code view strips strings AND comments (newlines kept), so an inline
+    # `// as a note` cannot be counted as an assertion now that the counted tier
+    # accepts lowercase type names.
+    joined = code_text(text)
+    code_lines = joined.split("\n")
 
     for lineno, line in enumerate(text.splitlines(), 1):
         if OK_LINE.search(line):
             continue
 
-        probe = METHOD_ANY.sub("._any_", _strip_strings(line))
-        comment_rule_hit = _comment_rule_hit(probe, profile)
+        code = code_lines[lineno - 1] if (lineno - 1) < len(code_lines) else ""
+        probe = METHOD_ANY.sub("._any_", code)
+        # Suppression directives ARE comments, so they are matched on the raw
+        # line (strings stripped), not on the comment-blanked code view.
+        comment_rule_hit = _comment_rule_hit(METHOD_ANY.sub("._any_", _strip_strings(line)), profile)
 
         if comment_rule_hit is not None:
             found.append(_hit(relpath, lineno, comment_rule_hit["rule"], comment_rule_hit["match"], line, profile))
@@ -355,15 +438,55 @@ def scan_text(text: str, relpath: str, ruleset: str = "core") -> list[dict]:
         if is_comment_line(line):
             continue
 
-        if _scan_enforced_line(probe, relpath, lineno, line, profile, ruleset, found):
-            continue
-
+        _scan_enforced_line(probe, relpath, lineno, line, profile, ruleset, found)
         _scan_counted_line(probe, relpath, lineno, line, profile, found)
+
+    for hit in _cross_line_hits(joined, text, relpath, profile, ruleset, found):
+        found.append(hit)
 
     for lineno, body in ambient_findings(text):
         found.append(_hit(relpath, lineno, "ambient-any", "declare", body, profile))
 
     return found
+
+def _cross_line_hits(joined: str, text: str, relpath: str, profile: str, ruleset: str, found: list[dict]) -> list[dict]:
+    r"""Enforced-rule hits that the per-line pass cannot see (multi-line shapes).
+
+    Runs over `code_text` (comments and strings blanked, newlines kept) so a
+    generic, an alias or an assertion the formatter broke across lines still
+    matches. Findings already reported on the same line by the per-line pass are
+    skipped, and a line carrying a same-line exemption stays exempt.
+    """
+
+    lines = text.splitlines()
+    # The per-line pass reports at most one enforced rule per line; a line it
+    # already judged is not re-judged here, or `: any[]` would be counted twice.
+    seen = {(hit["rule"], hit["line"]) for hit in found}
+    settled = {hit["line"] for hit in found if tier_of(hit["rule"]) != TIER_COUNT}
+    hits: list[dict] = []
+
+    for name, pattern, tier, profiles in RULES:
+        if (name in COMMENT_RULES) or (tier == TIER_COUNT) or (not _tier_active(tier, ruleset)):
+            continue
+
+        if (profiles is not None) and (profile not in profiles):
+            continue
+
+        for match in pattern.finditer(joined):
+            lineno = joined.count("\n", 0, match.start()) + 1
+
+            if (lineno in settled) or ((name, lineno) in seen):
+                continue
+
+            source = lines[lineno - 1] if 0 < lineno <= len(lines) else ""
+
+            if OK_LINE.search(source):
+                continue
+
+            seen.add((name, lineno))
+            hits.append(_hit(relpath, lineno, name, " ".join(match.group(0).split()), source, profile))
+
+    return hits
 
 def _comment_rule_hit(probe: str, profile: str) -> dict | None:
     """Match the rules that are themselves comments (suppression directives)."""
@@ -380,8 +503,8 @@ def _comment_rule_hit(probe: str, profile: str) -> dict | None:
 
     return None
 
-def _scan_enforced_line(probe: str, relpath: str, lineno: int, line: str, profile: str, ruleset: str, found: list[dict]) -> bool:
-    """Append the first enforced-tier finding on this line; report whether one fired."""
+def _scan_enforced_line(probe: str, relpath: str, lineno: int, line: str, profile: str, ruleset: str, found: list[dict]) -> None:
+    """Append the first enforced-tier finding on this line (if any)."""
 
     for name, pattern, tier, profiles in RULES:
         if (tier == TIER_COUNT) or (name in COMMENT_RULES) or (not _tier_active(tier, ruleset)):
@@ -394,15 +517,16 @@ def _scan_enforced_line(probe: str, relpath: str, lineno: int, line: str, profil
 
         if hit:
             found.append(_hit(relpath, lineno, name, hit.group(0), line, profile))
-            return True
-
-    return False
+            return
 
 def _scan_counted_line(probe: str, relpath: str, lineno: int, line: str, profile: str, found: list[dict]) -> None:
     """Append every counted-tier finding on this line (they always count)."""
 
     for name, pattern, tier, profiles in RULES:
         if tier != TIER_COUNT:
+            continue
+
+        if (name == "as-assert") and _is_alias_line(probe):
             continue
 
         if (profiles is not None) and (profile not in profiles):
@@ -413,13 +537,28 @@ def _scan_counted_line(probe: str, relpath: str, lineno: int, line: str, profile
         if hit:
             found.append(_hit(relpath, lineno, name, hit.group(0), line, profile))
 
+def path_root_of(target: Path) -> Path:
+    """The directory a scan target represents (a file target means its parent)."""
+
+    return target.parent if target.is_file() else target
+
 def scan_paths(paths: Sequence[Path], base: Path, ruleset: str = "core") -> tuple[list[dict], int]:
-    """Scan `paths`, returning (findings, number of candidate files read)."""
+    """Scan `paths`, returning (findings, number of candidate files read).
+
+    `base` is kept in the signature for compatibility, but display keys are
+    anchored per target (see the body) because the process cwd is not stable
+    across invocations of the same tree.
+    """
 
     hits: list[dict] = []
     scanned = 0
 
     for root in paths:
+        # Keys are anchored on the git top level when the target lives in one,
+        # else on the scan target itself. Anchoring on the process cwd made the
+        # same tree produce different keys (and absolute ones outside the cwd).
+        inside = path_root_of(root)
+        display_base = _git_root(inside) or inside
         files = [root] if root.is_file() else list(iter_files(root))
 
         for path in files:
@@ -435,7 +574,9 @@ def scan_paths(paths: Sequence[Path], base: Path, ruleset: str = "core") -> tupl
             # is something else (emits arrays, `!` assertions, declaration
             # headers). A skipped file reads as clean, so the filter's tiny
             # speed-up is not worth the false negatives.
-            for hit in scan_text(text, _relative(path, base), ruleset):
+            display = _relative(path, display_base)
+
+            for hit in scan_text(text, display, ruleset):
                 hit["dts"] = is_declaration_file(path)
                 hits.append(hit)
 
@@ -551,7 +692,7 @@ def ratchet_violations(baseline: dict, hits: Iterable[dict], allow_new_files: bo
                 continue
 
             detailed = ", ".join(f"{rule_name}={count}" for rule_name, count in sorted(per_rule.items()))
-            messages.append(f"{name}: new file carries counted assertions ({detailed}); accept them with --update-baseline only when the review accepts them")
+            messages.append(f"{name}: file has no baseline entry but carries counted assertions ({detailed}); accept them with --update-baseline only when the review accepts them")
             continue
 
         for rule_name, count in sorted(per_rule.items()):
@@ -880,7 +1021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"type-escapes: no such path: {', '.join(missing)}", file = sys.stderr)
         return 2
 
-    hits, scanned = scan_paths(targets, Path.cwd(), args.ruleset)
+    hits, scanned = scan_paths(targets, _default_root(), args.ruleset)
 
     if (scanned == 0) and not args.allow_empty:
         listed = ", ".join(str(target) for target in targets)
@@ -912,8 +1053,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         ratchet = ratchet_violations(baseline, hits, args.baseline_allow_new)
 
-    if args.update_baseline:
-        Path(args.update_baseline).write_text(json.dumps(build_baseline(hits), indent = 1, ensure_ascii = True) + "\n", encoding = "utf-8")
+    if args.update_baseline and ratchet:
+        print(f"type-escapes: refusing to rewrite {args.update_baseline}: the tree grew the debt it would record; pay it down or pass --baseline-allow-new deliberately", file = sys.stderr)
+    elif args.update_baseline:
+        try:
+            Path(args.update_baseline).write_text(json.dumps(build_baseline(hits), indent = 1, ensure_ascii = True) + "\n", encoding = "utf-8")
+        except OSError as exc:
+            print(f"type-escapes: cannot write baseline {args.update_baseline}: {exc}", file = sys.stderr)
+            return 2
+
         print(f"type-escapes: baseline written to {args.update_baseline}")
 
     if enforced or ratchet:

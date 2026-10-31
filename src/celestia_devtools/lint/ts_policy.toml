@@ -43,6 +43,11 @@ version = 1
 [tier_a]
 # `allowUnreachableCode` is the one inverted flag: the strict value is `false`.
 required = ["strict", "noImplicitOverride", "noImplicitReturns", "noFallthroughCasesInSwitch", "allowUnreachableCode"]
+# `strict: true` is a bundle, and a repository can switch a member of it back off
+# while leaving the bundle key true — the standard mid-migration shape. A key
+# that is ABSENT here is satisfied by the bundle; a key that is PRESENT and not
+# `true` is a finding.
+strict_family = ["noImplicitAny", "noImplicitThis", "strictNullChecks", "strictFunctionTypes", "strictBindCallApply", "strictPropertyInitialization", "alwaysStrict", "useUnknownInCatchVariables"]
 
 [tier_b]
 # The migrations worth a decision. Ordered by measured pay-off (hikari probe:

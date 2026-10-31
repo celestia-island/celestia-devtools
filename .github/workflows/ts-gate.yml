@@ -76,6 +76,11 @@ on:
         required: false
         type: string
         default: ""
+      allow-nocheck:
+        description: "Tolerate @ts-nocheck files in the coverage audit (default: fail, since a silenced file enters the program only to be skipped)."
+        required: false
+        type: boolean
+        default: false
       typecheck-command:
         description: "The repository's own semantic check (e.g. 'pnpm -r typecheck'); empty: skipped."
         required: false
@@ -144,9 +149,16 @@ jobs:
         # script because a bash array cannot travel through $GITHUB_ENV.
         env:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+          # The runner rewrites github.com/celestia-island/* to local bare
+          # mirrors, and a mirror may not carry the pinned SHA. The bypass has
+          # to sit on THIS step: it is the one that clones the CLI.
+          GIT_CONFIG_COUNT: "0"
         run: |
           SHIM="${RUNNER_TEMP:-/tmp}/celestia-devtools.sh"
-          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools type-escapes --help >/dev/null 2>&1; then
+          # The probe checks BOTH commands: an installed CLI older than
+          # `ts-policy` would pass a type-escapes-only probe and then hard-fail
+          # every caller on an unknown argument.
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools type-escapes --help >/dev/null 2>&1 && celestia-devtools ts-policy --help >/dev/null 2>&1; then
             echo "devtools-ref is the master default; using preinstalled $(command -v celestia-devtools) version $(celestia-devtools --version)"
             printf '%s\n' '#!/bin/sh' 'exec celestia-devtools "$@"' > "$SHIM"
           else
@@ -180,6 +192,20 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           "$DEVTOOLS" type-escapes --ruleset "${RULESET:-core}" "${ARGS[@]}" "$@"
 
+      - name: Coverage preconditions
+        # The coverage audit needs a real checker, and the only step that
+        # installs one is install-command. Failing here with a sentence beats
+        # failing three steps later with "no checker found".
+        if: inputs.tsconfig != ''
+        env:
+          INSTALL: ${{ inputs.install-command }}
+          CHECKER: ${{ inputs.checker }}
+        run: |
+          if [ -z "${INSTALL}" ] && [ -z "${CHECKER}" ]; then
+            echo "::error::tsconfig is set but neither install-command nor checker is: the coverage audit has no compiler to ask. Add install-command (the normal case) or point checker at an absolute binary."
+            exit 1
+          fi
+
       - name: Strictness policy
         if: inputs.tsconfig != ''
         env:
@@ -196,9 +222,11 @@ jobs:
           TSCONFIG: ${{ inputs.tsconfig }}
           CHECKER: ${{ inputs.checker }}
           ISLANDS: ${{ inputs.allow-islands }}
+          ALLOW_NOCHECK: ${{ inputs.allow-nocheck }}
         run: |
           ARGS=(coverage --tsconfig "${TSCONFIG}")
           if [ -n "${CHECKER}" ]; then ARGS+=(--command "${CHECKER}"); fi
+          if [ "${ALLOW_NOCHECK}" = "true" ]; then ARGS+=(--allow-nocheck); fi
           for island in ${ISLANDS:-}; do ARGS+=(--allow-islands "$island"); done
           "$DEVTOOLS" ts-policy "${ARGS[@]}"
 

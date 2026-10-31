@@ -206,3 +206,88 @@ def test_unreadable_baseline_is_a_usage_error(tmp_path):
     broken = tmp_path / "broken.json"
     broken.write_text("{not json", encoding = "utf-8")
     assert type_escapes.main([str(tmp_path), "--baseline", str(broken)]) == 2
+
+def test_any_in_union_position_is_still_any(tmp_path):
+    """`any | null` collapses to `any`; the first rule set missed the union form."""
+
+    write(tmp_path, "union.ts", "let a: Promise<any | undefined> = p;\nlet b: string | any = raw;\n")
+    assert type_escapes.main([str(tmp_path)]) == 1
+
+def test_member_named_any_is_not_the_any_type(tmp_path):
+    """`{ any: boolean }` is a property called any, not type erasure."""
+
+    write(tmp_path, "member.ts", "type U = { any: boolean };\n")
+    assert type_escapes.main([str(tmp_path)]) == 0
+
+def test_any_broken_across_lines_is_still_found(tmp_path):
+    """Prettier breaks long generics; a per-line regex would miss them."""
+
+    body = "const provider = new Map<\n  string,\n  any\n>();\ntype Loose =\n  any;\n"
+    write(tmp_path, "split.ts", body)
+    assert type_escapes.main([str(tmp_path)]) == 1
+
+def test_a_comment_between_as_and_any_does_not_hide_it(tmp_path):
+    write(tmp_path, "inline.ts", "export const casted = value as /* widened */ any;\n")
+    assert type_escapes.main([str(tmp_path)]) == 1
+
+def test_prose_prose_in_an_inline_comment_is_never_counted(tmp_path, capsys):
+    write(tmp_path, "note.ts", "foo(); // as a note about the width\nconst e = bar as number;\n")
+    assert type_escapes.main([str(tmp_path), "--inventory", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rules"]["as-assert"]["total"] == 1
+
+def test_counted_tier_sees_lowercase_assertions_and_a_line_final_bang(tmp_path, capsys):
+    write(tmp_path, "count.ts", "const c = foo as string;\nconst d = value!\nconst e = bar as HTMLElement;\n")
+    assert type_escapes.main([str(tmp_path), "--inventory", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rules"]["as-assert"]["total"] == 2
+    assert payload["rules"]["nonnull-assert"]["total"] == 1
+
+def test_import_aliases_are_not_counted_as_assertions(tmp_path, capsys):
+    write(tmp_path, "alias.ts", 'import { defineComponent as DC, ref as R } from "vue";\nexport { helper as Helper };\n')
+    assert type_escapes.main([str(tmp_path), "--inventory", "--json"]) == 0
+    assert "as-assert" not in json.loads(capsys.readouterr().out)["rules"]
+
+def test_a_relative_root_still_skips_dependencies_and_build_output(tmp_path, monkeypatch, capsys):
+    """`type-escapes .` is the reusable workflow's default; it must not scan deps."""
+
+    write(tmp_path, "src/ok.ts", "export const width = 1;\n")
+    write(tmp_path, "node_modules/pkg/escape.ts", "export const a = b as any;\n")
+    write(tmp_path, "dist/bundle.ts", "export const c = d as any;\n")
+    monkeypatch.chdir(tmp_path)
+    assert type_escapes.main(["."]) == 0
+    assert "1 file(s) scanned" in capsys.readouterr().out
+
+def test_ambient_shim_with_no_same_line_any_still_fails(tmp_path):
+    """The block scan is the only thing that can see a shim's erased member."""
+
+    body = 'declare module "*.untyped" {\n  const value: Record<\n    string,\n    any\n  >;\n  export default value;\n}\n'
+    write(tmp_path, "shim.d.ts", body)
+    assert type_escapes.main([str(tmp_path), "--fail-on-dts"]) == 1
+
+def test_update_baseline_refuses_to_record_growth(tmp_path, capsys):
+    body = "export const card = body as HTMLElement;\n"
+    write(tmp_path, "debt.ts", body)
+    baseline = tmp_path / "baseline.json"
+    assert type_escapes.main([str(tmp_path), "--update-baseline", str(baseline)]) == 0
+    write(tmp_path, "debt.ts", body + "export const other = node as HTMLElement;\n")
+    assert type_escapes.main([str(tmp_path), "--baseline", str(baseline), "--update-baseline", str(baseline)]) == 1
+    assert json.loads(baseline.read_text(encoding = "utf-8"))["rules"]["as-assert"] == 1
+    assert "refusing to rewrite" in capsys.readouterr().err
+
+def test_update_baseline_into_a_missing_directory_is_a_usage_error(tmp_path, capsys):
+    write(tmp_path, "debt.ts", "export const card = body as HTMLElement;\n")
+    assert type_escapes.main([str(tmp_path), "--update-baseline", str(tmp_path / "absent" / "b.json")]) == 2
+    assert "cannot write baseline" in capsys.readouterr().err
+
+def test_baseline_keys_are_relative_and_stable_across_cwd(tmp_path, monkeypatch, capsys):
+    """An absolute or cwd-relative key makes the ledger machine-specific."""
+
+    write(tmp_path, "src/a.ts", "export const card = body as HTMLElement;\n")
+    baseline = tmp_path / "baseline.json"
+    target = str(tmp_path / "src")
+    assert type_escapes.main([target, "--update-baseline", str(baseline)]) == 0
+    recorded = json.loads(baseline.read_text(encoding = "utf-8"))
+    assert list(recorded["files"]) == ["a.ts"]
+    monkeypatch.chdir(tmp_path)
+    assert type_escapes.main([target, "--baseline", str(baseline)]) == 0

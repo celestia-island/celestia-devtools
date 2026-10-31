@@ -61,11 +61,37 @@ def _run(command: str, cwd: Path, extra: Sequence[str]) -> tuple[int, str]:
     return completed.returncode, (completed.stdout or "") + (completed.stderr or "")
 
 def emit_declarations(checker: str, cwd: Path, config: Path, out_dir: Path, root_dir: Path) -> tuple[int, str]:
-    """Ask the checker to write the package's declarations into `out_dir`."""
+    """Ask the checker to write the package's declarations into `out_dir`.
 
-    flags = list(EMIT_FLAGS) + ["-p", str(config.resolve()), "--outDir", str(out_dir), "--rootDir", str(root_dir)]
+    `--declarationDir` is passed as well as `--outDir`: a tsconfig that sets
+    `declarationDir` (the normal shape for a library that publishes types)
+    overrides the CLI `--outDir`, so the first version emitted into the
+    checkout and then read an empty temp directory — both a dirty worktree and
+    a false "produced no files" failure on exactly the packages this targets.
+    """
+
+    flags = list(EMIT_FLAGS) + ["-p", str(config.resolve()), "--outDir", str(out_dir), "--declarationDir", str(out_dir), "--rootDir", str(root_dir)]
 
     return _run(checker, cwd, flags)
+
+DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+
+def _full_source(surface: Path, hit: dict) -> str:
+    """The complete source line behind one finding.
+
+    `type_escapes` truncates each finding's `source` to 200 characters; the Vue
+    noise tokens sit far to the right of a realistic emitted `DefineComponent`
+    line, so the noise filter has to look at the untruncated line.
+    """
+
+    try:
+        lines = (surface / hit["file"]).read_text(encoding = "utf-8", errors = "replace").splitlines()
+    except OSError:
+        return hit["source"]
+
+    index = hit["line"] - 1
+
+    return lines[index] if 0 <= index < len(lines) else hit["source"]
 
 def scan_surface(surface: Path, keep_noise: bool = False) -> tuple[list[dict], int]:
     """Scan emitted declarations with the escape rules; return (hits, suppressed noise)."""
@@ -78,7 +104,7 @@ def scan_surface(surface: Path, keep_noise: bool = False) -> tuple[list[dict], i
         if type_escapes.tier_of(hit["rule"]) == type_escapes.TIER_COUNT:
             continue
 
-        if (not keep_noise) and NOISE.search(hit["source"]):
+        if (not keep_noise) and NOISE.search(_full_source(surface, hit)):
             noise += 1
             continue
 
@@ -115,6 +141,7 @@ def selftest() -> int:
         (dirt / "index.d.ts").write_text('export declare const payload: any;\nexport declare const handler: ((...args: any[]) => any) | undefined;\n', encoding = "utf-8")
         (clean / "index.d.ts").write_text('export declare const payload: unknown;\nexport declare const handler: ((value: string) => void) | undefined;\n', encoding = "utf-8")
         (dirt / "noise.d.ts").write_text('export declare const component: import("vue").DefineComponent<{}, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;\n', encoding = "utf-8")
+        (dirt / "long-noise.d.ts").write_text('export declare const wide: import("vue").DefineComponent<{' + ", ".join(f'"prop{index}": string' for index in range(40)) + '}, {}, {}, {}, string, import("vue").ComponentProvideOptions, true, {}, any>;\n', encoding = "utf-8")
         dirty_hits, dirty_noise = scan_surface(dirt)
         loud_hits, _loud_noise = scan_surface(dirt, keep_noise = True)
         clean_hits, _clean_noise = scan_surface(clean)
@@ -125,7 +152,7 @@ def selftest() -> int:
         if clean_hits:
             failures.append(f"clean surface produced {len(clean_hits)} false positive(s): {clean_hits}")
 
-        if dirty_noise < 1:
+        if dirty_noise < 2:
             failures.append("the Vue noise filter suppressed nothing (a component library surface cannot pass)")
 
         if len(loud_hits) <= len(dirty_hits):
@@ -134,7 +161,7 @@ def selftest() -> int:
         if not [hit for hit in dirty_hits if hit["rule"] == "any-annot"]:
             failures.append("any-annot did not fire on an emitted `any`")
 
-        if [hit for hit in dirty_hits if hit["file"].endswith("noise.d.ts")]:
+        if [hit for hit in dirty_hits if hit["file"].endswith("noise.d.ts") or hit["file"].endswith("long-noise.d.ts")]:
             failures.append("synthesised Vue declaration leaked past the noise filter")
     finally:
         shutil.rmtree(tmp, ignore_errors = True)
@@ -181,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         status, output = emit_declarations(checker, root, config, surface, root)
-        emitted = list(surface.rglob("*.d.ts"))
+        emitted = [item for suffix in DECLARATION_SUFFIXES for item in surface.rglob("*" + suffix)]
 
         if not emitted:
             message = f"declaration emit produced no files (checker exited {status}): {output.strip()[:400]}"
