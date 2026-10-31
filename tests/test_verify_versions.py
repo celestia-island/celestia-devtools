@@ -580,3 +580,90 @@ def test_virtualenv_directories_are_pruned(tmp_path, capsys):
     rc = main([str(tmp_path)])
     out = capsys.readouterr().out
     assert rc == 0, out
+
+# ── cross-track lockstep ([cross], ledger #19) ──────────────────────────────
+
+def _lockstep_repo(root, version = "0.1.224", cargo_version = None):
+    """The ledger #19 shape: chest-like workspace whose cargo and npm slots move together."""
+    _cargo_workspace(root, base = cargo_version if cargo_version is not None else version)
+    _package(root, ".", version)
+    _package(root, "packages/webui", version)
+
+def _declare_lockstep(root):
+    _write(root / ".versions.toml", "[cross]\ncargo_npm = \"lockstep\"\n")
+
+def test_lockstep_declared_and_consistent_exit_0(tmp_path, capsys):
+    _lockstep_repo(tmp_path)
+    _declare_lockstep(tmp_path)
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "No version drift" in out
+
+def test_lockstep_declared_root_cargo_revert_goes_red(tmp_path, capsys):
+    """The ledger #19 regression: root Cargo.toml alone reverted 0.1.224 -> 0.1.223.
+
+    Before the cross check this exact tree reported "No version drift detected
+    (cargo=0.1.223, npm=0.1.224)" and exited 0, because the cargo baseline IS
+    the root manifest and every member inherits it.
+    """
+    _lockstep_repo(tmp_path, version = "0.1.224", cargo_version = "0.1.224")
+    _declare_lockstep(tmp_path)
+    _cargo_workspace(tmp_path, base = "0.1.223")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "cross" in out
+    assert "0.1.223" in out
+    assert "0.1.224" in out
+    assert "lockstep" in out
+
+def test_undeclared_repo_keeps_independent_lines(tmp_path, capsys):
+    """No [cross] table: a cargo/npm divergence is a decision, not a drift.
+
+    hikari (cargo 0.4 vs npm 0.55) and the 0.1.0-family-frozen service repos
+    rely on this: lockstep is opt-in per repo.
+    """
+    _lockstep_repo(tmp_path, version = "0.55.0", cargo_version = "0.4.0")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "No version drift" in out
+
+def test_lockstep_with_missing_npm_track_fails_closed(tmp_path, capsys):
+    _cargo_workspace(tmp_path)
+    _declare_lockstep(tmp_path)
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "lockstep" in out
+    assert "did not resolve" in out
+
+def test_lockstep_typo_value_fails_closed(tmp_path, capsys):
+    _lockstep_repo(tmp_path)
+    _write(tmp_path / ".versions.toml", "[cross]\ncargo_npm = \"lockstp\"\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "not a supported mode" in out
+
+def test_cross_unknown_key_fails_closed(tmp_path, capsys):
+    _lockstep_repo(tmp_path)
+    _write(tmp_path / ".versions.toml", "[cross]\ncargo_mpm = \"lockstep\"\n")
+    rc = main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert rc == 1, out
+    assert "unknown" in out
+
+def test_cross_state_lands_in_json(tmp_path, capsys):
+    _lockstep_repo(tmp_path, version = "0.1.224", cargo_version = "0.1.223")
+    _declare_lockstep(tmp_path)
+    rc = main([str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert payload["cross"]["declared"] == "lockstep"
+    cross_drifts = payload["cross"]["drifts"]
+    assert cross_drifts[0]["package"] == "Cargo.toml<->package.json"
+    assert cross_drifts[0]["actual"] == "0.1.223"
+    assert cross_drifts[0]["expected"] == "0.1.224"
+    assert "lockstep" in cross_drifts[0]["suggestion"]

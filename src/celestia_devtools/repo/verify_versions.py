@@ -53,6 +53,9 @@ Rules
         npm = "0.4.5"      # optional: override the detected npm baseline
         python = "0.2.0"   # optional: override the detected python baseline
 
+        [cross]
+        cargo_npm = "lockstep"   # optional: the cargo and npm baselines must be EQUAL
+
         [exempt.cargo]
         "packages/e2e" = "test-only crate"
 
@@ -68,6 +71,20 @@ Rules
     line instead of one entry per manifest.  This is what lets the shared
     vendored-upstream rule (``patches/boa_*``, ``packages/vendor/``,
     test-fixture crates) be expressed without 65 hand-written keys.
+
+    The ``[cross]`` table (2026-10-31, ledger #19) is an **opt-in lockstep
+    declaration** for repositories whose cargo and npm tracks are one line
+    moved together (shittim-chest before the 0.1.0 family freeze, akivili
+    today).  Within-track drift cannot see a root-slot regression: the cargo
+    baseline IS the root ``Cargo.toml`` and every member inherits it via
+    ``version.workspace = true``, so reverting the root alone kept the gate
+    green (measured 2026-09-22: cargo=0.1.223, npm=0.1.224, exit 0).  With
+    ``cargo_npm = "lockstep"`` the two resolved baselines must be equal and a
+    track that cannot resolve under the declaration is a hard error.  A repo
+    that does NOT declare it keeps fully independent lines (hikari sails at
+    cargo 0.3/0.4 while npm runs 0.55; the 0.1.0-family freeze decoupled the
+    service repos the same way) — the declaration is the only place the
+    lockstep expectation lives.
 
 5.  **Fail-closed baselines (2026-09-27, structural scan S1-1)** — a track
     that *exists* (any gated ``Cargo.toml`` declaring ``[package].version`` or
@@ -141,6 +158,7 @@ class verify_result:
     cargo_base: str | None = None
     npm_base: str | None = None
     python_base: str | None = None
+    cross_declared: str | None = None
     drifts: List[drift] = field(default_factory = list)
     # Non-drift failures: a present track whose baseline could not be resolved.
     # These fail the gate exactly like drifts do (fail-closed, S1-1).
@@ -158,7 +176,7 @@ class verify_result:
         def _drift_dict(track: str) -> List[dict]:
             return [{"package": d.package, "actual": d.actual, "expected": d.expected, "suggestion": d.suggestion}for d in self.drifts if d.track == track]
 
-        return {"repo": self.repo, "cargo": {"base": self.cargo_base, "drifts": _drift_dict("cargo")}, "npm": {"base": self.npm_base, "drifts": _drift_dict("npm")}, "python": {"base": self.python_base, "drifts": _drift_dict("python")}, "errors": list(self.errors)}
+        return {"repo": self.repo, "cargo": {"base": self.cargo_base, "drifts": _drift_dict("cargo")}, "npm": {"base": self.npm_base, "drifts": _drift_dict("npm")}, "python": {"base": self.python_base, "drifts": _drift_dict("python")}, "cross": {"declared": self.cross_declared, "drifts": _drift_dict("cross")}, "errors": list(self.errors)}
 
 # ── Manifest helpers ─────────────────────────────────────────────────────────
 
@@ -347,6 +365,11 @@ def load_versions_config(repo: Path, errors: List[str] | None = None) -> dict:
 
             if isinstance(table, dict):
                 result["exempt"][key] = set(_norm_path(k) for k in table)
+
+    cross = data.get("cross")
+
+    if isinstance(cross, dict):
+        result["cross"] = cross
 
     return result
 
@@ -707,6 +730,50 @@ def _python_root_drifts(repo: Path, base: str, errors: List[str] | None = None) 
 
     return [drift(track = "python", package = ".", actual = declared, expected = base, suggestion = "root pyproject.toml version diverged from the [track] python pin — " "bump the pin in .versions.toml in the same release commit")]
 
+# ── Cross-track lockstep ([cross], ledger #19) ───────────────────────────────
+
+_CROSS_KEYS = frozenset({"cargo_npm"})
+_CROSS_VALUES = frozenset({"lockstep"})
+
+def _cross_track_drifts(cross: dict, cargo_base: str | None, npm_base: str | None, errors: List[str] | None = None) -> List[drift]:
+    """Judge the opt-in cargo↔npm lockstep declaration.
+
+    Within-track drift is blind to a root-slot regression: the cargo baseline
+    IS the root manifest and every member inherits it, so a root-only revert
+    sailed green while any package.json revert went red (ledger #19, measured
+    2026-09-22).  ``[cross] cargo_npm = "lockstep"`` declares that the two
+    resolved baselines are one line; anything else — a typo'd key/value, or a
+    track that cannot resolve under the declaration — fails closed exactly
+    like an unresolvable baseline.
+    """
+
+    if not cross:
+        return []
+
+    for key, value in cross.items():
+        if key not in _CROSS_KEYS:
+            if errors is not None:
+                errors.append(f"[cross] key {key!r} is unknown (known: {', '.join(sorted(_CROSS_KEYS))}); " "a typo here must fail, not silently disable the cross check.")
+
+            continue
+
+        if value not in _CROSS_VALUES:
+            if errors is not None:
+                errors.append(f"[cross] {key} = {value!r} is not a supported mode (supported: {', '.join(sorted(_CROSS_VALUES))}).")
+
+            continue
+
+        if (cargo_base is None) or (npm_base is None):
+            if errors is not None:
+                errors.append("[cross] cargo_npm = \"lockstep\" is declared but a baseline did not resolve " f"(cargo={cargo_base!r}, npm={npm_base!r}). A lockstep repo must carry both " "tracks — fix the manifests, or drop the declaration if the lines are " "independent after all.")
+
+            continue
+
+        if cargo_base != npm_base:
+            return [drift(track = "cross", package = "Cargo.toml<->package.json", actual = cargo_base, expected = npm_base, suggestion = "the root Cargo.toml version and the npm baseline diverged — a release " "commit must move both slots together ([cross] cargo_npm = \"lockstep\" " "is declared in .versions.toml)")]
+
+    return []
+
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 def _cargo_root_drifts(repo: Path, base: str, errors: List[str] | None = None) -> List[drift]:
@@ -797,9 +864,12 @@ def verify(repo: Path) -> verify_result:
     if (python_override is not None) and (python_base is not None):
         drifts.extend(_python_root_drifts(repo, python_base, errors))
 
+    drifts.extend(_cross_track_drifts(config.get("cross", {}), cargo_base, npm_base, errors))
+
     drifts.sort(key = lambda d: (d.track, d.package))
 
-    return verify_result(repo = str(repo), cargo_base = cargo_base, npm_base = npm_base, python_base = python_base, drifts = drifts, errors = errors)
+    cross_table = config.get("cross", {})
+    return verify_result(repo = str(repo), cargo_base = cargo_base, npm_base = npm_base, python_base = python_base, cross_declared = cross_table.get("cargo_npm") if isinstance(cross_table, dict) else None, drifts = drifts, errors = errors)
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 
