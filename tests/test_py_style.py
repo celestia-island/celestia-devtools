@@ -22,7 +22,7 @@ import inspect
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 
-from celestia_devtools.lint import py_style, py_style_rules  # noqa: E402
+from celestia_devtools.lint import py_style, py_style_checks, py_style_rules  # noqa: E402
 from celestia_devtools.lint.py_style_config import (config_error, style_config, load_config)  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -538,7 +538,17 @@ def test_snake_case_file_dunder_exempt(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_naming_helper_defined_once():
-    assert inspect.getsource(py_style_rules).count("def _naming_issues") == 1
+    # Moved to py_style_checks with the 2026-10-31 module split; the
+    # duplicate-definition guard follows the owning module.
+    assert inspect.getsource(py_style_checks).count("def _naming_issues") == 1
+
+def test_facade_all_pins_the_public_api_surface():
+    # R3 mutation M5 of the split: dropping a name from __all__ stayed green
+    # because no consumer star-imports the facade. Pin the 33-name contract
+    # so an accidental facade hole is at least visible to `import *` users.
+    assert len(py_style_rules.__all__) == 33
+    assert "line_edit" in py_style_rules.__all__
+    assert "string_token_texts" in py_style_rules.__all__
 
 def test_compound_word_bad(tmp_path):
     cfg = style_config(root = tmp_path, compound_words = ("textbox",))
