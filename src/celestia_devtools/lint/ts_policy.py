@@ -343,10 +343,20 @@ def resolve_decisions(explicit: str | None, root: Path) -> tuple[Path, dict] | N
         candidates.append(Path(explicit))
     elif os.environ.get("CELESTIA_TS_POLICY"):
         candidates.append(Path(str(os.environ["CELESTIA_TS_POLICY"])))
-    elif Path(str(root) + "/ts-policy.toml").is_file():
-        candidates.append(Path(str(root) + "/ts-policy.toml"))
     else:
-        candidates.append(BUNDLED_POLICY)
+        # Walk up from the tsconfig directory: a workspace leaf (packages/foo)
+        # keeps its decisions at the repository root, not beside every config.
+        # Found the hard way: the first version looked only at `root` itself,
+        # so every monorepo leaf read as "all tier B flags undecided".
+        for directory in (root, *root.parents):
+            candidate = directory / "ts-policy.toml"
+
+            if candidate.is_file():
+                candidates.append(candidate)
+                break
+
+        if not candidates:
+            candidates.append(BUNDLED_POLICY)
 
     for candidate in candidates:
         policy = load_policy(candidate)

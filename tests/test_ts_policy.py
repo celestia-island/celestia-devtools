@@ -265,3 +265,26 @@ def test_the_policy_environment_variable_is_honored(tmp_path, monkeypatch):
     config = write(tmp_path, "tsconfig.json", '{\n  "compilerOptions": {"strict": true, "exactOptionalPropertyTypes": true}\n}\n')
     assert ts_policy.main(["check", "--tsconfig", str(config)]) == 1
     assert ts_policy.main(["list", "--tsconfig", str(config)]) == 0
+
+def test_decisions_are_found_from_a_workspace_leaf(tmp_path, monkeypatch, capsys):
+    """A monorepo leaf tsconfig must find the repo-root decisions by walking up.
+
+    The first version looked only beside the tsconfig, so every leaf read as
+    "all tier B flags undecided" — found the hard way wiring entelecheia, whose
+    only tsconfig lives at packages/webui_bindings.
+    """
+
+    monkeypatch.delenv("CELESTIA_TS_POLICY", raising = False)
+    body = ", ".join(f'"{flag}": true' for flag in ("noImplicitOverride", "noImplicitReturns", "noFallthroughCasesInSwitch", "allowUnreachableCode", "strict", "exactOptionalPropertyTypes"))
+    write(tmp_path, "ts-policy.toml", DECIDED)
+    write(tmp_path, "packages/webui/tsconfig.json", '{\n  "compilerOptions": {' + body + '}\n}\n')
+    resolved = ts_policy.resolve_decisions(None, tmp_path / "packages" / "webui")
+    expected = tmp_path / "ts-policy.toml"
+    assert (resolved is not None) and (resolved[0] == expected)
+    assert ts_policy.main(["check", "--tsconfig", str(tmp_path / "packages" / "webui" / "tsconfig.json")]) == 1
+    undecided = [line for line in capsys.readouterr().out.splitlines() if "tier-b-undecided" in line]
+    # DECIDED covers two of the catalog's five flags; the proof of inheritance
+    # is that THOSE two no longer read as undecided.
+    decided_flags = ("exactOptionalPropertyTypes", "noUncheckedIndexedAccess")
+    inherited = all(all(flag not in line for flag in decided_flags) for line in undecided)
+    assert inherited and undecided, "leaf config did not inherit the root decisions"
