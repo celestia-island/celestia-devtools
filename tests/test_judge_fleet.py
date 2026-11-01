@@ -128,49 +128,119 @@ def _judge_with_supervision(workers: list[dict], *, ticks: int = 4, interval: fl
 
     return fleet.evaluate(observation, fleet.thresholds()), observation
 
+_SUPERVISED_PROGRAMS: set[str] = set()
+
+@pytest.fixture(scope = "module", autouse = True)
+def _sweep_the_module_fleet():
+    """Module teardown: nothing of ours may outlive the suite.
+
+    A supervision can still be restarting a pod when a single test's sweep window closes,
+    so a second pass at module teardown (after every real-fleet test) is what actually
+    guarantees zero leftovers. The same leak class malkuth #175 fixed for its own suite.
+    """
+    yield
+
+    for _ in range(25):
+        candidates = [pid for program in _SUPERVISED_PROGRAMS for pid in _pids_running(program)]
+
+        if not candidates:
+            return
+
+        for pid in candidates:
+            _kill_if_abandoned(pid)
+
+        time.sleep(0.4)
+
+    for pid in [pid for program in _SUPERVISED_PROGRAMS for pid in _pids_running(program)]:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            continue
+
 def _sweep_supervised_leftovers(workers: list[dict]) -> None:
     """Kill leftover grandchildren of this test's supervision, scoped and leader-aware.
 
-    Only processes whose executable is exactly one of the programs this test asked for
-    are considered, and only when their process-group leader is gone — a live leader
-    means an in-flight run (a concurrent test), which is never touched.
+    A supervised pod can outlive the session close in two shapes: its group leader is gone
+    (a plain orphan), or the leader is still draining while its own parent is already gone
+    (the malkuth supervisor is the parent). Both are ours; a leader whose parent chain is
+    intact belongs to an in-flight run and is never touched. The sweep keeps retrying while
+    candidates exist, because malkuth's drain and the example supervisor's exit are not
+    instantaneous.
     """
     programs = {worker.get("program") for worker in workers if isinstance(worker.get("program"), str)}
 
-    for program in programs:
-        if not Path(program).exists():
+    for _ in range(20):
+        candidates = [pid for program in programs if Path(program).exists() for pid in _pids_running(program)]
+
+        if not candidates:
+            return
+
+        for pid in candidates:
+            _kill_if_abandoned(pid)
+
+        time.sleep(0.4)
+
+def _pids_running(program: str) -> list[int]:
+    listing = subprocess.run(["pgrep", "-f", program], capture_output = True, text = True)
+    pids = []
+
+    for pid_text in listing.stdout.split():
+        if not pid_text.isdigit():
             continue
 
-        listing = subprocess.run(["pgrep", "-f", str(program)], capture_output = True, text = True)
+        cmdline = Path(f"/proc/{pid_text}/cmdline")
 
-        for pid_text in listing.stdout.split():
-            if not pid_text.isdigit():
-                continue
+        if not cmdline.exists():
+            continue
 
-            pid = int(pid_text)
-            cmdline = Path(f"/proc/{pid}/cmdline")
-            stat_path = Path(f"/proc/{pid}/stat")
+        argv = [part.decode("utf-8", "replace") for part in cmdline.read_bytes().split(b"\0") if part]
 
-            if not (cmdline.exists() and stat_path.exists()):
-                continue
+        if argv and (os.path.realpath(argv[0]) == os.path.realpath(program)):
+            pids.append(int(pid_text))
 
-            argv = [part.decode("utf-8", "replace") for part in cmdline.read_bytes().split(b"\0") if part]
+    return pids
 
-            if not argv or (os.path.realpath(argv[0]) != os.path.realpath(program)):
-                continue
+def _parent_of(pid: int) -> int | None:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[-1].split()
+    except OSError:
+        return None
 
-            fields = stat_path.read_text().split(") ", 1)[-1].split()
+    return int(fields[1]) if len(fields) > 1 else None
 
-            if len(fields) < 3:
-                continue
+def _is_init(pid: int) -> bool:
+    try:
+        return Path(f"/proc/{pid}/comm").read_text().strip() in ("systemd", "init")
+    except OSError:
+        return False
 
-            if Path(f"/proc/{int(fields[2])}").exists():
-                continue  # leader alive: never touch an in-flight run
+def _kill_if_abandoned(pid: int) -> bool:
+    """Return True when this pid was killed because nothing supervises it any more.
 
-            try:
-                os.kill(pid, 15)
-            except OSError:
-                continue
+    A supervised pod is easy to spot from the outside: it was reparented to init/systemd
+    when the supervision died. The process-group id is NOT usable here — malkuth spawns its
+    children without a new session, so the pod inherits the *caller's* group (the test
+    process group stays alive and would protect an orphan forever). Ancestry is the only
+    honest signal, and it is the same conclusion malkuth #175 reached from the other side.
+    """
+    parent = _parent_of(pid)
+
+    if (parent is None) or not _is_init(parent):
+        return False
+
+    try:
+        cwd = Path(f"/proc/{pid}/cwd").resolve()
+    except OSError:
+        return False
+
+    if not str(cwd).startswith(str(Path.cwd())):
+        return False  # not this checkout's program instance
+
+    try:
+        os.kill(pid, 15)
+        return True
+    except OSError:
+        return False
 
 # ── parsing ────────────────────────────────────────────────────────────────
 
