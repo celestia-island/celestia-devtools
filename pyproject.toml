@@ -51,6 +51,8 @@ publish-crates = "celestia_devtools.publish.crates:main"
 release-notes = "celestia_devtools.publish.release_notes:main"
 lint-separators = "celestia_devtools.lint.separator_lint:main"
 celestia-type-escapes = "celestia_devtools.lint.type_escapes:main"
+celestia-ts-policy = "celestia_devtools.lint.ts_policy:main"
+celestia-ts-surface = "celestia_devtools.lint.ts_surface:main"
 py-style = "celestia_devtools.lint.py_style:main"
 cpp-style = "celestia_devtools.lint.cpp_style:main"
 p0-gate = "celestia_devtools.lint.p0_gate:main"
@@ -76,6 +78,7 @@ packages = ["src/celestia_devtools"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/celestia_devtools/common.just" = "celestia_devtools/common.just"
 "src/celestia_devtools/lint/p0_ledger.toml" = "celestia_devtools/lint/p0_ledger.toml"
+"src/celestia_devtools/lint/ts_policy.toml" = "celestia_devtools/lint/ts_policy.toml"
 "src/celestia_devtools/repo/family_layers.toml" = "celestia_devtools/repo/family_layers.toml"
 
 [tool.ruff]

@@ -1,0 +1,235 @@
+name: Type Gate
+
+# One job that answers the whole "is this tree's TypeScript actually checked?"
+# question, on a lane that runs. The 2026-11-01 review found the family's
+# semantic coverage inverted: every application repository ran `pnpm typecheck`
+# on pull requests, while the three producers of the types everybody consumes
+# did not (hikari's Vue half ran only on GitHub-hosted runners, dead org-wide
+# since 2026-09-24; tairitsu's glue is 100% `@ts-nocheck`; entelecheia's
+# generated bindings were never compiled). A syntactic `any` scan cannot see any
+# of that, so this workflow adds the three questions that were missing:
+#
+#   1. type-escapes     no escape hatches (ruleset + counted-debt ratchet)
+#   2. ts-policy check  the tsconfig is at policy, every tier B flag is DECIDED
+#   3. ts-policy cov.   no source file silently fails to enter the program
+#   4. typecheck        the repository's own semantic check, on a live runner
+#
+# Determinism: callers pin `devtools-ref` to a full 40-hex SHA (org rule H14), so
+# a rule tightened on devtools master judges nobody until that repository bumps
+# its anchor. That is the migration mechanism: no family-wide red wave.
+
+on:
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: "celestia-devtools git ref to judge with (pinned callers pass their 40-hex anchor; master uses the preinstalled CLI)."
+        required: false
+        type: string
+        default: "master"
+      paths:
+        description: "Space-separated paths for the escape scan; defaults to '.' (the whole checkout)."
+        required: false
+        type: string
+        default: "."
+      ruleset:
+        description: "type-escapes rule tier: core (always-on) or strict (adds the erasure rules whose fix costs a migration)."
+        required: false
+        type: string
+        default: "core"
+      baseline:
+        description: "Ratchet ledger path for counted assertions (empty: counted debt is reported, not enforced)."
+        required: false
+        type: string
+        default: ""
+      fail-on-dts:
+        description: "Also fail on escapes inside declaration files (*.d.ts, *.d.mts, *.d.cts)."
+        required: false
+        type: boolean
+        default: false
+      working-directory:
+        description: "Directory the install/typecheck commands run in (and the default tsconfig directory)."
+        required: false
+        type: string
+        default: "."
+      install-command:
+        description: "Command that installs the JS dependencies (empty: skip; node/pnpm are only set up when this is set)."
+        required: false
+        type: string
+        default: ""
+      tsconfig:
+        description: "tsconfig to police (empty: skip ts-policy check and coverage)."
+        required: false
+        type: string
+        default: ""
+      policy:
+        description: "ts-policy policy override (empty: <working-directory>/ts-policy.toml, then the bundled catalog)."
+        required: false
+        type: string
+        default: ""
+      checker:
+        description: "Checker binary for the coverage audit (empty: node_modules/.bin/vue-tsc, then tsc)."
+        required: false
+        type: string
+        default: ""
+      allow-islands:
+        description: "Space-separated unchecked-island globs to exempt. Say why in the caller's comment; the list is the audit trail."
+        required: false
+        type: string
+        default: ""
+      allow-nocheck:
+        description: "Tolerate @ts-nocheck files in the coverage audit (default: fail, since a silenced file enters the program only to be skipped)."
+        required: false
+        type: boolean
+        default: false
+      typecheck-command:
+        description: "The repository's own semantic check (e.g. 'pnpm -r typecheck'); empty: skipped."
+        required: false
+        type: string
+        default: ""
+      node-version:
+        description: "Node version when install-command is set (default: the family floor)."
+        required: false
+        type: string
+        default: "24"
+      pnpm-version:
+        description: "pnpm version when install-command is set (default: the family floor)."
+        required: false
+        type: string
+        default: "11"
+
+jobs:
+  type-gate:
+    name: Type gate
+    # Fork PRs must not consume self-hosted runner capacity or execute untrusted
+    # code on the shared node; they need maintainer approval anyway.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been failing at the org billing tier since 2026-09-24).
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+        # Defensive: the runner env rewrites github.com/celestia-island/* to
+        # local bare mirrors. Mirrors may lack fresh refs, so clone straight
+        # from github.com for the CLI when a ref is pinned.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      # No actions/setup-python: node-1 preinstalls python3; the CLI fallback
+      # below avoids pip entirely and runs straight from a shallow clone.
+
+      - name: Set up Node
+        if: inputs.install-command != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Set up pnpm
+        if: inputs.install-command != ''
+        uses: pnpm/action-setup@v6
+        with:
+          version: ${{ inputs.pnpm-version }}
+
+      - name: Install dependencies
+        if: inputs.install-command != ''
+        run: ${{ inputs.install-command }}
+
+      - name: Resolve celestia-devtools
+        # Ref-determinism rule (H14): a caller that pins `devtools-ref` names the
+        # EXACT CLI whose rules judge this tree. The preinstalled fast path is
+        # only for the master default. The resolved command is exported as a shim
+        # script because a bash array cannot travel through $GITHUB_ENV.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+          # The runner rewrites github.com/celestia-island/* to local bare
+          # mirrors, and a mirror may not carry the pinned SHA. The bypass has
+          # to sit on THIS step: it is the one that clones the CLI.
+          GIT_CONFIG_COUNT: "0"
+        run: |
+          SHIM="${RUNNER_TEMP:-/tmp}/celestia-devtools.sh"
+          # The probe checks BOTH commands: an installed CLI older than
+          # `ts-policy` would pass a type-escapes-only probe and then hard-fail
+          # every caller on an unknown argument.
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools type-escapes --help >/dev/null 2>&1 && celestia-devtools ts-policy --help >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled $(command -v celestia-devtools) version $(celestia-devtools --version)"
+            printf '%s\n' '#!/bin/sh' 'exec celestia-devtools "$@"' > "$SHIM"
+          else
+            echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh clone so the rules match the pin"
+            CLONE="${RUNNER_TEMP:-/tmp}/celestia-devtools"
+            rm -rf "$CLONE"
+            if [[ "${DEVTOOLS_REF:-master}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              git init -q "$CLONE"
+              git -C "$CLONE" remote add origin https://github.com/celestia-island/celestia-devtools.git
+              git -C "$CLONE" fetch -q --depth 1 origin "${DEVTOOLS_REF}"
+              git -C "$CLONE" checkout -q FETCH_HEAD
+            else
+              git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git "$CLONE"
+            fi
+            printf '%s\n' '#!/bin/sh' "PYTHONPATH=$CLONE/src exec python3 -m celestia_devtools \"\$@\"" > "$SHIM"
+          fi
+          chmod +x "$SHIM"
+          echo "DEVTOOLS=$SHIM" >> "$GITHUB_ENV"
+
+      - name: Escape hatches
+        env:
+          SCAN_PATHS: ${{ inputs.paths }}
+          RULESET: ${{ inputs.ruleset }}
+          BASELINE: ${{ inputs.baseline }}
+          FAIL_ON_DTS: ${{ inputs.fail-on-dts }}
+        run: |
+          set -- ${SCAN_PATHS:-.}
+          ARGS=()
+          if [ "${FAIL_ON_DTS}" = "true" ]; then ARGS+=(--fail-on-dts); fi
+          if [ -n "${BASELINE}" ]; then ARGS+=(--baseline "${BASELINE}"); fi
+          cd "$GITHUB_WORKSPACE"
+          "$DEVTOOLS" type-escapes --ruleset "${RULESET:-core}" "${ARGS[@]}" "$@"
+
+      - name: Coverage preconditions
+        # The coverage audit needs a real checker, and the only step that
+        # installs one is install-command. Failing here with a sentence beats
+        # failing three steps later with "no checker found".
+        if: inputs.tsconfig != ''
+        env:
+          INSTALL: ${{ inputs.install-command }}
+          CHECKER: ${{ inputs.checker }}
+        run: |
+          if [ -z "${INSTALL}" ] && [ -z "${CHECKER}" ]; then
+            echo "::error::tsconfig is set but neither install-command nor checker is: the coverage audit has no compiler to ask. Add install-command (the normal case) or point checker at an absolute binary."
+            exit 1
+          fi
+
+      - name: Strictness policy
+        if: inputs.tsconfig != ''
+        env:
+          TSCONFIG: ${{ inputs.tsconfig }}
+          POLICY: ${{ inputs.policy }}
+        run: |
+          ARGS=(check --tsconfig "${TSCONFIG}")
+          if [ -n "${POLICY}" ]; then ARGS+=(--policy "${POLICY}"); fi
+          "$DEVTOOLS" ts-policy "${ARGS[@]}"
+
+      - name: Unchecked islands
+        if: inputs.tsconfig != ''
+        env:
+          TSCONFIG: ${{ inputs.tsconfig }}
+          CHECKER: ${{ inputs.checker }}
+          ISLANDS: ${{ inputs.allow-islands }}
+          ALLOW_NOCHECK: ${{ inputs.allow-nocheck }}
+        run: |
+          ARGS=(coverage --tsconfig "${TSCONFIG}")
+          if [ -n "${CHECKER}" ]; then ARGS+=(--command "${CHECKER}"); fi
+          if [ "${ALLOW_NOCHECK}" = "true" ]; then ARGS+=(--allow-nocheck); fi
+          for island in ${ISLANDS:-}; do ARGS+=(--allow-islands "$island"); done
+          "$DEVTOOLS" ts-policy "${ARGS[@]}"
+
+      - name: Semantic typecheck
+        if: inputs.typecheck-command != ''
+        run: ${{ inputs.typecheck-command }}

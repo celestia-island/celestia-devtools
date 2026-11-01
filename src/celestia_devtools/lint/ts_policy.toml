@@ -1,0 +1,60 @@
+# ts_policy.toml — the canonical TypeScript strictness policy for the family.
+#
+# Why a policy file and not just prose: 2026-11-01 measured the family and found
+# every repository passing `strict: true`, the shape of the *only* flag anyone
+# had turned on. Nothing systematically asked whether `noImplicitOverride`,
+# `noImplicitReturns` or `noUncheckedIndexedAccess` were on, so each repository
+# answered the question once, years ago, and no gate ever re-asked it. hikari's
+# probe says `noUncheckedIndexedAccess` would cost 1072 errors today and
+# `exactOptionalPropertyTypes` 136 — numbers nobody had, because nothing ran the
+# experiment.
+#
+# The split exists because the two tiers cost different things:
+#   tier A  cheap, mechanical, no legitimate disagreement: a repository that has
+#           not turned these on is simply missing checks. `check` fails on them.
+#   tier B  each migration moves real code: the repository must DECIDE, in its own
+#           `ts-policy.toml`, and `check` fails on an undecided flag. Silence is
+#           not an option; a decision with a reason is.
+#
+# Resolution order (first hit wins, same shape as p0_gate):
+#   --policy <path>  ->  $CELESTIA_TS_POLICY  ->  <repo>/ts-policy.toml  ->  this file.
+# The catalog below (tier_a.required, tier_b.flags) always comes from THIS file;
+# only the decisions (tier_b.on / tier_b.off) are taken from the resolved one, so
+# a repository cannot shrink the list of questions it must answer.
+#
+# A repository file declares its tier B decisions like this::
+#
+#     version = 1
+#
+#     [tier_b]
+#     on = ["exactOptionalPropertyTypes"]
+#
+#     [tier_b.off]
+#     noUncheckedIndexedAccess = "new-files-only pilot, see known-live-issues"
+#
+# Every tier B flag must appear in exactly one of `on` / `off`; a missing
+# decision is an error, so a flag added here cannot silently apply nowhere. A
+# flag listed `on` must actually be true in the repository's tsconfig (a stale
+# ledger would otherwise read as compliance), and a flag listed `off` must
+# actually be false or absent (otherwise the ledger understates what is on).
+
+version = 1
+
+[tier_a]
+# `allowUnreachableCode` is the one inverted flag: the strict value is `false`.
+required = ["strict", "noImplicitOverride", "noImplicitReturns", "noFallthroughCasesInSwitch", "allowUnreachableCode"]
+# `strict: true` is a bundle, and a repository can switch a member of it back off
+# while leaving the bundle key true — the standard mid-migration shape. A key
+# that is ABSENT here is satisfied by the bundle; a key that is PRESENT and not
+# `true` is a finding.
+strict_family = ["noImplicitAny", "noImplicitThis", "strictNullChecks", "strictFunctionTypes", "strictBindCallApply", "strictPropertyInitialization", "alwaysStrict", "useUnknownInCatchVariables"]
+
+[tier_b]
+# The migrations worth a decision. Ordered by measured pay-off (hikari probe:
+# exactOptionalPropertyTypes +136 errors, noUncheckedIndexedAccess +1072).
+flags = ["exactOptionalPropertyTypes", "noUncheckedIndexedAccess", "noPropertyAccessFromIndexSignature", "noUnusedLocals", "noUnusedParameters"]
+# The bundled default decides nothing, so `check` exits non-zero with every
+# tier B flag undecided until the repository states its position.
+on = []
+
+[tier_b.off]

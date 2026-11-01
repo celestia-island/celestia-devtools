@@ -9,42 +9,71 @@ would be invisible — the same fail-open shape the workspace keeps re-learning.
 not in any git tree, so the gate belongs in the shared CLI the runner farm
 already installs (the same way `commit-msg-lint` and `rules-lint` do).
 
-*Rule set* (identical to the workspace scanner, deliberately not weakened)::
+*What the first version could not see* (2026-11-01 review). A word-level `any`
+ban is a painkiller, not a cure: nothing stopped `type Any = any` from
+laundering every `any` in a file, nothing caught the `any` that arrives with no
+`any` token at all (`JSON.parse(text)`, `res.json()`), and nothing watched the
+lane the gate runs on. The redesign adds three axes.
 
-    double-cast      `as unknown as T`      (bypasses every assignability check)
-    paren-dbl-cast   `(x as unknown) as T`  (identical trick, parenthesised)
-    cast-any         `as any`, `<any>`
-    any-annot        `: any`, `any[]`
-    any-generic      `<any>`, `Promise<any>`, `Record<K, any>`, `Array<any>`
-    any-return       `=> any`
-    suppress         `@ts-ignore`, `@ts-nocheck`, `@ts-expect-error`
+*Rulesets.* ``core`` is the always-on set (the original seven rules plus the
+laundering, ambient and component-contract shapes, and ``cast-never`` in
+sources — the same token is legitimate inside tests as deliberate bad-input
+injection, so that rule is profile-scoped rather than ruleset-scoped).
+``strict`` adds the shapes whose fix costs a migration, so a repository opts in
+only after paying it down: ``any-source`` (untyped-by-construction APIs),
+``function-type`` (an erased callable is an ``any`` with better manners) and
+``event-target-cast`` (the DOM's own ``EventTarget`` widening).
 
-Plain `unknown` annotations are NOT flagged. `unknown` is the safe counterpart
-of `any` (type-guard parameters, catch clauses, external input) and banning it
-pushes code back toward `any`; this gate only removes the ways of *lying* to
-the compiler.
+*Profiles.* A finding is not equally alarming everywhere, so the scan labels
+each file ``src`` / ``test`` / ``generated`` / ``dts`` from its path and header
+and rules declare the profiles they apply to. ``cast-never`` is the first
+beneficiary: 116 of hikari's 125 occurrences are tests feeding deliberately
+invalid values, which is good testing, not debt.
+
+*Ratchet.* Some shapes are too large to ban outright (hikari alone carries
+~1.8k plain ``as`` assertions and ~2.8k non-null assertions); banning them
+would push the codebase into worse workarounds. They are counted instead, and
+``--baseline`` makes the counts monotone: a file that already carries debt may
+not grow, and by default a new file may not introduce any. ``--update-baseline``
+rewrites the ledger; it is JSON so a reviewer can diff exactly what debt a PR
+took on.
 
 *Suppression* is explicit and reviewable, never silent::
 
     same line   // ts-escape-ok: <reason>
-    whole file  // ts-escape-allow-file: <reason>
+    whole file  // ts-escape-allow-file: <reason> ledger=<id>
+
+The file-level marker has to name a ledger entry AND sit on a file whose header
+says it is generated. The two largest exemptions in the family are generated
+trees (tairitsu's 40k-line WASM glue); an exemption with no id is exactly the
+"regression nobody can trace" failure this module exists to prevent, and a
+hand-written file must not be able to paste itself out of the gate.
+
+Plain ``unknown`` annotations are NOT flagged. `unknown` is the safe counterpart
+of `any` (type-guard parameters, catch clauses, external input) and banning it
+pushes code back toward `any`; this gate only removes the ways of *lying* to
+the compiler. The unsafe use of ``unknown`` is the assertion out of it, which
+``double-cast`` and ``any-source`` already cover.
 
 *Usage*::
 
     celestia-devtools type-escapes                  # scan the repository root
     celestia-devtools type-escapes packages src     # explicit paths
-    celestia-devtools type-escapes --json
-    celestia-devtools type-escapes --fail-on-dts    # enforce *.d.ts too
+    celestia-devtools type-escapes --ruleset strict
+    celestia-devtools type-escapes --inventory      # per-rule/per-profile counts
+    celestia-devtools type-escapes --baseline .type-escapes-baseline.json
+    celestia-devtools type-escapes --update-baseline .type-escapes-baseline.json
+    celestia-devtools type-escapes --fail-on-dts    # enforce declarations too
     celestia-devtools type-escapes --selftest
 
-`*.d.ts` files are reported in a separate advisory section by default: a
-hand-written shim sometimes has to model an untyped upstream, but a facade
-typed `any` hides the checking of every caller, so the section is never
-silently dropped — `--fail-on-dts` moves it into the exit code.
+`*.d.ts`, `*.d.mts` and `*.d.cts` files are reported in a separate advisory
+section by default: a hand-written shim sometimes has to model an untyped
+upstream, but a facade typed `any` hides the checking of every caller, so the
+section is never silently dropped — `--fail-on-dts` moves it into the exit code.
 
-Exit: 0 clean, 1 violations found, 2 usage error. A missing path, and a target
-that holds no scannable file at all (`--allow-empty` to accept the latter
-explicitly), are usage errors: a mistyped path must never read as clean.
+Exit: 0 clean, 1 violations (or ratchet growth), 2 usage error. A missing path,
+and a target that holds no scannable file at all (`--allow-empty` to accept the
+latter explicitly), are usage errors: a mistyped path must never read as clean.
 """
 
 from __future__ import annotations
@@ -57,29 +86,69 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Iterable, Sequence
+from celestia_devtools.core import envelope
 
 #: File suffixes scanned (TypeScript family, incl. Vue SFC script blocks).
 INCLUDE = ("*.ts", "*.tsx", "*.vue", "*.mts", "*.cts")
 
-#: Path segments never scanned (build output, dependencies, VCS internals).
-SKIP_SEGMENTS = ("/node_modules/", "/dist/", "/target/", "/.git/", "/coverage/", "/build/")
+#: Directory names never scanned (build output, dependencies, VCS internals).
+#: Matched as path COMPONENTS relative to the scan root: the first version
+#: compared a slash-anchored substring against the raw path string, so a
+#: relative root (`type-escapes .`, the reusable workflow's default) matched
+#: nothing and happily scanned node_modules and dist.
+SKIP_DIRS = ("node_modules", "dist", "target", ".git", "coverage", "build")
 
-#: name -> regex. All of these are type-position assertions/annotations; the
-#: first match on a line wins, so `const h: any[]` is one finding, not two.
-RULES: Sequence[tuple[str, re.Pattern[str]]] = [("double-cast", re.compile(r"\bas\s+unknown\s+as\b")), ("paren-dbl-cast", re.compile(r"\bas\s+unknown\s*\)\s*as\b")), ("cast-any", re.compile(r"\bas\s+any\b|\bas\s+any\s*\[\s*\]")), ("any-annot", re.compile(r":\s*any\b")), ("any-generic", re.compile(r"(?:[<\[(,]\s*any\s*[>\]),;]|Promise\s*<\s*any\s*>|Record\s*<[^<>]*,?\s*any\s*>|Array\s*<\s*any\s*>|\bany\s*\[\s*\])")), ("any-return", re.compile(r"=>\s*any\b"))]
+#: Every declaration-file suffix. The first version only knew `.d.ts`, so
+#: hikari's hand-written `.d.mts` plugin shims silently counted as source.
+DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+
+#: Directory names whose files are tests (profile ``test``).
+TEST_SEGMENTS = ("/test/", "/tests/", "/__tests__/", "/__mocks__/", "/e2e/")
+
+#: File names that are tests regardless of directory.
+TEST_NAMES = re.compile(r"\.(?:test|spec)\.[cm]?tsx?$|\.test-d\.[cm]?ts$")
+
+#: Header marker that makes a file generated (profile ``generated``). Only the
+#: leading lines are inspected: a marker further down is prose.
+GENERATED_HEADER = re.compile(r"auto-?generated|@generated|do not edit|this file was generated", re.IGNORECASE)
+
+#: How many leading lines the generated-header probe reads.
+GENERATED_HEADER_WINDOW = 12
+
+#: Rule tiers: enforced always (``core``), enforced only under
+#: ``--ruleset strict``, or counted for the ratchet (``count``).
+TIER_CORE = "core"
+TIER_STRICT = "strict"
+TIER_COUNT = "count"
+
+#: Profiles a rule can apply to. A rule declaring ``None`` applies everywhere.
+PROFILE_SRC = "src"
+PROFILE_TEST = "test"
+PROFILE_GENERATED = "generated"
+PROFILE_DTS = "dts"
+
+#: `(name, pattern, tier, profiles)`; profiles is a frozenset or None for
+#: "every profile". Every literal stays on one physical line: the org's
+#: py-style checker forbids multi-line logical lines.
+RULES: Sequence[tuple[str, re.Pattern[str], str, frozenset[str] | None]] = [("double-cast", re.compile(r"\bas\s+unknown\s+as\b"), TIER_CORE, None), ("paren-dbl-cast", re.compile(r"\bas\s+unknown\s*\)\s*as\b"), TIER_CORE, None), ("cast-any", re.compile(r"\bas\s+any\b|\bas\s+any\s*\[\s*\]"), TIER_CORE, None), ("any-annot", re.compile(r":\s*any\b"), TIER_CORE, None), ("any-generic", re.compile(r"(?:[<\[(,]\s*any\s*[>\]),;]|Promise\s*<\s*any\s*>|Record\s*<[^<>]*,?\s*any\s*>|Array\s*<\s*any\s*>|\bany\s*\[\s*\])"), TIER_CORE, None), ("any-return", re.compile(r"=>\s*any\b"), TIER_CORE, None), ("any-union", re.compile(r"\bany\s*\||\|\s*any\b"), TIER_CORE, None), ("type-alias-any", re.compile(r"\btype\s+[A-Za-z_$][\w$]*(?:\s*<[^<>]*>)?\s*=\s*(?:any\b(?!\s*[?:(])|[^\n]*?\bany\b(?!\s*[?:(]))"), TIER_CORE, None), ("eslint-type-disable", re.compile(r"eslint-disable(?:-next-line|-line)?\b[^\n]*(?:@typescript-eslint/no-explicit-any|@typescript-eslint/no-unsafe-)"), TIER_CORE, None), ("emits-array-form", re.compile(r"\bemits\s*:\s*\[|\bdefineEmits\s*\(\s*\["), TIER_CORE, frozenset({PROFILE_SRC})), ("cast-never", re.compile(r"\bas\s+never\b"), TIER_CORE, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("any-source", re.compile(r"\bJSON\.parse\s*\(|\.json\s*\(\s*\)|\bnew\s+Function\s*\(|\beval\s*\(|\bObject\.create\s*\(|\bReflect\.get\s*\("), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("function-type", re.compile(r":\s*Function\b|=>\s*Function\b"), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("event-target-cast", re.compile(r"\.target\s+as\s+[\w<(]"), TIER_STRICT, frozenset({PROFILE_SRC, PROFILE_GENERATED})), ("suppress", re.compile(r"@ts-(?:nocheck|ignore|expect-error)\b"), TIER_CORE, None), ("as-assert", re.compile(r"\bas\s+(?!const\b)(?!never\b)(?!unknown\b)(?!any\b)(?:[A-Za-z_$][\w$]*|<|\{)"), TIER_COUNT, None), ("nonnull-assert", re.compile(r"[\w\)\]]!(?=[.\)\[,;\s]|$)"), TIER_COUNT, None)]
+
+#: Rules that live in a comment by construction: they must be matched before
+#: the comment-line filter, or they would never fire at all.
+COMMENT_RULES = ("suppress", "eslint-type-disable")
 
 #: Same-line allowlist: the marker must carry a reason (anything non-empty).
 OK_LINE = re.compile(r"ts-escape-ok\s*:\s*\S")
 
-#: Whole-file allowlist, for vendored/generated glue that is regenerated
-#: upstream. It also has to name a reason.
+#: Whole-file allowlist. It has to name a reason AND a ledger id, because an
+#: unnamed exemption is exactly how a generated tree re-acquires hand-edited
+#: escapes with nobody able to trace the decision back to a finding.
 # Horizontal whitespace only between the colon and the reason: `\s*` would
 # swallow the newline and let a BARE marker (no reason on its own line) mute
 # the first violation on the following line.
 OK_FILE = re.compile(r"ts-escape-allow-file[ \t]*:[ \t]*\S")
 
-#: TypeScript suppression directives, in all three spellings.
-SUPPRESS = re.compile(r"@ts-(?:nocheck|ignore|expect-error)\b")
+#: The ledger id inside a file-level marker (`ledger=L40`, `ledger=P0-A`).
+OK_FILE_LEDGER = re.compile(r"\bledger\s*=\s*[A-Za-z0-9][A-Za-z0-9._/-]*")
 
 #: String literals are stripped before rule matching: `"cast as any is fine"`
 #: is prose, not an assertion.
@@ -87,6 +156,20 @@ STRING_LIT = re.compile(r"""(?:"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)""")
 
 #: `expect.any(String)` / `arr.any()` are member calls, not the any type.
 METHOD_ANY = re.compile(r"\.\s*any\b")
+
+#: Block comments are blanked (newlines kept) before the whole-text rule pass:
+#: `as /* widened */ any` is one assertion, not code plus prose.
+BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+#: Line comments are blanked for the same reason.
+LINE_COMMENT = re.compile(r"//[^\n]*")
+
+#: An ambient module/global block header; the block body is scanned as a unit
+#: because a shim can erase an entire dependency in one line.
+AMBIENT_HEADER = re.compile(r"\bdeclare\s+(?:module|global)\b")
+
+#: The token whose presence inside an ambient block is the finding.
+ANY_WORD = re.compile(r"\bany\b")
 
 def _default_root() -> Path:
     """The repository root when no path is given (falls back to the cwd).
@@ -109,6 +192,23 @@ def _default_root() -> Path:
 
     return Path.cwd()
 
+def _git_root(path: Path) -> Path | None:
+    """The git top level containing `path`, or None outside a repository."""
+
+    probe_root = path if path.is_dir() else path.parent
+
+    try:
+        probe = subprocess.run(["git", "-C", str(probe_root), "rev-parse", "--show-toplevel"], capture_output = True, text = True, check = False)
+    except OSError:
+        return None
+
+    top = probe.stdout.strip()
+
+    if (probe.returncode == 0) and top:
+        return Path(top)
+
+    return None
+
 def _relative(path: Path, base: Path) -> str:
     """Render `path` relative to `base` so findings are repo-relative in CI."""
 
@@ -117,10 +217,44 @@ def _relative(path: Path, base: Path) -> str:
     except (OSError, ValueError):
         return str(path)
 
+def is_declaration_file(path: Path | str) -> bool:
+    """True for `*.d.ts`, `*.d.mts` and `*.d.cts` (all three are shims)."""
+
+    return str(path).endswith(DECLARATION_SUFFIXES)
+
+def is_generated(text: str) -> bool:
+    """True when the leading lines carry a generator header."""
+
+    return bool(GENERATED_HEADER.search("\n".join(text.splitlines()[:GENERATED_HEADER_WINDOW])))
+
+def profile_of(path: Path | str, text: str = "") -> str:
+    """Classify a file as dts / test / generated / src, in that order.
+
+    Declaration wins because the `--fail-on-dts` partition depends on it, then
+    tests (a fixture may legitimately carry `as never`), then the generator
+    header, and everything else is source.
+    """
+
+    name = str(path)
+
+    if is_declaration_file(name):
+        return PROFILE_DTS
+
+    normalised = "/" + name.replace("\\", "/").lstrip("/")
+
+    if TEST_NAMES.search(name) or any(segment in normalised for segment in TEST_SEGMENTS):
+        return PROFILE_TEST
+
+    if text and is_generated(text):
+        return PROFILE_GENERATED
+
+    return PROFILE_SRC
+
 def is_comment_line(line: str) -> bool:
     """True for lines that are entirely comment (prose is never a violation)."""
 
     text = line.lstrip()
+
     return text.startswith("//") or text.startswith("*") or text.startswith("/*")
 
 def iter_files(root: Path) -> Iterable[Path]:
@@ -136,54 +270,295 @@ def iter_files(root: Path) -> Iterable[Path]:
         for path in root.rglob(include):
             shown = str(path)
 
-            if (shown in seen) or any(segment in shown for segment in SKIP_SEGMENTS):
+            if shown in seen:
+                continue
+
+            try:
+                inside = path.relative_to(root).parts
+            except ValueError:
+                inside = path.parts
+
+            if any(part in SKIP_DIRS for part in inside):
                 continue
 
             seen.add(shown)
             yield path
 
-def scan_text(text: str, relpath: str) -> list[dict]:
-    """Return the violations in one file's text."""
+def _strip_strings(line: str) -> str:
+    """Replace string literals with empty pairs so prose cannot match a rule."""
+
+    return STRING_LIT.sub('""', line)
+
+def _blank(match: re.Match) -> str:
+    """Replace a comment with spaces, keeping its newlines so line numbers hold."""
+
+    return re.sub(r"[^\n]", " ", match.group(0))
+
+def code_text(text: str) -> str:
+    r"""Return the file's code with strings and comments blanked, newlines kept.
+
+    The per-line pass cannot see a construct the formatter broke across lines
+    (`new Map<\n string,\n any\n>()`), and TypeScript's `\s` happily spans
+    newlines, so a second pass runs over this joined view and maps each match
+    back to its line by counting newlines before it.
+    """
+
+    lines: list[str] = []
+
+    for line in text.splitlines():
+        lines.append("" if is_comment_line(line) else _strip_strings(line))
+
+    joined = "\n".join(lines)
+
+    return LINE_COMMENT.sub(_blank, BLOCK_COMMENT.sub(_blank, joined))
+
+def _brace_delta(line: str) -> int:
+    """Open minus close braces on one already string-stripped line."""
+
+    return line.count("{") - line.count("}")
+
+def ambient_findings(text: str) -> list[tuple[int, str]]:
+    """Return `(line, body)` for each ambient block that carries an `any`.
+
+    The block is delimited by brace counting over string-stripped lines, which
+    is enough for the shapes that matter (a wildcard shim is a few lines); a
+    block whose depth never returns to zero is reported at its header, because
+    an unterminated shim is itself suspicious.
+    """
+
+    found: list[tuple[int, str]] = []
+    lines = text.splitlines()
+    index = 0
+
+    while index < len(lines):
+        header = lines[index]
+
+        if (not AMBIENT_HEADER.search(header)) or is_comment_line(header):
+            index += 1
+            continue
+
+        depth = _brace_delta(_strip_strings(header))
+        body = [header]
+        cursor = index + 1
+
+        while (cursor < len(lines)) and (depth > 0):
+            stripped = _strip_strings(lines[cursor])
+            depth += _brace_delta(stripped)
+            body.append(stripped)
+            cursor += 1
+
+        if ANY_WORD.search(" ".join(body)):
+            found.append((index + 1, header.strip()[:200]))
+
+        index = max(cursor, index + 1)
+
+    return found
+
+ALIAS_LINE = re.compile(r"^\s*(?:import|export)\s*(?:type\s+)?(?:\{[^}]*\}|\*(?:\s+as\s+\w+)?|\w+\s+as\s+\w+)")
+
+def _is_alias_line(probe: str) -> bool:
+    """True for `import { x as Y }` / `export { x as Y }`, which is not an assertion."""
+
+    return bool(ALIAS_LINE.search(probe))
+
+def _allowed_file(text: str) -> bool:
+    """Whether the file-level marker exempts this file.
+
+    The marker only works on a file that a generator header owns: a
+    hand-written source file cannot paste itself out of the gate.
+    """
+
+    return bool(OK_FILE.search(text)) and bool(OK_FILE_LEDGER.search(text)) and is_generated(text)
+
+def _hit(relpath: str, lineno: int, rule: str, match: str, source: str, profile: str) -> dict:
+    """Build one finding record (the JSON shape is part of the CLI contract)."""
+
+    return {"file": relpath, "line": lineno, "rule": rule, "match": match, "source": source.strip()[:200], "profile": profile}
+
+#: Rules whose findings are produced outside the per-line loop and therefore
+#: have no `RULES` entry of their own. Without this table they fell through to
+#: the counted tier, which made the ambient-shim rule unenforceable.
+TIER_OVERRIDES = {"ambient-any": TIER_CORE}
+
+def tier_of(rule_name: str) -> str:
+    """Look up a rule's tier by name (used by the ratchet and the report)."""
+
+    if rule_name in TIER_OVERRIDES:
+        return TIER_OVERRIDES[rule_name]
+
+    for name, _pattern, tier, _profiles in RULES:
+        if name == rule_name:
+            return tier
+
+    return TIER_COUNT
+
+def _tier_active(tier: str, ruleset: str) -> bool:
+    """Whether an enforced tier runs under `ruleset` (`core` or `strict`)."""
+
+    if tier == TIER_CORE:
+        return True
+
+    return ruleset == TIER_STRICT
+
+def scan_text(text: str, relpath: str, ruleset: str = "core") -> list[dict]:
+    """Return the violations in one file's text.
+
+    `ruleset` selects the enforced tiers: ``core`` runs core + count rules,
+    ``strict`` adds the strict tier. Count-tier findings are always returned
+    (they feed `--inventory` and `--baseline`); `main()` decides whether they
+    can affect the exit code.
+    """
 
     found: list[dict] = []
 
-    if OK_FILE.search(text):
+    if _allowed_file(text):
         return found
+
+    profile = profile_of(relpath, text)
+    # The code view strips strings AND comments (newlines kept), so an inline
+    # `// as a note` cannot be counted as an assertion now that the counted tier
+    # accepts lowercase type names.
+    joined = code_text(text)
+    code_lines = joined.split("\n")
 
     for lineno, line in enumerate(text.splitlines(), 1):
         if OK_LINE.search(line):
             continue
 
-        # Suppression directives ARE comments, so they must be matched before
-        # the comment-line filter below.
-        directive = SUPPRESS.search(line)
+        code = code_lines[lineno - 1] if (lineno - 1) < len(code_lines) else ""
+        probe = METHOD_ANY.sub("._any_", code)
+        # Suppression directives ARE comments, so they are matched on the raw
+        # line (strings stripped), not on the comment-blanked code view.
+        comment_rule_hit = _comment_rule_hit(METHOD_ANY.sub("._any_", _strip_strings(line)), profile)
 
-        if directive:
-            found.append({"file": relpath, "line": lineno, "rule": "suppress", "match": directive.group(0), "source": line.strip()[:200]})
+        if comment_rule_hit is not None:
+            found.append(_hit(relpath, lineno, comment_rule_hit["rule"], comment_rule_hit["match"], line, profile))
             continue
 
         if is_comment_line(line):
             continue
 
-        probe = STRING_LIT.sub('""', line)
-        probe = METHOD_ANY.sub("._any_", probe)
+        _scan_enforced_line(probe, relpath, lineno, line, profile, ruleset, found)
+        _scan_counted_line(probe, relpath, lineno, line, profile, found)
 
-        for name, pattern in RULES:
-            hit = pattern.search(probe)
+    for hit in _cross_line_hits(joined, text, relpath, profile, ruleset, found):
+        found.append(hit)
 
-            if hit:
-                found.append({"file": relpath, "line": lineno, "rule": name, "match": hit.group(0), "source": line.strip()[:200]})
-                break
+    for lineno, body in ambient_findings(text):
+        found.append(_hit(relpath, lineno, "ambient-any", "declare", body, profile))
 
     return found
 
-def scan_paths(paths: Sequence[Path], base: Path) -> tuple[list[dict], int]:
-    """Scan `paths`, returning (violations, number of candidate files read)."""
+def _cross_line_hits(joined: str, text: str, relpath: str, profile: str, ruleset: str, found: list[dict]) -> list[dict]:
+    r"""Enforced-rule hits that the per-line pass cannot see (multi-line shapes).
+
+    Runs over `code_text` (comments and strings blanked, newlines kept) so a
+    generic, an alias or an assertion the formatter broke across lines still
+    matches. Findings already reported on the same line by the per-line pass are
+    skipped, and a line carrying a same-line exemption stays exempt.
+    """
+
+    lines = text.splitlines()
+    # The per-line pass reports at most one enforced rule per line; a line it
+    # already judged is not re-judged here, or `: any[]` would be counted twice.
+    seen = {(hit["rule"], hit["line"]) for hit in found}
+    settled = {hit["line"] for hit in found if tier_of(hit["rule"]) != TIER_COUNT}
+    hits: list[dict] = []
+
+    for name, pattern, tier, profiles in RULES:
+        if (name in COMMENT_RULES) or (tier == TIER_COUNT) or (not _tier_active(tier, ruleset)):
+            continue
+
+        if (profiles is not None) and (profile not in profiles):
+            continue
+
+        for match in pattern.finditer(joined):
+            lineno = joined.count("\n", 0, match.start()) + 1
+
+            if (lineno in settled) or ((name, lineno) in seen):
+                continue
+
+            source = lines[lineno - 1] if 0 < lineno <= len(lines) else ""
+
+            if OK_LINE.search(source):
+                continue
+
+            seen.add((name, lineno))
+            hits.append(_hit(relpath, lineno, name, " ".join(match.group(0).split()), source, profile))
+
+    return hits
+
+def _comment_rule_hit(probe: str, profile: str) -> dict | None:
+    """Match the rules that are themselves comments (suppression directives)."""
+
+    for name in COMMENT_RULES:
+        for rule_name, pattern, _tier, profiles in RULES:
+            if (rule_name != name) or ((profiles is not None) and (profile not in profiles)):
+                continue
+
+            hit = pattern.search(probe)
+
+            if hit:
+                return {"rule": rule_name, "match": hit.group(0)}
+
+    return None
+
+def _scan_enforced_line(probe: str, relpath: str, lineno: int, line: str, profile: str, ruleset: str, found: list[dict]) -> None:
+    """Append the first enforced-tier finding on this line (if any)."""
+
+    for name, pattern, tier, profiles in RULES:
+        if (tier == TIER_COUNT) or (name in COMMENT_RULES) or (not _tier_active(tier, ruleset)):
+            continue
+
+        if (profiles is not None) and (profile not in profiles):
+            continue
+
+        hit = pattern.search(probe)
+
+        if hit:
+            found.append(_hit(relpath, lineno, name, hit.group(0), line, profile))
+            return
+
+def _scan_counted_line(probe: str, relpath: str, lineno: int, line: str, profile: str, found: list[dict]) -> None:
+    """Append every counted-tier finding on this line (they always count)."""
+
+    for name, pattern, tier, profiles in RULES:
+        if tier != TIER_COUNT:
+            continue
+
+        if (name == "as-assert") and _is_alias_line(probe):
+            continue
+
+        if (profiles is not None) and (profile not in profiles):
+            continue
+
+        hit = pattern.search(probe)
+
+        if hit:
+            found.append(_hit(relpath, lineno, name, hit.group(0), line, profile))
+
+def path_root_of(target: Path) -> Path:
+    """The directory a scan target represents (a file target means its parent)."""
+
+    return target.parent if target.is_file() else target
+
+def scan_paths(paths: Sequence[Path], base: Path, ruleset: str = "core") -> tuple[list[dict], int]:
+    """Scan `paths`, returning (findings, number of candidate files read).
+
+    `base` is kept in the signature for compatibility, but display keys are
+    anchored per target (see the body) because the process cwd is not stable
+    across invocations of the same tree.
+    """
 
     hits: list[dict] = []
     scanned = 0
 
     for root in paths:
+        # Keys are anchored on the git top level when the target lives in one,
+        # else on the scan target itself. Anchoring on the process cwd made the
+        # same tree produce different keys (and absolute ones outside the cwd).
+        inside = path_root_of(root)
+        display_base = _git_root(inside) or inside
         files = [root] if root.is_file() else list(iter_files(root))
 
         for path in files:
@@ -194,16 +569,139 @@ def scan_paths(paths: Sequence[Path], base: Path) -> tuple[list[dict], int]:
 
             scanned += 1
 
-            # Cheap pre-filter: a file without any of these three tokens cannot
-            # match a rule, so the regex pass is skipped entirely.
-            if ("any" not in text) and ("unknown" not in text) and ("@ts-" not in text):
-                continue
+            # No token pre-filter: the first version skipped files without an
+            # "any"/"as " token, which silently exempted every rule whose token
+            # is something else (emits arrays, `!` assertions, declaration
+            # headers). A skipped file reads as clean, so the filter's tiny
+            # speed-up is not worth the false negatives.
+            display = _relative(path, display_base)
 
-            for hit in scan_text(text, _relative(path, base)):
-                hit["dts"] = path.name.endswith(".d.ts")
+            for hit in scan_text(text, display, ruleset):
+                hit["dts"] = is_declaration_file(path)
                 hits.append(hit)
 
     return hits, scanned
+
+def enforced_hits(hits: Iterable[dict], fail_on_dts: bool = False) -> tuple[list[dict], list[dict]]:
+    """Split findings into (enforced, declaration-advisory) by tier and profile."""
+
+    enforced: list[dict] = []
+    advisory: list[dict] = []
+
+    for hit in hits:
+        if tier_of(hit["rule"]) == TIER_COUNT:
+            continue
+
+        if hit.get("dts") and not fail_on_dts:
+            advisory.append(hit)
+            continue
+
+        enforced.append(hit)
+
+    return enforced, advisory
+
+def count_by_rule(hits: Iterable[dict]) -> dict[str, int]:
+    """Count findings per rule (the ratchet's unit of account)."""
+
+    counts: dict[str, int] = {}
+
+    for hit in hits:
+        counts[hit["rule"]] = counts.get(hit["rule"], 0) + 1
+
+    return counts
+
+def counted_by_rule(hits: Iterable[dict]) -> dict[str, int]:
+    """Count only the counted tier (what the ratchet compares)."""
+
+    return count_by_rule(hit for hit in hits if tier_of(hit["rule"]) == TIER_COUNT)
+
+def count_by_file(hits: Iterable[dict]) -> dict[str, dict[str, int]]:
+    """Count counted-tier findings per file, per rule (the per-file ratchet)."""
+
+    counts: dict[str, dict[str, int]] = {}
+
+    for hit in hits:
+        if tier_of(hit["rule"]) != TIER_COUNT:
+            continue
+
+        per_file = counts.setdefault(hit["file"], {})
+        per_file[hit["rule"]] = per_file.get(hit["rule"], 0) + 1
+
+    return counts
+
+def build_baseline(hits: Iterable[dict]) -> dict:
+    """Render the baseline document for the current tree (sorted, diffable)."""
+
+    hits = list(hits)
+    files = {name: dict(sorted(per_file.items())) for name, per_file in sorted(count_by_file(hits).items())}
+
+    return {"version": 1, "rules": dict(sorted(counted_by_rule(hits).items())), "files": files}
+
+def load_baseline(path: Path) -> dict | None:
+    """Read a ratchet baseline; a missing or malformed file is a usage error."""
+
+    try:
+        document = json.loads(path.read_text(encoding = "utf-8"))
+    except OSError as exc:
+        print(f"type-escapes: cannot read baseline {path}: {exc}", file = sys.stderr)
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"type-escapes: baseline {path} is not JSON: {exc}", file = sys.stderr)
+        return None
+
+    if not isinstance(document, dict) or not isinstance(document.get("files", {}), dict):
+        print(f"type-escapes: baseline {path} must be an object with a 'files' object", file = sys.stderr)
+        return None
+
+    return document
+
+def ratchet_violations(baseline: dict, hits: Iterable[dict], allow_new_files: bool = False) -> list[str]:
+    """Return the messages for counted-tier growth against `baseline`.
+
+    Two independent ceilings: the per-rule totals (deleting one finding and
+    adding one under a different rule cannot net out to zero) and the
+    per-file/rule counts (a file cannot grow while another shrinks). Files
+    absent from the baseline are new debt: refused unless the caller explicitly
+    opted into `allow_new_files`.
+    """
+
+    hits = list(hits)
+    current_rules = counted_by_rule(hits)
+    current_files = count_by_file(hits)
+    baseline_rules = baseline.get("rules") or {}
+    baseline_files = baseline.get("files") or {}
+    messages: list[str] = []
+
+    # The per-rule ceiling is the strict mode. `--baseline-allow-new` exists for
+    # repositories that are still adding components: new files may bring their
+    # own assertions, but an EXISTING file stays frozen (checked below).
+    if not allow_new_files:
+        for rule_name, count in sorted(current_rules.items()):
+            allowed = baseline_rules.get(rule_name)
+
+            if allowed is None:
+                messages.append(f"{rule_name}: baseline has no entry; the tree now carries {count} (record it with --update-baseline)")
+            elif count > allowed:
+                messages.append(f"{rule_name}: {count} > baseline {allowed} (the ratchet is monotone: lower the count, do not raise the budget)")
+
+    for name, per_rule in sorted(current_files.items()):
+        allowed_file = baseline_files.get(name)
+
+        if allowed_file is None:
+            if allow_new_files:
+                continue
+
+            detailed = ", ".join(f"{rule_name}={count}" for rule_name, count in sorted(per_rule.items()))
+            messages.append(f"{name}: file has no baseline entry but carries counted assertions ({detailed}); accept them with --update-baseline only when the review accepts them")
+            continue
+
+        for rule_name, count in sorted(per_rule.items()):
+            allowed = allowed_file.get(rule_name, 0)
+
+            if count > allowed:
+                messages.append(f"{name}: {rule_name} {count} > baseline {allowed}")
+
+    return messages
 
 SELFTEST_POSITIVE = """\
 const a = b as unknown as Widget;
@@ -231,9 +729,21 @@ const y: Record<string, unknown> = {};
 """
 
 SELFTEST_ALLOW_FILE = """\
-// ts-escape-allow-file: vendored generated glue, regenerate upstream
+// Auto-generated by build_npm_glue_packages.py
+// ts-escape-allow-file: generated WASM-browser glue, retires with L40 ledger=L40
 const a = b as unknown as Widget;
 const c = d as any;
+"""
+
+SELFTEST_HANDWRITTEN_ALLOW = """\
+// ts-escape-allow-file: hand-written file pasting the marker ledger=L40
+const a = b as any;
+"""
+
+SELFTEST_ALLOW_NO_LEDGER = """\
+// Auto-generated by build_npm_glue_packages.py
+// ts-escape-allow-file: generated glue, reason only
+const a = b as any;
 """
 
 SELFTEST_SCOPING = """\
@@ -246,12 +756,50 @@ SELFTEST_DTS = """\
 declare const payload: any;
 """
 
+SELFTEST_LAUNDER = """\
+type Any = any;
+type Widened = Array<any>;
+declare module "*.vue" {
+  const component: DefineComponent<Record<string, never>, Record<string, never>, Record<string, never>>;
+  export default component;
+}
+declare module "*.untyped" {
+  const value: any;
+  export default value;
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const value: unknown = 1;
+"""
+
+SELFTEST_STRICT = """\
+export const parsed = JSON.parse(raw);
+export const fired: Function = handler;
+export const name = (event.target as HTMLElement).dataset.name;
+export const doomed = value as never;
+"""
+
+SELFTEST_TEST_PROFILE = """\
+export const invalid = isTimeAware(null as never);
+"""
+
+SELFTEST_EMITS = """\
+export const Widget = defineComponent({ emits: ["select"], setup() { return () => null; } });
+"""
+
+SELFTEST_RATCHET_TREE = """\
+export const el = document.querySelector("#app")!;
+export const card = body as HTMLElement;
+"""
+
 def selftest() -> int:
     """Verify the scanner against its own positive and negative controls.
 
-    The controls are the ones the workspace scanner carried, plus a line-scope
-    case and a `*.d.ts` case: a gate whose allowlist silently widened to the
-    whole file would pass every clean tree and catch nothing.
+    The controls are the ones the workspace scanner carried, plus the axes the
+    redesign added: the laundering shapes, the strict tier, the test profile,
+    the generated/ledger protocol, the declaration-file classification and the
+    ratchet in both directions. A gate whose allowlist silently widened, or
+    whose strict tier never fired, would pass every clean tree and catch
+    nothing.
     """
 
     tmp = Path(tempfile.mkdtemp(prefix = "type-escapes-selftest-"))
@@ -260,41 +808,106 @@ def selftest() -> int:
         (tmp / "positive.ts").write_text(SELFTEST_POSITIVE, encoding = "utf-8")
         (tmp / "negative.ts").write_text(SELFTEST_NEGATIVE, encoding = "utf-8")
         (tmp / "allowfile.ts").write_text(SELFTEST_ALLOW_FILE, encoding = "utf-8")
+        (tmp / "handwritten.ts").write_text(SELFTEST_HANDWRITTEN_ALLOW, encoding = "utf-8")
+        (tmp / "noledger.ts").write_text(SELFTEST_ALLOW_NO_LEDGER, encoding = "utf-8")
         (tmp / "scoping.ts").write_text(SELFTEST_SCOPING, encoding = "utf-8")
         (tmp / "shim.d.ts").write_text(SELFTEST_DTS, encoding = "utf-8")
+        (tmp / "launder.ts").write_text(SELFTEST_LAUNDER, encoding = "utf-8")
+        (tmp / "strict.ts").write_text(SELFTEST_STRICT, encoding = "utf-8")
+        (tmp / "tests").mkdir()
+        (tmp / "tests" / "guard.test.ts").write_text(SELFTEST_TEST_PROFILE, encoding = "utf-8")
+        (tmp / "widget.tsx").write_text(SELFTEST_EMITS, encoding = "utf-8")
+        (tmp / "ratchet.ts").write_text(SELFTEST_RATCHET_TREE, encoding = "utf-8")
         positive = scan_text(SELFTEST_POSITIVE, "positive.ts")
         negative = scan_text(SELFTEST_NEGATIVE, "negative.ts")
         allowfile = scan_text(SELFTEST_ALLOW_FILE, "allowfile.ts")
+        handwritten = scan_text(SELFTEST_HANDWRITTEN_ALLOW, "handwritten.ts")
+        noledger = scan_text(SELFTEST_ALLOW_NO_LEDGER, "noledger.ts")
         scoping = scan_text(SELFTEST_SCOPING, "scoping.ts")
-        wanted = {"double-cast", "paren-dbl-cast", "cast-any", "any-annot", "any-generic", "any-return", "suppress"}
-        seen = {hit["rule"] for hit in positive}
+        launder = scan_text(SELFTEST_LAUNDER, "launder.ts")
+        core_strict = scan_text(SELFTEST_STRICT, "strict.ts", "core")
+        strict = scan_text(SELFTEST_STRICT, "strict.ts", "strict")
+        test_profile = scan_text(SELFTEST_TEST_PROFILE, "tests/guard.test.ts")
+        emits = scan_text(SELFTEST_EMITS, "widget.tsx")
+        wanted_core = {"double-cast", "paren-dbl-cast", "cast-any", "any-annot", "any-generic", "any-return", "suppress"}
+        seen_core = {hit["rule"] for hit in positive if tier_of(hit["rule"]) != TIER_COUNT}
         failures: list[str] = []
 
-        if seen != wanted:
-            failures.append(f"positive control missed rules: want={sorted(wanted)} got={sorted(seen)}")
+        if seen_core != wanted_core:
+            failures.append(f"positive control missed rules: want={sorted(wanted_core)} got={sorted(seen_core)}")
 
-        if len(positive) != 10:
-            failures.append(f"positive control expected 10 hits, got {len(positive)}")
+        if len([hit for hit in positive if tier_of(hit["rule"]) != TIER_COUNT]) != 10:
+            failures.append(f"positive control expected 10 enforced hits, got {len([hit for hit in positive if tier_of(hit['rule']) != TIER_COUNT])}")
 
-        if negative:
+        if [hit["rule"] for hit in negative if tier_of(hit["rule"]) != TIER_COUNT]:
             failures.append(f"negative control produced {len(negative)} hit(s): {negative}")
 
         if allowfile:
-            failures.append(f"file-level allowlist ignored: {len(allowfile)} hit(s)")
+            failures.append(f"generated+ledger allowlist ignored: {len(allowfile)} hit(s)")
 
-        if [hit["line"] for hit in scoping] != [1, 3]:
+        if not handwritten:
+            failures.append("hand-written file pasted the file marker and was excused (the marker must require a generator header)")
+
+        if not noledger:
+            failures.append("file-level marker without ledger= was accepted")
+
+        if [hit["line"] for hit in scoping if tier_of(hit["rule"]) != TIER_COUNT] != [1, 3]:
             failures.append(f"line-scoped allowlist is not line-scoped: want lines [1, 3], got {[hit['line'] for hit in scoping]}")
+
+        laundering = {hit["rule"] for hit in launder}
+
+        if not {"type-alias-any", "ambient-any", "eslint-type-disable"}.issubset(laundering):
+            failures.append(f"laundering shapes not all reported: got={sorted(laundering)}")
+
+        if {hit["rule"] for hit in core_strict} & {"any-source", "function-type", "event-target-cast"}:
+            failures.append("strict rules fired under --ruleset core")
+
+        if not {"any-source", "function-type", "event-target-cast", "cast-never"}.issubset({hit["rule"] for hit in strict}):
+            failures.append(f"strict ruleset missed shapes: got={sorted({hit['rule'] for hit in strict})}")
+
+        if "cast-never" in {hit["rule"] for hit in test_profile}:
+            failures.append("cast-never fired inside a test profile (deliberate bad-input injection is legitimate there)")
+
+        if "emits-array-form" not in {hit["rule"] for hit in emits}:
+            failures.append("emits array form was not reported on a component source")
 
         live, scanned = scan_paths([tmp], tmp)
 
-        if scanned != 5:
-            failures.append(f"file enumeration read {scanned} of 5 control files")
+        if scanned != 12:
+            failures.append(f"file enumeration read {scanned} of 12 control files")
 
         if not [hit for hit in live if hit["file"].endswith("positive.ts")]:
             failures.append("known-positive file produced no hit (the scan would read as clean)")
 
         if not [hit for hit in live if hit.get("dts")]:
             failures.append("declaration-file hit was not marked dts (the advisory section would be empty)")
+
+        baseline = build_baseline(live)
+        extra_counted = {"file": "ratchet.ts", "line": 1, "rule": "as-assert", "match": "", "source": "", "profile": PROFILE_SRC}
+        grown = ratchet_violations(baseline, live)
+        stricter = ratchet_violations(baseline, live + [extra_counted])
+        newfile = ratchet_violations(baseline, live + [dict(extra_counted, file = "brand-new.ts")])
+        allowed_new = ratchet_violations(baseline, live + [dict(extra_counted, file = "brand-new.ts")], allow_new_files = True)
+
+        if grown:
+            failures.append(f"ratchet rejected its own baseline: {grown[:2]}")
+
+        if not stricter:
+            failures.append("ratchet accepted growth in an existing file")
+
+        if not newfile:
+            failures.append("ratchet accepted a new file's counted debt")
+
+        if allowed_new:
+            failures.append(f"ratchet refused a new file even with --baseline-allow-new: {allowed_new[:1]}")
+
+        enforced, advisory = enforced_hits(live)
+
+        if not advisory:
+            failures.append("declaration-file findings were not split into the advisory section")
+
+        if [hit for hit in enforced if hit.get("dts")]:
+            failures.append("a declaration-file finding leaked into the enforced set without --fail-on-dts")
 
         shutil.rmtree(tmp)
 
@@ -304,14 +917,39 @@ def selftest() -> int:
 
             return 1
 
-        print(f"selftest OK: {len(positive)}/10 positive hits, 0 false positives, line + file allowlists honored, known-positive file live, dts classified")
+        print(f"selftest OK: {len([hit for hit in positive if tier_of(hit['rule']) != TIER_COUNT])}/10 enforced hits, 0 false positives, profiles honored, {len(strict)} strict hits, laundering shapes reported, dts advisory, ratchet monotone both ways")
         return 0
     except Exception as exc:  # noqa: BLE001 - the selftest must never mask its own crash
         shutil.rmtree(tmp, ignore_errors = True)
         print(f"SELFTEST ERROR: {exc}", file = sys.stderr)
         return 2
 
-def _print_report(hits: list[dict], dts_hits: list[dict], scanned: int) -> None:
+def inventory(hits: Sequence[dict], scanned: int) -> dict:
+    """Summarise findings by rule, tier and profile (the measurement stick)."""
+
+    by_rule: dict[str, dict] = {}
+
+    for hit in hits:
+        slot = by_rule.setdefault(hit["rule"], {"tier": tier_of(hit["rule"]), "total": 0, "profiles": {}})
+        slot["total"] += 1
+        slot["profiles"][hit["profile"]] = slot["profiles"].get(hit["profile"], 0) + 1
+
+    rules = {name: {"tier": slot["tier"], "total": slot["total"], "profiles": dict(sorted(slot["profiles"].items()))} for name, slot in sorted(by_rule.items())}
+
+    return {"rules": rules, "files": len({hit["file"] for hit in hits}), "scanned": scanned}
+
+def _print_inventory(document: dict) -> None:
+    """Print the inventory as a table a human can read in a terminal."""
+
+    print(f"{'rule':22s} {'tier':7s} {'total':>6s}  profiles")
+
+    for name, slot in document["rules"].items():
+        profiles = ", ".join(f"{key}={value}" for key, value in slot["profiles"].items())
+        print(f"{name:22s} {slot['tier']:7s} {slot['total']:6d}  {profiles}")
+
+    print(f"\n{document['files']} file(s) with findings; {document['scanned']} file(s) scanned")
+
+def _print_report(hits: list[dict], dts_hits: list[dict], scanned: int, ratchet: Sequence[str], ruleset: str, counted: dict[str, int]) -> None:
     """Human-readable report: findings, by-rule summary, advisory d.ts section."""
 
     per_rule: dict[str, int] = {}
@@ -322,11 +960,11 @@ def _print_report(hits: list[dict], dts_hits: list[dict], scanned: int) -> None:
         per_file[hit["file"]] = per_file.get(hit["file"], 0) + 1
 
     for hit in hits:
-        print(f"{hit['file']}:{hit['line']}  [{hit['rule']}]  {hit['source']}")
+        print(f"{hit['file']}:{hit['line']}  [{hit['rule']}/{hit['profile']}]  {hit['source']}")
 
     if hits:
         print()
-        print("by rule: " + ", ".join(f"{name}={count}" for name, count in sorted(per_rule.items())))
+        print(f"by rule ({ruleset}): " + ", ".join(f"{name}={count}" for name, count in sorted(per_rule.items())))
         print("top files:")
 
         for name, count in sorted(per_file.items(), key = lambda item: -item[1])[:10]:
@@ -343,7 +981,17 @@ def _print_report(hits: list[dict], dts_hits: list[dict], scanned: int) -> None:
         for hit in dts_hits:
             dts_by_rule[hit["rule"]] = dts_by_rule.get(hit["rule"], 0) + 1
 
-        print(f"   {len(dts_hits)} hit(s) in *.d.ts: " + ", ".join(f"{name}={count}" for name, count in sorted(dts_by_rule.items())))
+        print(f"   {len(dts_hits)} hit(s) in declaration files: " + ", ".join(f"{name}={count}" for name, count in sorted(dts_by_rule.items())))
+
+    if counted:
+        print("\n-- counted assertions (ratcheted, not enforced: see --baseline) --")
+        print("   " + ", ".join(f"{name}={count}" for name, count in sorted(counted.items())))
+
+    if ratchet:
+        print("\n-- ratchet (counted assertions may only shrink) --")
+
+        for message in ratchet:
+            print(f"  {message}")
 
     print(f"\n{len(hits)} escape hatch(es) across {len(per_file)} file(s); {scanned} file(s) scanned")
 
@@ -353,7 +1001,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "type-escapes", description = "Fail a tree that reintroduces TypeScript type escape hatches.")
     parser.add_argument("paths", nargs = "*", default = [], metavar = "PATH", help = "Files or directories to scan; defaults to the repository root.")
     parser.add_argument("--json", action = "store_true", help = "Machine-readable output.")
-    parser.add_argument("--fail-on-dts", action = "store_true", help = "Count hits in declaration files (*.d.ts) toward the exit code; by default they are an advisory section.")
+    parser.add_argument("--ruleset", choices = ("core", "strict"), default = "core", help = "Rule tier to enforce: core (always-on) or strict (adds the shapes whose fix costs a migration).")
+    parser.add_argument("--inventory", action = "store_true", help = "Print per-rule/per-profile counts instead of a findings list (never affects the exit code).")
+    parser.add_argument("--baseline", default = None, metavar = "FILE", help = "Ratchet ledger: counted-tier assertions may not exceed the counts recorded there.")
+    parser.add_argument("--update-baseline", default = None, metavar = "FILE", help = "Rewrite the ratchet ledger from the current tree (review the diff: it is debt).")
+    parser.add_argument("--baseline-allow-new", action = "store_true", help = "Let files absent from the baseline carry counted assertions (migration aid; off by default).")
+    parser.add_argument("--fail-on-dts", action = "store_true", help = "Count hits in declaration files (*.d.ts, *.d.mts, *.d.cts) toward the exit code; by default they are an advisory section.")
     parser.add_argument("--allow-empty", action = "store_true", help = "Accept a target that contains no scannable file (off by default: a mistyped path must not read as clean).")
     parser.add_argument("--selftest", action = "store_true", help = "Verify the scanner against its own controls.")
     args = parser.parse_args(argv)
@@ -368,22 +1021,58 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"type-escapes: no such path: {', '.join(missing)}", file = sys.stderr)
         return 2
 
-    hits, scanned = scan_paths(targets, Path.cwd())
+    hits, scanned = scan_paths(targets, _default_root(), args.ruleset)
 
     if (scanned == 0) and not args.allow_empty:
         listed = ", ".join(str(target) for target in targets)
         print(f"type-escapes: no scannable file ({', '.join(INCLUDE)}) under: {listed} — check the path (--allow-empty to accept)", file = sys.stderr)
         return 2
 
-    enforced = [hit for hit in hits if args.fail_on_dts or not hit.get("dts")]
-    dts_hits = [hit for hit in hits if hit.get("dts")]
+    if args.inventory:
+        document = inventory(hits, scanned)
+
+        if args.json:
+            envelope.emit(document)
+        else:
+            _print_inventory(document)
+
+        return 0
+
+    enforced, advisory = enforced_hits(hits, args.fail_on_dts)
+    counted = counted_by_rule(hits)
+    ratchet: list[str] = []
+    status = 0
+
+    # Baseline comparison happens BEFORE an update writes: `--update-baseline`
+    # must not be able to launder growth it accepted a moment ago.
+    if args.baseline:
+        baseline = load_baseline(Path(args.baseline))
+
+        if baseline is None:
+            return 2
+
+        ratchet = ratchet_violations(baseline, hits, args.baseline_allow_new)
+
+    if args.update_baseline and ratchet:
+        print(f"type-escapes: refusing to rewrite {args.update_baseline}: the tree grew the debt it would record; pay it down or pass --baseline-allow-new deliberately", file = sys.stderr)
+    elif args.update_baseline:
+        try:
+            Path(args.update_baseline).write_text(json.dumps(build_baseline(hits), indent = 1, ensure_ascii = True) + "\n", encoding = "utf-8")
+        except OSError as exc:
+            print(f"type-escapes: cannot write baseline {args.update_baseline}: {exc}", file = sys.stderr)
+            return 2
+
+        print(f"type-escapes: baseline written to {args.update_baseline}")
+
+    if enforced or ratchet:
+        status = 1
 
     if args.json:
-        print(json.dumps({"count": len(enforced), "hits": enforced, "dts_count": len(dts_hits), "dts_hits": dts_hits, "scanned": scanned}, indent = 1, ensure_ascii = False))
+        envelope.emit({"count": len(enforced), "hits": enforced, "dts_count": len(advisory), "dts_hits": advisory, "scanned": scanned, "ruleset": args.ruleset, "counted": counted, "ratchet": ratchet, "ratchet_ok": not ratchet})
     else:
-        _print_report(enforced, dts_hits, scanned)
+        _print_report(enforced, advisory, scanned, ratchet, args.ruleset, counted)
 
-    return 1 if enforced else 0
+    return status
 
 if __name__ == "__main__":
     raise SystemExit(main())
