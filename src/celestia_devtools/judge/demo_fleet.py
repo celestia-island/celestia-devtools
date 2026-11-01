@@ -7,9 +7,9 @@ holds. To demonstrate the judge at all, the CLI has to bring a fleet itself — 
 MCP server and supervise one command through it, then judge that run.
 
 So the contract is: ``malkuth_supervise`` appears here and nowhere else in the package,
-and nothing in here is called by :func:`celestia_devtools.judge.cli.judge` (the judgement
-entry point). That is what keeps "the judge never acts" honest while still giving the
-demo a supported path.
+and the judgement entry points in :mod:`celestia_devtools.judge.cli`
+(:func:`~celestia_devtools.judge.cli.main` / ``_render``) never import it. That is what
+keeps "the judge never acts" honest while still giving the demo a supported path.
 
 The supervision is bounded by ``timeout_secs``: malkuth drains and returns on its own, and
 the caller closes the session afterwards, which ends the server and (with it) the child it
@@ -122,15 +122,99 @@ def descendants(pid: int) -> set[int]:
 
     return found
 
+def _checkout_root() -> Path:
+    """The source checkout this module was imported from (not the caller's cwd).
+
+    Installed copies fall back to the caller's cwd, where a sweep cannot do better than
+    "same directory as the CLI" — the conservative choice, since a wrong root only means
+    we clean less.
+    """
+    candidate = Path(__file__).resolve().parents[3]
+
+    if (candidate / "src").is_dir() and (candidate / "pyproject.toml").is_file():
+        return candidate
+
+    return Path.cwd()
+
+def _within_checkout(path: Path, root: Path | None = None) -> bool:
+    """True when ``path`` is the checkout root or below it (a real path boundary).
+
+    ``str.startswith`` would accept a sibling like ``/mnt/work/r241-r2pp-srcX`` for a root
+    of ``/mnt/work/r241-r2pp-src`` — the reason this uses path semantics instead.
+    """
+
+    try:
+        return path.resolve().is_relative_to((root or _checkout_root()).resolve())
+    except OSError:
+        return False
+
+def _proc_cmdline(pid: int) -> list[str] | None:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+
+    return [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+
+def _proc_parent_comm(pid: int) -> str:
+    try:
+        parent = int(Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[-1].split()[1])
+        return Path(f"/proc/{parent}/comm").read_text().strip()
+    except (OSError, IndexError, ValueError):
+        return ""
+
+def _proc_cwd(pid: int) -> Path | None:
+    try:
+        return Path(f"/proc/{pid}/cwd").resolve()
+    except OSError:
+        return None
+
+def _iter_pids() -> list[int]:
+    return [int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()]
+
+def terminate(pids: Sequence[int], *, expect: Sequence[str] | None = None) -> int:
+    """TERM the given pids, but only after the process still *is* what we started.
+
+    A pid from a status payload is a hint, not an identity: by the time the demo tears down
+    it can be dead and recycled onto an unrelated process. With ``expect`` (the demo's
+    programs) the kill only lands when ``/proc/<pid>/cmdline`` still matches one of them;
+    an unreadable or mismatched process is skipped. Without ``expect`` nothing is signalled
+    — an unverified pid is never terminated.
+    """
+
+    if not pids or not expect:
+        return 0
+
+    programs = {os.path.realpath(program) for program in expect}
+    delivered = 0
+
+    for pid in pids:
+        try:
+            numeric = int(pid)
+        except (TypeError, ValueError):
+            continue
+
+        argv = _proc_cmdline(numeric)
+
+        if not argv or (os.path.realpath(argv[0]) not in programs):
+            continue
+
+        try:
+            os.kill(numeric, 15)
+            delivered += 1
+        except OSError:
+            continue
+
+    return delivered
+
 def sweep_abandoned(commands: Sequence[Sequence[str]]) -> int:
     """TERM orphaned leftovers of the demo commands that the drain could not reach.
 
     Only *project-local* programs are swept (a path with a separator outside the system bin
     and opt/home trees) **and** only when the process' working directory is under this
-    checkout's: the demo never hunts system-wide copies of ``python3`` or ``sh``, nor a
-    same-named binary that another session started elsewhere. A process is a leftover when
-    its parent was reparented to init/systemd, i.e. nothing supervises it any more — the
-    same ancestry rule as the test suite.
+    checkout's root (derived from this module's location, not the caller's cwd). A process
+    is a leftover when its parent was reparented to init/systemd, i.e. nothing supervises it
+    any more — the same ancestry rule as the test suite.
     """
     programs = set()
 
@@ -150,52 +234,24 @@ def sweep_abandoned(commands: Sequence[Sequence[str]]) -> int:
 
     killed = 0
 
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-
-        try:
-            argv = [part.decode("utf-8", "replace") for part in (entry / "cmdline").read_bytes().split(b"\0") if part]
-            parent = int((entry / "stat").read_text().split(") ", 1)[-1].split()[1])
-        except (OSError, IndexError, ValueError):
-            continue
+    for pid in _iter_pids():
+        argv = _proc_cmdline(pid)
 
         if not argv or (os.path.realpath(argv[0]) not in programs):
             continue
 
-        try:
-            cwd = Path(f"/proc/{entry.name}/cwd").resolve()
-        except OSError:
+        cwd = _proc_cwd(pid)
+
+        if (cwd is None) or not _within_checkout(cwd):
             continue
 
-        if not str(cwd).startswith(str(Path.cwd())):
-            continue  # started elsewhere: not ours to sweep
-
-        try:
-            parent_comm = (Path("/proc") / str(parent) / "comm").read_text().strip()
-        except OSError:
-            parent_comm = ""
-
-        if parent_comm not in ("systemd", "init"):
+        if _proc_parent_comm(pid) not in ("systemd", "init"):
             continue
 
         try:
-            os.kill(int(entry.name), 15)
+            os.kill(pid, 15)
             killed += 1
         except OSError:
             continue
 
     return killed
-
-def terminate(pids: Sequence[int]) -> int:
-    """TERM the given pids; returns how many signals were delivered."""
-    delivered = 0
-
-    for pid in pids:
-        try:
-            os.kill(int(pid), 15)
-            delivered += 1
-        except (OSError, ValueError):
-            continue
-
-    return delivered

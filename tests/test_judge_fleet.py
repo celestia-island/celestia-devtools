@@ -14,12 +14,13 @@ import ast
 import json
 import os
 import shutil
+import subprocess
 import socket
 import sys
 import time
 from pathlib import Path
 import pytest
-from celestia_devtools.judge import cli, fleet
+from celestia_devtools.judge import cli, demo_fleet, fleet
 from celestia_devtools.judge.mcp_stdio import READ_ONLY_TOOLS, mcp_error, mcp_session
 
 HERE = Path(__file__).resolve().parent
@@ -102,6 +103,9 @@ def test_rejects_a_not_ok_payload() -> None:
 def test_probe_semantics() -> None:
     assert fleet.probe_ok([{"ok": True, "status": 200}, {"ok": True, "status": 204}]) is True
     assert fleet.probe_ok([{"ok": True, "status": 200}, {"ok": False, "status": 503}]) is False
+    # An endpoint that claims ok but answered 5xx is a readiness failure, not health.
+    assert fleet.probe_state([{"ok": True, "status": 500}]) == "down"
+    assert fleet.probe_ok([{"ok": True, "status": 500}]) is False
 
     with pytest.raises(fleet.schema_error):
         fleet.probe_ok([])
@@ -202,6 +206,61 @@ def test_c1_does_not_fire_without_the_frozen_tail() -> None:
 
     assert "C1" not in [verdict.code for verdict in fleet.evaluate(_observation(ticks))]
 
+# ── teardown identity (a status pid is a hint, not an identity) ────────────
+
+def test_terminate_skips_a_recycled_pid(monkeypatch) -> None:
+    """A pid that now belongs to something else must never be signalled."""
+    killed = []
+    monkeypatch.setattr(demo_fleet, "_proc_cmdline", lambda pid: ["/usr/bin/something-else"])
+    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append(pid))
+    assert demo_fleet.terminate([4242], expect = ["/tmp/demo/test_app"]) == 0
+    assert killed == []
+
+def test_terminate_requires_identity_and_a_pid(monkeypatch) -> None:
+    killed = []
+    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append(pid))
+    assert demo_fleet.terminate([4242]) == 0, "no expect list: never signal"
+    assert demo_fleet.terminate([], expect = ["/tmp/demo/test_app"]) == 0
+    assert killed == []
+
+def test_terminate_signals_a_matching_process(monkeypatch) -> None:
+    killed = []
+    monkeypatch.setattr(demo_fleet, "_proc_cmdline", lambda pid: ["/tmp/demo/test_app", "worker"])
+    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append(pid))
+    assert demo_fleet.terminate([4242], expect = ["/tmp/demo/test_app"]) == 1
+    assert killed == [4242]
+
+def test_terminate_does_not_touch_a_live_foreign_process() -> None:
+    """Real process, wrong identity: it keeps running."""
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+
+    try:
+        assert demo_fleet.terminate([sleeper.pid], expect = ["/nonexistent/demo-program"]) == 0
+        time.sleep(0.2)
+        assert sleeper.poll() is None, "a foreign process was terminated"
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout = 10)
+
+# ── sweep scope (checkout root, not the caller's cwd) ───────────────────────
+
+def test_sweep_uses_the_checkout_root_and_rejects_prefix_siblings(monkeypatch, tmp_path) -> None:
+    killed = []
+    fake_pids = {111: "/mnt/work/r241-r2pp-srcX", 222: str(tmp_path / "inside")}
+    monkeypatch.setattr(demo_fleet, "_iter_pids", lambda: sorted(fake_pids))
+    monkeypatch.setattr(demo_fleet, "_proc_cmdline", lambda pid: ["/tmp/demo-r241/test_app"])
+    monkeypatch.setattr(demo_fleet, "_proc_parent_comm", lambda pid: "systemd")
+    monkeypatch.setattr(demo_fleet, "_proc_cwd", lambda pid: Path(fake_pids[pid]))
+    monkeypatch.setattr(demo_fleet, "_checkout_root", lambda: tmp_path)
+    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append(pid))
+    assert demo_fleet.sweep_abandoned([["/tmp/demo-r241/test_app"]]) == 1
+    assert killed == [222], "a prefix sibling directory must not be swept"
+
+def test_checkout_root_does_not_follow_the_caller(monkeypatch) -> None:
+    root = demo_fleet._checkout_root()
+    monkeypatch.chdir("/")
+    assert demo_fleet._checkout_root() == root
+
 # ── zero actions (structural) ──────────────────────────────────────────────
 
 def test_allowlist_is_exactly_the_three_read_tools() -> None:
@@ -228,6 +287,20 @@ def test_mutating_tool_names_are_refused_by_an_open_session(monkeypatch) -> None
         assert "allowlist" in str(caught.value)
         assert sent == [], "an action tool name must never reach the server"
 
+def _literal_string(node: ast.AST) -> str | None:
+    """Resolve a string the compiler would fold: a literal or its ``+`` concatenation."""
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _literal_string(node.left), _literal_string(node.right)
+
+        if (left is not None) and (right is not None):
+            return left + right
+
+    return None
+
 def _action_call_sites(path: Path, forbidden: set[str]) -> list[tuple[str, int, str]]:
     """AST-level scan: which calls pass an action tool name as a literal argument.
 
@@ -253,22 +326,22 @@ def _action_call_sites(path: Path, forbidden: set[str]) -> list[tuple[str, int, 
             continue
 
         for arg in node.args:
-            if isinstance(arg, ast.Constant):
-                values = [arg]
-            elif isinstance(arg, ast.Dict):
+            if isinstance(arg, ast.Dict):
                 values = list(arg.values)
             else:
-                continue
+                values = [arg]
 
             for value in values:
-                if isinstance(value, ast.Constant) and isinstance(value.value, str) and (value.value in forbidden):
-                    hits.append((path.name, node.lineno, value.value))
+                literal = _literal_string(value)
+
+                if (literal is not None) and (literal in forbidden):
+                    hits.append((path.name, node.lineno, literal))
 
     return hits
 
 def test_the_judgement_path_contains_no_action_call() -> None:
     forbidden = {"malkuth_" + "restart", "malkuth_" + "drain", "malkuth_" + "supervise"}
-    modules = [path for path in JUDGE_SOURCES.glob("*.py") if path.name != "demo_fleet.py"]
+    modules = [path for path in JUDGE_SOURCES.rglob("*.py") if path.name != "demo_fleet.py"]
     assert len(modules) >= 4, "the glob must actually see the package"
     offenders = [hit for path in modules for hit in _action_call_sites(path, forbidden)]
     assert offenders == [], f"the judgement path must not call action tools: {offenders}"
@@ -277,7 +350,7 @@ def test_every_module_outside_the_demo_holds_no_action_literal() -> None:
     """Text-level backstop: a mutating action name anywhere but the demo is a smell."""
     forbidden = ("malkuth_" + "restart", "malkuth_" + "drain")
 
-    for path in [path for path in JUDGE_SOURCES.glob("*.py") if path.name != "demo_fleet.py"]:
+    for path in [path for path in JUDGE_SOURCES.rglob("*.py") if path.name != "demo_fleet.py"]:
         text = path.read_text()
         assert not any(needle in text for needle in forbidden), f"{path.name} mentions an action tool"
 
@@ -377,6 +450,17 @@ def test_server_without_the_read_arms_is_a_cannot_judge(capsys) -> None:
     code, out, _ = _judge("missing-tools", capsys)
     assert code == 0
     assert ("无法判定" in out) and ("does not advertise" in out)
+
+def test_unavailable_report_has_the_same_schema(capsys) -> None:
+    code, out, _ = _judge("badshape", capsys, "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["status"] == "unavailable"
+
+    for key in ("ticks", "interval_secs", "runs", "workers", "verdicts", "unevaluated", "cannot_judge"):
+        assert key in payload, key
+
+    assert (payload["verdicts"] == []) and (payload["unevaluated"] == [])
 
 def test_malformed_payload_is_a_cannot_judge(capsys) -> None:
     code, out, _ = _judge("badshape", capsys)

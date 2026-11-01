@@ -22,7 +22,7 @@ def _content(payload) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
 
 def _worker(**overrides) -> dict:
-    worker = {"id": "app", "kind": "backend", "phase": "running", "pid": 4242, "uptime_secs": 120, "restart_policy": "permanent", "restart_count": 0, "last_error": None}
+    worker = {"id": "app", "kind": "backend", "phase": "running", "pid": 1 << 30, "uptime_secs": 120, "restart_policy": "permanent", "restart_count": 0, "last_error": None}
     worker.update(overrides)
     return worker
 

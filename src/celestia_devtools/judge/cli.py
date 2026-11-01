@@ -18,18 +18,19 @@ it started itself through ``--supervise``, or one whose MCP session it owns (the
 platform-side embedding, PR-2). Against a server that is already running something else,
 the honest answer is "no fleet" — not an error and not a guess.
 
-Three-state contract
-====================
+Status contract (four values; `failed` > `indeterminate` > `ok`)
+==============================================================
 
-The report is never "healthy" when a signal was missing:
-
-* ``ok`` — every applicable predicate was evaluated (a fleet with no runs is also ``ok``:
-  an empty registry is a real observation);
-* ``indeterminate`` — at least one predicate could not be evaluated (no probe URL, a
-  failed log read, a probe that timed out) and the ones that did run found nothing;
-  found verdicts are still listed, but the conclusion says *not judged*, not *healthy*;
-* ``failed`` — nothing could be read at all (transport, non-JSON framing, missing
-  capability); the report carries the reason and never a verdict.
+* ``ok`` — every applicable predicate was evaluated and nothing fired. An empty registry
+  is also ``ok``: "no fleet" is a real observation, not a missing one;
+* ``indeterminate`` — nothing fired, but at least one predicate could not be evaluated
+  (no probe URL, an unreadable log, a probe that never answered);
+* ``failed`` — at least one predicate fired; the severity travels per verdict
+  (``critical`` / ``suspicious``). A finding never reads as ``ok`` — that is the property
+  a consumer gating on ``status == "ok"`` relies on;
+* ``unavailable`` — nothing could be read at all (transport failure, non-JSON framing, a
+  server without the read tools). This is the *absence* of a judgement: no verdicts, no
+  counts, just the reason.
 
 Exit codes: ``0`` a report was produced (including "no fleet" and "cannot judge")
 | ``2`` usage error.
@@ -43,6 +44,7 @@ Actions (restart/drain) are PR-2 and need a target-bound approval chain (L61).
 from __future__ import annotations
 import argparse
 import json
+import os
 import shlex
 import sys
 import threading
@@ -110,7 +112,7 @@ def _cannot_judge(reason: str, *, as_json: bool) -> int:
     """Fail-open report: no guess, just the reason (status ``unavailable``)."""
 
     if as_json:
-        print(json.dumps({"status": "unavailable", "read_only": True, "cannot_judge": reason, "ticks": 0, "runs": 0, "workers": 0, "verdicts": [], "unevaluated": [], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
+        print(json.dumps({"status": "unavailable", "read_only": True, "cannot_judge": reason, "ticks": 0, "interval_secs": 0, "runs": 0, "workers": 0, "verdicts": [], "unevaluated": [], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
     else:
         print(f"无法判定: {reason}")
 
@@ -316,9 +318,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # child can outlive the session close by a moment; the demo's own processes should
         # not be left waiting for that.
         leftovers |= {int(pid) for pid in demo.get("worker_pids", []) if isinstance(pid, int)}
+        # A pid from the status payload is a hint, not an identity: the process may be gone
+        # and the number recycled. Only a process whose cmdline still matches a demo command
+        # is terminated (an empty pid list never reaches the killer).
+        expected = [os.path.realpath(shlex.split(command)[0]) for command in args.supervise if shlex.split(command)]
 
         if leftovers:
-            demo_fleet.terminate(sorted(leftovers))
+            demo_fleet.terminate(sorted(leftovers), expect = expected)
 
         if demo.get("worker_pids"):
             demo_fleet.sweep_abandoned([shlex.split(command) for command in args.supervise])
