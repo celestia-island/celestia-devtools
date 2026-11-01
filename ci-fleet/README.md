@@ -113,12 +113,12 @@ sudo -u lab ./vm-runner-bootstrap.sh --check  # 只报告漂移，有漂移则 e
 1. **`~/.cargo/config.toml` → rsproxy**（`sparse+https://rsproxy.cn/index/`）。
    2026-11-01 起 TUNA 对整个 fleet 返回 403（域名根也 403，是镜像侧拒绝，不是我们的代理），
    旧配置指向 TUNA ⇒ 全农场 Rust 作业死在 `failed to query replaced source registry`。
-2. **`~/.gitconfig` 的 `url.<gh-ci-x>.insteadOf`**——把 github.com 的 org URL 改写到
+1. **`~/.gitconfig` 的 `url.<gh-ci-x>.insteadOf`**——把 github.com 的 org URL 改写到
    `gh-ci-<repo>` SSH 别名，实现**内网项目通联**（每仓一把 deploy key，不需要跨仓 PAT）。
-3. **校验 ssh 别名与 deploy key 是否在位**（只检查不创建——密钥属凭据，按 `_secure/` 流程供给）。
+1. **校验 ssh 别名与 deploy key 是否在位**（只检查不创建——密钥属凭据，按 `_secure/` 流程供给）。
 
 > ⚠️ **跨仓 checkout 的坑**：`actions/checkout` 会临时覆盖 `HOME`，于是 `~/.ssh/config`
-   里的 `gh-ci-*` 别名解析不到，checkout 别人的私仓会报 `repository ... not found`。
-   跨仓取数**必须**用裸 clone：`git clone --depth 1 gh-ci-entelecheia:celestia-island/entelecheia.git ente-src`。
+里的 `gh-ci-*` 别名解析不到，checkout 别人的私仓会报 `repository ... not found`。
+跨仓取数**必须**用裸 clone：`git clone --depth 1 gh-ci-entelecheia:celestia-island/entelecheia.git ente-src`。
 
 > ⚠️ **重建 baseline 前先跑一遍这个脚本**，否则下次 revert 会把上述配置抹回旧值、全线复发。
