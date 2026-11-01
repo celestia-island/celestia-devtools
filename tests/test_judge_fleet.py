@@ -337,6 +337,21 @@ def test_drain_stalled_is_reported(capsys) -> None:
     assert code == 0
     assert "B3" in out
 
+def test_phase_oscillation_is_reported(capsys) -> None:
+    code, out, _ = _judge("oscillate", capsys, "--ticks", "4")
+    assert code == 0
+    assert "B2" in out
+
+def test_readiness_down_is_reported(capsys) -> None:
+    code, out, _ = _judge("silent-hang", capsys, "--probe-url", "http://127.0.0.1:9")
+    assert code == 0
+    assert "A1" in out
+
+def test_silent_hang_is_reported(capsys) -> None:
+    code, out, _ = _judge("hang", capsys, "--probe-url", "http://127.0.0.1:9")
+    assert code == 0
+    assert "C1" in out
+
 def test_spawn_failure_is_reported(capsys) -> None:
     code, out, _ = _judge("spawnfail", capsys)
     assert code == 0

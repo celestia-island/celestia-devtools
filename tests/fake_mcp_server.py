@@ -43,6 +43,13 @@ class fake_server:
         if self.mode == "spawnfail":
             return {"ok": True, "runs": [_run([_worker(restart_count = tick * 2, phase = "starting", pid = None, uptime_secs = 0, last_error = "spawn failed: No such file or directory (os error 2)")])]}
 
+        if self.mode == "oscillate":
+            phase = "running" if tick % 2 else "restarting"
+            return {"ok": True, "runs": [_run([_worker(phase = phase, pid = 4242 if phase == "running" else None)])]}
+
+        if self.mode == "hang":
+            return {"ok": True, "runs": [_run([_worker(uptime_secs = 600 + tick)])]}
+
         if self.mode == "drainstalled":
             return {"ok": True, "runs": [_run([_worker()], draining = True, drain_kind = "graceful")]}
 
@@ -55,11 +62,11 @@ class fake_server:
         return {"ok": True, "runs": [_run([_worker(restart_count = 0, uptime_secs = 120 + tick)])]}
 
     def logs(self) -> dict:
-        text = "boot\nsteady" if self.mode == "logstall" else f"boot\nsteady {self.calls}"
+        text = "boot\nsteady" if self.mode in ("logstall", "hang") else f"boot\nsteady {self.calls}"
         return {"ok": True, "text": text, "total_lines_in_ring": 2, "lines_returned": 2}
 
     def probe(self) -> list:
-        if self.mode == "silent-hang":
+        if self.mode in ("silent-hang", "hang"):
             return [{"url": "http://x/healthz", "ok": False, "status": 503}]
 
         return [{"url": "http://x/healthz", "ok": True, "status": 200}, {"url": "http://x/readyz", "ok": True, "status": 200}]
