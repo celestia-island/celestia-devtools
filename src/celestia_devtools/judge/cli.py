@@ -218,11 +218,18 @@ def _render(args: argparse.Namespace, observation: fleet.observation, latest: fl
     status = report_status(verdicts, observation)
 
     if args.json:
-        print(json.dumps({"status": status, "read_only": True, "ticks": len(observation.ticks), "interval_secs": args.interval, "runs": len(latest.runs), "workers": len(workers), "verdicts": [{"code": verdict.code, "severity": verdict.severity, "run_id": verdict.run_id, "worker_id": verdict.worker_id, "evidence": verdict.evidence, "suggest": verdict.suggest} for verdict in verdicts], "unevaluated": [{"codes": list(item.codes), "scope": item.scope, "reason": item.reason} for item in observation.unevaluated], "suggested_actions": [item.as_json() for item in suggestions], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
+        print(json.dumps({"status": status, "read_only": True, "ticks": len(observation.ticks), "interval_secs": args.interval, "runs": len(latest.runs), "workers": len(workers), "verdicts": [{"code": verdict.code, "severity": verdict.severity, "run_id": verdict.run_id, "worker_id": verdict.worker_id, "evidence": verdict.evidence} for verdict in verdicts], "unevaluated": [{"codes": list(item.codes), "scope": item.scope, "reason": item.reason} for item in observation.unevaluated], "suggested_actions": [item.as_json() for item in suggestions], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
         return 0
 
     if not latest.runs:
         print("无 fleet: the MCP server supervises no runs (its registry is per-process; pass --supervise to bring one)")
+
+        if suggestions:
+            for item in suggestions:
+                print(f"  建议动作: {item.action} confidence={item.confidence}: {item.reason}")
+        else:
+            print("  建议动作: 无 (nothing fired, nothing to act on)")
+
         _print_unevaluated(observation)
         return 0
 
@@ -236,7 +243,6 @@ def _render(args: argparse.Namespace, observation: fleet.observation, latest: fl
 
         for verdict in verdicts:
             print(f"  [{verdict.severity}] {verdict.code} {verdict.run_id}/{verdict.worker_id} {json.dumps(verdict.evidence, ensure_ascii = False)}")
-            print(f"    {verdict.suggest}")
     elif observation.unevaluated:
         print(f"结论: 未判定 ({len(observation.unevaluated)} 组谓词未评估 — 未评估不等于健康)")
     else:
@@ -339,10 +345,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if leftovers:
             demo_fleet.terminate(sorted(leftovers), expect = expected)
 
-        if demo.get("worker_pids"):
-            # A supervisor-shaped demo command can spawn a replacement child right as it is
-            # being torn down; sweep a few times so a late grandchild is still collected once
-            # its own parent has gone away.
+        if args.supervise:
+            # Not gated on `worker_pids`: malkuth registers the run before it spawns, so the
+            # first status can legitimately show `pid: null` and the demo would skip cleanup
+            # entirely. The sweep is identity- and cwd-scoped, so it is safe to always run.
             commands = [shlex.split(command) for command in args.supervise]
 
             for _ in range(4):

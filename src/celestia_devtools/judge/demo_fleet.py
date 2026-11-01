@@ -55,7 +55,9 @@ def start_supervision(session: mcp_session, commands: Sequence[Sequence[str]], *
 
     payload = json.loads(content[0].get("text") or "{}")
 
-    if not isinstance(payload, dict) or (payload.get("ok") is not True):
+    # A started supervision reports ``{run_id, timed_out, workers}`` and has no ``ok`` key;
+    # only an explicit ``ok: false`` (or a missing run id) is a refusal.
+    if not isinstance(payload, dict) or (payload.get("ok") is False) or not payload.get("run_id"):
         raise mcp_error(f"supervise did not start a run: {payload}")
 
     return payload

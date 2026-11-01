@@ -149,7 +149,8 @@ def test_b2_phase_oscillation() -> None:
 def test_b3_drain_stalled() -> None:
     ticks = [fleet.tick(index = index, runs = (_run((_worker(),), draining = True, drain_kind = "graceful"),)) for index in range(2)]
     verdicts = [verdict for verdict in fleet.evaluate(_observation(ticks)) if verdict.code == "B3"]
-    assert verdicts and (verdicts[0].evidence["stuck_workers"] == ["app"])
+    assert verdicts and (verdicts[0].worker_id == "app")
+    assert verdicts[0].evidence["phase"] == "running"
 
 def test_c2_evidence_has_no_phantom_threshold() -> None:
     ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 1, last_error = "spawn failed: nope"),)),))]
@@ -226,10 +227,9 @@ def test_terminate_requires_identity_and_a_pid(monkeypatch) -> None:
 def test_terminate_signals_a_matching_process(monkeypatch) -> None:
     killed = []
     monkeypatch.setattr(demo_fleet, "_proc_cmdline", lambda pid: ["/tmp/demo/test_app", "worker"])
-    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append(pid))
+    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append((pid, signal)))
     assert demo_fleet.terminate([4242], expect = ["/tmp/demo/test_app"]) == 1
-    assert killed[0] == 4242, "the first signal is TERM to the verified pid"
-    assert set(killed) == {4242}, "a TERM-ignoring survivor is escalated to KILL"
+    assert killed == [(4242, 15), (4242, 9)], "TERM first, then the KILL escalation"
 
 def test_terminate_does_not_touch_a_live_foreign_process() -> None:
     """Real process, wrong identity: it keeps running."""
@@ -278,7 +278,7 @@ def test_crash_loop_suggests_restart() -> None:
     assert [row.action for row in rows] == ["restart"]
     assert rows[0].confidence == advice.CONFIDENCE_HIGH
     assert "B1" in rows[0].reason
-    assert rows[0].evidence["verdict"]["code"] == "B1"
+    assert rows[0].evidence["codes"] == ["B1"]
 
 def test_drain_stalled_suggests_drain() -> None:
     ticks = [fleet.tick(index = index, runs = (_run((_worker(),), draining = True, drain_kind = "graceful"),)) for index in range(2)]
@@ -316,12 +316,53 @@ def test_suspicious_results_suggest_notify() -> None:
     assert [row.action for row in rows] == ["notify"]
     assert rows[0].confidence == advice.CONFIDENCE_LOW
 
+def test_b1_plus_c2_yields_one_notify_not_restart() -> None:
+    """The two verdicts disagree by design; the priority table must pick notify."""
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 3, last_error = "spawn failed: nope"),)),))]
+    observation = _observation(ticks)
+    codes = {verdict.code for verdict in fleet.evaluate(observation)}
+    assert {"B1", "C2"} <= codes, codes
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["notify"], rows
+
+def test_c1_plus_b3_yields_one_drain() -> None:
+    ticks = []
+
+    for index in range(3):
+        tick = fleet.tick(index = index, runs = (_run((_worker(uptime_secs = 600),), draining = True, drain_kind = "graceful"),), probe_ok = False)
+        tick.log_digests[("run-1", "app")] = "deadbeef"
+        ticks.append(tick)
+
+    observation = _observation(ticks)
+    codes = {verdict.code for verdict in fleet.evaluate(observation)}
+    assert {"C1", "B3"} <= codes, codes
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["drain"], rows
+
+def test_b3_suggests_drain_per_worker_with_filled_evidence() -> None:
+    ticks = [fleet.tick(index = index, runs = (_run((_worker(),), draining = True, drain_kind = "graceful"),)) for index in range(2)]
+    rows = _suggestions(ticks)
+    assert [row.action for row in rows] == ["drain"]
+    assert rows[0].worker_id == "app"
+    assert rows[0].evidence["worker"]["draining"] is True
+    assert rows[0].evidence["worker"]["phase"] == "running"
+
 def test_unevaluated_observes_and_unavailable_observes() -> None:
     observation = _observation([fleet.tick(index = 0, runs = (_run((_worker(),)),))])
     observation.note_unevaluated(("A1", "C1"), "run-1/app", "no --probe-url")
     rows = advice.suggest(fleet.evaluate(observation), observation)
     assert [row.action for row in rows] == ["observe"]
     assert advice.unavailable("boom").action == "observe"
+    assert advice.unavailable("boom").confidence == advice.CONFIDENCE_NONE
+    assert "never triggers an action" in advice.unavailable("boom").reason
+
+def test_unevaluated_is_reported_even_when_a_verdict_exists() -> None:
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 3),)),))]
+    observation = _observation(ticks)
+    observation.note_unevaluated(("A1", "C1"), "run-1/app", "no --probe-url")
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["restart", "observe"], rows
+    assert rows[0].confidence == advice.CONFIDENCE_HIGH
 
 # ── zero actions (structural) ──────────────────────────────────────────────
 
@@ -477,15 +518,17 @@ def test_crash_loop_report_carries_a_restart_suggestion(capsys) -> None:
     code, out, _ = _judge("crashloop", capsys, "--json")
     assert code == 0
     payload = json.loads(out)
-    assert [row["action"] for row in payload["suggested_actions"]] == ["restart"]
+    actions = [row["action"] for row in payload["suggested_actions"]]
+    assert actions[0] == "restart", actions
     assert payload["suggested_actions"][0]["confidence"] == "high"
-    assert payload["suggested_actions"][0]["evidence"]["verdict"]["code"] == "B1"
+    assert any(row["action"] == "observe" for row in payload["suggested_actions"]), "the unevaluated readiness signals are still reported"
+    assert payload["suggested_actions"][0]["evidence"]["codes"] == ["B1"]
 
 def test_drain_stalled_report_suggests_drain(capsys) -> None:
     code, out, _ = _judge("drainstalled", capsys, "--json")
     assert code == 0
     payload = json.loads(out)
-    assert [row["action"] for row in payload["suggested_actions"]] == ["drain"]
+    assert [row["action"] for row in payload["suggested_actions"]][0] == "drain"
     assert payload["suggested_actions"][0]["evidence"]["worker"]["draining"] is True
 
 def test_healthy_report_suggests_nothing(capsys) -> None:
@@ -505,7 +548,7 @@ def test_silent_hang_report_suggests_restart(capsys) -> None:
     assert code == 0
     payload = json.loads(out)
     assert [row["action"] for row in payload["suggested_actions"]] == ["restart"]
-    assert payload["suggested_actions"][0]["evidence"]["verdict"]["code"] in ("C1", "A1")
+    assert "C1" in payload["suggested_actions"][0]["evidence"]["codes"]
 
 def test_the_judge_never_calls_an_action_tool_at_runtime(monkeypatch) -> None:
     """Runtime companion to the AST guard: only the three read tools ever go out."""
@@ -718,6 +761,28 @@ def test_supervise_demo_crash_loop_is_reported(capsys) -> None:
     assert ("B1" in codes) or ("C2" in codes), payload
     assert any(verdict["severity"] == "critical" for verdict in payload["verdicts"])
 
+def test_cleanup_still_runs_when_the_first_status_had_no_pid(capsys, monkeypatch) -> None:
+    """malkuth registers the run before spawning, so `worker_pids` can be empty."""
+    malkuth_bin, test_app = _require_real_malkuth()
+
+    if test_app is None:
+        pytest.skip("test_app example binary not available next to the malkuth binary")
+
+    monkeypatch.setattr(demo_fleet, "wait_for_run", lambda session, **kwargs: (True, []))
+    port = _free_port()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{test_app} supervise --pods 1 --port-base {port}", "--ticks", "2", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    _assert_no_pods_left(test_app)
+
+def test_supervise_nonexistent_program_suggests_notify_only(capsys) -> None:
+    """A spawn failure is configuration: notify, never restart (R2 S1 conflict case)."""
+    malkuth_bin, _ = _require_real_malkuth()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", "/nonexistent/definitely-not-a-program", "--supervise-timeout", "4", "--ticks", "3", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    actions = [row["action"] for row in payload["suggested_actions"] if row["action"] != "observe"]
+    assert actions == ["notify"], payload["suggested_actions"]
+
 def test_supervise_crash_loop_suggests_restart_without_acting(capsys) -> None:
     """Acceptance ① (crash loop): the suggestion is advisory and the run is untouched."""
     malkuth_bin, _ = _require_real_malkuth()
@@ -725,9 +790,10 @@ def test_supervise_crash_loop_suggests_restart_without_acting(capsys) -> None:
     assert code == 0, out
     payload = json.loads(out)
     assert payload["status"] == "failed"
-    assert [row["action"] for row in payload["suggested_actions"]] == ["restart"]
+    actions = [row["action"] for row in payload["suggested_actions"]]
+    assert actions[0] == "restart", actions
     evidence = payload["suggested_actions"][0]["evidence"]
-    assert evidence["verdict"]["code"] == "B1"
+    assert evidence["codes"] == ["B1"]
     assert evidence["worker"]["draining"] is False, "nothing drained it"
 
 def test_supervise_silent_hang_suggests_restart_without_acting(capsys) -> None:
@@ -740,9 +806,10 @@ def test_supervise_silent_hang_suggests_restart_without_acting(capsys) -> None:
     assert code == 0, out
     payload = json.loads(out)
     assert payload["status"] == "failed"
-    assert [row["action"] for row in payload["suggested_actions"]] == ["restart"]
+    actions = [row["action"] for row in payload["suggested_actions"]]
+    assert actions[0] == "restart", actions
     evidence = payload["suggested_actions"][0]["evidence"]
-    assert evidence["verdict"]["code"] == "C1"
+    assert "C1" in evidence["codes"], evidence["codes"]
     assert evidence["worker"]["restart_count"] == 0, "nothing restarted it"
     assert evidence["worker"]["draining"] is False, "nothing drained it"
 

@@ -495,17 +495,20 @@ for any report (including "no fleet" and "cannot judge") and `2` for usage error
 
 **Suggested actions (advisory only).** Every report also carries `suggested_actions`:
 `{run_id, worker_id, action, confidence, reason, evidence}`, where `action` is one of
-`observe` / `notify` / `restart` / `drain`. The mapping is fixed and tested:
+`observe` / `notify` / `restart` / `drain`. There is exactly **one action per target**,
+chosen by this fixed priority (two contradicting actions for one worker would be worse than
+none) — `fleet` produces verdicts only, `judge/advice.py` is the single suggestion source:
 
-| Trigger | Suggestion | Why |
-| --- | --- | --- |
-| `ok` | *none* (`[]`) | nothing fired |
-| B1 critical | `restart` | a crash loop needs a fresh child; draining would end the run |
-| B3 critical | `drain` | the run is already draining and stuck — escalate |
-| C1 critical | `restart` (or `drain` when already draining) | a hung child: restart is the smallest action |
-| C2 critical | `notify` | a spawn failure is usually configuration; restarting loops it |
-| suspicious | `notify` | worth a human look, not an automated action |
-| unevaluated / `unavailable` | `observe` | no action is possible on an unjudged signal |
+| Priority | Trigger | Suggestion | Why |
+| --- | --- | --- | --- |
+| 1 | `C2` (`last_error` set) | `notify` | a spawn failure is configuration; restarting reproduces it, draining ends the run |
+| 2 | `B3` critical | `drain` | the run is already draining and stuck — escalate rather than restart |
+| 3 | `C1` while the run is already draining | `drain` | restarting a worker on its way out is busy-work |
+| 4 | `B1` / `C1` | `restart` | a fresh child is the smallest action for a crash loop or a silent hang |
+| 5 | any `suspicious` verdict | `notify` | worth a human look, not an automated action |
+| 6 | any unevaluated signal | `observe` | reported **even alongside a verdict** — an unjudged signal must not be swallowed |
+| 7 | `unavailable` | `observe` | no judgement exists, and it is not an empty observation |
+| — | `ok` | *none* (`[]`) | nothing fired |
 
 `confidence` is a mechanical tier (`high` for a critical finding, `low` for a suspicion,
 `none` for "could not judge"), not a probability. **Nothing is executed**: the judge has no
