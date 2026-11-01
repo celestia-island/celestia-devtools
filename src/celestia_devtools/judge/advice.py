@@ -9,7 +9,7 @@ into a call by construction.
 One action per target, chosen by this fixed priority
 ====================================================
 
-1. ``C2`` (``last_error`` set, restarts rising) → ``notify``. A spawn failure is usually
+1. ``C2`` (spawn/wait failure with the worker never getting up) → ``notify``. A spawn failure is usually
    configuration; restarting reproduces it, draining ends the run — so escalate to a human.
 2. ``B3`` (run draining, worker still running) → ``drain``. The run is already on its way
    out and stuck: the next rung is an escalated drain, not a restart.
@@ -78,6 +78,9 @@ def decide(codes: set[str], run: fleet.run_state | None) -> tuple[str, str, str]
 
     if codes & {"B1", "C1"}:
         return ACTION_RESTART, CONFIDENCE_HIGH, "crash loop (B1) or silent hang (C1): a fresh child is the smallest action"
+
+    if not codes:
+        return ACTION_OBSERVE, CONFIDENCE_NONE, "no predicate fired for this target: nothing to suggest"
 
     return ACTION_NOTIFY, CONFIDENCE_LOW, "suspicious signal: worth a human look, not an automated action"
 

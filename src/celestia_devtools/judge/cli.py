@@ -70,6 +70,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--probe-wait", type = float, default = 8.0, help = "with --supervise: seconds to wait for the demo readiness surface to answer (default 8)")
     parser.add_argument("--supervise", action = "append", default = [], metavar = "CMD", help = "DEMO PATH: supervise this command through the server and judge that fleet (repeatable; shlex-split)")
     parser.add_argument("--supervise-timeout", type = float, default = 0.0, help = "how long the demo supervision lives (default: max(10s, ticks*interval + 8s))")
+    parser.add_argument("--max-restarts", type = int, default = 20, help = "with --supervise: the demo's restart budget (default 20; a spawn-failure repro needs a large one)")
     parser.add_argument("--crash-delta", type = int, default = 2, help = "B1 restart-count delta threshold (default 2)")
     parser.add_argument("--crash-absolute", type = int, default = 5, help = "B1 absolute restart count for a saturated loop (default 5)")
     parser.add_argument("--crash-rate", type = float, default = 0.02, help = "B1 restarts-per-second floor for the saturated branch (default 0.02)")
@@ -199,7 +200,7 @@ def _start_demo(session: mcp_session, args: argparse.Namespace) -> dict:
 
     def drive() -> None:
         try:
-            state["result"] = demo_fleet.start_supervision(session, [shlex.split(command) for command in args.supervise], timeout_secs = timeout)
+            state["result"] = demo_fleet.start_supervision(session, [shlex.split(command) for command in args.supervise], timeout_secs = timeout, max_restarts = args.max_restarts)
         except (mcp_error, mcp_unavailable, ValueError) as error:
             state["error"] = str(error)
 
@@ -226,7 +227,8 @@ def _render(args: argparse.Namespace, observation: fleet.observation, latest: fl
 
         if suggestions:
             for item in suggestions:
-                print(f"  建议动作: {item.action} confidence={item.confidence}: {item.reason}")
+                target = f"{item.run_id}/{item.worker_id}" if item.run_id or item.worker_id else "(fleet)"
+                print(f"  建议动作: {item.action} [{target}] confidence={item.confidence}: {item.reason}")
         else:
             print("  建议动作: 无 (nothing fired, nothing to act on)")
 

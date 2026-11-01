@@ -1,8 +1,8 @@
 """Mechanical fleet predicates over malkuth's read-only MCP payloads.
 
-Wave 4, PR-1: this module decides what a fleet's numbers *look like*; it never
-decides what to do about them. Every verdict is evidence plus an advisory
-``suggest`` string — the tool prints it, nothing executes.
+Wave 4: this module decides what a fleet's numbers *look like*; it never decides what to do
+about them (the only suggestion source is :mod:`celestia_devtools.judge.advice`). Every
+verdict is code, severity and evidence — nothing executes.
 
 The predicate table (kept in lockstep with the wave-4 design note):
 
@@ -16,14 +16,17 @@ B1        ``restart_count`` rose by >= K inside the window           ``malkuth_s
 B2        ``running -> restarting`` transitions >= K inside window   ``malkuth_status``
 B3        run draining for N ticks and a worker still running        ``malkuth_status``
 C1        readiness down N ticks + long uptime + frozen log tail     ``probe`` + ``logs``
-C2        ``last_error`` set while ``restart_count`` rises            ``malkuth_status``
+C2        ``last_error`` set and the worker never got up in the window ``malkuth_status``
 ========  =========================================================  ==========================
 
 Two facts from the malkuth implementation shape the table and are stated here so a
 reader does not expect more than the payload can give:
 
-* ``last_error`` only covers spawn/wait failures — a normal non-zero exit leaves it
-  null, so "crashed" is inferred from ``restart_count``/phase, never from an exit code.
+* ``last_error`` only covers spawn/wait failures — a normal non-zero exit leaves it null,
+  so "crashed" is inferred from ``restart_count``/phase, never from an exit code. It is
+  **never cleared when the worker later comes up** (malkuth sets it in ``finish()`` only), so
+  C2 means "could not get up", not "failed once": a worker observed running with a stale
+  ``last_error`` is not a spawn-failure loop.
 * a worker's log ring has no monotonic counter, so "log moved" is decided by hashing
   the tail the tool returns (a saturated ring still changes when output continues).
 """
@@ -277,7 +280,10 @@ def b1_crash_loop(run: run_state, worker_id: str, history: list[worker_state], l
     elapsed = max(run.elapsed_secs, 1)
     rate = latest.restart_count / elapsed
     moved = delta >= limits.crash_delta
-    saturated = (latest.restart_count >= limits.crash_absolute) and (rate >= limits.crash_rate_per_sec)
+    # A recovered worker (running again and its counter has stopped moving) is not a live
+    # crash loop: the saturated branch would otherwise keep escalating a storm that is over.
+    recovered = (latest.phase == "running") and (delta == 0)
+    saturated = (not recovered) and (latest.restart_count >= limits.crash_absolute) and (rate >= limits.crash_rate_per_sec)
 
     if not (moved or saturated):
         return None
@@ -309,7 +315,7 @@ def b3_drain_stalled(run: run_state, worker: worker_state, draining_ticks: int, 
     if worker.phase not in ("running", "draining"):
         return None
 
-    return verdict(code = "B3", severity = "critical", run_id = run.run_id, worker_id = worker.id, evidence = {"drain_kind": run.drain_kind, "draining_ticks": draining_ticks, "phase": worker.phase})
+    return verdict(code = "B3", severity = "critical", run_id = run.run_id, worker_id = worker.id, evidence = {"drain_kind": run.drain_kind, "draining": run.draining, "draining_ticks": draining_ticks, "phase": worker.phase})
 
 def a1_readiness_down(run: run_state, worker: worker_state, failing_ticks: int, limits: thresholds) -> verdict | None:
     if (worker.phase != "running") or (failing_ticks < limits.readiness_ticks):
@@ -350,11 +356,17 @@ def c1_silent_hang(run: run_state, worker: worker_state, failing_ticks: int, dig
     return verdict(code = "C1", severity = "critical", run_id = run.run_id, worker_id = worker.id, evidence = {"failing_readiness_ticks": failing_ticks, "uptime_secs": worker.uptime_secs, "frozen_log_ticks": limits.stall_ticks})
 
 def c2_spawn_failure(run_id: str, worker_id: str, history: list[worker_state], limits: thresholds) -> verdict | None:
-    """A spawn/wait failure is configuration evidence, whether or not the counter moves.
+    """Could not get up: a spawn/wait failure with the worker never running in the window.
 
-    ``last_error`` is only ever set for spawn/wait failures (a normal exit leaves it null),
-    so its presence is the signal — requiring the restart counter to rise inside the window
-    would hide a loop that already hit its restart budget and went quiet.
+    ``last_error`` is only written for spawn/wait failures (a normal exit leaves it null),
+    and malkuth **does not clear it when a later spawn succeeds**: the field survives a
+    recovered worker. Reading "last_error is set" as "spawn-failure loop" therefore marks a
+    healthy recovered worker critical forever, so the predicate requires that the worker was
+    never observed running:
+
+    * never ran + error → C2 ("did not come up");
+    * ran, then keeps crashing (count rising) → **B1 owns it**, not C2;
+    * ran and is running now (stale error) → neither: it recovered.
     """
 
     if not history:
@@ -365,7 +377,10 @@ def c2_spawn_failure(run_id: str, worker_id: str, history: list[worker_state], l
     if latest.last_error is None:
         return None
 
-    return verdict(code = "C2", severity = "critical", run_id = run_id, worker_id = worker_id, evidence = {"last_error": latest.last_error, "restart_count": latest.restart_count, "restart_delta": latest.restart_count - history[0].restart_count})
+    if any((worker.phase == "running") or (worker.pid is not None) for worker in history):
+        return None
+
+    return verdict(code = "C2", severity = "critical", run_id = run_id, worker_id = worker_id, evidence = {"last_error": latest.last_error, "restart_count": latest.restart_count, "restart_delta": latest.restart_count - history[0].restart_count, "phase": latest.phase, "never_running": True})
 
 def _draining_ticks(observation: observation, run_id: str) -> int:
     return sum(1 for tick in observation.ticks if any((run.run_id == run_id) and run.draining for run in tick.runs))
