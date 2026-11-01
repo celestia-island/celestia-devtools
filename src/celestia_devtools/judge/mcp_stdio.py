@@ -4,9 +4,11 @@ Why hand-rolled instead of an SDK: this tool talks to exactly one server
 (``malkuth mcp``), needs three read methods, and must stay stdlib-only — the same
 reason the rest of this package keeps its dependency surface at zero.
 
-The read-only contract is **structural**, not a convention: :data:`READ_ONLY_TOOLS`
-is an allowlist and :meth:`mcp_session.call_tool` refuses anything outside it, so a
-future caller cannot reach a mutating tool by accident or by copy-paste.
+The read-only contract is **structural for the judgement path**: :data:`READ_ONLY_TOOLS` is
+an allowlist and :meth:`mcp_session.call_tool` refuses anything outside it, so a caller
+cannot reach a mutating tool by accident or by copy-paste. The single documented bypass is
+the demo supervision in :mod:`celestia_devtools.judge.demo_fleet`, which goes through the
+JSON-RPC layer directly because widening this allowlist would weaken the guard itself.
 """
 
 from __future__ import annotations

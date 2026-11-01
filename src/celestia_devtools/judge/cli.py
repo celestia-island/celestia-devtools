@@ -57,7 +57,7 @@ DEFAULT_MCP_COMMAND = "malkuth mcp"
 PROBE_ENDPOINTS = 2
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog = "celestia-devtools judge-fleet", description = "Read-only judgement of a malkuth MCP fleet (evidence + conclusions; no actions).", epilog = "Predicates: A1 readiness-down, A2 log-stall, B1 crash-loop, B2 phase-oscillation, " "B3 drain-stalled, C1 silent-hang, C2 spawn-failure. A3 (no-progress) is reserved " "for the platform-provided progress endpoint. Malkuth's run registry is in-process: " "this CLI only sees a fleet it starts with --supervise (or a session it owns).")
+    parser = argparse.ArgumentParser(prog = "celestia-devtools judge-fleet", description = "Read-only judgement of a malkuth MCP fleet (evidence + conclusions; no actions).", epilog = "Predicates: A1 readiness-down, A2 log-stall, B1 crash-loop, B2 phase-oscillation, " "B3 drain-stalled, C1 silent-hang, C2 spawn-failure. A3 (no-progress) is reserved " "for the platform-provided progress endpoint. Malkuth's run registry is in-process: " "this CLI only sees a fleet it starts with --supervise (or a session it owns). " "Status values: ok (everything evaluated, nothing fired), indeterminate (something was " "not evaluated), failed (a predicate fired), unavailable (nothing could be read). " "Exit codes: 0 a report was produced, 2 usage error.")
     parser.add_argument("--mcp-cmd", default = DEFAULT_MCP_COMMAND, help = "command that starts an MCP stdio server (default: 'malkuth mcp')")
     parser.add_argument("--ticks", type = int, default = 3, help = "number of samples (default 3, min 2)")
     parser.add_argument("--interval", type = float, default = 15.0, help = "seconds between samples (default 15)")
@@ -84,11 +84,33 @@ def limits_from_args(args: argparse.Namespace) -> fleet.thresholds:
     """Thresholds for a parsed CLI namespace (kept public for the test suite)."""
     return fleet.thresholds(crash_delta = args.crash_delta, crash_absolute = args.crash_absolute, crash_rate_per_sec = args.crash_rate, oscillation = args.oscillation, stall_ticks = args.stall_ticks, drain_ticks = args.drain_ticks, readiness_ticks = 2, hang_uptime_secs = args.hang_uptime)
 
+def report_status(verdicts: Sequence[fleet.verdict], observation: fleet.observation) -> str:
+    """The report's status. Findings escalate; missing signals never read as health.
+
+    Order matters and is the contract PR-2 will gate on:
+
+    1. ``failed`` — at least one predicate fired (any severity), because the definition of
+       ``ok`` is "everything was evaluated and nothing fired";
+    2. ``indeterminate`` — nothing fired, but at least one predicate could not be evaluated;
+    3. ``ok`` — everything evaluated and nothing fired.
+
+    ``unavailable`` is the separate "nothing could be read at all" outcome produced by
+    :func:`_cannot_judge`; it is not a judgement, so it never contains verdicts.
+    """
+
+    if verdicts:
+        return "failed"
+
+    if observation.unevaluated:
+        return "indeterminate"
+
+    return "ok"
+
 def _cannot_judge(reason: str, *, as_json: bool) -> int:
-    """Fail-open report: no guess, just the reason (status ``failed``)."""
+    """Fail-open report: no guess, just the reason (status ``unavailable``)."""
 
     if as_json:
-        print(json.dumps({"status": "failed", "read_only": True, "cannot_judge": reason}, ensure_ascii = False))
+        print(json.dumps({"status": "unavailable", "read_only": True, "cannot_judge": reason, "ticks": 0, "runs": 0, "workers": 0, "verdicts": [], "unevaluated": [], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
     else:
         print(f"无法判定: {reason}")
 
@@ -188,7 +210,7 @@ def _start_demo(session: mcp_session, args: argparse.Namespace) -> dict:
 def _render(args: argparse.Namespace, observation: fleet.observation, latest: fleet.tick) -> int:
     verdicts = fleet.evaluate(observation, limits_from_args(args))
     workers = [(run, worker) for run in latest.runs for worker in run.workers]
-    status = "indeterminate" if observation.unevaluated else "ok"
+    status = report_status(verdicts, observation)
 
     if args.json:
         print(json.dumps({"status": status, "read_only": True, "ticks": len(observation.ticks), "interval_secs": args.interval, "runs": len(latest.runs), "workers": len(workers), "verdicts": [{"code": verdict.code, "severity": verdict.severity, "run_id": verdict.run_id, "worker_id": verdict.worker_id, "evidence": verdict.evidence, "suggest": verdict.suggest} for verdict in verdicts], "unevaluated": [{"codes": list(item.codes), "scope": item.scope, "reason": item.reason} for item in observation.unevaluated], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
@@ -205,13 +227,13 @@ def _render(args: argparse.Namespace, observation: fleet.observation, latest: fl
         print("  " + fleet.worker_line(run, worker))
 
     if verdicts:
-        print(f"结论: {len(verdicts)} 项命中")
+        print(f"结论: 失败 ({len(verdicts)} 组命中 — status failed)")
 
         for verdict in verdicts:
             print(f"  [{verdict.severity}] {verdict.code} {verdict.run_id}/{verdict.worker_id} {json.dumps(verdict.evidence, ensure_ascii = False)}")
             print(f"    {verdict.suggest}")
     elif observation.unevaluated:
-        print(f"结论: 未判定 ({len(observation.unevaluated)} 项谓词未评估 — 未评估不等于健康)")
+        print(f"结论: 未判定 ({len(observation.unevaluated)} 组谓词未评估 — 未评估不等于健康)")
     else:
         print("结论: 健康 (every applicable predicate was evaluated and none fired)")
 
@@ -290,6 +312,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             leftovers |= demo_fleet.descendants(pid)
 
         session.close()
+        # The supervised workers themselves too: malkuth reaps them on shutdown, but a slow
+        # child can outlive the session close by a moment; the demo's own processes should
+        # not be left waiting for that.
+        leftovers |= {int(pid) for pid in demo.get("worker_pids", []) if isinstance(pid, int)}
 
         if leftovers:
             demo_fleet.terminate(sorted(leftovers))

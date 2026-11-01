@@ -478,18 +478,20 @@ processes it spawned.
 
 A3 (no-progress) is reserved: it needs a platform-provided progress endpoint.
 
-**Three-state contract — "not evaluated" is never "healthy".**
+**Status — a finding is never "ok", and "not evaluated" is never "healthy".**
 
 | status | meaning | text output |
 | --- | --- | --- |
-| `ok` | every applicable predicate was evaluated and nothing fired (an empty registry is also `ok`) | `结论: 健康` |
-| `indeterminate` | at least one predicate could not be evaluated (no `--probe-url`, unreadable logs, a probe that never answered) | `结论: 未判定` + the list |
-| `failed` | nothing could be read at all (transport, non-JSON framing, missing capability) | `无法判定: <reason>` |
+| `ok` | every applicable predicate was evaluated and nothing fired (an empty registry is `ok` too) | `结论: 健康` |
+| `indeterminate` | nothing fired, but at least one predicate could not be evaluated (no `--probe-url`, unreadable logs, a probe that never answered) | `结论: 未判定` + the list |
+| `failed` | at least one predicate fired (severity per verdict: `critical` / `suspicious`) | `结论: 失败` + the verdicts |
+| `unavailable` | nothing could be read at all (transport, non-JSON framing, missing capability) — no judgement exists | `无法判定: <reason>` |
 
-A probe that *answered* non-2xx is a readiness signal; a probe that never answered
-(transport error) is **not** — it goes to `indeterminate` instead of producing an A1
-verdict. Exit status is `0` for any report (including "no fleet" and "cannot judge") and
-`2` for usage errors.
+The order is `failed` > `indeterminate` > `ok`: a consumer that gates on `status == "ok"`
+will never act on a fleet that has a finding, and will never treat a half-observed fleet
+as healthy. A probe that *answered* non-2xx is a readiness signal; a probe that never
+answered goes to `indeterminate` instead of producing an A1 verdict. Exit status is `0`
+for any report (including "no fleet" and "cannot judge") and `2` for usage errors.
 
 **Known boundaries.** `last_error` only covers spawn/wait failures, so a crash is inferred
 from `restart_count`/phase and never from an exit code. The judge cannot subtract the

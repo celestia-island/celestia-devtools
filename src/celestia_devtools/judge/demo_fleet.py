@@ -125,10 +125,12 @@ def descendants(pid: int) -> set[int]:
 def sweep_abandoned(commands: Sequence[Sequence[str]]) -> int:
     """TERM orphaned leftovers of the demo commands that the drain could not reach.
 
-    Only *project-local* programs are swept (a path with a separator outside the system
-    bin directories): the demo never hunts system-wide copies of ``python3`` or ``sh``.
-    A process is a leftover when its parent was reparented to init/systemd, i.e. nothing
-    supervises it any more — the same ancestry rule as the test suite.
+    Only *project-local* programs are swept (a path with a separator outside the system bin
+    and opt/home trees) **and** only when the process' working directory is under this
+    checkout's: the demo never hunts system-wide copies of ``python3`` or ``sh``, nor a
+    same-named binary that another session started elsewhere. A process is a leftover when
+    its parent was reparented to init/systemd, i.e. nothing supervises it any more — the
+    same ancestry rule as the test suite.
     """
     programs = set()
 
@@ -138,7 +140,7 @@ def sweep_abandoned(commands: Sequence[Sequence[str]]) -> int:
 
         program = os.path.realpath(argv[0])
 
-        if ("/" not in argv[0]) or program.startswith(("/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/")):
+        if ("/" not in argv[0]) or program.startswith(("/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/opt/", "/home/")):
             continue
 
         programs.add(program)
@@ -160,6 +162,14 @@ def sweep_abandoned(commands: Sequence[Sequence[str]]) -> int:
 
         if not argv or (os.path.realpath(argv[0]) not in programs):
             continue
+
+        try:
+            cwd = Path(f"/proc/{entry.name}/cwd").resolve()
+        except OSError:
+            continue
+
+        if not str(cwd).startswith(str(Path.cwd())):
+            continue  # started elsewhere: not ours to sweep
 
         try:
             parent_comm = (Path("/proc") / str(parent) / "comm").read_text().strip()

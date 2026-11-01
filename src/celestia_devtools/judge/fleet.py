@@ -200,7 +200,9 @@ def probe_state(payload: Any) -> str:
         if not isinstance(entry, dict):
             raise schema_error("probe entry is not an object")
 
-        if entry.get("ok") is True:
+        status = entry.get("status")
+
+        if (entry.get("ok") is True) and isinstance(status, int) and (200 <= status < 400):
             states.add("ok")
         elif isinstance(entry.get("status"), int):
             states.add("down")

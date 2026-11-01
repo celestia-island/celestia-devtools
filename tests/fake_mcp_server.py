@@ -78,7 +78,9 @@ class fake_server:
 
     def probe(self) -> list:
         if self.mode == "probefail":
-            return {"ok": False, "code": "probe_transport_failed"}
+            # A transport failure: an endpoint entry with no HTTP status, which the client
+            # must classify as "unreachable" (not evaluated), never as a readiness verdict.
+            return [{"url": "http://x/healthz", "ok": False, "error": "timed out"}, {"url": "http://x/readyz", "ok": False, "error": "timed out"}]
 
         if self.mode in ("silent-hang", "hang"):
             return [{"url": "http://x/healthz", "ok": False, "status": 503}]

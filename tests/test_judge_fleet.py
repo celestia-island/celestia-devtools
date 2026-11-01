@@ -10,13 +10,12 @@ Three test layers:
 """
 
 from __future__ import annotations
+import ast
 import json
 import os
 import shutil
-import subprocess
 import socket
 import sys
-import threading
 import time
 from pathlib import Path
 import pytest
@@ -71,177 +70,9 @@ def _test_app_bin(malkuth_bin: str) -> str | None:
     sibling = Path(malkuth_bin).resolve().parent / "examples" / "test_app"
     return str(sibling) if sibling.exists() else None
 
-def _supervise_as_fixture(session: mcp_session, arguments: dict) -> dict:
-    """Fixture plumbing: create the fleet the judge will read.
-
-    The judge's own contract forbids this (``READ_ONLY_TOOLS`` refuses the tool), so the
-    test goes one layer down to JSON-RPC. Keeping the production path closed is the
-    point; a test that could reach it through ``call_tool`` would mean the allowlist had
-    a hole.
-    """
-    reply = session._request("tools/call", {"name": "malkuth_supervise", "arguments": arguments})
-    content = reply.get("content")
-    assert isinstance(content, list) and content, "supervise returned no content"
-    return json.loads(content[0]["text"])
-
 def _judge(mode: str, capsys, *extra: str) -> tuple[int, str, str]:
     argv = ["--mcp-cmd", _fake_cmd(mode), "--ticks", "3", "--interval", "0.01", "--logs-lines", "10", *extra]
     return _run_cli(argv, capsys)
-
-def _open_real() -> tuple[mcp_session, str]:
-    malkuth_bin = _malkuth_bin()
-    assert malkuth_bin is not None
-    session = mcp_session([malkuth_bin, "mcp"], timeout = 10.0)
-    session.open()
-
-    if not READ_ONLY_TOOLS <= session.tools:
-        session.close()
-        pytest.skip("installed malkuth predates the wave-4 read arms")
-
-    return session, malkuth_bin
-
-def _judge_with_supervision(workers: list[dict], *, ticks: int = 4, interval: float = 0.35) -> tuple[list[fleet.verdict], fleet.observation]:
-    session, _ = _open_real()
-    outcome: dict = {}
-
-    def drive() -> None:
-        try:
-            outcome["supervise"] = _supervise_as_fixture(session, {"workers": workers, "timeout_secs": 4, "max_restarts": 100, "window_secs": 60})
-        except mcp_error as error:
-            outcome["supervise_error"] = str(error)
-
-    driver = threading.Thread(target = drive, name = "supervise-driver", daemon = True)
-    driver.start()
-    time.sleep(0.4)
-    observation = fleet.observation()
-
-    try:
-        failure = cli._collect(session, observation, ticks = ticks, interval = interval, logs_lines = 20)
-        assert failure is None, failure
-    finally:
-        # Let the supervision drain BEFORE the session goes away: a hard close orphans
-        # the grandchildren (`test_app worker` pods behind `test_app supervise`) — the
-        # same leak class malkuth #175 fixed for its own suite.
-        driver.join(timeout = 10)
-        session.close()
-        _sweep_supervised_leftovers(workers)
-
-    return fleet.evaluate(observation, fleet.thresholds()), observation
-
-_SUPERVISED_PROGRAMS: set[str] = set()
-
-@pytest.fixture(scope = "module", autouse = True)
-def _sweep_the_module_fleet():
-    """Module teardown: nothing of ours may outlive the suite.
-
-    A supervision can still be restarting a pod when a single test's sweep window closes,
-    so a second pass at module teardown (after every real-fleet test) is what actually
-    guarantees zero leftovers. The same leak class malkuth #175 fixed for its own suite.
-    """
-    yield
-
-    for _ in range(25):
-        candidates = [pid for program in _SUPERVISED_PROGRAMS for pid in _pids_running(program)]
-
-        if not candidates:
-            return
-
-        for pid in candidates:
-            _kill_if_abandoned(pid)
-
-        time.sleep(0.4)
-
-    for pid in [pid for program in _SUPERVISED_PROGRAMS for pid in _pids_running(program)]:
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            continue
-
-def _sweep_supervised_leftovers(workers: list[dict]) -> None:
-    """Kill leftover grandchildren of this test's supervision, scoped and leader-aware.
-
-    A supervised pod can outlive the session close in two shapes: its group leader is gone
-    (a plain orphan), or the leader is still draining while its own parent is already gone
-    (the malkuth supervisor is the parent). Both are ours; a leader whose parent chain is
-    intact belongs to an in-flight run and is never touched. The sweep keeps retrying while
-    candidates exist, because malkuth's drain and the example supervisor's exit are not
-    instantaneous.
-    """
-    programs = {worker.get("program") for worker in workers if isinstance(worker.get("program"), str)}
-    _SUPERVISED_PROGRAMS.update(programs)
-
-    for _ in range(20):
-        candidates = [pid for program in programs if Path(program).exists() for pid in _pids_running(program)]
-
-        if not candidates:
-            return
-
-        for pid in candidates:
-            _kill_if_abandoned(pid)
-
-        time.sleep(0.4)
-
-def _pids_running(program: str) -> list[int]:
-    listing = subprocess.run(["pgrep", "-f", program], capture_output = True, text = True)
-    pids = []
-
-    for pid_text in listing.stdout.split():
-        if not pid_text.isdigit():
-            continue
-
-        cmdline = Path(f"/proc/{pid_text}/cmdline")
-
-        if not cmdline.exists():
-            continue
-
-        argv = [part.decode("utf-8", "replace") for part in cmdline.read_bytes().split(b"\0") if part]
-
-        if argv and (os.path.realpath(argv[0]) == os.path.realpath(program)):
-            pids.append(int(pid_text))
-
-    return pids
-
-def _parent_of(pid: int) -> int | None:
-    try:
-        fields = Path(f"/proc/{pid}/stat").read_text().split(") ", 1)[-1].split()
-    except OSError:
-        return None
-
-    return int(fields[1]) if len(fields) > 1 else None
-
-def _is_init(pid: int) -> bool:
-    try:
-        return Path(f"/proc/{pid}/comm").read_text().strip() in ("systemd", "init")
-    except OSError:
-        return False
-
-def _kill_if_abandoned(pid: int) -> bool:
-    """Return True when this pid was killed because nothing supervises it any more.
-
-    A supervised pod is easy to spot from the outside: it was reparented to init/systemd
-    when the supervision died. The process-group id is NOT usable here — malkuth spawns its
-    children without a new session, so the pod inherits the *caller's* group (the test
-    process group stays alive and would protect an orphan forever). Ancestry is the only
-    honest signal, and it is the same conclusion malkuth #175 reached from the other side.
-    """
-    parent = _parent_of(pid)
-
-    if (parent is None) or not _is_init(parent):
-        return False
-
-    try:
-        cwd = Path(f"/proc/{pid}/cwd").resolve()
-    except OSError:
-        return False
-
-    if not str(cwd).startswith(str(Path.cwd())):
-        return False  # not this checkout's program instance
-
-    try:
-        os.kill(pid, 15)
-        return True
-    except OSError:
-        return False
 
 # ── parsing ────────────────────────────────────────────────────────────────
 
@@ -373,11 +204,6 @@ def test_c1_does_not_fire_without_the_frozen_tail() -> None:
 
 # ── zero actions (structural) ──────────────────────────────────────────────
 
-def test_sweep_remembers_the_programs_it_supervised() -> None:
-    probe_program = "/nonexistent/test_app-for-sweep"
-    _sweep_supervised_leftovers([{"program": probe_program}])
-    assert probe_program in _SUPERVISED_PROGRAMS
-
 def test_allowlist_is_exactly_the_three_read_tools() -> None:
     assert READ_ONLY_TOOLS == {"malkuth_status", "malkuth_logs", "malkuth_probe"}
 
@@ -402,15 +228,58 @@ def test_mutating_tool_names_are_refused_by_an_open_session(monkeypatch) -> None
         assert "allowlist" in str(caught.value)
         assert sent == [], "an action tool name must never reach the server"
 
+def _action_call_sites(path: Path, forbidden: set[str]) -> list[tuple[str, int, str]]:
+    """AST-level scan: which calls pass an action tool name as a literal argument.
+
+    A text scan would flag docstrings that *explain* the exception; the contract is about
+    call sites, and this covers a future `judge/actions.py` calling
+    ``call_tool("malkuth_restart")`` just as well.
+    """
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    hits = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        if isinstance(node.func, ast.Attribute):
+            callee = node.func.attr
+        elif isinstance(node.func, ast.Name):
+            callee = node.func.id
+        else:
+            continue
+
+        if callee not in ("call_tool", "_request"):
+            continue
+
+        for arg in node.args:
+            if isinstance(arg, ast.Constant):
+                values = [arg]
+            elif isinstance(arg, ast.Dict):
+                values = list(arg.values)
+            else:
+                continue
+
+            for value in values:
+                if isinstance(value, ast.Constant) and isinstance(value.value, str) and (value.value in forbidden):
+                    hits.append((path.name, node.lineno, value.value))
+
+    return hits
+
 def test_the_judgement_path_contains_no_action_call() -> None:
-    forbidden = ("malkuth_" + "restart", "malkuth_" + "drain", "malkuth_" + "supervise")
-    offenders = []
+    forbidden = {"malkuth_" + "restart", "malkuth_" + "drain", "malkuth_" + "supervise"}
+    modules = [path for path in JUDGE_SOURCES.glob("*.py") if path.name != "demo_fleet.py"]
+    assert len(modules) >= 4, "the glob must actually see the package"
+    offenders = [hit for path in modules for hit in _action_call_sites(path, forbidden)]
+    assert offenders == [], f"the judgement path must not call action tools: {offenders}"
 
-    for name in ("fleet.py", "cli.py", "mcp_stdio.py", "__init__.py"):
-        text = (JUDGE_SOURCES / name).read_text()
-        offenders.extend(f"{name}: {needle}" for needle in forbidden if needle in text)
+def test_every_module_outside_the_demo_holds_no_action_literal() -> None:
+    """Text-level backstop: a mutating action name anywhere but the demo is a smell."""
+    forbidden = ("malkuth_" + "restart", "malkuth_" + "drain")
 
-    assert offenders == [], f"the judgement path must not contain action tools: {offenders}"
+    for path in [path for path in JUDGE_SOURCES.glob("*.py") if path.name != "demo_fleet.py"]:
+        text = path.read_text()
+        assert not any(needle in text for needle in forbidden), f"{path.name} mentions an action tool"
 
 def test_the_demo_module_holds_exactly_one_action() -> None:
     """The bring-your-own-fleet demo is the single exception, and it is supervision only."""
@@ -426,6 +295,8 @@ def test_healthy_fleet_with_readiness_reports_health(capsys) -> None:
     assert code == 0
     assert "结论: 健康" in out
     assert ("run-1/app" in out) and ("phase=running" in out)
+    code, out, _ = _judge("healthy", capsys, "--probe-url", "http://127.0.0.1:9", "--json")
+    assert json.loads(out)["status"] == "ok"
 
 def test_missing_readiness_is_not_health(capsys) -> None:
     """No probe URL means A1/C1 were never evaluated — the report must say so."""
@@ -457,6 +328,15 @@ def test_crash_loop_is_reported(capsys) -> None:
     code, out, _ = _judge("crashloop", capsys)
     assert code == 0
     assert ("B1" in out) and ("critical" in out)
+    assert "结论: 失败" in out
+
+def test_a_finding_is_never_status_ok(capsys) -> None:
+    """Both signals present: the crash loop is a finding, so `ok` would be a lie."""
+    code, out, _ = _judge("crashloop", capsys, "--probe-url", "http://127.0.0.1:9", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["verdicts"], payload
+    assert payload["status"] == "failed", payload
 
 def test_log_stall_is_reported(capsys) -> None:
     code, out, _ = _judge("logstall", capsys)
@@ -517,7 +397,7 @@ def test_json_report_shape(capsys) -> None:
     code, out, _ = _judge("crashloop", capsys, "--json")
     assert code == 0
     payload = json.loads(out)
-    assert (payload["status"] in ("ok", "indeterminate")) and (payload["read_only"] is True)
+    assert (payload["status"] == "failed") and (payload["read_only"] is True)
     assert (payload["runs"] == 1) and (payload["workers"] == 1)
     assert any(verdict["code"] == "B1" for verdict in payload["verdicts"])
     assert any(entry["codes"] == ["A1", "C1"] for entry in payload["unevaluated"])
@@ -570,6 +450,19 @@ def _live_pods(program: str) -> list[int]:
 
     return found
 
+def _assert_port_closed(port: int, *, timeout: float = 5.0) -> None:
+    """The demo's supervised server must be gone once the CLI returns."""
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        with socket.socket() as sock:
+            if sock.connect_ex(("127.0.0.1", port)) != 0:
+                return
+
+        time.sleep(0.2)
+
+    raise AssertionError(f"the demo left its supervised server listening on port {port}")
+
 def _assert_no_pods_left(program: str, *, timeout: float = 3.0) -> None:
     deadline = time.time() + timeout
 
@@ -613,6 +506,7 @@ def test_supervise_demo_with_readiness_reports_health(capsys, tmp_path) -> None:
     assert payload["status"] == "ok", payload
     assert payload["verdicts"] == []
     assert payload["unevaluated"] == []
+    _assert_port_closed(port)
 
 def test_supervise_demo_crash_loop_is_reported(capsys) -> None:
     """Acceptance ① (crash loop), through the PUBLIC --supervise path on a real malkuth."""
