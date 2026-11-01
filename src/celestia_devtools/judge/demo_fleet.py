@@ -55,7 +55,9 @@ def start_supervision(session: mcp_session, commands: Sequence[Sequence[str]], *
 
     payload = json.loads(content[0].get("text") or "{}")
 
-    if not isinstance(payload, dict) or (payload.get("ok") is not True):
+    # A started supervision reports ``{run_id, timed_out, workers}`` and has no ``ok`` key;
+    # only an explicit ``ok: false`` (or a missing run id) is a refusal.
+    if not isinstance(payload, dict) or (payload.get("ok") is False) or not payload.get("run_id"):
         raise mcp_error(f"supervise did not start a run: {payload}")
 
     return payload
@@ -204,6 +206,27 @@ def terminate(pids: Sequence[int], *, expect: Sequence[str] | None = None) -> in
             delivered += 1
         except OSError:
             continue
+
+    # A demo child may ignore TERM (a legitimate thing to supervise). Give it a moment and
+    # KILL the survivors we started — the identity is re-checked before the second signal.
+    if delivered:
+        time.sleep(0.3)
+
+        for pid in pids:
+            try:
+                numeric = int(pid)
+            except (TypeError, ValueError):
+                continue
+
+            argv = _proc_cmdline(numeric)
+
+            if not argv or (os.path.realpath(argv[0]) not in programs):
+                continue
+
+            try:
+                os.kill(numeric, 9)
+            except OSError:
+                continue
 
     return delivered
 

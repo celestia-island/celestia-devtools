@@ -474,7 +474,7 @@ processes it spawned.
 | B2 | `running -> restarting` transitions inside the window | `malkuth_status` |
 | B3 | run draining for N ticks with a worker still running | `malkuth_status` |
 | C1 | readiness down + long uptime + frozen log tail (all three) | `probe` + `logs` |
-| C2 | `last_error` set while `restart_count` rises (spawn-failure loop) | `malkuth_status` |
+| C2 | `last_error` set while the worker has **never** reached `running` inside the window (never came up) | `malkuth_status` |
 
 A3 (no-progress) is reserved: it needs a platform-provided progress endpoint.
 
@@ -492,6 +492,27 @@ will never act on a fleet that has a finding, and will never treat a half-observ
 as healthy. A probe that *answered* non-2xx is a readiness signal; a probe that never
 answered goes to `indeterminate` instead of producing an A1 verdict. Exit status is `0`
 for any report (including "no fleet" and "cannot judge") and `2` for usage errors.
+
+**Suggested actions (advisory only).** Every report also carries `suggested_actions`:
+`{run_id, worker_id, action, confidence, reason, evidence}`, where `action` is one of
+`observe` / `notify` / `restart` / `drain`. There is exactly **one action per target**,
+chosen by this fixed priority (two contradicting actions for one worker would be worse than
+none) — `fleet` produces verdicts only, `judge/advice.py` is the single suggestion source:
+
+| Priority | Trigger | Suggestion | Why |
+| --- | --- | --- | --- |
+| 1 | `C2` (`last_error` set and the worker never came up in the window) | `notify` | a spawn failure is configuration; restarting reproduces it, draining ends the run |
+| 2 | `B3` critical | `drain` | the run is already draining and stuck — escalate rather than restart |
+| 3 | `C1` while the run is already draining | `drain` | restarting a worker on its way out is busy-work |
+| 4 | `B1` / `C1` | `restart` | a fresh child is the smallest action for a crash loop or a silent hang |
+| 5 | any `suspicious` verdict | `notify` | worth a human look, not an automated action |
+| 6 | any unevaluated signal | `observe` | reported **even alongside a verdict** — an unjudged signal must not be swallowed |
+| 7 | `unavailable` | `observe` | no judgement exists, and it is not an empty observation |
+| — | `ok` | *none* (`[]`) | nothing fired |
+
+`confidence` is a mechanical tier (`high` for a critical finding, `low` for a suspicion,
+`none` for "could not judge"), not a probability. **Nothing is executed**: the judge has no
+transport for actions, and the only MCP tools it may call are the three read tools.
 
 **Known boundaries.** `last_error` only covers spawn/wait failures, so a crash is inferred
 from `restart_count`/phase and never from an exit code. The judge cannot subtract the

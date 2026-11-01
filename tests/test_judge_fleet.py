@@ -17,10 +17,11 @@ import shutil
 import subprocess
 import socket
 import sys
+import threading
 import time
 from pathlib import Path
 import pytest
-from celestia_devtools.judge import cli, demo_fleet, fleet
+from celestia_devtools.judge import advice, cli, demo_fleet, fleet
 from celestia_devtools.judge.mcp_stdio import READ_ONLY_TOOLS, mcp_error, mcp_session
 
 HERE = Path(__file__).resolve().parent
@@ -149,10 +150,11 @@ def test_b2_phase_oscillation() -> None:
 def test_b3_drain_stalled() -> None:
     ticks = [fleet.tick(index = index, runs = (_run((_worker(),), draining = True, drain_kind = "graceful"),)) for index in range(2)]
     verdicts = [verdict for verdict in fleet.evaluate(_observation(ticks)) if verdict.code == "B3"]
-    assert verdicts and (verdicts[0].evidence["stuck_workers"] == ["app"])
+    assert verdicts and (verdicts[0].worker_id == "app")
+    assert verdicts[0].evidence["phase"] == "running"
 
 def test_c2_evidence_has_no_phantom_threshold() -> None:
-    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 1, last_error = "spawn failed: nope"),)),))]
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, pid = None, phase = "starting", last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 1, pid = None, phase = "starting", last_error = "spawn failed: nope"),)),))]
     verdicts = [verdict for verdict in fleet.evaluate(_observation(ticks)) if verdict.code == "C2"]
     assert verdicts, "C2 must fire on a one-restart spawn failure"
     assert verdicts[0].evidence["restart_delta"] == 1
@@ -226,9 +228,9 @@ def test_terminate_requires_identity_and_a_pid(monkeypatch) -> None:
 def test_terminate_signals_a_matching_process(monkeypatch) -> None:
     killed = []
     monkeypatch.setattr(demo_fleet, "_proc_cmdline", lambda pid: ["/tmp/demo/test_app", "worker"])
-    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append(pid))
+    monkeypatch.setattr(demo_fleet.os, "kill", lambda pid, signal: killed.append((pid, signal)))
     assert demo_fleet.terminate([4242], expect = ["/tmp/demo/test_app"]) == 1
-    assert killed == [4242]
+    assert killed == [(4242, 15), (4242, 9)], "TERM first, then the KILL escalation"
 
 def test_terminate_does_not_touch_a_live_foreign_process() -> None:
     """Real process, wrong identity: it keeps running."""
@@ -260,6 +262,128 @@ def test_checkout_root_does_not_follow_the_caller(monkeypatch) -> None:
     root = demo_fleet._checkout_root()
     monkeypatch.chdir("/")
     assert demo_fleet._checkout_root() == root
+
+# ── advisory suggestions (phase A: mapping only, nothing executes) ─────────
+
+def _suggestions(ticks: list[fleet.tick]) -> list[advice.suggestion]:
+    observation = _observation(ticks)
+    verdicts = fleet.evaluate(observation)
+    return advice.suggest(verdicts, observation)
+
+def test_ok_fleet_has_no_suggestion() -> None:
+    assert _suggestions([fleet.tick(index = 0, runs = (_run((_worker(),)),))]) == []
+
+def test_crash_loop_suggests_restart() -> None:
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 2),)),))]
+    rows = _suggestions(ticks)
+    assert [row.action for row in rows] == ["restart"]
+    assert rows[0].confidence == advice.CONFIDENCE_HIGH
+    assert "B1" in rows[0].reason
+    assert rows[0].evidence["codes"] == ["B1"]
+
+def test_drain_stalled_suggests_drain() -> None:
+    ticks = [fleet.tick(index = index, runs = (_run((_worker(),), draining = True, drain_kind = "graceful"),)) for index in range(2)]
+    rows = _suggestions(ticks)
+    assert [row.action for row in rows] == ["drain"]
+    assert rows[0].evidence["worker"]["draining"] is True
+
+def test_silent_hang_suggests_restart_and_drain_when_already_draining() -> None:
+    def hang_ticks(*, draining: bool) -> list[fleet.tick]:
+        ticks = []
+
+        for index in range(3):
+            tick = fleet.tick(index = index, runs = (_run((_worker(uptime_secs = 600),), draining = draining, drain_kind = "graceful" if draining else None),), probe_ok = False)
+            tick.log_digests[("run-1", "app")] = "deadbeef"
+            ticks.append(tick)
+
+        return ticks
+
+    assert [row.action for row in _suggestions(hang_ticks(draining = False))] == ["restart"]
+    assert [row.action for row in _suggestions(hang_ticks(draining = True))] == ["drain"]
+
+def test_spawn_failure_suggests_notify_not_restart() -> None:
+    """Never got up: configuration evidence, never a restart candidate."""
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, pid = None, phase = "starting", last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 1, pid = None, phase = "stopped", last_error = "spawn failed: nope"),)),))]
+    assert [row.action for row in _suggestions(ticks)] == ["notify"]
+
+def test_running_worker_with_stale_last_error_is_not_c2() -> None:
+    """malkuth never clears last_error once a later spawn succeeds (real payload shape)."""
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 403, phase = "restarting", pid = None, last_error = "spawn failed: Text file busy (os error 26)"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 403, phase = "running", pid = 3815510, last_error = "spawn failed: Text file busy (os error 26)"),)),)), fleet.tick(index = 2, runs = (_run((_worker(restart_count = 403, phase = "running", pid = 3815510, last_error = "spawn failed: Text file busy (os error 26)"),)),))]
+    observation = _observation(ticks)
+    codes = {verdict.code for verdict in fleet.evaluate(observation)}
+    assert "C2" not in codes, codes
+    assert "B1" not in codes, "a recovered worker is not a live crash loop"
+    assert advice.suggest(fleet.evaluate(observation), observation) == []
+
+def test_suspicious_results_suggest_notify() -> None:
+    ticks = []
+
+    for index in range(3):
+        tick = fleet.tick(index = index, runs = (_run((_worker(uptime_secs = 100 + index),)),))
+        tick.log_digests[("run-1", "app")] = "deadbeef"
+        ticks.append(tick)
+
+    rows = _suggestions(ticks)
+    assert [row.action for row in rows] == ["notify"]
+    assert rows[0].confidence == advice.CONFIDENCE_LOW
+
+def test_decision_policy_is_c2_then_b3_then_restart_then_notify() -> None:
+    """The priority table itself, independent of which payload can produce which pair."""
+    draining_run = _run((_worker(),), draining = True, drain_kind = "graceful")
+    stopped_run = _run((_worker(),))
+    assert advice.decide({"B1", "C2"}, stopped_run)[0] == "notify"
+    assert advice.decide({"B3", "C1"}, draining_run)[0] == "drain"
+    assert advice.decide({"C1"}, stopped_run)[0] == "restart"
+    assert advice.decide({"A1"}, stopped_run)[0] == "notify"
+    assert advice.decide(set(), stopped_run)[0] == "observe", "an empty code set never invents an action"
+
+def test_crash_loop_with_a_stale_error_belongs_to_b1_restart() -> None:
+    """The worker ran and keeps crashing: B1 wins, C2 stays out of it."""
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, pid = 11, phase = "running", last_error = "spawn failed: Text file busy (os error 26)"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 3, pid = 12, phase = "restarting", last_error = "spawn failed: Text file busy (os error 26)"),)),))]
+    observation = _observation(ticks)
+    codes = {verdict.code for verdict in fleet.evaluate(observation)}
+    assert ("B1" in codes) and ("C2" not in codes), codes
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["restart"], rows
+
+def test_c1_plus_b3_yields_one_drain() -> None:
+    ticks = []
+
+    for index in range(3):
+        tick = fleet.tick(index = index, runs = (_run((_worker(uptime_secs = 600),), draining = True, drain_kind = "graceful"),), probe_ok = False)
+        tick.log_digests[("run-1", "app")] = "deadbeef"
+        ticks.append(tick)
+
+    observation = _observation(ticks)
+    codes = {verdict.code for verdict in fleet.evaluate(observation)}
+    assert {"C1", "B3"} <= codes, codes
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["drain"], rows
+
+def test_b3_suggests_drain_per_worker_with_filled_evidence() -> None:
+    ticks = [fleet.tick(index = index, runs = (_run((_worker(),), draining = True, drain_kind = "graceful"),)) for index in range(2)]
+    rows = _suggestions(ticks)
+    assert [row.action for row in rows] == ["drain"]
+    assert rows[0].worker_id == "app"
+    assert rows[0].evidence["worker"]["draining"] is True
+    assert rows[0].evidence["worker"]["phase"] == "running"
+
+def test_unevaluated_observes_and_unavailable_observes() -> None:
+    observation = _observation([fleet.tick(index = 0, runs = (_run((_worker(),)),))])
+    observation.note_unevaluated(("A1", "C1"), "run-1/app", "no --probe-url")
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["observe"]
+    assert advice.unavailable("boom").action == "observe"
+    assert advice.unavailable("boom").confidence == advice.CONFIDENCE_NONE
+    assert "never triggers an action" in advice.unavailable("boom").reason
+
+def test_unevaluated_is_reported_even_when_a_verdict_exists() -> None:
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 3),)),))]
+    observation = _observation(ticks)
+    observation.note_unevaluated(("A1", "C1"), "run-1/app", "no --probe-url")
+    rows = advice.suggest(fleet.evaluate(observation), observation)
+    assert [row.action for row in rows] == ["restart", "observe"], rows
+    assert rows[0].confidence == advice.CONFIDENCE_HIGH
 
 # ── zero actions (structural) ──────────────────────────────────────────────
 
@@ -371,6 +495,12 @@ def test_healthy_fleet_with_readiness_reports_health(capsys) -> None:
     code, out, _ = _judge("healthy", capsys, "--probe-url", "http://127.0.0.1:9", "--json")
     assert json.loads(out)["status"] == "ok"
 
+def test_empty_fleet_reports_no_advice(capsys) -> None:
+    code, out, _ = _judge("empty", capsys)
+    assert code == 0
+    assert "无 fleet" in out
+    assert "建议动作: 无" in out
+
 def test_missing_readiness_is_not_health(capsys) -> None:
     """No probe URL means A1/C1 were never evaluated — the report must say so."""
     code, out, _ = _judge("healthy", capsys)
@@ -410,6 +540,62 @@ def test_a_finding_is_never_status_ok(capsys) -> None:
     payload = json.loads(out)
     assert payload["verdicts"], payload
     assert payload["status"] == "failed", payload
+
+def test_crash_loop_report_carries_a_restart_suggestion(capsys) -> None:
+    code, out, _ = _judge("crashloop", capsys, "--json")
+    assert code == 0
+    payload = json.loads(out)
+    actions = [row["action"] for row in payload["suggested_actions"]]
+    assert actions[0] == "restart", actions
+    assert payload["suggested_actions"][0]["confidence"] == "high"
+    assert any(row["action"] == "observe" for row in payload["suggested_actions"]), "the unevaluated readiness signals are still reported"
+    assert payload["suggested_actions"][0]["evidence"]["codes"] == ["B1"]
+
+def test_drain_stalled_report_suggests_drain(capsys) -> None:
+    code, out, _ = _judge("drainstalled", capsys, "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert [row["action"] for row in payload["suggested_actions"]][0] == "drain"
+    assert payload["suggested_actions"][0]["evidence"]["worker"]["draining"] is True
+
+def test_healthy_report_suggests_nothing(capsys) -> None:
+    code, out, _ = _judge("healthy", capsys, "--probe-url", "http://127.0.0.1:9", "--json")
+    assert code == 0
+    assert json.loads(out)["suggested_actions"] == []
+
+def test_unavailable_report_suggests_observe(capsys) -> None:
+    code, out, _ = _judge("badshape", capsys, "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["status"] == "unavailable"
+    assert [row["action"] for row in payload["suggested_actions"]] == ["observe"]
+
+def test_silent_hang_report_suggests_restart(capsys) -> None:
+    code, out, _ = _judge("hang", capsys, "--probe-url", "http://127.0.0.1:9", "--hang-uptime", "1", "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert [row["action"] for row in payload["suggested_actions"]] == ["restart"]
+    assert "C1" in payload["suggested_actions"][0]["evidence"]["codes"]
+
+def test_the_judge_never_calls_an_action_tool_at_runtime(monkeypatch) -> None:
+    """Runtime companion to the AST guard: only the three read tools ever go out."""
+    sent: list[str] = []
+    original = mcp_session.call_tool
+
+    def spy(session, name, arguments = None, *, timeout = None):
+        sent.append(name)
+        return original(session, name, arguments, timeout = timeout)
+
+    monkeypatch.setattr(mcp_session, "call_tool", spy)
+
+    with mcp_session([sys.executable, str(FAKE_SERVER), "crashloop"], timeout = 5.0) as session:
+        observation = fleet.observation()
+        failure = cli._collect(session, observation, ticks = 3, interval = 0.01, logs_lines = 10)
+        assert failure is None
+        rows = advice.suggest(fleet.evaluate(observation), observation)
+        assert rows and (rows[0].action == "restart")
+
+    assert set(sent) <= READ_ONLY_TOOLS, f"the judge called a non-read tool: {sent}"
 
 def test_log_stall_is_reported(capsys) -> None:
     code, out, _ = _judge("logstall", capsys)
@@ -601,6 +787,119 @@ def test_supervise_demo_crash_loop_is_reported(capsys) -> None:
     codes = {verdict["code"] for verdict in payload["verdicts"]}
     assert ("B1" in codes) or ("C2" in codes), payload
     assert any(verdict["severity"] == "critical" for verdict in payload["verdicts"])
+
+def test_cleanup_still_runs_when_the_first_status_had_no_pid(capsys, monkeypatch) -> None:
+    """malkuth registers the run before spawning, so `worker_pids` can be empty."""
+    malkuth_bin, test_app = _require_real_malkuth()
+
+    if test_app is None:
+        pytest.skip("test_app example binary not available next to the malkuth binary")
+
+    monkeypatch.setattr(demo_fleet, "wait_for_run", lambda session, **kwargs: (True, []))
+    port = _free_port()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{test_app} supervise --pods 1 --port-base {port}", "--ticks", "2", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    _assert_no_pods_left(test_app)
+
+def test_recovered_spawn_failure_is_not_reported_as_c2(capsys, tmp_path) -> None:
+    """ETXTBSY burst then success: malkuth keeps the stale last_error, C2 must not fire.
+
+    Holding a write handle on the program file makes the first spawns fail with
+    ``Text file busy``; closing it lets the retries succeed, so the worker ends up
+    ``running`` with a stale ``last_error`` and a restart counter that stopped moving.
+    """
+    malkuth_bin, _ = _require_real_malkuth()
+    source = shutil.which("sleep")
+    assert source is not None
+    program = tmp_path / "sleep-busy"
+    shutil.copy(source, program)
+    program.chmod(0o755)
+    holder = open(program, "r+b")  # no truncation: the file stays a valid executable
+
+    def release() -> None:
+        time.sleep(0.6)
+
+        if not holder.closed:
+            holder.close()
+
+    releaser = threading.Thread(target = release, daemon = True)
+    releaser.start()
+
+    try:
+        code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{program} 60", "--supervise-timeout", "8", "--max-restarts", "100000", "--ticks", "5", "--interval", "0.8", "--json"], capsys)
+    finally:
+        releaser.join(timeout = 5)
+
+        if not holder.closed:
+            holder.close()
+
+    assert code == 0, out
+    payload = json.loads(out)
+    codes = {verdict["code"] for verdict in payload["verdicts"]}
+    # The regression R2'' proved: a recovered worker keeps the stale `last_error`, and C2
+    # used to read that as a spawn-failure loop forever.
+    assert "C2" not in codes, payload
+
+    # The window may legitimately contain the retry storm itself; that is B1's business
+    # (and B1 suggests a restart), but it must never be reported as a C2 notify.
+    if codes:
+        assert codes == {"B1"}, codes
+        assert payload["suggested_actions"][0]["action"] == "restart", payload
+
+def test_supervise_nonexistent_program_suggests_notify_only(capsys) -> None:
+    """A spawn failure is configuration: notify, never restart (R2 S1 conflict case)."""
+    malkuth_bin, _ = _require_real_malkuth()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", "/nonexistent/definitely-not-a-program", "--supervise-timeout", "4", "--ticks", "3", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    assert [row["action"] for row in payload["suggested_actions"]] == ["notify", "observe"], payload["suggested_actions"]
+
+def test_supervise_crash_loop_suggests_restart_without_acting(capsys) -> None:
+    """Acceptance ① (crash loop): the suggestion is advisory and the run is untouched."""
+    malkuth_bin, _ = _require_real_malkuth()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", "sh -c 'exit 7'", "--supervise-timeout", "4", "--ticks", "3", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    assert payload["status"] == "failed"
+    actions = [row["action"] for row in payload["suggested_actions"]]
+    assert actions[0] == "restart", actions
+    evidence = payload["suggested_actions"][0]["evidence"]
+    assert evidence["codes"] == ["B1"]
+    assert evidence["worker"]["draining"] is False, "nothing drained it"
+
+def test_supervise_silent_hang_suggests_restart_without_acting(capsys) -> None:
+    """Acceptance ① (alive-but-not-ready): C1 fires, the worker keeps its identity."""
+    malkuth_bin, _ = _require_real_malkuth()
+    port = _free_port()
+    unready = HERE / "fake_unready_server.py"
+    assert unready.exists()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{sys.executable} {unready} {port}", "--probe-url", f"http://127.0.0.1:{port}", "--probe-timeout", "2", "--probe-wait", "8", "--hang-uptime", "1", "--stall-ticks", "2", "--ticks", "3", "--interval", "0.5", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    assert payload["status"] == "failed"
+    actions = [row["action"] for row in payload["suggested_actions"]]
+    assert actions[0] == "restart", actions
+    evidence = payload["suggested_actions"][0]["evidence"]
+    assert "C1" in evidence["codes"], evidence["codes"]
+    assert evidence["worker"]["restart_count"] == 0, "nothing restarted it"
+    assert evidence["worker"]["draining"] is False, "nothing drained it"
+
+def test_supervise_drain_stall_is_not_producible_through_the_public_path(capsys) -> None:
+    """Acceptance ① (drain stalled): documented boundary, not silently skipped.
+
+    malkuth's supervise deadline does ``begin_drain(Graceful)`` and then
+    ``fleet.stop_all()`` immediately, so a drain never *stays* stalled through this path:
+    the status goes ``draining: true, finished: true`` inside one tick. B3's mapping is
+    therefore covered by the fixture server and the unit tests, and this test pins the
+    reason so a future change (a real graceful drain) is noticed.
+    """
+    malkuth_bin, _ = _require_real_malkuth()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{sys.executable} -c 'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'", "--supervise-timeout", "2", "--ticks", "6", "--interval", "0.8", "--drain-ticks", "2", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    assert payload["status"] in ("failed", "indeterminate"), payload
+    codes = {verdict["code"] for verdict in payload["verdicts"]}
+    assert "B3" not in codes, "a stalled drain should not be observable through the supervise deadline any more"
 
 def test_installed_malkuth_without_arms_reports_cannot_judge(capsys) -> None:
     """The real-world version of acceptance ③: an old server is 'cannot judge', not a guess."""
