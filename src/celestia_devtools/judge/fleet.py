@@ -30,6 +30,7 @@ reader does not expect more than the payload can give:
 
 from __future__ import annotations
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,6 +78,18 @@ class tick:
     log_digests: dict[tuple[str, str], str] = field(default_factory = dict)
     probe_ok: bool | None = None
     probe_detail: str = ""
+
+@dataclass(frozen = True)
+class unevaluated:
+    """A predicate (or a set of them) that could not be evaluated, and why.
+
+    The report distinguishes this from "evaluated and found nothing": an unjudged signal
+    must never be reported as health.
+    """
+
+    codes: tuple[str, ...]
+    scope: str
+    reason: str
 
 @dataclass(frozen = True)
 class verdict:
@@ -169,42 +182,55 @@ def log_digest(text: Any) -> str:
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
-def probe_ok(payload: Any) -> bool:
-    """A probe counts as ok when every endpoint answered 2xx/3xx."""
+def probe_state(payload: Any) -> str:
+    """Classify one ``malkuth_probe`` payload as ``ok`` | ``down`` | ``unreachable``.
 
-    if not isinstance(payload, list):
-        raise schema_error("probe payload is not an array")
+    The three outcomes are not the same thing and must not collapse into one boolean: a
+    black-holed endpoint (transport error, no HTTP status) is not evidence about readiness,
+    while a 503 *is*. ``unreachable`` therefore feeds the "not evaluated" state instead of
+    a readiness verdict.
+    """
 
-    if not payload:
-        raise schema_error("probe payload has no endpoints")
+    if not isinstance(payload, list) or not payload:
+        raise schema_error("probe payload is not a non-empty array")
+
+    states = set()
 
     for entry in payload:
         if not isinstance(entry, dict):
             raise schema_error("probe entry is not an object")
 
-        if entry.get("ok") is not True:
-            return False
+        if entry.get("ok") is True:
+            states.add("ok")
+        elif isinstance(entry.get("status"), int):
+            states.add("down")
+        else:
+            states.add("unreachable")
 
-        status = entry.get("status")
+    if "unreachable" in states:
+        return "unreachable"
 
-        if not isinstance(status, int) or not 200 <= status < 400:
-            return False
+    return "ok" if states == {"ok"} else "down"
 
-    return True
+def probe_ok(payload: Any) -> bool:
+    """A probe counts as ok when every endpoint answered 2xx/3xx."""
+    return probe_state(payload) == "ok"
 
 class observation:
     """The tick sequence one judgement run collected."""
 
     def __init__(self) -> None:
         self.ticks: list[tick] = []
-        self.indeterminate: list[str] = []
+        self.unevaluated: list[unevaluated] = []
 
     def add(self, tick: tick) -> None:
         self.ticks.append(tick)
 
-    def note_indeterminate(self, reason: str) -> None:
-        if reason not in self.indeterminate:
-            self.indeterminate.append(reason)
+    def note_unevaluated(self, codes: Sequence[str], scope: str, reason: str) -> None:
+        item = unevaluated(tuple(codes), scope, reason)
+
+        if item not in self.unevaluated:
+            self.unevaluated.append(item)
 
     def latest(self) -> tick | None:
         return self.ticks[-1] if self.ticks else None
@@ -333,7 +359,7 @@ def c2_spawn_failure(run_id: str, worker_id: str, history: list[worker_state], l
     if latest.restart_count <= history[0].restart_count:
         return None
 
-    return verdict(code = "C2", severity = "critical", run_id = run_id, worker_id = worker_id, evidence = {"last_error": latest.last_error, "restart_count": latest.restart_count, "threshold_used": limits.crash_delta}, suggest = _advisory("observe"))
+    return verdict(code = "C2", severity = "critical", run_id = run_id, worker_id = worker_id, evidence = {"last_error": latest.last_error, "restart_count": latest.restart_count, "restart_delta": latest.restart_count - history[0].restart_count}, suggest = _advisory("observe"))
 
 def _draining_ticks(observation: observation, run_id: str) -> int:
     return sum(1 for tick in observation.ticks if any((run.run_id == run_id) and run.draining for run in tick.runs))

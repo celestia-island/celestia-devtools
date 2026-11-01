@@ -110,7 +110,7 @@ class mcp_session:
         """Tool names the server advertised at initialize time."""
         return self._tools
 
-    def call_tool(self, name: str, arguments: dict | None = None) -> Any:
+    def call_tool(self, name: str, arguments: dict | None = None, *, timeout: float | None = None) -> Any:
         """Call one read-only tool and return its parsed JSON payload.
 
         Raises :class:`mcp_error` (never a bare exception) for a tool-level error or
@@ -119,12 +119,12 @@ class mcp_session:
         """
 
         if name not in READ_ONLY_TOOLS:
-            raise mcp_error(f"tool {name!r} is not in the read-only allowlist")
+            raise mcp_error(f"tool {name!r} is not in the read-only allowlist {sorted(READ_ONLY_TOOLS)}")
 
         if name not in self._tools:
             raise mcp_unavailable(f"MCP server does not advertise {name!r}; cannot judge")
 
-        reply = self._request("tools/call", {"name": name, "arguments": arguments or {}})
+        reply = self._request("tools/call", {"name": name, "arguments": arguments or {}}, timeout = timeout)
         content = reply.get("content")
 
         if not isinstance(content, list) or not content:

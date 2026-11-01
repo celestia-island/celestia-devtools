@@ -440,27 +440,36 @@ hints). Both are advisory warnings, never failures.
 
 Exit codes: `0` all steps passed, `1` any step failed, `2` usage error.
 
-## Fleet Judgement (`judge-fleet`, read-only)
+## Fleet Judgement (`judge-fleet`)
 
 `celestia-devtools judge-fleet` samples a malkuth fleet through its **MCP read tools**
 (`malkuth_status`, `malkuth_logs`, `malkuth_probe`) over a few ticks and reports
-mechanical verdicts with the evidence behind each one. It is deliberately
-**read-only**: the allowlist in `judge/mcp_stdio.py` refuses every other MCP tool, so
-there is no code path that can restart or drain anything. Actions are a later slice and
-require a target-bound approval chain first.
+mechanical verdicts with the evidence behind each one.
+
+**What it can see.** A malkuth server's run registry is *in process*: it holds the runs
+that server itself started, and there is no attach mechanism. An external client
+therefore **cannot observe a fleet somebody else holds** — not a limitation of this tool
+but of the transport. So `judge-fleet` offers a **bring-your-own-fleet** demo path
+(`--supervise`) and otherwise reports `no fleet`. A platform-side judge that must watch a
+running fleet has to own the MCP session itself (that embedding is the follow-up slice).
 
 ```bash
-celestia-devtools judge-fleet                          # 3 ticks x 15s against `malkuth mcp`
-celestia-devtools judge-fleet --ticks 5 --interval 30  # longer window
-celestia-devtools judge-fleet --mcp-cmd "malkuth mcp"  # explicit server command
-celestia-devtools judge-fleet --json                   # machine-readable report
-celestia-devtools judge-fleet --probe-url http://127.0.0.1:3005  # enables A1/C1
+celestia-devtools judge-fleet                                   # judge a session it spawns (usually: no fleet)
+celestia-devtools judge-fleet --supervise "sleep 600"           # DEMO: supervise a command, judge that fleet
+celestia-devtools judge-fleet --supervise "my-service --port 3005" --probe-url http://127.0.0.1:3005
+celestia-devtools judge-fleet --ticks 5 --interval 30 --json    # longer window, machine-readable
+celestia-devtools judge-fleet --mcp-cmd "malkuth mcp"           # explicit server command (shlex-split)
 ```
+
+`--supervise` is a **demo path, not an action surface**: it is the only place the package
+sends `malkuth_supervise` (isolated in `judge/demo_fleet.py`), it always drains at the end
+(`--supervise-timeout`, default `max(10s, ticks×interval + 8s)`), and it sweeps the
+processes it spawned.
 
 | Code | Mechanical condition | Source |
 | --- | --- | --- |
 | A1 | readiness non-2xx/3xx for N ticks while running | `malkuth_probe` |
-| A2 | identical log tail for N ticks while uptime rises | `malkuth_logs` |
+| A2 | identical log tail for N ticks while uptime rises (after a warm-up floor) | `malkuth_logs` |
 | B1 | `restart_count` delta inside the window **or** a saturated rate (catches a loop that filled before the window opened) | `malkuth_status` |
 | B2 | `running -> restarting` transitions inside the window | `malkuth_status` |
 | B3 | run draining for N ticks with a worker still running | `malkuth_status` |
@@ -469,15 +478,25 @@ celestia-devtools judge-fleet --probe-url http://127.0.0.1:3005  # enables A1/C1
 
 A3 (no-progress) is reserved: it needs a platform-provided progress endpoint.
 
-**Fail-open contract.** A timeout, a malformed payload, a missing field, or a server that
-does not advertise the read tools all produce a `无法判定: <reason>` report instead of a
-guess. A fleet with no runs reports `无 fleet` (the registry is per MCP server; systemd
-units are a different process and are not visible). Exit status is `0` for any report —
-including "no fleet" and "cannot judge" — and `2` for usage errors.
+**Three-state contract — "not evaluated" is never "healthy".**
 
-**Known boundaries:** `last_error` only covers spawn/wait failures (a normal non-zero exit
-is invisible; the crash-loop verdict infers from `restart_count`), and the status payload
-carries no worker spec, so a drained run cannot be replayed from the judge's data alone.
+| status | meaning | text output |
+| --- | --- | --- |
+| `ok` | every applicable predicate was evaluated and nothing fired (an empty registry is also `ok`) | `结论: 健康` |
+| `indeterminate` | at least one predicate could not be evaluated (no `--probe-url`, unreadable logs, a probe that never answered) | `结论: 未判定` + the list |
+| `failed` | nothing could be read at all (transport, non-JSON framing, missing capability) | `无法判定: <reason>` |
+
+A probe that *answered* non-2xx is a readiness signal; a probe that never answered
+(transport error) is **not** — it goes to `indeterminate` instead of producing an A1
+verdict. Exit status is `0` for any report (including "no fleet" and "cannot judge") and
+`2` for usage errors.
+
+**Known boundaries.** `last_error` only covers spawn/wait failures, so a crash is inferred
+from `restart_count`/phase and never from an exit code. The judge cannot subtract the
+restarts a platform itself requested (the status payload has no such field): a fleet that
+is being restarted on purpose during the window can look like a crash loop — the follow-up
+slice reconciles this against its action audit. And because the status payload carries no
+worker spec, a drained run cannot be replayed from the judge's data alone.
 
 ## P0 Ledger Gate
 

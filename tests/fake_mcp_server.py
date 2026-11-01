@@ -5,8 +5,12 @@ Used by ``tests/test_judge_fleet.py`` to drive the judge without a real malkuth:
 mode answers the same JSON-RPC envelope, and only the payloads change. A mode is the
 first CLI argument.
 
-Modes: healthy, crashloop, spawnfail, logstall, drainstalled, empty, garbage, badshape,
-missing-tools, slow, junkline.
+Modes: healthy, crashloop, spawnfail, logstall, drainstalled, empty, badshape,
+missing-tools, slow, junkline, oscillate, hang, logfail, probefail.
+
+A ``malkuth_supervise`` call always answers ``{"ok": true}`` and makes later ``status``
+calls report one demo run, so the CLI's ``--supervise`` demo path is exercised without a
+real malkuth.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ class fake_server:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self.calls = 0
+        self.supervised = False
 
     def status(self) -> dict:
         self.calls += 1
@@ -36,6 +41,9 @@ class fake_server:
 
         if self.mode == "empty":
             return {"ok": True, "runs": []}
+
+        if self.supervised:
+            return {"ok": True, "runs": [_run([_worker(id = "demo-0", uptime_secs = 60 + tick)])]}
 
         if self.mode == "crashloop":
             return {"ok": True, "runs": [_run([_worker(restart_count = tick * 2, phase = "running")])]}
@@ -62,10 +70,16 @@ class fake_server:
         return {"ok": True, "runs": [_run([_worker(restart_count = 0, uptime_secs = 120 + tick)])]}
 
     def logs(self) -> dict:
+        if self.mode == "logfail":
+            return {"ok": False, "code": "log_read_failed"}
+
         text = "boot\nsteady" if self.mode in ("logstall", "hang") else f"boot\nsteady {self.calls}"
         return {"ok": True, "text": text, "total_lines_in_ring": 2, "lines_returned": 2}
 
     def probe(self) -> list:
+        if self.mode == "probefail":
+            return {"ok": False, "code": "probe_transport_failed"}
+
         if self.mode in ("silent-hang", "hang"):
             return [{"url": "http://x/healthz", "ok": False, "status": 503}]
 
@@ -109,7 +123,10 @@ def main(argv: list[str]) -> int:
         elif method == "tools/call":
             name = message.get("params", {}).get("name")
 
-            if name == "malkuth_status":
+            if name == "malkuth_supervise":
+                backend.supervised = True
+                payload = {"ok": True, "run_id": "demo-run", "workers": []}
+            elif name == "malkuth_status":
                 payload = backend.status()
             elif name == "malkuth_logs":
                 payload = backend.logs()

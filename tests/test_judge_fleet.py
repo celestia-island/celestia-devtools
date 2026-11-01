@@ -168,6 +168,7 @@ def _sweep_supervised_leftovers(workers: list[dict]) -> None:
     instantaneous.
     """
     programs = {worker.get("program") for worker in workers if isinstance(worker.get("program"), str)}
+    _SUPERVISED_PROGRAMS.update(programs)
 
     for _ in range(20):
         candidates = [pid for program in programs if Path(program).exists() for pid in _pids_running(program)]
@@ -315,6 +316,13 @@ def test_b3_drain_stalled() -> None:
     verdicts = [verdict for verdict in fleet.evaluate(_observation(ticks)) if verdict.code == "B3"]
     assert verdicts and (verdicts[0].evidence["stuck_workers"] == ["app"])
 
+def test_c2_evidence_has_no_phantom_threshold() -> None:
+    ticks = [fleet.tick(index = 0, runs = (_run((_worker(restart_count = 0, last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(restart_count = 1, last_error = "spawn failed: nope"),)),))]
+    verdicts = [verdict for verdict in fleet.evaluate(_observation(ticks)) if verdict.code == "C2"]
+    assert verdicts, "C2 must fire on a one-restart spawn failure"
+    assert verdicts[0].evidence["restart_delta"] == 1
+    assert "threshold_used" not in verdicts[0].evidence
+
 def test_c2_spawn_failure() -> None:
     ticks = [fleet.tick(index = 0, runs = (_run((_worker(phase = "starting", pid = None, restart_count = 0, last_error = "spawn failed: nope"),)),)), fleet.tick(index = 1, runs = (_run((_worker(phase = "starting", pid = None, restart_count = 2, last_error = "spawn failed: nope"),)),))]
     assert "C2" in [verdict.code for verdict in fleet.evaluate(_observation(ticks))]
@@ -365,32 +373,85 @@ def test_c1_does_not_fire_without_the_frozen_tail() -> None:
 
 # ── zero actions (structural) ──────────────────────────────────────────────
 
+def test_sweep_remembers_the_programs_it_supervised() -> None:
+    probe_program = "/nonexistent/test_app-for-sweep"
+    _sweep_supervised_leftovers([{"program": probe_program}])
+    assert probe_program in _SUPERVISED_PROGRAMS
+
 def test_allowlist_is_exactly_the_three_read_tools() -> None:
     assert READ_ONLY_TOOLS == {"malkuth_status", "malkuth_logs", "malkuth_probe"}
 
-def test_mutating_tool_names_are_refused() -> None:
-    session = mcp_session([sys.executable, str(FAKE_SERVER), "healthy"])
+def test_mutating_tool_names_are_refused_by_an_open_session(monkeypatch) -> None:
+    """The guard must bite on a live session, before any byte reaches the server.
 
-    with pytest.raises(mcp_error):
-        session.call_tool("malkuth_" + "restart", {})
+    A closed session would raise a *transport* error instead, which is why the old shape
+    of this test passed even with the allowlist deleted. Here the session is open, the
+    exception type is the allowlist error (not its `mcp_unavailable` subclass), and the
+    write path is spied to prove nothing was sent.
+    """
 
-def test_the_judge_package_contains_no_action_call() -> None:
+    with mcp_session([sys.executable, str(FAKE_SERVER), "healthy"]) as session:
+        sent: list[dict] = []
+        original = session._write
+        monkeypatch.setattr(session, "_write", lambda message: sent.append(message) or original(message))
+
+        with pytest.raises(mcp_error) as caught:
+            session.call_tool("malkuth_" + "restart", {})
+
+        assert type(caught.value) is mcp_error
+        assert "allowlist" in str(caught.value)
+        assert sent == [], "an action tool name must never reach the server"
+
+def test_the_judgement_path_contains_no_action_call() -> None:
     forbidden = ("malkuth_" + "restart", "malkuth_" + "drain", "malkuth_" + "supervise")
     offenders = []
 
-    for path in JUDGE_SOURCES.glob("*.py"):
-        text = path.read_text()
-        offenders.extend(f"{path.name}: {needle}" for needle in forbidden if needle in text)
+    for name in ("fleet.py", "cli.py", "mcp_stdio.py", "__init__.py"):
+        text = (JUDGE_SOURCES / name).read_text()
+        offenders.extend(f"{name}: {needle}" for needle in forbidden if needle in text)
 
-    assert offenders == [], f"the judge package must not contain action tools: {offenders}"
+    assert offenders == [], f"the judgement path must not contain action tools: {offenders}"
+
+def test_the_demo_module_holds_exactly_one_action() -> None:
+    """The bring-your-own-fleet demo is the single exception, and it is supervision only."""
+    text = (JUDGE_SOURCES / "demo_fleet.py").read_text()
+    assert ("malkuth_" + "supervise") in text
+    assert ("malkuth_" + "restart") not in text
+    assert ("malkuth_" + "drain") not in text
 
 # ── CLI end-to-end against the fixture server ──────────────────────────────
 
-def test_healthy_fleet_reports_health(capsys) -> None:
-    code, out, _ = _judge("healthy", capsys)
+def test_healthy_fleet_with_readiness_reports_health(capsys) -> None:
+    code, out, _ = _judge("healthy", capsys, "--probe-url", "http://127.0.0.1:9")
     assert code == 0
     assert "结论: 健康" in out
     assert ("run-1/app" in out) and ("phase=running" in out)
+
+def test_missing_readiness_is_not_health(capsys) -> None:
+    """No probe URL means A1/C1 were never evaluated — the report must say so."""
+    code, out, _ = _judge("healthy", capsys)
+    assert code == 0
+    assert "结论: 未判定" in out
+    assert "未评估 A1,C1" in out
+    assert "结论: 健康" not in out
+    code, out, _ = _judge("healthy", capsys, "--json")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["status"] == "indeterminate", payload
+    assert payload["verdicts"] == []
+    assert any(entry["codes"] == ["A1", "C1"] for entry in payload["unevaluated"])
+
+def test_probe_transport_failure_is_unevaluated(capsys) -> None:
+    code, out, _ = _judge("probefail", capsys, "--probe-url", "http://127.0.0.1:9")
+    assert code == 0
+    assert "结论: 未判定" in out
+    assert "未评估 A1,C1" in out
+
+def test_log_read_failure_is_unevaluated(capsys) -> None:
+    code, out, _ = _judge("logfail", capsys, "--probe-url", "http://127.0.0.1:9")
+    assert code == 0
+    assert "结论: 未判定" in out
+    assert "未评估 A2,C1" in out
 
 def test_crash_loop_is_reported(capsys) -> None:
     code, out, _ = _judge("crashloop", capsys)
@@ -456,10 +517,17 @@ def test_json_report_shape(capsys) -> None:
     code, out, _ = _judge("crashloop", capsys, "--json")
     assert code == 0
     payload = json.loads(out)
-    assert (payload["ok"] is True) and (payload["read_only"] is True)
+    assert (payload["status"] in ("ok", "indeterminate")) and (payload["read_only"] is True)
     assert (payload["runs"] == 1) and (payload["workers"] == 1)
     assert any(verdict["code"] == "B1" for verdict in payload["verdicts"])
+    assert any(entry["codes"] == ["A1", "C1"] for entry in payload["unevaluated"])
     assert payload["reserved_predicates"]
+
+def test_supervise_demo_path_judges_the_fleet_it_brings(capsys) -> None:
+    code, out, _ = _judge("healthy", capsys, "--supervise", "sleep 30", "--probe-url", "http://127.0.0.1:9")
+    assert code == 0
+    assert "demo-0" in out, out
+    assert "结论: 健康" in out
 
 def test_action_mode_is_refused(capsys) -> None:
     code, _, err = _run_cli(["--no-read-only"], capsys)
@@ -473,32 +541,88 @@ def test_single_tick_is_refused(capsys) -> None:
 
 # ── real malkuth acceptance ────────────────────────────────────────────────
 
-def test_healthy_test_app_fleet_is_not_called_critical() -> None:
-    if _malkuth_bin() is None:
+def _require_real_malkuth() -> tuple[str, str | None]:
+    malkuth_bin = _malkuth_bin()
+
+    if malkuth_bin is None:
         pytest.skip("no malkuth binary available")
 
-    _, malkuth_bin = _open_real()
-    test_app = _test_app_bin(malkuth_bin)
+    if not _advertises_read_arms(malkuth_bin):
+        pytest.skip("installed malkuth predates the wave-4 read arms")
+
+    return malkuth_bin, _test_app_bin(malkuth_bin)
+
+def _live_pods(program: str) -> list[int]:
+    """Pids whose executable is exactly ``program`` (the demo's own grandchildren)."""
+    found = []
+
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+
+        try:
+            argv = [part.decode("utf-8", "replace") for part in (entry / "cmdline").read_bytes().split(b"\0") if part]
+        except OSError:
+            continue
+
+        if argv and (os.path.realpath(argv[0]) == os.path.realpath(program)):
+            found.append(int(entry.name))
+
+    return found
+
+def _assert_no_pods_left(program: str, *, timeout: float = 3.0) -> None:
+    deadline = time.time() + timeout
+
+    while (time.time() < deadline) and _live_pods(program):
+        time.sleep(0.2)
+
+    assert _live_pods(program) == [], f"the demo left supervised processes behind: {_live_pods(program)}"
+
+def _advertises_read_arms(malkuth_bin: str) -> bool:
+    with mcp_session([malkuth_bin, "mcp"], timeout = 10.0) as session:
+        return READ_ONLY_TOOLS <= session.tools
+
+def test_supervise_demo_healthy_fleet_has_no_critical_verdict(capsys) -> None:
+    """Acceptance ① (healthy), through the PUBLIC --supervise path on a real malkuth."""
+    malkuth_bin, test_app = _require_real_malkuth()
 
     if test_app is None:
         pytest.skip("test_app example binary not available next to the malkuth binary")
 
-    workers = [{"id": "app", "kind": "test", "program": test_app, "args": ["supervise", "--pods", "1", "--port-base", str(_free_port())]}]
-    verdicts, observation = _judge_with_supervision(workers)
-    assert observation.latest() is not None
-    assert [run for run in observation.latest().runs], "no run observed"
-    critical = [verdict for verdict in verdicts if verdict.severity == "critical"]
-    assert critical == [], f"a healthy test_app fleet was escalated: {critical}"
+    port = _free_port()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{test_app} supervise --pods 1 --port-base {port}", "--ticks", "3", "--interval", "0.4", "--json"], capsys)
+    _assert_no_pods_left(test_app)
+    assert code == 0, out
+    payload = json.loads(out)
+    assert (payload["runs"] >= 1) and (payload["workers"] >= 1), payload
+    assert [verdict for verdict in payload["verdicts"] if verdict["severity"] == "critical"] == [], payload
+    # No HTTP readiness surface on the example app: A1/C1 must be reported as unevaluated,
+    # not silently counted as healthy.
+    assert payload["status"] == "indeterminate"
+    assert any(entry["codes"] == ["A1", "C1"] for entry in payload["unevaluated"])
 
-def test_crash_loop_is_detected_on_real_malkuth() -> None:
-    if _malkuth_bin() is None:
-        pytest.skip("no malkuth binary available")
+def test_supervise_demo_with_readiness_reports_health(capsys, tmp_path) -> None:
+    """Acceptance ① (healthy + readiness): every predicate evaluated, nothing fired."""
+    malkuth_bin, _ = _require_real_malkuth()
+    (tmp_path / "healthz").write_text("ok", encoding = "utf-8")
+    (tmp_path / "readyz").write_text("ok", encoding = "utf-8")
+    port = _free_port()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", f"{sys.executable} -m http.server {port} --directory {tmp_path}", "--probe-url", f"http://127.0.0.1:{port}", "--ticks", "3", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    assert payload["status"] == "ok", payload
+    assert payload["verdicts"] == []
+    assert payload["unevaluated"] == []
 
-    _open_real()[0].close()
-    workers = [{"id": "crasher", "kind": "test", "program": "/bin/sh", "args": ["-c", "exit 7"]}]
-    verdicts, _ = _judge_with_supervision(workers)
-    codes = {verdict.code for verdict in verdicts}
-    assert ("B1" in codes) or ("C2" in codes), f"crash loop not detected: {verdicts}"
+def test_supervise_demo_crash_loop_is_reported(capsys) -> None:
+    """Acceptance ① (crash loop), through the PUBLIC --supervise path on a real malkuth."""
+    malkuth_bin, _ = _require_real_malkuth()
+    code, out, _ = _run_cli(["--mcp-cmd", f"{malkuth_bin} mcp", "--supervise", "sh -c 'exit 7'", "--supervise-timeout", "6", "--ticks", "3", "--interval", "0.4", "--json"], capsys)
+    assert code == 0, out
+    payload = json.loads(out)
+    codes = {verdict["code"] for verdict in payload["verdicts"]}
+    assert ("B1" in codes) or ("C2" in codes), payload
+    assert any(verdict["severity"] == "critical" for verdict in payload["verdicts"])
 
 def test_installed_malkuth_without_arms_reports_cannot_judge(capsys) -> None:
     """The real-world version of acceptance ③: an old server is 'cannot judge', not a guess."""
