@@ -474,7 +474,7 @@ processes it spawned.
 | B2 | `running -> restarting` transitions inside the window | `malkuth_status` |
 | B3 | run draining for N ticks with a worker still running | `malkuth_status` |
 | C1 | readiness down + long uptime + frozen log tail (all three) | `probe` + `logs` |
-| C2 | `last_error` set while `restart_count` rises (spawn-failure loop) | `malkuth_status` |
+| C2 | `last_error` set while the worker has **never** reached `running` inside the window (never came up) | `malkuth_status` |
 
 A3 (no-progress) is reserved: it needs a platform-provided progress endpoint.
 
@@ -501,7 +501,7 @@ none) — `fleet` produces verdicts only, `judge/advice.py` is the single sugges
 
 | Priority | Trigger | Suggestion | Why |
 | --- | --- | --- | --- |
-| 1 | `C2` (`last_error` set) | `notify` | a spawn failure is configuration; restarting reproduces it, draining ends the run |
+| 1 | `C2` (`last_error` set and the worker never came up in the window) | `notify` | a spawn failure is configuration; restarting reproduces it, draining ends the run |
 | 2 | `B3` critical | `drain` | the run is already draining and stuck — escalate rather than restart |
 | 3 | `C1` while the run is already draining | `drain` | restarting a worker on its way out is busy-work |
 | 4 | `B1` / `C1` | `restart` | a fresh child is the smallest action for a crash loop or a silent hang |
