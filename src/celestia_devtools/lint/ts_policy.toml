@@ -17,7 +17,9 @@
 #           not an option; a decision with a reason is.
 #
 # Resolution order (first hit wins, same shape as p0_gate):
-#   --policy <path>  ->  $CELESTIA_TS_POLICY  ->  <repo>/ts-policy.toml  ->  this file.
+#   --policy <path>  ->  $CELESTIA_TS_POLICY  ->  the nearest ts-policy.toml
+# walking UP from the tsconfig directory (a workspace leaf keeps its decisions
+# at the repository root)  ->  this file.
 # The catalog below (tier_a.required, tier_b.flags) always comes from THIS file;
 # only the decisions (tier_b.on / tier_b.off) are taken from the resolved one, so
 # a repository cannot shrink the list of questions it must answer.
