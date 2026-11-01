@@ -205,6 +205,27 @@ def terminate(pids: Sequence[int], *, expect: Sequence[str] | None = None) -> in
         except OSError:
             continue
 
+    # A demo child may ignore TERM (a legitimate thing to supervise). Give it a moment and
+    # KILL the survivors we started — the identity is re-checked before the second signal.
+    if delivered:
+        time.sleep(0.3)
+
+        for pid in pids:
+            try:
+                numeric = int(pid)
+            except (TypeError, ValueError):
+                continue
+
+            argv = _proc_cmdline(numeric)
+
+            if not argv or (os.path.realpath(argv[0]) not in programs):
+                continue
+
+            try:
+                os.kill(numeric, 9)
+            except OSError:
+                continue
+
     return delivered
 
 def sweep_abandoned(commands: Sequence[Sequence[str]]) -> int:

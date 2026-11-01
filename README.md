@@ -493,6 +493,24 @@ as healthy. A probe that *answered* non-2xx is a readiness signal; a probe that 
 answered goes to `indeterminate` instead of producing an A1 verdict. Exit status is `0`
 for any report (including "no fleet" and "cannot judge") and `2` for usage errors.
 
+**Suggested actions (advisory only).** Every report also carries `suggested_actions`:
+`{run_id, worker_id, action, confidence, reason, evidence}`, where `action` is one of
+`observe` / `notify` / `restart` / `drain`. The mapping is fixed and tested:
+
+| Trigger | Suggestion | Why |
+| --- | --- | --- |
+| `ok` | *none* (`[]`) | nothing fired |
+| B1 critical | `restart` | a crash loop needs a fresh child; draining would end the run |
+| B3 critical | `drain` | the run is already draining and stuck — escalate |
+| C1 critical | `restart` (or `drain` when already draining) | a hung child: restart is the smallest action |
+| C2 critical | `notify` | a spawn failure is usually configuration; restarting loops it |
+| suspicious | `notify` | worth a human look, not an automated action |
+| unevaluated / `unavailable` | `observe` | no action is possible on an unjudged signal |
+
+`confidence` is a mechanical tier (`high` for a critical finding, `low` for a suspicion,
+`none` for "could not judge"), not a probability. **Nothing is executed**: the judge has no
+transport for actions, and the only MCP tools it may call are the three read tools.
+
 **Known boundaries.** `last_error` only covers spawn/wait failures, so a crash is inferred
 from `restart_count`/phase and never from an exit code. The judge cannot subtract the
 restarts a platform itself requested (the status payload has no such field): a fleet that

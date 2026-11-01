@@ -50,7 +50,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from celestia_devtools.judge import demo_fleet, fleet
+from celestia_devtools.judge import advice, demo_fleet, fleet
 from celestia_devtools.judge.mcp_stdio import READ_ONLY_TOOLS, mcp_error, mcp_session, mcp_unavailable
 
 DEFAULT_MCP_COMMAND = "malkuth mcp"
@@ -112,9 +112,11 @@ def _cannot_judge(reason: str, *, as_json: bool) -> int:
     """Fail-open report: no guess, just the reason (status ``unavailable``)."""
 
     if as_json:
-        print(json.dumps({"status": "unavailable", "read_only": True, "cannot_judge": reason, "ticks": 0, "interval_secs": 0, "runs": 0, "workers": 0, "verdicts": [], "unevaluated": [], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
+        observe = advice.unavailable(reason)
+        print(json.dumps({"status": "unavailable", "read_only": True, "cannot_judge": reason, "ticks": 0, "interval_secs": 0, "runs": 0, "workers": 0, "verdicts": [], "unevaluated": [], "suggested_actions": [observe.as_json()], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
     else:
         print(f"无法判定: {reason}")
+        print("建议动作: observe (confidence none) — 无判定，不动作，也不当空 observation")
 
     return 0
 
@@ -211,11 +213,12 @@ def _start_demo(session: mcp_session, args: argparse.Namespace) -> dict:
 
 def _render(args: argparse.Namespace, observation: fleet.observation, latest: fleet.tick) -> int:
     verdicts = fleet.evaluate(observation, limits_from_args(args))
+    suggestions = advice.suggest(verdicts, observation)
     workers = [(run, worker) for run in latest.runs for worker in run.workers]
     status = report_status(verdicts, observation)
 
     if args.json:
-        print(json.dumps({"status": status, "read_only": True, "ticks": len(observation.ticks), "interval_secs": args.interval, "runs": len(latest.runs), "workers": len(workers), "verdicts": [{"code": verdict.code, "severity": verdict.severity, "run_id": verdict.run_id, "worker_id": verdict.worker_id, "evidence": verdict.evidence, "suggest": verdict.suggest} for verdict in verdicts], "unevaluated": [{"codes": list(item.codes), "scope": item.scope, "reason": item.reason} for item in observation.unevaluated], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
+        print(json.dumps({"status": status, "read_only": True, "ticks": len(observation.ticks), "interval_secs": args.interval, "runs": len(latest.runs), "workers": len(workers), "verdicts": [{"code": verdict.code, "severity": verdict.severity, "run_id": verdict.run_id, "worker_id": verdict.worker_id, "evidence": verdict.evidence, "suggest": verdict.suggest} for verdict in verdicts], "unevaluated": [{"codes": list(item.codes), "scope": item.scope, "reason": item.reason} for item in observation.unevaluated], "suggested_actions": [item.as_json() for item in suggestions], "reserved_predicates": [fleet.A3_RESERVED]}, ensure_ascii = False))
         return 0
 
     if not latest.runs:
@@ -240,6 +243,16 @@ def _render(args: argparse.Namespace, observation: fleet.observation, latest: fl
         print("结论: 健康 (every applicable predicate was evaluated and none fired)")
 
     _print_unevaluated(observation)
+
+    if suggestions:
+        print("建议动作 (advisory only; nothing executed):")
+
+        for item in suggestions:
+            target = f"{item.run_id}/{item.worker_id}" if item.run_id or item.worker_id else "(fleet)"
+            print(f"  - {item.action} [{target}] confidence={item.confidence}: {item.reason}")
+    else:
+        print("建议动作: 无 (nothing fired)")
+
     print(f"  保留未实现: {fleet.A3_RESERVED}")
     return 0
 
@@ -327,7 +340,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             demo_fleet.terminate(sorted(leftovers), expect = expected)
 
         if demo.get("worker_pids"):
-            demo_fleet.sweep_abandoned([shlex.split(command) for command in args.supervise])
+            # A supervisor-shaped demo command can spawn a replacement child right as it is
+            # being torn down; sweep a few times so a late grandchild is still collected once
+            # its own parent has gone away.
+            commands = [shlex.split(command) for command in args.supervise]
+
+            for _ in range(4):
+                demo_fleet.sweep_abandoned(commands)
+                time.sleep(0.2)
 
     latest = observation.latest()
     assert latest is not None  # _collect guarantees at least one tick
