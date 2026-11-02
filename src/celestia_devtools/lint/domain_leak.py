@@ -586,6 +586,13 @@ def selftest() -> int:
             rc_prune_json, out_prune_json, _ = _capture_cli(["--prune-baseline", "--json"])
             payload_prune = json.loads(out_prune_json)
             assert (rc_prune_json == 2) and (payload_prune["rc"] == 2) and (set(payload_prune) == {"new", "baseline", "stale", "rc"}), (f"the refused prune broke the --json contract (rc={rc_prune_json}, keys={sorted(payload_prune)})")
+            partial_root = tmp / "cli-partial-root"
+            (partial_root / "kirino" / "src").mkdir(parents = True, exist_ok = True)
+            WORKSPACE, WORKSPACE_SOURCE = partial_root, WORKSPACE_SOURCE_FLAG
+            rc_partial, out_partial, err_partial = _capture_cli(["--prune-baseline"])
+            assert rc_partial == 2, f"a prune with only part of the reach must refuse (rc={rc_partial})"
+            assert (out_partial == "") and err_partial.strip(), "the partial-root prune refusal leaked or stayed silent"
+            assert guarded_baseline.read_bytes() == guarded_bytes, "the partial-root prune still rewrote the baseline"
             WORKSPACE, WORKSPACE_SOURCE = detached, WORKSPACE_SOURCE_FALLBACK
             rc_scan, out_scan, err_scan = _capture_cli([])
             assert (rc_scan == 2) and (out_scan == "") and err_scan.strip(), "the CLI-level full-scan refusal leaked or stayed silent"
@@ -687,7 +694,13 @@ def selftest() -> int:
                 (grepo / "src" / "blob.rs").unlink()
                 # A new branch with no base falls back to the whole tree and still hits
                 rc_fulltree = run_pushed(f"refs/heads/newbr {head} refs/heads/newbr {zeros}", True)
-                # prune keeps the _doc metadata and a new hit still returns rc 1
+
+                for repo in SCOPE:
+                    (tmp / repo).mkdir(exist_ok = True)
+
+                # Concatenate the complete reach above first: prune keeps the _doc
+                # metadata, but it refuses when any scanned repository is missing (Part
+                # three covers that refusal on purpose). The remaining hit still gives rc 1.
                 baseline_text = '{"_doc": "keepme", "entries": [{"repo": "kirino", "path": "nope/gone.rs", "terms": ["hydrogen"], "note": "stale"}]}'
                 BASELINE.write_text(baseline_text, encoding = "utf-8")
                 rc_prune = main(["--prune-baseline", "--quiet"])
@@ -713,7 +726,7 @@ def selftest() -> int:
             BASELINE = base_backup
             WORKSPACE_SOURCE = source_backup
 
-        print("selftest: +21 assertions passed (detached full-scan fail-closed / cli refusal contract / prune-no-repository guard / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
+        print("selftest: +24 assertions passed (detached full-scan fail-closed / cli refusal contract / prune-no-repository + partial-root guard / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
         return 0
     except AssertionError as e:
         print(f"selftest: FAILED - {e}", file = sys.stderr)
@@ -771,13 +784,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return rc
 
     if args.prune_baseline:
-        # A prune against a root that cannot see a single scanned repository would drop
-        # every entry: nothing is scanned, so the whole baseline looks stale - and the
-        # baseline is a committed file, so that is one command away from erasing the
-        # tracked debt record. Refuse like the other fail-closed paths: stdout stays
-        # empty, --quiet does not swallow it, and --json keeps its four keys.
-        if not any((WORKSPACE / repo).is_dir() for repo in SCOPE):
-            print(f"domain-leak: --prune-baseline refused - no scanned repository exists under {WORKSPACE} (every baseline entry would look stale)", file = sys.stderr)
+        # A prune needs the whole reach, not part of it: entries belonging to a repository
+        # that is not even checked out here would look stale and be deleted from a
+        # committed file. Refuse like the other fail-closed paths: stdout stays empty,
+        # --quiet does not swallow it, and --json keeps its four keys.
+        missing_for_prune = [repo for repo in SCOPE if not (WORKSPACE / repo).is_dir()]
+
+        if missing_for_prune:
+            print(f"domain-leak: --prune-baseline refused - {len(missing_for_prune)} of {len(SCOPE)} scanned repositories are missing under {WORKSPACE} ({', '.join(missing_for_prune)}); their entries would look stale", file = sys.stderr)
 
             if args.json:
                 print(json.dumps({"new": [], "baseline": [], "stale": [], "rc": 2}, ensure_ascii = False))
