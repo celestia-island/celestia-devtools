@@ -19,6 +19,7 @@ supervised.
 from __future__ import annotations
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from collections.abc import Sequence
@@ -94,6 +95,85 @@ def wait_for_run(session: mcp_session, *, timeout: float = 10.0) -> tuple[bool, 
         time.sleep(0.2)
 
     return False, []
+
+class supervision:
+    """One bring-your-own-fleet supervision: start it, hold it, tear it down.
+
+    The judge's ``--supervise`` established this lifecycle (start the blocking
+    ``malkuth_supervise`` on a background thread, wait for the run to register, snapshot the
+    descendants while the supervisor is still alive, then join + terminate the stragglers and
+    sweep abandoned demo processes). The executor's demo switch needs exactly the same
+    lifecycle, so it lives here instead of being copied into a second CLI.
+
+    Use it as a context manager around whatever the caller does with the run::
+
+        with demo_fleet.supervision(session, [["sleep", "30"]]) as demo:
+            if demo.error: ...
+            if not demo.run_seen: ...
+
+    The MCP session stays the caller's: the manager never closes it (the judge closes it after
+    the supervision, and the executor still needs it while it acts).
+    """
+
+    def __init__(self, session: mcp_session, commands: Sequence[Sequence[str]], *, timeout_secs: float, max_restarts: int = 20, settle_seconds: float = 10.0, join_grace: float = 5.0) -> None:
+        self._session = session
+        self._commands = [list(command) for command in commands]
+        self._timeout_secs = timeout_secs
+        self._max_restarts = max_restarts
+        self._settle_seconds = settle_seconds
+        self._join_grace = join_grace
+        self._thread: threading.Thread | None = None
+        self._state: dict = {}
+        self.run_seen = False
+        self.worker_pids: list[int] = []
+        self.result: dict | None = None
+        self.error: str | None = None
+
+    def __enter__(self) -> "supervision":
+        state = self._state
+
+        def drive() -> None:
+            try:
+                state["result"] = start_supervision(self._session, self._commands, timeout_secs = self._timeout_secs, max_restarts = self._max_restarts)
+            except (mcp_error, ValueError) as error:
+                state["error"] = str(error)
+
+        self._thread = threading.Thread(target = drive, name = "demo-supervision", daemon = True)
+        self._thread.start()
+        self.run_seen, self.worker_pids = wait_for_run(self._session, timeout = self._settle_seconds)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        leftovers: set[int] = set()
+
+        def snapshot() -> None:
+            # A pid from the status payload is a hint, not an identity — the eventual
+            # terminate() re-checks the cmdline before signalling.
+            for pid in self.worker_pids:
+                leftovers.update(descendants(pid))
+
+        # Snapshot BEFORE the join: by then the demo supervisor is dead and its pods have been
+        # reparented to init, unreachable by a ppid walk.
+        snapshot()
+
+        if self._thread is not None:
+            self._thread.join(timeout = self._timeout_secs + self._join_grace)
+
+        snapshot()
+        self.result = self._state.get("result")
+        self.error = self._state.get("error")
+        leftovers.update(int(pid) for pid in self.worker_pids if isinstance(pid, int))
+        expected = [os.path.realpath(command[0]) for command in self._commands if command]
+
+        if leftovers:
+            terminate(sorted(leftovers), expect = expected)
+
+        # Not gated on `worker_pids`: malkuth registers the run before it spawns, so the first
+        # status can legitimately show `pid: null` and the demo would otherwise skip cleanup
+        # entirely. The sweep is identity- and cwd-scoped, so it is safe to always run.
+        for _ in range(4):
+            sweep_abandoned(self._commands)
+            time.sleep(0.2)
 
 def descendants(pid: int) -> set[int]:
     """Every live descendant of ``pid`` (the demo's own leaves), read from /proc."""

@@ -471,7 +471,16 @@ is scepter's, written back by the platform session.
 ```bash
 celestia-devtools judge-fleet act --handoff bundle.json --dry-run   # preflight only
 celestia-devtools judge-fleet act < approved-handoff.json --json     # one approved action
+celestia-devtools judge-fleet act --supervise "sleep 600" < handoff # DEMO: bring a fleet, act on it
 ```
+
+`--supervise` is a **demo path, not a production action surface**: malkuth's run registry is
+in-process, so a CLI can only act on a fleet *it* supervises. The switch starts one through the
+server, binds the handoff's target identity (`run_id`/`worker_id`/`pid`/`starttime`) to that
+run, acts, and then drains it — the same lifecycle the judge's `--supervise` uses, because
+both share `demo_fleet.supervision`. Production runs on the platform's own supervising
+session (`act.run_act(bundle, session)`), never through this switch. The handoff still
+authorises the action: `--supervise` supplies the target, not the approval.
 
 Its tool allowlist is separate and disjoint from the judge's (`ACTION_TOOLS` =
 `status`/`approve`/`restart`/`drain`): the judgement session cannot reach a mutating tool,

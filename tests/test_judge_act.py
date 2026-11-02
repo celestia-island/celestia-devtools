@@ -348,6 +348,43 @@ def test_the_executor_refuses_a_server_without_the_gate(monkeypatch, capsys) -> 
     assert document["code"] == "malkuth_unavailable"
     assert document["status"] == "failed"
 
+# ── demo switch: --supervise ───────────────────────────────────────────────
+
+def test_the_demo_switch_acts_on_the_fleet_it_brings(monkeypatch, capsys) -> None:
+    """`--supervise` starts a fleet, binds the bundle to it and executes there."""
+
+    # The demo bundle authorises the action only: the target identity comes from the
+    # fleet this CLI just started.
+    payload = _bundle()
+
+    for field in ("run_id", "worker_id", "pid", "starttime"):
+        payload.pop(field)
+
+    _stdin(monkeypatch, payload)
+    code, document, _ = _run("act-ok", capsys, argv = ["--supervise", "sleep 30", "--supervise-timeout", "1"])
+
+    assert code == act.EXIT_OK, document
+    assert document["status"] == "executed"
+    assert document["target"] == {"run_id": "run-1", "worker_id": "demo-0"}
+
+def test_without_the_demo_switch_a_missing_fleet_is_still_target_unknown(monkeypatch, capsys) -> None:
+    """No `--supervise` means no fleet: the existing refusal is unchanged."""
+
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("act-empty", capsys)
+
+    assert code == act.EXIT_REFUSED
+    assert document["code"] == "target_unknown"
+    message = document["message"]
+    assert ("supervising session" in message) or ("per-process" in message)
+
+def test_the_demo_switch_reports_a_supervise_failure(monkeypatch, capsys) -> None:
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("healthy", capsys, argv = ["--supervise", "sleep 30"])
+
+    assert code == act.EXIT_UNAVAILABLE
+    assert document["code"] == "malkuth_unavailable"
+
 # ── structural contract ────────────────────────────────────────────────────
 
 def test_the_action_allowlist_is_exactly_the_four_gate_tools() -> None:
@@ -422,6 +459,57 @@ def test_the_judgement_modules_name_no_action_tool() -> None:
     for name in ("cli.py", "fleet.py", "advice.py", "mcp_stdio.py"):
         literals = _tool_literals(JUDGE_SOURCES / name)
         assert not (literals & forbidden), f"{name} must not call {sorted(literals & forbidden)}"
+
+def test_the_demo_switch_leaves_no_supervised_process_behind(tmp_path) -> None:
+    """The demo switch owns the fleet it brings: after the act, nothing of it runs on."""
+
+    binary = _require_gate_binary()
+    counter = tmp_path / "crash-counter"
+    # Two crashes then a long run: the demo is a real (short) crash loop that settles, and
+    # the teardown must remove the settled child.
+    command = [["sh", "-c", 'n=$(cat "$1" 2>/dev/null || echo 0); echo $((n + 1)) > "$1"; if [ "$n" -lt 2 ]; then exit 1; fi; sleep 60', "sh", str(counter)]]
+    session = action_session([binary, "mcp"], timeout = 10)
+
+    with session:
+        with demo_fleet.supervision(session, command, timeout_secs = 5, max_restarts = 10) as demo:
+            assert demo.run_seen, demo.error
+            bound = act.bind_to_supervised_fleet(_bundle_missing_target(), session)
+            bundle = act.parse_handoff(bound)
+            act.check_action_supported(bundle)
+            act.check_justification(bundle)
+            outcome = act.run_act(bundle, session)
+            assert outcome["status"] == act.STATUS_EXECUTED, outcome
+            supervised_pids = list(demo.worker_pids)
+
+    deadline = time.time() + 10
+
+    while time.time() < deadline:
+        survivors = [pid for pid in supervised_pids if _alive(pid)]
+
+        if not survivors:
+            break
+
+        time.sleep(0.1)
+
+    assert not [pid for pid in supervised_pids if _alive(pid)], "the demo fleet must not outlive act"
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+    return True
+
+def _bundle_missing_target() -> dict:
+    payload = _bundle()
+
+    for field in ("run_id", "worker_id", "pid", "starttime"):
+        payload.pop(field)
+
+    return payload
 
 # ── real malkuth acceptance ────────────────────────────────────────────────
 

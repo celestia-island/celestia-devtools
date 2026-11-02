@@ -39,7 +39,7 @@ import time
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any
-from celestia_devtools.judge import advice
+from celestia_devtools.judge import advice, demo_fleet
 from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, action_session, mcp_error, mcp_unavailable
 
 #: Exit codes (stable; the platform branches on them).
@@ -417,6 +417,43 @@ def main(argv: list[str] | None = None) -> int:
     except json.JSONDecodeError as e:
         return _fail(args, None, act_error("bundle_invalid", f"the handoff is not JSON: {e}"))
 
+    session = action_session([*_split(args.mcp_cmd)], timeout = args.call_timeout)
+
+    try:
+        with session:
+            missing = sorted(ACTION_TOOLS - session.tools)
+
+            if missing:
+                return _fail(args, None, act_error("malkuth_unavailable", f"the MCP server does not advertise {missing}: it predates the action gate"))
+
+            if args.supervise:
+                # DEMO PATH. malkuth's run registry is in-process, so a CLI can only act on a
+                # fleet IT supervises: production runs on the platform's own supervising
+                # session. This switch brings one here, executes against it, then drains it —
+                # the same lifecycle the judge's `--supervise` uses.
+                commands = [shlex.split(command) for command in args.supervise]
+
+                with demo_fleet.supervision(session, commands, timeout_secs = _supervise_budget(args), max_restarts = args.max_restarts) as demo:
+                    if demo.error:
+                        return _fail(args, None, act_error("malkuth_unavailable", f"--supervise failed: {demo.error}"))
+
+                    if not demo.run_seen:
+                        return _fail(args, None, act_error("target_unknown", f"--supervise started but no run appeared within the settle window ({args.supervise_settle:g}s)"))
+
+                    try:
+                        payload = bind_to_supervised_fleet(payload, session)
+                    except act_error as error:
+                        return _fail(args, None, error)
+
+                    return _execute(payload, session, args)
+
+            return _execute(payload, session, args)
+    except (mcp_error, mcp_unavailable) as error:
+        return _fail(args, None, act_error("malkuth_unavailable", str(error)))
+
+def _execute(payload: object, session: action_session, args: argparse.Namespace) -> int:
+    """Parse, preflight and execute one bundle on the given session."""
+
     bundle: handoff | None = None
 
     try:
@@ -426,20 +463,10 @@ def main(argv: list[str] | None = None) -> int:
     except act_error as error:
         return _fail(args, bundle, error)
 
-    session = action_session([*_split(args.mcp_cmd)], timeout = args.call_timeout)
-
     try:
-        with session:
-            missing = sorted(ACTION_TOOLS - session.tools)
-
-            if missing:
-                return _fail(args, bundle, act_error("malkuth_unavailable", f"the MCP server does not advertise {missing}: it predates the action gate"))
-
-            outcome = run_act(bundle, session, dry_run = args.dry_run)
+        outcome = run_act(bundle, session, dry_run = args.dry_run)
     except act_error as error:
         return _fail(args, bundle, error)
-    except (mcp_error, mcp_unavailable) as error:
-        return _fail(args, bundle, act_error("malkuth_unavailable", str(error)))
 
     document = _result_document(bundle, status = outcome["status"], outcome = outcome, age_secs = time.time() - bundle.received_at)
 
@@ -449,6 +476,47 @@ def main(argv: list[str] | None = None) -> int:
         _print_human(document)
 
     return _exit_for(outcome["status"])
+
+def bind_to_supervised_fleet(payload: object, session: action_session, *, attempts: int = 40, backoff: float = 0.05) -> dict:
+    """Point the bundle at the fleet this CLI just started.
+
+    The demo bundle authorises the action (gate token, action, codes) — it cannot know the
+    run id malkuth assigned or the child's pid/starttime. Those are read from the live
+    snapshot, which is exactly the identity the executor re-checks before acting.
+    """
+
+    if not isinstance(payload, dict):
+        raise act_error("bundle_invalid", "the handoff bundle must be a JSON object")
+
+    previous: tuple[str, str, int, int] | None = None
+
+    for _ in range(max(attempts, 1)):
+        status = session.call_tool("malkuth_status")
+        current: tuple[str, str, int, int] | None = None
+
+        for run in status.get("runs") or []:
+            for worker in run.get("workers") or []:
+                if (worker.get("phase") == "running") and worker.get("pid") and worker.get("starttime"):
+                    current = (run["run_id"], worker["id"], worker["pid"], worker["starttime"])
+
+                    break
+
+            if current is not None:
+                break
+
+        # A crash-looping demo worker can be mid-cycle: the pid must HOLD across two
+        # reads, or the executor would be handed an identity that is already stale.
+        if (current is not None) and (current == previous):
+            run_id, worker_id, pid, starttime = current
+            return {**payload, "run_id": run_id, "worker_id": worker_id, "pid": pid, "starttime": starttime}
+
+        previous = current
+        time.sleep(backoff)
+
+    raise act_error("target_unknown", "the supervised fleet has no stable running worker to act on", hint = "a crash-looping demo worker never holds one identity: supervise a command that stays up")
+
+def _supervise_budget(args: argparse.Namespace) -> float:
+    return args.supervise_timeout if args.supervise_timeout > 0 else 30.0
 
 #: Refusals that are really "the executor could not run", not "the platform said no".
 FAILED_CODES = frozenset({"execution_failed", "gate_register_failed", "malkuth_unavailable", "malkuth_timeout"})
@@ -501,4 +569,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action = "store_true", help = "machine-readable result")
     parser.add_argument("--call-timeout", type = float, default = 10.0, help = "per-call timeout in seconds (default 10)")
     parser.add_argument("--mcp-cmd", default = "malkuth mcp", help = "command that starts an MCP stdio server (default: 'malkuth mcp')")
+    parser.add_argument("--supervise", action = "append", default = [], metavar = "CMD", help = "DEMO PATH: start this supervision through the server and act on that fleet (repeatable; shlex-split). Production runs on the platform's own supervising session")
+    parser.add_argument("--supervise-timeout", type = float, default = 0.0, help = "how long the demo supervision lives (default 30s)")
+    parser.add_argument("--supervise-settle", type = float, default = 10.0, help = "seconds to wait for the demo run to register (default 10)")
+    parser.add_argument("--max-restarts", type = int, default = 20, help = "with --supervise: the demo's restart budget (default 20)")
     return parser
