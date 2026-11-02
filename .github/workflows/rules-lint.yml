@@ -11,7 +11,7 @@
 #
 #   jobs:
 #     rules-lint:
-#       uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@master
+#       uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@2e76d373762dc6b36c1ab7625c1c34842c28ad4a
 #       with:
 #         runs-on: '["ubuntu-latest"]'   # public repos only; see below
 #

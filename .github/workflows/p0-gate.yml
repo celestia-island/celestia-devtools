@@ -13,7 +13,7 @@ name: P0 Ledger Gate
 #
 #   jobs:
 #     p0-gate:
-#       uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master
+#       uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@2e76d373762dc6b36c1ab7625c1c34842c28ad4a
 #
 # The escape hatch is deliberate and narrow: an open P0 stops blocking once a
 # human writes `P0-ACK: <id> [reason]` in the PR body (hence the `edited`
