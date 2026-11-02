@@ -50,10 +50,14 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from celestia_devtools.judge import advice, demo_fleet, fleet
+from celestia_devtools.judge import act, advice, demo_fleet, fleet
 from celestia_devtools.judge.mcp_stdio import READ_ONLY_TOOLS, mcp_error, mcp_session, mcp_unavailable
 
 DEFAULT_MCP_COMMAND = "malkuth mcp"
+
+#: The executor subcommand (see :mod:`celestia_devtools.judge.act`). Dispatched before the
+#: judgement parser so the two tool allowlists can never be confused with each other.
+ACTION_SUBCOMMAND = "act"
 
 #: Endpoints a ``kind="both"`` probe call touches (healthz + readyz).
 PROBE_ENDPOINTS = 2
@@ -270,11 +274,18 @@ def _print_unevaluated(observation: fleet.observation) -> None:
         print(f"  未评估 {codes} [{item.scope}]: {item.reason}")
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+
+    if argv and (argv[0] == ACTION_SUBCOMMAND):
+        # The executor lives in its own module with its own tool allowlist; the judgement
+        # parser below stays read-only.
+        return act.main(argv[1:])
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     if not args.read_only:
-        print("refusing: the action mode is not implemented; restart/drain need a target-bound " "approval chain first (L61). PR-1 is read-only by construction.", file = sys.stderr)
+        print("refusing: judging never acts. Use `celestia-devtools judge-fleet act` (executor, " "needs a handoff bundle from scepter) for a single approved action.", file = sys.stderr)
         return 2
 
     if args.ticks < 2:

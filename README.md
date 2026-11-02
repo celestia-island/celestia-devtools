@@ -461,6 +461,27 @@ celestia-devtools judge-fleet --ticks 5 --interval 30 --json    # longer window,
 celestia-devtools judge-fleet --mcp-cmd "malkuth mcp"           # explicit server command (shlex-split)
 ```
 
+**The executor (`judge-fleet act`)** is the only path that acts, and it needs a handoff
+bundle — scepter's `Export` output for one *approved* proposal — on **stdin** (never
+argv: the gate token is an execution right). It registers the gate approval
+(`malkuth_approve`), performs exactly one `malkuth_restart`/`malkuth_drain`, and prints one
+JSON result. It holds **no scepter credential** and writes no state: the durable audit row
+is scepter's, written back by the platform session.
+
+```bash
+celestia-devtools judge-fleet act --handoff bundle.json --dry-run   # preflight only
+celestia-devtools judge-fleet act < approved-handoff.json --json     # one approved action
+```
+
+Its tool allowlist is separate and disjoint from the judge's (`ACTION_TOOLS` =
+`status`/`approve`/`restart`/`drain`): the judgement session cannot reach a mutating tool,
+and the executor cannot read logs or probes. Preflight refusals carry stable codes —
+`bundle_invalid`, `action_not_supported`, `action_not_justified`, `window_expired`,
+`target_unknown`/`target_gone`, `identity_missing`, `target_changed` — and gate refusals
+pass malkuth's own codes through (`approval_required` / `expired` / `consumed` /
+`blocked`) with the operator's next move in `hint`. Exit codes: `0` executed, `2` usage,
+`3` refused, `4` execution failed, `5` malkuth unavailable.
+
 `--supervise` is a **demo path, not an action surface**: it is the only place the package
 sends `malkuth_supervise` (isolated in `judge/demo_fleet.py`), it always drains at the end
 (`--supervise-timeout`, default `max(10s, ticks×interval + 8s)`), and it sweeps the

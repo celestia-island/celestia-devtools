@@ -6,7 +6,12 @@ mode answers the same JSON-RPC envelope, and only the payloads change. A mode is
 first CLI argument.
 
 Modes: healthy, crashloop, spawnfail, logstall, drainstalled, empty, badshape,
-missing-tools, slow, junkline, oscillate, hang, logfail, probefail.
+missing-tools, slow, junkline, oscillate, hang, logfail, probefail, and the action-gate
+modes (see ``ACTION_MODES``) that drive ``judge-fleet act``.
+
+The action modes record every ``tools/call`` they receive to the file named by
+``FAKE_MCP_CALL_LOG`` (one ``name {json}`` line each), which is how the tests prove a
+``--dry-run`` registered and executed nothing.
 
 A ``malkuth_supervise`` call always answers ``{"ok": true}`` and makes later ``status``
 calls report one demo run, so the CLI's ``--supervise`` demo path is exercised without a
@@ -15,8 +20,16 @@ real malkuth.
 
 from __future__ import annotations
 import json
+import os
 import sys
 import time
+
+#: Worker identity the action-gate modes report (the bundles in the tests quote it).
+ACT_PID = 4242
+ACT_STARTTIME = 99
+
+#: Modes that drive the executor: status payload + gate answers per mode.
+ACTION_MODES = frozenset({"act-ok", "act-required", "act-consumed", "act-blocked", "act-expired", "act-changed", "act-no-starttime", "act-drain-ok"})
 
 def _content(payload) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
@@ -41,6 +54,17 @@ class fake_server:
 
         if self.mode == "empty":
             return {"ok": True, "runs": []}
+
+        if self.mode in ACTION_MODES:
+            pid, starttime = ACT_PID, ACT_STARTTIME
+
+            if self.mode == "act-changed":
+                starttime = ACT_STARTTIME + 1
+
+            if self.mode == "act-no-starttime":
+                starttime = None
+
+            return {"ok": True, "runs": [_run([_worker(pid = pid, starttime = starttime)])]}
 
         if self.supervised:
             return {"ok": True, "runs": [_run([_worker(id = "demo-0", uptime_secs = 60 + tick)])]}
@@ -91,7 +115,21 @@ def _tool_list(mode: str) -> list:
     if mode == "missing-tools":
         return [{"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
 
+    if mode in ACTION_MODES:
+        return [{"name": "malkuth_status"}, {"name": "malkuth_approve"}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
+
     return [{"name": "malkuth_status"}, {"name": "malkuth_logs"}, {"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
+
+def _log_call(params: dict) -> None:
+    """Append one ``tools/call`` line to $FAKE_MCP_CALL_LOG, if the test asked for it."""
+
+    path = os.environ.get("FAKE_MCP_CALL_LOG")
+
+    if not path:
+        return
+
+    with open(path, "a", encoding = "utf-8") as handle:
+        handle.write(json.dumps({"name": params.get("name"), "arguments": params.get("arguments")}) + "\n")
 
 def main(argv: list[str]) -> int:
     mode = argv[1] if len(argv) > 1 else "healthy"
@@ -114,6 +152,10 @@ def main(argv: list[str]) -> int:
 
         message = json.loads(text)
         method = message.get("method")
+
+        if method == "tools/call":
+            _log_call(message.get("params", {}))
+
         request_id = message.get("id")
 
         if method == "initialize":
@@ -134,6 +176,21 @@ def main(argv: list[str]) -> int:
                 payload = backend.logs()
             elif name == "malkuth_probe":
                 payload = backend.probe()
+            elif name == "malkuth_approve":
+                payload = {"ok": True, "registered": True, "expires_in_secs": 300}
+            elif name == "malkuth_restart":
+                if mode == "act-required":
+                    payload = {"ok": False, "code": "approval_required", "message": "no live approval"}
+                elif mode == "act-consumed":
+                    payload = {"ok": False, "code": "approval_consumed", "message": "already spent"}
+                elif mode == "act-blocked":
+                    payload = {"ok": False, "code": "approval_blocked", "message": "blocked by operator"}
+                elif mode == "act-expired":
+                    payload = {"ok": False, "code": "approval_expired", "message": "gate window closed"}
+                else:
+                    payload = {"ok": True, "accepted": True, "phase": "restarting"}
+            elif name == "malkuth_drain":
+                payload = {"ok": True, "accepted": True, "already": False, "kind": "graceful", "workers": []}
             else:
                 payload = {"ok": False, "code": "unknown_tool"}
 
