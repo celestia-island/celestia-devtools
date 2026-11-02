@@ -618,7 +618,7 @@ celestia-devtools domain-leak --staged         # pre-commit: this repo's staged 
 celestia-devtools domain-leak --pushed         # pre-push: ref lines on stdin
 celestia-devtools domain-leak --pushed-range B H # CI: the diff of B..H
 celestia-devtools domain-leak --json           # machine-readable
-celestia-devtools domain-leak --selftest       # 19 assertions: patterns, hooks, prune
+celestia-devtools domain-leak --selftest       # 20 assertions: patterns, hooks, prune
 ```
 
 - **Reach** — each repository in `SCOPE` is scanned in full (any tracked-file
@@ -637,8 +637,13 @@ celestia-devtools domain-leak --selftest       # 19 assertions: patterns, hooks,
   batch so a repaired entry never lingers.
 - **Fail-closed** — hook mode refuses (`rc 2`) when the repository cannot be
   identified by path or by a family `origin`, instead of silently passing; a
-  violation is always printed to stderr even under `--quiet`. Exit codes: `0` clean
-  or baseline-only, `1` a hit outside the baseline, `2` configuration, usage or git
+  violation is always printed to stderr even under `--quiet`. The full scan refuses
+  (`rc 2`) too when **no root was declared and no workspace markers were found**
+  (an installed wheel, a checkout outside the workspace): scanning anyway would
+  report a green pass over zero reachable repositories. Declaring the root with
+  `--workspace` / `$CELESTIA_WORKSPACE` opts out — the caller then owns a wrong
+  root, and missing repositories stay warnings. Exit codes: `0` clean or
+  baseline-only, `1` a hit outside the baseline, `2` configuration, usage or git
   error.
 
 The workspace is located from the checkout layout (the nearest ancestor holding

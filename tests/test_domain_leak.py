@@ -13,14 +13,14 @@ import json
 from celestia_devtools.lint import domain_leak
 
 class test_selftest:
-    """All nineteen ported assertions must still hold."""
+    """All twenty ported assertions must still hold."""
 
     def test_selftest_passes_both_halves(self, capsys):
         rc = domain_leak.main(["--selftest"])
         out = capsys.readouterr().out
         assert rc == 0
         assert "7/7 assertions passed" in out
-        assert "+12 assertions passed" in out
+        assert "+13 assertions passed" in out
 
 class test_baseline:
     """The shipped baseline is the single source of truth and stays well formed."""
@@ -115,6 +115,10 @@ class test_full_scan:
         workspace, baseline = self._workspace(tmp_path)
         monkeypatch.setattr(domain_leak, "WORKSPACE", workspace)
         monkeypatch.setattr(domain_leak, "BASELINE", baseline)
+        # The test declares its throwaway workspace, so it vouches for the root the way
+        # a marker walk would; without this the full-scan fail-closed guard would (rightly)
+        # refuse in a bare CI checkout that carries no workspace markers.
+        monkeypatch.setattr(domain_leak, "WORKSPACE_SOURCE", domain_leak.WORKSPACE_SOURCE_MARKER)
         rc, new_hits, known_hits, stale = domain_leak.run_scan(quiet = True)
         assert rc == 1
         assert [hit["path"] for hit in new_hits] == ["src/leak.rs"]
