@@ -595,7 +595,7 @@ non-zero on any hit that the baseline does not cover.
 celestia-devtools domain-leak                  # full scan (human or weekly sweep)
 celestia-devtools domain-leak --staged         # pre-commit: this repo's staged content
 celestia-devtools domain-leak --pushed         # pre-push: ref lines on stdin
-celestia-devtools domain-leak --pushed-range B # CI: the diff of B..H
+celestia-devtools domain-leak --pushed-range B H # CI: the diff of B..H
 celestia-devtools domain-leak --json           # machine-readable
 celestia-devtools domain-leak --selftest       # 19 assertions: patterns, hooks, prune
 ```

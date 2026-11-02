@@ -64,7 +64,6 @@ class test_workspace_resolution:
         one.mkdir()
         two.mkdir()
         assert domain_leak.resolve_workspace(str(one)) == one
-        assert domain_leak.resolve_workspace(str(one)) == one
         monkeypatch.setenv(domain_leak.WORKSPACE_PATH_ENV, str(two))
         assert domain_leak.resolve_workspace() == two
         assert domain_leak.resolve_workspace(str(one)) == one
