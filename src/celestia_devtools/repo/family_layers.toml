@@ -15,7 +15,7 @@
 # `[rust_layers.<family>]` table): a member deliberately parked on the previous
 # line must be listed there, otherwise the family's `line` is applied to it and
 # the gate reports a "different primitive" that does not exist.
-updated_at = "2026-10-30"
+updated_at = "2026-11-02"
 source = "plana/.github/workflows/publish.yml + crates.io published lines; npm bindings published by their own repos"
 
 [plana_published]
@@ -34,6 +34,11 @@ plana-build-info = "0.1"
 plana-infra-utils = "0.1"
 plana-llm-provider = "0.1"
 plana-dispatch-client = "0.1"
+# plana #516 (2026-11-01) hyphenated and published these two on the same
+# 0.1 line (crates.io max 0.1.52, verified 2026-11-02); the rename wave
+# missed this table and chest's version deps tripped the gate.
+plana-core = "0.1"
+plana-text = "0.1"
 
 [rust_layers.kirino]
 # 0.9.0 shipped on 2026-10-28. The line moved only after every consumer did
