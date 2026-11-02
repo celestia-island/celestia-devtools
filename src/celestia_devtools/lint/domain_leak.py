@@ -488,6 +488,17 @@ def report(new_hits: list[dict], known_hits: list[dict], stale: list[dict], elap
 
     print(f"total: new {len(new_hits)} (rc {'1' if new_hits else '0'}) | baseline {len(known_hits)}" f" | stale {len(stale)} | {elapsed:.2f}s")
 
+def _capture_cli(argv: Sequence[str]) -> tuple[int, str, str]:
+    """Run :func:`main` with both streams captured (self-test harness only)."""
+    out, err = io.StringIO(), io.StringIO()
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+
+    try:
+        return main(argv), out.getvalue(), err.getvalue()
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+
 def selftest() -> int:
     """Self-proof with known positives and negatives: the patterns hit, the baseline
     mechanism works, and the domain zone stays exempt.
@@ -555,7 +566,35 @@ def selftest() -> int:
         finally:
             WORKSPACE, WORKSPACE_SOURCE, BASELINE = ws_backup_detached, source_backup_detached, base_backup_detached
 
-        # ── Part three: hook mode against a real git repository (not a mock) ──
+        # ── Part three: the CLI contract of both refusals (quiet stdout, --quiet tight, --json keys) ──
+        empty_root = tmp / "cli-empty-root"
+        empty_root.mkdir(exist_ok = True)
+        guarded_baseline = tmp / "cli-guarded-baseline.json"
+        guarded_baseline.write_text('{"entries": [{"repo": "kirino", "path": "src/leak.rs", "terms": ["hydrogen"], "note": "guard"}]}', encoding = "utf-8")
+        guarded_bytes = guarded_baseline.read_bytes()
+        ws_backup_cli, source_backup_cli, base_backup_cli = WORKSPACE, WORKSPACE_SOURCE, BASELINE
+
+        try:
+            WORKSPACE, WORKSPACE_SOURCE, BASELINE = empty_root, WORKSPACE_SOURCE_FLAG, guarded_baseline
+            rc_prune, out_prune, err_prune = _capture_cli(["--prune-baseline"])
+            assert rc_prune == 2, f"prune with no reachable repository must refuse (rc={rc_prune})"
+            assert out_prune == "", "the refused prune must keep stdout empty"
+            assert err_prune.strip(), "the refused prune said nothing on stderr"
+            assert guarded_baseline.read_bytes() == guarded_bytes, "the refused prune still rewrote the baseline"
+            rc_prune_quiet, _, err_prune_quiet = _capture_cli(["--prune-baseline", "--quiet"])
+            assert (rc_prune_quiet == 2) and err_prune_quiet.strip(), "--quiet swallowed the prune refusal"
+            rc_prune_json, out_prune_json, _ = _capture_cli(["--prune-baseline", "--json"])
+            payload_prune = json.loads(out_prune_json)
+            assert (rc_prune_json == 2) and (payload_prune["rc"] == 2) and (set(payload_prune) == {"new", "baseline", "stale", "rc"}), (f"the refused prune broke the --json contract (rc={rc_prune_json}, keys={sorted(payload_prune)})")
+            WORKSPACE, WORKSPACE_SOURCE = detached, WORKSPACE_SOURCE_FALLBACK
+            rc_scan, out_scan, err_scan = _capture_cli([])
+            assert (rc_scan == 2) and (out_scan == "") and err_scan.strip(), "the CLI-level full-scan refusal leaked or stayed silent"
+            rc_scan_json, out_scan_json, _ = _capture_cli(["--json"])
+            assert (rc_scan_json == 2) and (json.loads(out_scan_json)["rc"] == 2), "--json lost the full-scan refusal code"
+        finally:
+            WORKSPACE, WORKSPACE_SOURCE, BASELINE = ws_backup_cli, source_backup_cli, base_backup_cli
+
+        # ── Part four: hook mode against a real git repository (not a mock) ──
         ws_backup = WORKSPACE
         base_backup = BASELINE
         source_backup = WORKSPACE_SOURCE
@@ -674,7 +713,7 @@ def selftest() -> int:
             BASELINE = base_backup
             WORKSPACE_SOURCE = source_backup
 
-        print("selftest: +13 assertions passed (detached full-scan fail-closed / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
+        print("selftest: +21 assertions passed (detached full-scan fail-closed / cli refusal contract / prune-no-repository guard / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
         return 0
     except AssertionError as e:
         print(f"selftest: FAILED - {e}", file = sys.stderr)
@@ -732,6 +771,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return rc
 
     if args.prune_baseline:
+        # A prune against a root that cannot see a single scanned repository would drop
+        # every entry: nothing is scanned, so the whole baseline looks stale - and the
+        # baseline is a committed file, so that is one command away from erasing the
+        # tracked debt record. Refuse like the other fail-closed paths: stdout stays
+        # empty, --quiet does not swallow it, and --json keeps its four keys.
+        if not any((WORKSPACE / repo).is_dir() for repo in SCOPE):
+            print(f"domain-leak: --prune-baseline refused - no scanned repository exists under {WORKSPACE} (every baseline entry would look stale)", file = sys.stderr)
+
+            if args.json:
+                print(json.dumps({"new": [], "baseline": [], "stale": [], "rc": 2}, ensure_ascii = False))
+
+            return 2
+
         raw = load_baseline()
 
         if stale:

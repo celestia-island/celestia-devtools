@@ -20,7 +20,7 @@ class test_selftest:
         out = capsys.readouterr().out
         assert rc == 0
         assert "7/7 assertions passed" in out
-        assert "+13 assertions passed" in out
+        assert "+21 assertions passed" in out
 
 class test_baseline:
     """The shipped baseline is the single source of truth and stays well formed."""
