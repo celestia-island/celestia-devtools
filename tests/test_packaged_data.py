@@ -31,7 +31,7 @@ from celestia_devtools.repo.init import common_just_path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: (source path in the tree, wheel path the code resolves at runtime)
-FORCED_DATA = [("src/celestia_devtools/common.just", "celestia_devtools/common.just"), ("src/celestia_devtools/lint/p0_ledger.toml", "celestia_devtools/lint/p0_ledger.toml"), ("src/celestia_devtools/repo/family_layers.toml", "celestia_devtools/repo/family_layers.toml"), ("src/celestia_devtools/lint/ts_policy.toml", "celestia_devtools/lint/ts_policy.toml")]
+FORCED_DATA = [("src/celestia_devtools/common.just", "celestia_devtools/common.just"), ("src/celestia_devtools/lint/p0_ledger.toml", "celestia_devtools/lint/p0_ledger.toml"), ("src/celestia_devtools/repo/family_layers.toml", "celestia_devtools/repo/family_layers.toml"), ("src/celestia_devtools/lint/ts_policy.toml", "celestia_devtools/lint/ts_policy.toml"), ("src/celestia_devtools/lint/domain_leak_baseline.json", "celestia_devtools/lint/domain_leak_baseline.json")]
 
 def _force_include() -> dict:
     data = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding = "utf-8"))

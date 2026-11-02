@@ -13,14 +13,14 @@ import json
 from celestia_devtools.lint import domain_leak
 
 class test_selftest:
-    """All nineteen ported assertions must still hold."""
+    """All twenty ported assertions must still hold."""
 
     def test_selftest_passes_both_halves(self, capsys):
         rc = domain_leak.main(["--selftest"])
         out = capsys.readouterr().out
         assert rc == 0
         assert "7/7 assertions passed" in out
-        assert "+12 assertions passed" in out
+        assert "+24 assertions passed" in out
 
 class test_baseline:
     """The shipped baseline is the single source of truth and stays well formed."""
@@ -28,7 +28,10 @@ class test_baseline:
     def test_bundled_baseline_is_well_formed(self):
         data = json.loads(domain_leak._PACKAGE_BASELINE.read_text(encoding = "utf-8"))
         entries = data["entries"]
-        assert entries, "the shipped baseline must carry the tracked debt"
+        # An empty list is the healthy end state: every tracked entry got fixed and the
+        # fix waves' prune PR cleared them. Requiring debt made clearing the baseline a
+        # red build (it did, right after the zeroing PR landed on master).
+        assert isinstance(entries, list), "entries must stay a list, empty when the debt is cleared"
 
         for entry in entries:
             assert set(entry) >= {"repo", "path", "terms"}, entry
@@ -115,6 +118,10 @@ class test_full_scan:
         workspace, baseline = self._workspace(tmp_path)
         monkeypatch.setattr(domain_leak, "WORKSPACE", workspace)
         monkeypatch.setattr(domain_leak, "BASELINE", baseline)
+        # The test declares its throwaway workspace, so it vouches for the root the way
+        # a marker walk would; without this the full-scan fail-closed guard would (rightly)
+        # refuse in a bare CI checkout that carries no workspace markers.
+        monkeypatch.setattr(domain_leak, "WORKSPACE_SOURCE", domain_leak.WORKSPACE_SOURCE_MARKER)
         rc, new_hits, known_hits, stale = domain_leak.run_scan(quiet = True)
         assert rc == 1
         assert [hit["path"] for hit in new_hits] == ["src/leak.rs"]

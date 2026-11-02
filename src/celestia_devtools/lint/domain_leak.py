@@ -33,9 +33,12 @@ plus ``_ledger/``). The depth is deliberately *not* hardcoded: measured from thi
 file, the workspace is ``parents[4]`` in a main checkout
 (``<ws>/celestia-devtools/src/celestia_devtools/lint/``) but ``parents[6]`` from a
 workspace worktree (``<ws>/_worktree/celestia-devtools/<slug>/src/...``), so a
-fixed index would silently scan the wrong tree. The devtools checkout's parent is
-the last resort, which at least produces a usable error message for a detached
-copy.
+fixed index would silently scan the wrong tree. When neither a declared root nor a
+marker walk succeeds (an installed wheel, an unfamiliar cwd) the checkout's parent is
+returned as a last resort flagged as a *fallback*: the full scan then refuses with
+``rc 2`` instead of reporting a green scan over zero reachable repositories. A
+declared root (``--workspace`` / ``$CELESTIA_WORKSPACE``) keeps the old semantics -
+the caller owns the risk of an empty scan.
 
 Usage::
 
@@ -50,8 +53,8 @@ Usage::
 
 Exit codes: ``0`` clean or baseline-only; ``1`` a hit outside the baseline (or a
 failing self-test); ``2`` configuration, usage or git error - fail closed: an
-unusable git checkout or an unidentifiable repository refuses to pass instead of
-silently skipping.
+unusable git checkout, an unidentifiable repository, or a full scan with no declared
+root and no workspace markers refuses to pass instead of silently skipping.
 """
 
 from __future__ import annotations
@@ -110,25 +113,44 @@ def looks_like_workspace(path: Path) -> bool:
     """
     return (path / "_tools" / "claim.py").is_file() and (path / "_ledger").is_dir()
 
-def resolve_workspace(explicit: str | None = None, env: Dict[str, str] | None = None) -> Path:
-    """Resolve the workspace root: flag, environment, then the checkout's ancestors.
+# How the workspace root was arrived at. The full scan needs this split: a caller
+# that declared the root (flag or environment) owns the risk of an empty scan, and a
+# marker walk proves the root is a workspace - but the last-resort parent fallback
+# proves nothing, and scanning it to report a clean pass is a silent green.
+WORKSPACE_SOURCE_FLAG = "flag"
+WORKSPACE_SOURCE_ENV = "env"
+WORKSPACE_SOURCE_MARKER = "marker"
+WORKSPACE_SOURCE_FALLBACK = "fallback"
+
+def resolve_workspace_source(explicit: str | None = None, env: Dict[str, str] | None = None) -> tuple[Path, str]:
+    """Resolve the workspace root together with how it was found.
 
     The devtools checkout normally sits at ``<workspace>/celestia-devtools``, so the
     walking fallback finds the workspace without hardcoding an absolute mount path
-    (worktrees and secondary clones resolve the same way); the parent directory is
-    the last resort so a detached copy still produces a usable error message.
+    (worktrees and secondary clones resolve the same way). When neither a declaration
+    nor a marker walk succeeds - an installed wheel, an unfamiliar cwd - the parent
+    directory is returned as a last resort flagged as ``fallback``, so the caller can
+    refuse instead of reporting a silent green over zero reachable repositories.
     """
     env = dict(os.environ) if env is None else env
 
-    for candidate in (explicit, env.get(WORKSPACE_PATH_ENV)):
-        if candidate:
-            return Path(candidate).expanduser().resolve()
+    if explicit:
+        return Path(explicit).expanduser().resolve(), WORKSPACE_SOURCE_FLAG
+
+    from_env = env.get(WORKSPACE_PATH_ENV)
+
+    if from_env:
+        return Path(from_env).expanduser().resolve(), WORKSPACE_SOURCE_ENV
 
     for candidate in _REPO_ROOT.parents:
         if looks_like_workspace(candidate):
-            return candidate
+            return candidate, WORKSPACE_SOURCE_MARKER
 
-    return _REPO_ROOT.parent
+    return _REPO_ROOT.parent, WORKSPACE_SOURCE_FALLBACK
+
+def resolve_workspace(explicit: str | None = None, env: Dict[str, str] | None = None) -> Path:
+    """Resolve the workspace root only (see :func:`resolve_workspace_source`)."""
+    return resolve_workspace_source(explicit, env)[0]
 
 def resolve_baseline(explicit: str | None = None, env: Dict[str, str] | None = None) -> Path:
     """Resolve the baseline file: flag, environment, then the copy bundled here."""
@@ -140,7 +162,7 @@ def resolve_baseline(explicit: str | None = None, env: Dict[str, str] | None = N
 
     return _PACKAGE_BASELINE
 
-WORKSPACE = resolve_workspace()
+WORKSPACE, WORKSPACE_SOURCE = resolve_workspace_source()
 BASELINE = resolve_baseline()
 
 def find_terms(text: str, extra: str = "") -> list[str]:
@@ -405,7 +427,22 @@ def run_pushed(stdin_text: str, quiet: bool) -> int:
     return rc
 
 def run_scan(quiet: bool = False) -> tuple[int, list[dict], list[dict], list[dict]]:
-    """Return (rc, new hits, baseline hits, stale baseline entries)."""
+    """Return (rc, new hits, baseline hits, stale baseline entries).
+
+    Fails closed (``rc 2``) when nothing vouches for the root: with no declared root
+    and no marker walk, every repository below is merely "missing", which used to
+    print a green ``rc 0`` (the L68 follow-up). An explicit ``--workspace`` or
+    ``$CELESTIA_WORKSPACE`` keeps the old semantics - the caller declared the root and
+    owns the risk of an empty scan.
+    """
+
+    if WORKSPACE_SOURCE == WORKSPACE_SOURCE_FALLBACK:
+        # Deliberately not silenced by --quiet: a configuration failure nobody can
+        # read is the same trap as a quiet rejection in hook mode.
+        print(f"domain-leak: no workspace markers found above {_REPO_ROOT} - pass --workspace or set {WORKSPACE_PATH_ENV} (refusing to report a green scan over zero reachable repositories)", file = sys.stderr)
+
+        return 2, [], [], []
+
     baseline = {key(e): e for e in load_baseline()["entries"]}
     new_hits: list[dict] = []
     known_hits: list[dict] = []
@@ -451,11 +488,22 @@ def report(new_hits: list[dict], known_hits: list[dict], stale: list[dict], elap
 
     print(f"total: new {len(new_hits)} (rc {'1' if new_hits else '0'}) | baseline {len(known_hits)}" f" | stale {len(stale)} | {elapsed:.2f}s")
 
+def _capture_cli(argv: Sequence[str]) -> tuple[int, str, str]:
+    """Run :func:`main` with both streams captured (self-test harness only)."""
+    out, err = io.StringIO(), io.StringIO()
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+
+    try:
+        return main(argv), out.getvalue(), err.getvalue()
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
+
 def selftest() -> int:
     """Self-proof with known positives and negatives: the patterns hit, the baseline
     mechanism works, and the domain zone stays exempt.
     """
-    global WORKSPACE, BASELINE
+    global WORKSPACE, BASELINE, WORKSPACE_SOURCE
     tmp = Path(tempfile.mkdtemp(prefix = "dlscan-selftest-"))
 
     try:
@@ -495,12 +543,75 @@ def selftest() -> int:
 
         print("selftest: 7/7 assertions passed (3 positive, 1 negative, 1 exemption, 1 reach, 1 aggregation)")
 
-        # ── Part two: hook mode against a real git repository (not a mock) ──
+        # ── Part two: full-scan fail-closed without a vouched-for root ──
+        detached = tmp / "detached-no-markers"
+        detached.mkdir(exist_ok = True)
+        ws_backup_detached, source_backup_detached, base_backup_detached = WORKSPACE, WORKSPACE_SOURCE, BASELINE
+
+        try:
+            WORKSPACE = detached
+            WORKSPACE_SOURCE = WORKSPACE_SOURCE_FALLBACK
+            BASELINE = tmp / "detached-baseline.json"
+            BASELINE.write_text('{"entries": []}', encoding = "utf-8")
+            err_detached = io.StringIO()
+            _sb_detached, sys.stderr = sys.stderr, err_detached
+
+            try:
+                rc_detached, _, _, _ = run_scan(quiet = True)
+            finally:
+                sys.stderr = _sb_detached
+
+            assert rc_detached == 2, f"a full scan with no declared root and no workspace markers must fail closed (rc={rc_detached})"
+            assert err_detached.getvalue().strip(), "the fail-closed full scan said nothing on stderr"
+        finally:
+            WORKSPACE, WORKSPACE_SOURCE, BASELINE = ws_backup_detached, source_backup_detached, base_backup_detached
+
+        # ── Part three: the CLI contract of both refusals (quiet stdout, --quiet tight, --json keys) ──
+        empty_root = tmp / "cli-empty-root"
+        empty_root.mkdir(exist_ok = True)
+        guarded_baseline = tmp / "cli-guarded-baseline.json"
+        guarded_baseline.write_text('{"entries": [{"repo": "kirino", "path": "src/leak.rs", "terms": ["hydrogen"], "note": "guard"}]}', encoding = "utf-8")
+        guarded_bytes = guarded_baseline.read_bytes()
+        ws_backup_cli, source_backup_cli, base_backup_cli = WORKSPACE, WORKSPACE_SOURCE, BASELINE
+
+        try:
+            WORKSPACE, WORKSPACE_SOURCE, BASELINE = empty_root, WORKSPACE_SOURCE_FLAG, guarded_baseline
+            rc_prune, out_prune, err_prune = _capture_cli(["--prune-baseline"])
+            assert rc_prune == 2, f"prune with no reachable repository must refuse (rc={rc_prune})"
+            assert out_prune == "", "the refused prune must keep stdout empty"
+            assert err_prune.strip(), "the refused prune said nothing on stderr"
+            assert guarded_baseline.read_bytes() == guarded_bytes, "the refused prune still rewrote the baseline"
+            rc_prune_quiet, _, err_prune_quiet = _capture_cli(["--prune-baseline", "--quiet"])
+            assert (rc_prune_quiet == 2) and err_prune_quiet.strip(), "--quiet swallowed the prune refusal"
+            rc_prune_json, out_prune_json, _ = _capture_cli(["--prune-baseline", "--json"])
+            payload_prune = json.loads(out_prune_json)
+            assert (rc_prune_json == 2) and (payload_prune["rc"] == 2) and (set(payload_prune) == {"new", "baseline", "stale", "rc"}), (f"the refused prune broke the --json contract (rc={rc_prune_json}, keys={sorted(payload_prune)})")
+            partial_root = tmp / "cli-partial-root"
+            (partial_root / "kirino" / "src").mkdir(parents = True, exist_ok = True)
+            WORKSPACE, WORKSPACE_SOURCE = partial_root, WORKSPACE_SOURCE_FLAG
+            rc_partial, out_partial, err_partial = _capture_cli(["--prune-baseline"])
+            assert rc_partial == 2, f"a prune with only part of the reach must refuse (rc={rc_partial})"
+            assert (out_partial == "") and err_partial.strip(), "the partial-root prune refusal leaked or stayed silent"
+            assert guarded_baseline.read_bytes() == guarded_bytes, "the partial-root prune still rewrote the baseline"
+            WORKSPACE, WORKSPACE_SOURCE = detached, WORKSPACE_SOURCE_FALLBACK
+            rc_scan, out_scan, err_scan = _capture_cli([])
+            assert (rc_scan == 2) and (out_scan == "") and err_scan.strip(), "the CLI-level full-scan refusal leaked or stayed silent"
+            rc_scan_json, out_scan_json, _ = _capture_cli(["--json"])
+            assert (rc_scan_json == 2) and (json.loads(out_scan_json)["rc"] == 2), "--json lost the full-scan refusal code"
+        finally:
+            WORKSPACE, WORKSPACE_SOURCE, BASELINE = ws_backup_cli, source_backup_cli, base_backup_cli
+
+        # ── Part four: hook mode against a real git repository (not a mock) ──
         ws_backup = WORKSPACE
         base_backup = BASELINE
+        source_backup = WORKSPACE_SOURCE
 
         try:
             WORKSPACE = tmp
+            # The self-test owns this throwaway workspace, so it vouches for the root
+            # exactly like a marker walk would; without this the full-scan fail-closed
+            # guard would (correctly) refuse in a bare CI checkout that has no markers.
+            WORKSPACE_SOURCE = WORKSPACE_SOURCE_MARKER
             BASELINE = tmp / "baseline.json"
             BASELINE.write_text('{"entries": []}', encoding = "utf-8")
             grepo = tmp / "kirino"
@@ -583,7 +694,13 @@ def selftest() -> int:
                 (grepo / "src" / "blob.rs").unlink()
                 # A new branch with no base falls back to the whole tree and still hits
                 rc_fulltree = run_pushed(f"refs/heads/newbr {head} refs/heads/newbr {zeros}", True)
-                # prune keeps the _doc metadata and a new hit still returns rc 1
+
+                for repo in SCOPE:
+                    (tmp / repo).mkdir(exist_ok = True)
+
+                # Concatenate the complete reach above first: prune keeps the _doc
+                # metadata, but it refuses when any scanned repository is missing (Part
+                # three covers that refusal on purpose). The remaining hit still gives rc 1.
                 baseline_text = '{"_doc": "keepme", "entries": [{"repo": "kirino", "path": "nope/gone.rs", "terms": ["hydrogen"], "note": "stale"}]}'
                 BASELINE.write_text(baseline_text, encoding = "utf-8")
                 rc_prune = main(["--prune-baseline", "--quiet"])
@@ -607,8 +724,9 @@ def selftest() -> int:
         finally:
             WORKSPACE = ws_backup
             BASELINE = base_backup
+            WORKSPACE_SOURCE = source_backup
 
-        print("selftest: +12 assertions passed (staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
+        print("selftest: +24 assertions passed (detached full-scan fail-closed / cli refusal contract / prune-no-repository + partial-root guard / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
         return 0
     except AssertionError as e:
         print(f"selftest: FAILED - {e}", file = sys.stderr)
@@ -632,10 +750,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Overrides apply only when asked for: the self-test reassigns these module
     # globals itself, and an unconditional re-resolve would both defeat that and
     # point --prune-baseline at the bundled baseline file.
-    global WORKSPACE, BASELINE
+    global WORKSPACE, BASELINE, WORKSPACE_SOURCE
 
     if args.workspace:
-        WORKSPACE = resolve_workspace(args.workspace)
+        WORKSPACE, WORKSPACE_SOURCE = resolve_workspace_source(args.workspace)
 
     if args.baseline:
         BASELINE = resolve_baseline(args.baseline)
@@ -655,7 +773,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     t0 = time.monotonic()
     rc, new_hits, known_hits, stale = run_scan(quiet = args.quiet)
 
+    if rc == 2:
+        # Fail-closed: run_scan already said why on stderr. Return before the ordinary
+        # report (a "0 new hits" summary next to a refusal reads like a pass) and before
+        # any prune (a refused scan knows nothing about staleness). --json still emits
+        # the same four keys so consumers keep one schema and read rc=2.
+        if args.json:
+            print(json.dumps({"new": new_hits, "baseline": known_hits, "stale": stale, "rc": rc}, ensure_ascii = False))
+
+        return rc
+
     if args.prune_baseline:
+        # A prune needs the whole reach, not part of it: entries belonging to a repository
+        # that is not even checked out here would look stale and be deleted from a
+        # committed file. Refuse like the other fail-closed paths: stdout stays empty,
+        # --quiet does not swallow it, and --json keeps its four keys.
+        missing_for_prune = [repo for repo in SCOPE if not (WORKSPACE / repo).is_dir()]
+
+        if missing_for_prune:
+            print(f"domain-leak: --prune-baseline refused - {len(missing_for_prune)} of {len(SCOPE)} scanned repositories are missing under {WORKSPACE} ({', '.join(missing_for_prune)}); their entries would look stale", file = sys.stderr)
+
+            if args.json:
+                print(json.dumps({"new": [], "baseline": [], "stale": [], "rc": 2}, ensure_ascii = False))
+
+            return 2
+
         raw = load_baseline()
 
         if stale:
