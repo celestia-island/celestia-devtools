@@ -618,7 +618,7 @@ celestia-devtools domain-leak --staged         # pre-commit: this repo's staged 
 celestia-devtools domain-leak --pushed         # pre-push: ref lines on stdin
 celestia-devtools domain-leak --pushed-range B H # CI: the diff of B..H
 celestia-devtools domain-leak --json           # machine-readable
-celestia-devtools domain-leak --selftest       # 31 assertions: patterns, hooks, prune
+celestia-devtools domain-leak --selftest       # 34 assertions: patterns, hooks, prune
 ```
 
 - **Reach** — each repository in `SCOPE` is scanned in full (any tracked-file
@@ -637,7 +637,10 @@ celestia-devtools domain-leak --selftest       # 31 assertions: patterns, hooks,
   batch so a repaired entry never lingers.
 - **Fail-closed** — hook mode refuses (`rc 2`) when the repository cannot be
   identified by path or by a family `origin`, instead of silently passing; a
-  violation is always printed to stderr even under `--quiet`. The full scan refuses
+  violation is always printed to stderr even under `--quiet`, and so is every
+  warning (a missing repository, a refusal reason): `--quiet` silences the *report*
+  body and the summary line, never the fact that the scan could not see everything
+  it claims to cover. The full scan refuses
   (`rc 2`) too when **no root was declared and no workspace markers were found**
   (an installed wheel, a checkout outside the workspace): scanning anyway would
   report a green pass over zero reachable repositories. Declaring the root with
