@@ -32,6 +32,7 @@ Exit codes: 0 executed (or a clean dry run) | 2 usage | 3 refused | 4 execution 
 from __future__ import annotations
 import argparse
 import json
+import re
 import shlex
 import sys
 import time
@@ -54,7 +55,15 @@ SUPPORTED_ACTIONS = (ACTION_RESTART, ACTION_DRAIN)
 
 #: Bundle keys the executor cannot work without. ``pid``/``starttime`` are checked in step 4
 #: under their own code (``identity_missing``) so the two failures stay distinguishable.
-REQUIRED_FIELDS = ("proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes")
+#: Keys whose absence is a pure shape error. ``expires_at`` is checked separately: a bundle
+#: with no deadline is well-formed but cannot prove its approval is live (``window_expired``).
+REQUIRED_FIELDS = ("proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "severity")
+
+#: Scepter's internal proposal id: ``judge:`` + a UUID.
+PROPOSAL_PREFIX = "judge:"
+
+#: The gate token is a bare 32-character lowercase hex string (malkuth treats it as opaque).
+GATE_TOKEN = re.compile(r"[0-9a-f]{32}")
 
 #: The judge report status that may be acted on at all. A report that is ``ok``,
 #: ``indeterminate`` or ``unavailable`` has no finding to act on — ``unavailable`` especially:
@@ -172,21 +181,33 @@ def parse_handoff(payload: Any) -> handoff:
     if missing:
         raise act_error("bundle_invalid", f"the handoff bundle is missing {missing}")
 
-    gate = _string(payload, "gate_proposal_id")
-    severity = _string(payload, "severity", required = False) or ""
+    gate = _string(payload, "gate_proposal_id") or ""
+
+    if GATE_TOKEN.fullmatch(gate) is None:
+        raise act_error("bundle_invalid", "`gate_proposal_id` must be exactly 32 lowercase hex characters")
+
+    proposal_id = _string(payload, "proposal_id") or ""
+
+    if not proposal_id.startswith(PROPOSAL_PREFIX):
+        raise act_error("bundle_invalid", f"`proposal_id` must be scepter's internal id (a {PROPOSAL_PREFIX!r} prefix)")
+
+    severity = _string(payload, "severity") or ""
     report_status = _string(payload, "report_status", required = False) or _string(payload, "status", required = False)
     expires_at = payload.get("expires_at")
-    horizon: float | None = None
 
-    if expires_at is not None:
-        horizon = _timestamp(expires_at)
+    if expires_at is None:
+        # No stated deadline means the approval cannot be proven live. Fail closed with the
+        # window code rather than a shape error: the bundle itself is well-formed.
+        raise act_error("window_expired", "the handoff states no execution deadline: a stale approval cannot be told from a live one", hint = "the bundle must carry the row's `expires_at`")
+
+    horizon = _timestamp(expires_at)
 
     drain_kind = _string(payload, "drain_kind", required = False) or "graceful"
 
     if drain_kind not in ("graceful", "immediate"):
         raise act_error("bundle_invalid", "`drain_kind` must be `graceful` or `immediate`")
 
-    parsed = handoff(proposal_id = _string(payload, "proposal_id") or "", gate_proposal_id = gate or "", run_id = _string(payload, "run_id") or "", worker_id = _string(payload, "worker_id") or "", action = (_string(payload, "action") or "").lower(), verdict_code = (_string(payload, "verdict_code") or "").upper(), codes = _codes(payload), severity = severity.lower(), pid = _optional_int(payload, "pid"), starttime = _optional_int(payload, "starttime"), report_status = (report_status or "").lower() or None, expires_at = horizon, drain_kind = drain_kind)
+    parsed = handoff(proposal_id = proposal_id, gate_proposal_id = gate, run_id = _string(payload, "run_id") or "", worker_id = _string(payload, "worker_id") or "", action = (_string(payload, "action") or "").lower(), verdict_code = (_string(payload, "verdict_code") or "").upper(), codes = _codes(payload), severity = severity.lower(), pid = _optional_int(payload, "pid"), starttime = _optional_int(payload, "starttime"), report_status = (report_status or "").lower() or None, expires_at = horizon, drain_kind = drain_kind)
     return parsed
 
 def check_action_supported(bundle: handoff) -> None:
@@ -384,7 +405,7 @@ def _exit_for(status: str, code: str = "") -> int:
 
     return EXIT_FAILED
 
-def main(argv: list[str] | None = None, *, stream_in: Any = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     raw = sys.stdin.read() if args.handoff == "-" else _read_file(args.handoff)
 

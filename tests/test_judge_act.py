@@ -29,7 +29,7 @@ JUDGE_SOURCES = Path(cli.__file__).resolve().parent
 GATE = "0" * 32
 
 def _bundle(**overrides) -> dict:
-    bundle = {"proposal_id": "judge:0190f0f0-0000-7000-8000-000000000001", "gate_proposal_id": GATE, "run_id": "run-1", "worker_id": "app", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": 4242, "starttime": 99, "report_status": "failed"}
+    bundle = {"proposal_id": "judge:0190f0f0-0000-7000-8000-000000000001", "gate_proposal_id": GATE, "run_id": "run-1", "worker_id": "app", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": 4242, "starttime": 99, "report_status": "failed", "expires_at": 2_000_000_000}
     bundle.update(overrides)
     return bundle
 
@@ -64,6 +64,42 @@ def test_a_missing_field_is_bundle_invalid(missing: str) -> None:
 
     assert caught.value.code == "bundle_invalid"
     assert missing in caught.value.message
+
+def test_a_missing_severity_is_refused() -> None:
+    payload = _bundle()
+    payload.pop("severity")
+
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(payload)
+
+    assert caught.value.code == "bundle_invalid"
+    assert "severity" in caught.value.message
+
+@pytest.mark.parametrize("token", ["A" * 32, "abc", "g" * 32, "0" * 31, "0" * 33, "judge:{}".format("0" * 32)])
+def test_a_malformed_gate_token_is_refused(token: str) -> None:
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(_bundle(gate_proposal_id = token))
+
+    assert caught.value.code == "bundle_invalid"
+    assert ("gate_proposal_id" in caught.value.message)
+
+@pytest.mark.parametrize("proposal_id", ["0190f0f0-0000-7000-8000-000000000001", "gate:abc"])
+def test_a_proposal_id_without_its_prefix_is_refused(proposal_id: str) -> None:
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(_bundle(proposal_id = proposal_id))
+
+    assert caught.value.code == "bundle_invalid"
+    assert "judge:" in caught.value.message
+
+def test_a_bundle_without_a_deadline_cannot_prove_its_approval_live() -> None:
+    payload = _bundle()
+    payload.pop("expires_at")
+
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(payload)
+
+    assert caught.value.code == "window_expired"
+    assert "expires_at" in caught.value.hint
 
 @pytest.mark.parametrize("payload", [None, [], "text", 3])
 def test_a_non_object_bundle_is_refused(payload) -> None:
@@ -316,7 +352,6 @@ def test_the_executor_refuses_a_server_without_the_gate(monkeypatch, capsys) -> 
 
 def test_the_action_allowlist_is_exactly_the_four_gate_tools() -> None:
     assert ACTION_TOOLS == {"malkuth_status", "malkuth_approve", "malkuth_restart", "malkuth_drain"}
-    assert not (ACTION_TOOLS & frozenset({"malkuth_logs", "malkuth_probe"})) or True
     assert READ_ONLY_TOOLS == {"malkuth_status", "malkuth_logs", "malkuth_probe"}
 
 def test_the_judgement_session_still_refuses_an_action_tool() -> None:
@@ -459,7 +494,7 @@ def test_a_real_malkuth_restart_executes_through_the_gate() -> None:
 
         assert run_id, "the supervision never appeared in the registry"
         target = _running_target(session)
-        bundle = act.parse_handoff({"proposal_id": "judge:real-1", "gate_proposal_id": "a" * 32, "run_id": run_id, "worker_id": "demo-0", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": target.pid, "starttime": target.starttime, "report_status": "failed"})
+        bundle = act.parse_handoff({"proposal_id": "judge:real-1", "gate_proposal_id": "a" * 32, "run_id": run_id, "worker_id": "demo-0", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": target.pid, "starttime": target.starttime, "report_status": "failed", "expires_at": 2_000_000_000})
         act.check_action_supported(bundle)
         act.check_justification(bundle)
         outcome = act.run_act(bundle, session)
