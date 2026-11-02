@@ -44,10 +44,8 @@ Actions (restart/drain) are PR-2 and need a target-bound approval chain (L61).
 from __future__ import annotations
 import argparse
 import json
-import os
 import shlex
 import sys
-import threading
 import time
 from collections.abc import Sequence
 from celestia_devtools.judge import act, advice, demo_fleet, fleet
@@ -197,24 +195,9 @@ def _await_probe(session: mcp_session, url: str, *, timeout: float, probe_timeou
 
     return False
 
-def _start_demo(session: mcp_session, args: argparse.Namespace) -> dict:
-    """Start the demo supervision in a background thread; it blocks until malkuth drains."""
-    timeout = args.supervise_timeout if args.supervise_timeout > 0 else max(10.0, (args.ticks * args.interval) + 8.0)
-    state: dict = {}
-
-    def drive() -> None:
-        try:
-            state["result"] = demo_fleet.start_supervision(session, [shlex.split(command) for command in args.supervise], timeout_secs = timeout, max_restarts = args.max_restarts)
-        except (mcp_error, mcp_unavailable, ValueError) as error:
-            state["error"] = str(error)
-
-    thread = threading.Thread(target = drive, name = "demo-supervision", daemon = True)
-    thread.start()
-    state["thread"] = thread
-    seen, workers = demo_fleet.wait_for_run(session)
-    state["run_seen"] = seen
-    state["workers"] = workers
-    return state
+def _supervise_budget(args: argparse.Namespace) -> float:
+    """How long the demo supervision lives (its own drain is the default)."""
+    return args.supervise_timeout if args.supervise_timeout > 0 else max(10.0, (args.ticks * args.interval) + 8.0)
 
 def _render(args: argparse.Namespace, observation: fleet.observation, latest: fleet.tick) -> int:
     verdicts = fleet.evaluate(observation, limits_from_args(args))
@@ -274,7 +257,7 @@ def _print_unevaluated(observation: fleet.observation) -> None:
         print(f"  未评估 {codes} [{item.scope}]: {item.reason}")
 
 def main(argv: Sequence[str] | None = None) -> int:
-    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
 
     if argv and (argv[0] == ACTION_SUBCOMMAND):
         # The executor lives in its own module with its own tool allowlist; the judgement
@@ -299,8 +282,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = shlex.split(args.mcp_cmd)
     observation = fleet.observation()
     session = mcp_session(command, timeout = args.call_timeout)
-    demo: dict = {}
-    leftovers: set[int] = set()
 
     try:
         session.open()
@@ -310,63 +291,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cannot_judge(f"MCP server {args.mcp_cmd!r} does not advertise {missing}; " "it predates the wave-4 read arms, so no judgement is possible", as_json = args.json)
 
         if args.supervise:
-            demo = _start_demo(session, args)
+            commands = [shlex.split(demo_command) for demo_command in args.supervise]
 
-            if demo.get("error"):
-                return _cannot_judge(f"--supervise failed: {demo['error']}", as_json = args.json)
+            with demo_fleet.supervision(session, commands, timeout_secs = _supervise_budget(args), max_restarts = args.max_restarts) as demo:
+                if demo.error:
+                    return _cannot_judge(f"--supervise failed: {demo.error}", as_json = args.json)
 
-            if not demo.get("run_seen"):
-                return _cannot_judge(f"--supervise started but no run appeared within the settle window ({args.supervise_timeout or 'auto'}s)", as_json = args.json)
+                if not demo.run_seen:
+                    return _cannot_judge(f"--supervise started but no run appeared within the settle window ({args.supervise_timeout or 'auto'}s)", as_json = args.json)
 
-            # Snapshot the descendants at TEARDOWN (below), not here: a supervisor-shaped demo
-            # command spawns its own children a moment after the run appears, and an early
-            # snapshot would miss exactly the grandchildren that leak.
-            demo["worker_pids"] = list(demo["workers"])
+                if args.probe_url:
+                    _await_probe(session, args.probe_url, timeout = args.probe_wait, probe_timeout = args.probe_timeout, budget = _probe_budget(args))
 
-        if args.probe_url:
-            _await_probe(session, args.probe_url, timeout = args.probe_wait, probe_timeout = args.probe_timeout, budget = _probe_budget(args))
+                failure = _collect(session, observation, ticks = args.ticks, interval = args.interval, logs_lines = args.logs_lines, probe_url = args.probe_url, probe_timeout = args.probe_timeout, probe_budget = _probe_budget(args))
 
-        failure = _collect(session, observation, ticks = args.ticks, interval = args.interval, logs_lines = args.logs_lines, probe_url = args.probe_url, probe_timeout = args.probe_timeout, probe_budget = _probe_budget(args))
+                if failure is not None:
+                    return _cannot_judge(failure, as_json = args.json)
+        else:
+            if args.probe_url:
+                _await_probe(session, args.probe_url, timeout = args.probe_wait, probe_timeout = args.probe_timeout, budget = _probe_budget(args))
 
-        if failure is not None:
-            return _cannot_judge(failure, as_json = args.json)
+            failure = _collect(session, observation, ticks = args.ticks, interval = args.interval, logs_lines = args.logs_lines, probe_url = args.probe_url, probe_timeout = args.probe_timeout, probe_budget = _probe_budget(args))
+
+            if failure is not None:
+                return _cannot_judge(failure, as_json = args.json)
     except (mcp_error, mcp_unavailable) as e:
         return _cannot_judge(str(e), as_json = args.json)
     finally:
-        # Snapshot BEFORE the join: the join waits for malkuth's drain, and by then the
-        # demo supervisor is dead and its pods have been reparented to init — unreachable
-        # by a ppid walk. Capturing while it is still alive is the only way to know them.
-        for pid in demo.get("worker_pids", []):
-            leftovers |= demo_fleet.descendants(pid)
-
-        if demo.get("thread") is not None:
-            demo["thread"].join(timeout = (args.supervise_timeout or max(10.0, (args.ticks * args.interval) + 8.0)) + 5.0)
-
-        for pid in demo.get("worker_pids", []):
-            leftovers |= demo_fleet.descendants(pid)
-
         session.close()
-        # The supervised workers themselves too: malkuth reaps them on shutdown, but a slow
-        # child can outlive the session close by a moment; the demo's own processes should
-        # not be left waiting for that.
-        leftovers |= {int(pid) for pid in demo.get("worker_pids", []) if isinstance(pid, int)}
-        # A pid from the status payload is a hint, not an identity: the process may be gone
-        # and the number recycled. Only a process whose cmdline still matches a demo command
-        # is terminated (an empty pid list never reaches the killer).
-        expected = [os.path.realpath(shlex.split(command)[0]) for command in args.supervise if shlex.split(command)]
-
-        if leftovers:
-            demo_fleet.terminate(sorted(leftovers), expect = expected)
-
-        if args.supervise:
-            # Not gated on `worker_pids`: malkuth registers the run before it spawns, so the
-            # first status can legitimately show `pid: null` and the demo would skip cleanup
-            # entirely. The sweep is identity- and cwd-scoped, so it is safe to always run.
-            commands = [shlex.split(command) for command in args.supervise]
-
-            for _ in range(4):
-                demo_fleet.sweep_abandoned(commands)
-                time.sleep(0.2)
 
     latest = observation.latest()
     assert latest is not None  # _collect guarantees at least one tick

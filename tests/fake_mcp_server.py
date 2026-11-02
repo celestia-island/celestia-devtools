@@ -29,7 +29,7 @@ ACT_PID = 4242
 ACT_STARTTIME = 99
 
 #: Modes that drive the executor: status payload + gate answers per mode.
-ACTION_MODES = frozenset({"act-ok", "act-required", "act-consumed", "act-blocked", "act-expired", "act-changed", "act-no-starttime", "act-drain-ok"})
+ACTION_MODES = frozenset({"act-ok", "act-required", "act-consumed", "act-blocked", "act-expired", "act-changed", "act-no-starttime", "act-drain-ok", "act-empty"})
 
 def _content(payload) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
@@ -55,7 +55,15 @@ class fake_server:
         if self.mode == "empty":
             return {"ok": True, "runs": []}
 
+        if self.mode == "act-empty":
+            return {"ok": True, "runs": []}
+
         if self.mode in ACTION_MODES:
+            if self.supervised:
+                # The demo switch supervises a command through this server; the run it
+                # brought is what the executor acts on.
+                return {"ok": True, "runs": [_run([_worker(id = "demo-0", pid = ACT_PID, starttime = ACT_STARTTIME)])]}
+
             pid, starttime = ACT_PID, ACT_STARTTIME
 
             if self.mode == "act-changed":

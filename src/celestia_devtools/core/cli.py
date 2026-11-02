@@ -120,7 +120,8 @@ from this help)::
                        status/logs/probe read tools over N ticks and reports
                        mechanical verdicts with evidence. Never acts; the
                        `judge-fleet act` subcommand is the separate executor
-                       (one approved action from a handoff bundle)
+                       (one approved action from a handoff bundle), with a
+                       `--supervise` demo switch that brings its own fleet
 
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and
