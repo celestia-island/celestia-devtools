@@ -1,0 +1,390 @@
+{
+  "_doc": "领域渗漏基线（2026-11-01；口径=整仓+文档后缀+路径级词面+本地化氢词+产品仓名引用）。A1=机械清理波；A2=设计迁移 3 处；A3=文档/个案小波；A3p=提示词冻结面。修复 PR 同批 --prune-baseline；基线只增删于 lead 手。",
+  "entries": [
+    {
+      "repo": "entelecheia",
+      "path": "res/prompts/system/container-edge-mode.md",
+      "terms": [
+        "electrolyzer"
+      ],
+      "note": "A3+：提示词冻结面（改前必读 prompt-purity：prompt_lint+负对照+对源码核）",
+      "wave": "A3p"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "res/prompts/agents/orexis/tools/audit_legality.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3+：提示词冻结面（改前必读 prompt-purity：prompt_lint+负对照+对源码核）",
+      "wave": "A3p"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ko/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ko/designs/architecture.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ko/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ja/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ja/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/es/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/es/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ru/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ru/designs/architecture.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ru/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/fr/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/fr/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/de/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/de/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/en/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/en/designs/architecture.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/en/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "electrolyzer",
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ar/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ar/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/zh-Hant/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/zh-Hant/designs/architecture.md",
+      "terms": [
+        "hydrogen",
+        "氫"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/zh-Hant/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen",
+        "氫",
+        "電解槽"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/pt/SUMMARY.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/pt/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/zh-Hans/SUMMARY.md",
+      "terms": [
+        "hydrogen",
+        "氢"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/zh-Hans/designs/architecture.md",
+      "terms": [
+        "氢"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/zh-Hans/guides/hydrogen-plant-case-study.md",
+      "terms": [
+        "hydrogen",
+        "氢",
+        "电解槽"
+      ],
+      "note": "A3：文档存量——案例章迁 vertical docs 域/celestia-integration（多语言小波）",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ja/designs/architecture.md",
+      "terms": [
+        "水素"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/es/designs/architecture.md",
+      "terms": [
+        "hidrógeno"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/fr/designs/architecture.md",
+      "terms": [
+        "hydrogène"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/de/designs/architecture.md",
+      "terms": [
+        "wasserstoff"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/ar/designs/architecture.md",
+      "terms": [
+        "الهيدروجين"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "docs/pt/designs/architecture.md",
+      "terms": [
+        "hidrogênio"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "aoba",
+      "path": "docs/ko/API_MODBUS_MASTER.md",
+      "terms": [
+        "수소"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "aoba",
+      "path": "docs/ja/API_MODBUS_MASTER.md",
+      "terms": [
+        "水素"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "aoba",
+      "path": "docs/es/API_MODBUS_MASTER.md",
+      "terms": [
+        "hidrógeno"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "aoba",
+      "path": "docs/ru/API_MODBUS_MASTER.md",
+      "terms": [
+        "водород"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "aoba",
+      "path": "docs/fr/API_MODBUS_MASTER.md",
+      "terms": [
+        "hydrogène"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "aoba",
+      "path": "docs/ar/API_MODBUS_MASTER.md",
+      "terms": [
+        "الهيدروجين"
+      ],
+      "note": "A3：文档存量——本地化氢词，案例章迁移小波",
+      "wave": "A3"
+    },
+    {
+      "repo": "entelecheia",
+      "path": "res/prompts/system/commit-convention.md",
+      "terms": [
+        "easy-hydro"
+      ],
+      "note": "A3+：提示词冻结面（改前必读 prompt-purity：prompt_lint+负对照+对源码核）",
+      "wave": "A3p"
+    }
+  ]
+}

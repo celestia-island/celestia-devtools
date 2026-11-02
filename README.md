@@ -581,6 +581,51 @@ jobs:
 check. An open P0 then blocks the repo's PRs until someone closes the ledger
 entry or writes the acknowledgment.
 
+## Domain Leak Gate
+
+A strategy of "one generic host, many vertical instances" degrades in small steps:
+industry vocabulary seeps into the host core until a second domain can no longer be
+plugged in. A rule nobody can run is a suggestion, so
+`celestia-devtools domain-leak` makes the criterion executable. It scans the
+host-core repositories listed in `SCOPE` (whole repository; `domain_*` packages are
+the legitimate domain zone) for the industry terms listed in `TERMS`, and exits
+non-zero on any hit that the baseline does not cover.
+
+```bash
+celestia-devtools domain-leak                  # full scan (human or weekly sweep)
+celestia-devtools domain-leak --staged         # pre-commit: this repo's staged content
+celestia-devtools domain-leak --pushed         # pre-push: ref lines on stdin
+celestia-devtools domain-leak --pushed-range B # CI: the diff of B..H
+celestia-devtools domain-leak --json           # machine-readable
+celestia-devtools domain-leak --selftest       # 19 assertions: patterns, hooks, prune
+```
+
+- **Reach** — each repository in `SCOPE` is scanned in full (any tracked-file
+  extension in `EXTS`, and the file *name* counts too, since `hydrogen_flow.rs`
+  leaks just as loudly as its contents). The empty include prefix means "whole
+  repository", so nothing hides in `res/`, `scripts/`, `examples/`, `benches/` or
+  `tests/`.
+- **Word list** — CJK terms match literally, ASCII terms match case-insensitively,
+  and the localized forms are listed so a translated document cannot carry the word
+  that the English one may not. Adding a term means editing `TERMS` **and** the
+  matching self-test positive, in the same pull request.
+- **Baseline** — `src/celestia_devtools/lint/domain_leak_baseline.json` ships inside
+  the package and records the tracked debt. **Baseline changes are pull requests
+  against this repository**: the review is the gate, and no consumer can edit a
+  local copy and expect it to hold. A fix PR runs `--prune-baseline` in the same
+  batch so a repaired entry never lingers.
+- **Fail-closed** — hook mode refuses (`rc 2`) when the repository cannot be
+  identified by path or by a family `origin`, instead of silently passing; a
+  violation is always printed to stderr even under `--quiet`. Exit codes: `0` clean
+  or baseline-only, `1` a hit outside the baseline, `2` configuration, usage or git
+  error.
+
+The workspace is located from the checkout layout (the nearest ancestor holding
+`_tools/claim.py` plus `_ledger/`), overridable with `--workspace` or
+`$CELESTIA_WORKSPACE`; the baseline likewise via `--baseline` or
+`$CELESTIA_DOMAIN_LEAK_BASELINE`. The self-test builds a throwaway workspace and a
+real git repository, so it needs neither network nor the workspace itself.
+
 ## Type Gate (TypeScript)
 
 A word-level `any` ban removes only the escapes that spell themselves out. The
