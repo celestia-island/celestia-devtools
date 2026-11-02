@@ -19,9 +19,15 @@ import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-#: The only MCP tools this package may call. Actions (restart/drain, supervision
-#: itself) are outside the allowlist on purpose — see the package docstring.
+#: The only MCP tools the **judgement** path may call. Actions (restart/drain,
+#: supervision itself) are outside this allowlist on purpose — see the package docstring.
 READ_ONLY_TOOLS = frozenset({"malkuth_status", "malkuth_logs", "malkuth_probe"})
+
+#: The tools the **action** path (`judge-fleet act`) may call: the same status read plus
+#: the three gate tools. Deliberately disjoint from :data:`READ_ONLY_TOOLS` — widening the
+#: judgement allowlist would let the reporter act, and narrowing this one would leave the
+#: executor unable to register or execute.
+ACTION_TOOLS = frozenset({"malkuth_status", "malkuth_approve", "malkuth_restart", "malkuth_drain"})
 
 _PROTOCOL_VERSION = "2024-11-05"
 _CLIENT_INFO = {"name": "celestia-judge", "version": "0"}
@@ -35,10 +41,17 @@ class mcp_unavailable(mcp_error):
 class mcp_session:
     """One stdio session with an MCP server, opened as a context manager.
 
+    The class-level ``allowed_tools`` is the session's whole contract with the server:
+    :class:`mcp_session` itself is read-only, and :class:`action_session` is the single
+    subclass that may call the action tools.
+
     Every request is bounded by `timeout`. On any transport failure the session
     marks itself dead and every later call raises :class:`mcp_unavailable`, which is
     what lets the caller fail open (report "cannot judge") instead of guessing.
     """
+
+    #: Tool allowlist for this session; subclasses replace it explicitly.
+    allowed_tools: frozenset[str] = READ_ONLY_TOOLS
 
     def __init__(self, command: Sequence[str], *, timeout: float = 10.0) -> None:
         self._command = list(command)
@@ -113,15 +126,15 @@ class mcp_session:
         return self._tools
 
     def call_tool(self, name: str, arguments: dict | None = None, *, timeout: float | None = None) -> Any:
-        """Call one read-only tool and return its parsed JSON payload.
+        """Call one tool from this session's allowlist and return its parsed JSON payload.
 
         Raises :class:`mcp_error` (never a bare exception) for a tool-level error or
         an unparsable payload; the payload contract is the server's own JSON
         document inside the first text content block.
         """
 
-        if name not in READ_ONLY_TOOLS:
-            raise mcp_error(f"tool {name!r} is not in the read-only allowlist {sorted(READ_ONLY_TOOLS)}")
+        if name not in self.allowed_tools:
+            raise mcp_error(f"tool {name!r} is not in the allowlist {sorted(self.allowed_tools)}")
 
         if name not in self._tools:
             raise mcp_unavailable(f"MCP server does not advertise {name!r}; cannot judge")
@@ -241,3 +254,12 @@ def open_session(command: Iterable[str], *, timeout: float = 10.0) -> mcp_sessio
 def utc_now() -> float:
     """Wall clock helper kept here so tests can patch one symbol."""
     return time.time()
+
+class action_session(mcp_session):
+    """A session that may call :data:`ACTION_TOOLS` — and nothing else.
+
+    Only :mod:`celestia_devtools.judge.act` constructs this; the judgement path keeps
+    :class:`mcp_session` and therefore cannot reach a mutating tool even by mistake.
+    """
+
+    allowed_tools: frozenset[str] = ACTION_TOOLS

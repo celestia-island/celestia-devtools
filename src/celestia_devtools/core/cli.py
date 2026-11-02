@@ -118,8 +118,9 @@ from this help)::
                        (actions/cargo/npm probes; report, never propose)
     judge-fleet        Read-only judgement of a malkuth MCP fleet: samples the
                        status/logs/probe read tools over N ticks and reports
-                       mechanical verdicts with evidence. Never acts (actions
-                       are PR-2 and need a target-bound approval chain)
+                       mechanical verdicts with evidence. Never acts; the
+                       `judge-fleet act` subcommand is the separate executor
+                       (one approved action from a handoff bundle)
 
 Each command has its own argparse interface; this dispatcher simply forwards
 ``argv`` so the individual ``main()`` entry points stay self-contained and

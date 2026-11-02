@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 import pytest
 from celestia_devtools.judge import advice, cli, demo_fleet, fleet
-from celestia_devtools.judge.mcp_stdio import READ_ONLY_TOOLS, mcp_error, mcp_session
+from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, READ_ONLY_TOOLS, mcp_error, mcp_session
 
 HERE = Path(__file__).resolve().parent
 FAKE_SERVER = HERE / "fake_mcp_server.py"
@@ -463,20 +463,55 @@ def _action_call_sites(path: Path, forbidden: set[str]) -> list[tuple[str, int, 
 
     return hits
 
+#: The two modules that may hold a write tool, each for one documented purpose: the demo
+#: brings its own fleet (supervise only) and the executor spends one approval (approve /
+#: restart / drain). Everything else is the read-only judgement path.
+ACTION_EXEMPT_MODULES = frozenset({"demo_fleet.py", "act.py"})
+
+#: Modules allowed to *spell* an action tool name in the text backstop. ``mcp_stdio.py``
+#: holds the :data:`~celestia_devtools.judge.mcp_stdio.ACTION_TOOLS` allowlist itself; that
+#: spelling is pinned separately (`test_the_stdio_allowlist_spells_exactly_the_action_tools`),
+#: and its call sites are still covered by the AST scan above.
+TEXT_SCAN_EXEMPT_MODULES = ACTION_EXEMPT_MODULES | {"mcp_stdio.py"}
+
 def test_the_judgement_path_contains_no_action_call() -> None:
     forbidden = {"malkuth_" + "restart", "malkuth_" + "drain", "malkuth_" + "supervise"}
-    modules = [path for path in JUDGE_SOURCES.rglob("*.py") if path.name != "demo_fleet.py"]
+    modules = [path for path in JUDGE_SOURCES.rglob("*.py") if path.name not in ACTION_EXEMPT_MODULES]
     assert len(modules) >= 4, "the glob must actually see the package"
     offenders = [hit for path in modules for hit in _action_call_sites(path, forbidden)]
     assert offenders == [], f"the judgement path must not call action tools: {offenders}"
 
-def test_every_module_outside_the_demo_holds_no_action_literal() -> None:
-    """Text-level backstop: a mutating action name anywhere but the demo is a smell."""
+def test_every_module_outside_the_exemptions_holds_no_action_literal() -> None:
+    """Text-level backstop: a mutating action name outside the two exemptions is a smell.
+
+    The exemptions are not free: :mod:`celestia_devtools.judge.act` is pinned separately to
+    name only its own allowlist, and the demo to name supervision and nothing else.
+    """
     forbidden = ("malkuth_" + "restart", "malkuth_" + "drain")
 
-    for path in [path for path in JUDGE_SOURCES.rglob("*.py") if path.name != "demo_fleet.py"]:
+    for path in [path for path in JUDGE_SOURCES.rglob("*.py") if path.name not in TEXT_SCAN_EXEMPT_MODULES]:
         text = path.read_text()
         assert not any(needle in text for needle in forbidden), f"{path.name} mentions an action tool"
+
+def test_the_stdio_allowlist_spells_exactly_the_action_tools() -> None:
+    """The one allowed spelling: mcp_stdio's ACTION_TOOLS set, nothing outside it."""
+
+    tree = ast.parse((JUDGE_SOURCES / "mcp_stdio.py").read_text(encoding = "utf-8"))
+    declared = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names = [target.id for target in targets if isinstance(target, ast.Name)]
+
+        if ("ACTION_TOOLS" in names) and isinstance(node.value, ast.Call):
+            for argument in node.value.args:
+                if isinstance(argument, (ast.Set, ast.List, ast.Tuple)):
+                    declared = {element.value for element in argument.elts if isinstance(element, ast.Constant)}
+
+    assert declared == set(ACTION_TOOLS), f"the declared allowlist drifted from ACTION_TOOLS: {sorted(declared)}"
 
 def test_the_demo_module_holds_exactly_one_action() -> None:
     """The bring-your-own-fleet demo is the single exception, and it is supervision only."""
@@ -680,9 +715,11 @@ def test_supervise_demo_path_judges_the_fleet_it_brings(capsys) -> None:
     assert "结论: 健康" in out
 
 def test_action_mode_is_refused(capsys) -> None:
+    """The judge has no action mode at all: judging never acts, the executor is `act`."""
     code, _, err = _run_cli(["--no-read-only"], capsys)
     assert code == 2
-    assert "target-bound approval" in err
+    assert "judge-fleet act" in err
+    assert "never acts" in err
 
 def test_single_tick_is_refused(capsys) -> None:
     code, _, err = _run_cli(["--ticks", "1"], capsys)
