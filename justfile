@@ -47,7 +47,7 @@ lint:
     {{python_cmd}} -m celestia_devtools ts-policy --selftest
     {{python_cmd}} -m celestia_devtools ts-surface --selftest
     @# The domain-leak gate scans other checkouts, so its controls here are its own
-    @# 31 assertions (patterns, hook modes, origin fallback, prune, detached-root
+    @# 34 assertions (patterns, hook modes, origin fallback, prune, detached-root
     @# fail-closed) over a throwaway workspace and a real git repository - no
     @# workspace needed.
     {{python_cmd}} -m celestia_devtools domain-leak --selftest

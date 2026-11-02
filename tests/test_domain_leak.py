@@ -20,7 +20,7 @@ class test_selftest:
         out = capsys.readouterr().out
         assert rc == 0
         assert "7/7 assertions passed" in out
-        assert "+24 assertions passed" in out
+        assert "+27 assertions passed" in out
 
 class test_baseline:
     """The shipped baseline is the single source of truth and stays well formed."""
@@ -122,18 +122,18 @@ class test_full_scan:
         # a marker walk would; without this the full-scan fail-closed guard would (rightly)
         # refuse in a bare CI checkout that carries no workspace markers.
         monkeypatch.setattr(domain_leak, "WORKSPACE_SOURCE", domain_leak.WORKSPACE_SOURCE_MARKER)
-        rc, new_hits, known_hits, stale = domain_leak.run_scan(quiet = True)
+        rc, new_hits, known_hits, stale = domain_leak.run_scan()
         assert rc == 1
         assert [hit["path"] for hit in new_hits] == ["src/leak.rs"]
         assert (known_hits == []) and (stale == [])
         entry = {"repo": "kirino", "path": "src/leak.rs", "terms": ["hydrogen"], "note": "test"}
         baseline.write_text(json.dumps({"entries": [entry]}), encoding = "utf-8")
-        rc, new_hits, known_hits, stale = domain_leak.run_scan(quiet = True)
+        rc, new_hits, known_hits, stale = domain_leak.run_scan()
         assert (rc == 0) and (new_hits == [])
         assert [hit["path"] for hit in known_hits] == ["src/leak.rs"]
         assert stale == []
         (workspace / "kirino" / "src" / "leak.rs").unlink()
-        rc, new_hits, known_hits, stale = domain_leak.run_scan(quiet = True)
+        rc, new_hits, known_hits, stale = domain_leak.run_scan()
         assert (rc == 0) and (known_hits == [])
         assert [entry["path"] for entry in stale] == ["src/leak.rs"]
 

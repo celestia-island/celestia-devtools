@@ -426,8 +426,13 @@ def run_pushed(stdin_text: str, quiet: bool) -> int:
     _report_hook_hits("push", new_hits, quiet)
     return rc
 
-def run_scan(quiet: bool = False) -> tuple[int, list[dict], list[dict], list[dict]]:
+def run_scan() -> tuple[int, list[dict], list[dict], list[dict]]:
     """Return (rc, new hits, baseline hits, stale baseline entries).
+
+    This function owns no output control at all: warnings (a missing repository below,
+    a root it cannot vouch for) always reach stderr. ``--quiet`` silences the *report*,
+    which is a ``main`` concern - a scan helper must not be able to hide the fact that
+    it did not see everything it claims to cover.
 
     Fails closed (``rc 2``) when nothing vouches for the root: with no declared root
     and no marker walk, every repository below is merely "missing", which used to
@@ -460,7 +465,7 @@ def run_scan(quiet: bool = False) -> tuple[int, list[dict], list[dict], list[dic
 
     stale = [{"repo": r, "path": p, "terms": e.get("terms", []), "note": e.get("note", "")}for (r, p), e in baseline.items()if (r, p) not in {key(h)for h in known_hits}]
 
-    if missing_repos and not quiet:
+    if missing_repos:
         print(f"domain-leak: missing repositories (treated as empty, not as hits): {', '.join(missing_repos)}", file = sys.stderr)
 
     return (1 if new_hits else 0), new_hits, known_hits, stale
@@ -557,7 +562,7 @@ def selftest() -> int:
             _sb_detached, sys.stderr = sys.stderr, err_detached
 
             try:
-                rc_detached, _, _, _ = run_scan(quiet = True)
+                rc_detached, _, _, _ = run_scan()
             finally:
                 sys.stderr = _sb_detached
 
@@ -593,6 +598,11 @@ def selftest() -> int:
             assert rc_partial == 2, f"a prune with only part of the reach must refuse (rc={rc_partial})"
             assert (out_partial == "") and err_partial.strip(), "the partial-root prune refusal leaked or stayed silent"
             assert guarded_baseline.read_bytes() == guarded_bytes, "the partial-root prune still rewrote the baseline"
+            WORKSPACE, WORKSPACE_SOURCE = empty_root, WORKSPACE_SOURCE_FLAG
+            rc_quiet_missing, out_quiet_missing, err_quiet_missing = _capture_cli(["--quiet"])
+            assert rc_quiet_missing == 0, f"--quiet changed the exit code of a scan that only warns about missing repositories (rc={rc_quiet_missing})"
+            assert out_quiet_missing == "", "--quiet must still suppress the report body"
+            assert "missing" in err_quiet_missing, "--quiet swallowed the missing-repositories warning"
             WORKSPACE, WORKSPACE_SOURCE = detached, WORKSPACE_SOURCE_FALLBACK
             rc_scan, out_scan, err_scan = _capture_cli([])
             assert (rc_scan == 2) and (out_scan == "") and err_scan.strip(), "the CLI-level full-scan refusal leaked or stayed silent"
@@ -726,7 +736,7 @@ def selftest() -> int:
             BASELINE = base_backup
             WORKSPACE_SOURCE = source_backup
 
-        print("selftest: +24 assertions passed (detached full-scan fail-closed / cli refusal contract / prune-no-repository + partial-root guard / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
+        print("selftest: +27 assertions passed (detached full-scan fail-closed / cli refusal contract / prune-no-repository + partial-root guard / quiet keeps missing warnings / staged / baseline allow / pushed-range / deleted ref / " "origin fallback / bare None / origin end-to-end / binary / quiet stderr / root-level md / " "full-tree fallback / prune keeps _doc)")
         return 0
     except AssertionError as e:
         print(f"selftest: FAILED - {e}", file = sys.stderr)
@@ -771,7 +781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_pushed_range(args.pushed_range[0], args.pushed_range[1], args.quiet)
 
     t0 = time.monotonic()
-    rc, new_hits, known_hits, stale = run_scan(quiet = args.quiet)
+    rc, new_hits, known_hits, stale = run_scan()
 
     if rc == 2:
         # Fail-closed: run_scan already said why on stderr. Return before the ordinary
@@ -811,7 +821,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("prune: no stale entries")
 
         # prune is not a free pass: after dropping entries a new hit must still fail
-        rc, new_hits, _, _ = run_scan(quiet = args.quiet)
+        rc, new_hits, _, _ = run_scan()
 
         if not args.quiet:
             for h in new_hits:
