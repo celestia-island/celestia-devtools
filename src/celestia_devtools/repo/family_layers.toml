@@ -15,7 +15,7 @@
 # `[rust_layers.<family>]` table): a member deliberately parked on the previous
 # line must be listed there, otherwise the family's `line` is applied to it and
 # the gate reports a "different primitive" that does not exist.
-updated_at = "2026-10-30"
+updated_at = "2026-11-02"
 source = "plana/.github/workflows/publish.yml + crates.io published lines; npm bindings published by their own repos"
 
 [plana_published]
@@ -34,6 +34,21 @@ plana-build-info = "0.1"
 plana-infra-utils = "0.1"
 plana-llm-provider = "0.1"
 plana-dispatch-client = "0.1"
+# plana #516 was an EIGHT-crate publish wave (one run, 2026-10-31
+# 18:38-19:09 UTC, all at 0.1.52 — re-verified on crates.io 2026-11-02).
+# The rename wave missed this table entirely; chest's version deps on
+# core/text tripped the gate, and the other six sat silent with their
+# "prefer registry" migration signals suppressed (R2 finding). All
+# eight are registered here so the next registry migration of any of
+# them meets an up-to-date baseline.
+plana-core = "0.1"
+plana-text = "0.1"
+plana-macros = "0.1"
+plana-domain-agent = "0.1"
+plana-state-sync = "0.1"
+plana-domain-skills-permissions = "0.1"
+plana-prompt = "0.1"
+plana-domain-skills = "0.1"
 
 [rust_layers.kirino]
 # 0.9.0 shipped on 2026-10-28. The line moved only after every consumer did

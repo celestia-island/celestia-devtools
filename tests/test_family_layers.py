@@ -9,9 +9,9 @@ from celestia_devtools.repo.family_versions import _FAMILY_LAYERS_PATH
 
 def test_bundled_table_is_pinned():
     layers = load_family_layers()
-    assert layers["updated_at"] == "2026-10-30"
+    assert layers["updated_at"] == "2026-11-02"
     assert layers["source"].startswith("plana/.github/workflows/publish.yml")
-    assert layers["plana_published"] == {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 1, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 1, 0), "plana-build-info": (0, 1, 0), "plana-infra-utils": (0, 1, 0), "plana-llm-provider": (0, 1, 0), "plana-dispatch-client": (0, 1, 0)}
+    assert layers["plana_published"] == {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 1, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 1, 0), "plana-build-info": (0, 1, 0), "plana-infra-utils": (0, 1, 0), "plana-llm-provider": (0, 1, 0), "plana-dispatch-client": (0, 1, 0), "plana-core": (0, 1, 0), "plana-text": (0, 1, 0), "plana-macros": (0, 1, 0), "plana-domain-agent": (0, 1, 0), "plana-state-sync": (0, 1, 0), "plana-domain-skills-permissions": (0, 1, 0), "plana-prompt": (0, 1, 0), "plana-domain-skills": (0, 1, 0)}
     assert [entry[0] for entry in layers["rust_layers"]] == ["kirino", "plana", "hikari"]
     assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 2, 0), "hikari": (0, 3, 0)}
     assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 7, 0), layers["rust_overrides"]["kirino_session"][2])}
