@@ -160,13 +160,21 @@ jobs:
           checked=0
           failed=0
 
-          for manifest in packages/*/Cargo.toml; do
+          for manifest in Cargo.toml packages/*/Cargo.toml; do
+            # Single-crate repos (yuuka, hare) keep their crate at the root;
+            # family repos enumerate packages/* and carry a virtual root.
+            # Glob misses expand literally when packages/ is absent, and the
+            # root of a virtual workspace has no [package] name at all.
+            [ -f "$manifest" ] || continue
             crate=$(awk '
               /^\[package\]/ { in_pkg = 1; next }
               /^\[/ { in_pkg = 0 }
               in_pkg && /^name[[:space:]]*=/ {
                 sub(/^name[[:space:]]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print; exit
               }' "$manifest")
+            if [ -z "$crate" ]; then
+              continue
+            fi
             if ! manifest_publishable "$manifest"; then
               internal_skipped+=("$crate")
               continue
