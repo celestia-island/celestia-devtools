@@ -160,11 +160,13 @@ jobs:
           checked=0
           failed=0
 
-          for manifest in Cargo.toml packages/*/Cargo.toml; do
-            # Single-crate repos (yuuka, hare) keep their crate at the root;
-            # family repos enumerate packages/* and carry a virtual root.
-            # Glob misses expand literally when packages/ is absent, and the
-            # root of a virtual workspace has no [package] name at all.
+          for manifest in Cargo.toml packages/*/Cargo.toml crates/*/Cargo.toml; do
+            # Three layouts live in the org: single-crate repos keep their
+            # crate at the root (yuuka, hare); family repos enumerate
+            # packages/* behind a virtual root (plana, kirino, akivili);
+            # cherino enumerates crates/* the same way. Glob misses expand
+            # literally when a directory is absent, and a virtual root has
+            # no [package] name at all.
             [ -f "$manifest" ] || continue
             crate=$(awk '
               /^\[package\]/ { in_pkg = 1; next }
