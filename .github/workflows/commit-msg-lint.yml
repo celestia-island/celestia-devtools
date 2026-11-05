@@ -148,13 +148,55 @@ jobs:
           print(f"PR_BASE_SHA={pr['base_sha']}")
           PY
 
+      - name: Resolve the checkout ref
+        # The merge ref is the RIGHT tree to judge — it is what GitHub would
+        # actually merge. It is also the tree that disappears the instant the
+        # PR is merged: `refs/pull/<n>/merge` is deleted, so any run that
+        # starts afterwards (an `edited` fired a second before the merge is
+        # the common case) dies in Checkout with
+        #   fatal: couldn't find remote ref refs/pull/<n>/merge
+        # — a red required check on a PR whose actual lint was green twice
+        # minutes earlier (observed on hikari #1085/#1086, 2026-11-05).
+        # Probe the ref instead of assuming it: keep merge-ref semantics while
+        # it exists, degrade to the head SHA afterwards (the commits being
+        # linted are the same objects).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || env.PR_HEAD_SHA }}
+        run: |
+          set -o pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${HEAD_SHA:-}" ]; then
+            echo "CHECKOUT_REF=${HEAD_SHA}" >> "$GITHUB_ENV"
+            echo "dispatched run: checking out resolved head SHA ${HEAD_SHA}"
+            exit 0
+          fi
+          # Probe through the API, not `git ls-remote`: private repos would
+          # make an unauthenticated ls-remote fail even when the ref EXISTS,
+          # silently downgrading every private-repo run to the head SHA.
+          if [ -n "${PR_NUMBER:-}" ] && \
+             gh api "repos/${GITHUB_REPOSITORY}/git/ref/pull/${PR_NUMBER}/merge" \
+               >/dev/null 2>&1; then
+            echo "CHECKOUT_REF=refs/pull/${PR_NUMBER}/merge" >> "$GITHUB_ENV"
+            echo "merge ref present: checking out refs/pull/${PR_NUMBER}/merge"
+            exit 0
+          fi
+          if [ -n "${HEAD_SHA:-}" ]; then
+            echo "CHECKOUT_REF=${HEAD_SHA}" >> "$GITHUB_ENV"
+            echo "merge ref gone (PR merged/closed): falling back to head SHA ${HEAD_SHA}"
+            exit 0
+          fi
+          echo "CHECKOUT_REF=${GITHUB_REF}" >> "$GITHUB_ENV"
+          echo "no PR payload: checking out ${GITHUB_REF}"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          # A dispatched (CNB) run has no PR payload, so it checks out the head
-          # SHA resolved above; every other trigger keeps its default ref.
-          ref: ${{ github.event_name == 'workflow_dispatch' && env.PR_HEAD_SHA || github.ref }}
+          # Resolved by the step above: the merge ref while it exists (the tree
+          # GitHub would merge), the head SHA once the PR is merged (the merge
+          # ref is deleted then), and the dispatch/head SHA on CNB runs.
+          ref: ${{ env.CHECKOUT_REF }}
         # Defensive: the org self-hosted runner env rewrites
         # github.com/celestia-island/* to local bare mirrors (per-repo
         # exact-prefix rules). Those mirrors may lack fresh PR merge refs
