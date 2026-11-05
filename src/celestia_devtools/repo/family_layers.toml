@@ -15,7 +15,7 @@
 # `[rust_layers.<family>]` table): a member deliberately parked on the previous
 # line must be listed there, otherwise the family's `line` is applied to it and
 # the gate reports a "different primitive" that does not exist.
-updated_at = "2026-11-05"
+updated_at = "2026-11-02"
 source = "plana/.github/workflows/publish.yml + crates.io published lines; npm bindings published by their own repos"
 
 [plana_published]
@@ -28,8 +28,13 @@ plana-rpc-client = "0.2"
 plana-rpc-server = "0.1"
 # plana #524 (2026-11-04) shipped the multi-tenant scope fields on the memory
 # wire params; crates.io carries 0.2.0 (index checksum matches the .crate).
-# Consumers still on ^0.1 keep passing while they pin an older devtools ref;
-# they only need to move when they repin.
+# This row alone was re-checked 2026-11-05 — `updated_at` above still stamps the
+# last FULL-table sweep (2026-11-02), which is what it means: the rest of the
+# table has NOT been re-verified since. The 2026-11-04 publish wave landed
+# thirteen 0.2.0 members; only this one is corrected here, so the remaining
+# rows keep the older line until they get their own wave.
+# Consumers on ^0.1 keep passing while they pin an older devtools ref; repinning
+# past this commit is what moves them (and it is a compile wave, not a no-op).
 plana-celestia-types = "0.2"
 plana-tauri = "0.1"
 # Released by the 2026-10-27 / 10-29 T1 publishes (crates.io max 0.1.52).
