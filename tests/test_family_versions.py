@@ -151,7 +151,7 @@ def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_pat
 def test_plana_alias_of_a_published_member_is_recognised(tmp_path):
     # Manifests alias with underscores (`plana_celestia_types = { package = ... }`);
     # the publication check must normalise before comparing.
-    _cargo(tmp_path, '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",' ' version = "^0.1" }\n')
+    _cargo(tmp_path, '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",' ' version = "^0.2" }\n')
     assert check(tmp_path) == []
 
 def test_plana_tauri_counts_as_published(tmp_path):
