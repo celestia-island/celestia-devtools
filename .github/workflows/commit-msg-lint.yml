@@ -174,8 +174,12 @@ jobs:
           # Probe through the API, not `git ls-remote`: private repos would
           # make an unauthenticated ls-remote fail even when the ref EXISTS,
           # silently downgrading every private-repo run to the head SHA.
+          # `timeout` is load-bearing: this resolver is on the critical path of a
+          # required check, and a hung proxy would otherwise hold it pending for
+          # the whole job timeout (60 min here).
           if [ -n "${PR_NUMBER:-}" ] && \
-             gh api "repos/${GITHUB_REPOSITORY}/git/ref/pull/${PR_NUMBER}/merge" \
+             timeout 20 gh api \
+               "repos/${GITHUB_REPOSITORY}/git/ref/pull/${PR_NUMBER}/merge" \
                >/dev/null 2>&1; then
             echo "CHECKOUT_REF=refs/pull/${PR_NUMBER}/merge" >> "$GITHUB_ENV"
             echo "merge ref present: checking out refs/pull/${PR_NUMBER}/merge"
@@ -183,7 +187,7 @@ jobs:
           fi
           if [ -n "${HEAD_SHA:-}" ]; then
             echo "CHECKOUT_REF=${HEAD_SHA}" >> "$GITHUB_ENV"
-            echo "merge ref gone (PR merged/closed): falling back to head SHA ${HEAD_SHA}"
+            echo "merge ref not found (merged, conflicting, or probe failed): falling back to head SHA ${HEAD_SHA}"
             exit 0
           fi
           echo "CHECKOUT_REF=${GITHUB_REF}" >> "$GITHUB_ENV"
