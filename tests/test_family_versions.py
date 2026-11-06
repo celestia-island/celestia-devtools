@@ -129,14 +129,14 @@ def test_plana_rev_pin_is_allowed_only_for_frozen_repositories(tmp_path):
     assert check(frozen) == []
 
 def test_plana_published_member_from_the_registry_passes(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "^0.2"\n')
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.3"\n')
     assert check(tmp_path) == []
 
 def test_plana_published_member_must_still_admit_the_family_line(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "^0.1"\n')
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.2"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
-    assert "published 0.2 line" in findings[0].message
+    assert "published 0.3 line" in findings[0].message
 
 def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_path):
     # `plana-celestia-config` has no crates.io release, so declaring it with a
@@ -510,7 +510,7 @@ def test_a_family_crate_on_the_family_repository_passes(tmp_path):
     assert check(tmp_path) == []
 
 def test_the_hikari_rust_track_is_checked(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nhikari-palette = "^0.3"\nhikari-components = "^0.3.20"\n')
+    _cargo(tmp_path, '[dependencies]\nhikari-palette = "^0.5"\nhikari-components = "^0.5.20"\n')
     assert check(tmp_path) == []
 
     _cargo(tmp_path, '[patch."https://github.com/celestia-island/hikari.git"]\n' 'hikari-palette = { path = "../hikari/packages/palette" }\n')

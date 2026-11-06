@@ -7,6 +7,12 @@ name: Family dependency identity
 #     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@2e76d373762dc6b36c1ab7625c1c34842c28ad4a
 #
 # to the repository's workflow. `with: strict: true` also fails on warnings.
+#
+# The same job also runs `celestia-devtools package-rules` (W0 package-surface
+# rules: kebab-case publishable crate names + one source per package name per
+# lockfile). It is ADVISORY for now — the 2026-11-06 org census had one stock
+# hit (hikari's `debug_glow` example crate), so it reports without failing and
+# flips to `--strict` once that is fixed.
 on:
   workflow_call:
     inputs:
@@ -64,7 +70,8 @@ jobs:
         #
         # Violations fail the job; warnings (a lock linking two generations, an
         # unbounded npm range, a binding behind its crate) are printed and only
-        # fail when the caller opts into `strict`.
+        # fail when the caller opts into `strict`. The package-rules run above
+        # adds no failure until its stock census is zero (flip to --strict).
         env:
           STRICT: ${{ inputs.strict && '--strict' || '' }}
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
@@ -72,6 +79,14 @@ jobs:
           set -euo pipefail
           if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools family-versions --help >/dev/null 2>&1; then
             echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
+            # Package-surface rules first, ADVISORY (see the file header): they
+            # still print when the family gate below is red. Guarded because a
+            # stale preinstall may predate the command.
+            if celestia-devtools package-rules --help >/dev/null 2>&1; then
+              celestia-devtools package-rules "$GITHUB_WORKSPACE"
+            else
+              echo "package-rules unavailable on this devtools build; skipping the package-surface check"
+            fi
             celestia-devtools family-versions $STRICT "$GITHUB_WORKSPACE"
           else
             echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the baselines match the pin"
@@ -89,5 +104,14 @@ jobs:
             else
               git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
             fi
-            cd /tmp/celestia-devtools-fv && PYTHONPATH=src python3 -m celestia_devtools family-versions $STRICT "$GITHUB_WORKSPACE"
+            cd /tmp/celestia-devtools-fv
+            # Package-surface rules first, ADVISORY (see the file header).
+            # The guard keeps pre-#263 pins green: an older devtools ref has no
+            # package-rules command, and a re-pin is what upgrades it.
+            if PYTHONPATH=src python3 -m celestia_devtools package-rules --help >/dev/null 2>&1; then
+              PYTHONPATH=src python3 -m celestia_devtools package-rules "$GITHUB_WORKSPACE"
+            else
+              echo "package-rules unavailable at devtools-ref '${DEVTOOLS_REF:-master}'; skipping the package-surface check"
+            fi
+            PYTHONPATH=src python3 -m celestia_devtools family-versions $STRICT "$GITHUB_WORKSPACE"
           fi
