@@ -34,12 +34,6 @@ on:
         required: false
         type: string
         default: "master"
-  pull_request:
-    types: [opened, edited, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-  # CNB (or an operator) dispatches this to serve the same single check when the
-  # scheduled lane cannot run; `pr` is the pull request number to lint.
   workflow_dispatch:
     inputs:
       pr:

@@ -22,11 +22,10 @@ name: P0 Ledger Gate
 # run log; the gate never passes silently.
 
 on:
+  workflow_dispatch:
   workflow_call: {}
-  # Runs on this repo's own PRs too, which is also how the workflow is verified
-  # before any caller adopts it.
-  pull_request:
-    types: [opened, edited, reopened, ready_for_review, synchronize]
+  # No pull_request trigger: CI runs only after a squash merge. Kept dispatchable
+  # so an operator can exercise the gate before a caller adopts it.
 
 concurrency:
   group: p0-gate-${{ github.ref }}
