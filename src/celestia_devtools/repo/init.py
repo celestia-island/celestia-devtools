@@ -283,20 +283,16 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  pull_request:
-    types: [opened, edited, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-  # Fallback entry for the CNB lane (or an operator): dispatch this workflow on
-  # the pull request's head branch, so the single required check is served by
-  # the lane that can actually run. See the devtools callee for the lane rules.
+  # Dispatch-only per the 2026-11-06 trigger policy: CI no longer runs on pull
+  # requests. Commit-message format is held by review plus the squash subject;
+  # this lane stays dispatchable so a PR's commits can still be checked on
+  # demand, by number, from any runner.
   workflow_dispatch:
     inputs:
       pr:
         description: "Pull request number to lint"
         required: true
         type: string
-
 permissions:
   # A called workflow cannot grant itself a permission the caller withholds —
   # the mismatch reads as startup_failure. The org default token permissions
@@ -381,11 +377,11 @@ _T_CI_CACHE = """\
 name: CI Cache Policy
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-
+  # Basic check (sub-minute, no compile): runs after a squash merge, never on
+  # the pull request itself (2026-11-06 trigger policy).
+  push:
+    branches: [master]
+  workflow_dispatch:
 jobs:
   cache-policy:
     uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@__DEVTOOLS_REF__
@@ -408,11 +404,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  pull_request:
-    types: [opened, edited, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-
+  # Dispatch-only per the 2026-11-06 trigger policy: CI no longer runs on pull
+  # requests. Format is held by review plus the squash subject; the lane stays
+  # dispatchable so a patch can still be checked on demand.
+  workflow_dispatch:
 jobs:
   pr-title-check:
     uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@__DEVTOOLS_REF__
@@ -458,10 +453,10 @@ name: P0 Gate
 # exactly that collision until 2026-10-24.
 
 on:
-  pull_request:
-    types: [opened, edited, reopened, ready_for_review, synchronize]
+  # Dispatch-only per the 2026-11-06 trigger policy: CI no longer runs on pull
+  # requests. Format is held by review plus the squash subject; the lane stays
+  # dispatchable so a patch can still be checked on demand.
   workflow_dispatch:
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -477,11 +472,11 @@ _T_FAMILY_VERSIONS = """\
 name: Family dependency identity
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-
+  # Basic check (sub-minute, no compile): runs after a squash merge, never on
+  # the pull request itself (2026-11-06 trigger policy).
+  push:
+    branches: [master]
+  workflow_dispatch:
 jobs:
   family-versions:
     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@__DEVTOOLS_REF__
@@ -494,11 +489,11 @@ _T_VERIFY_VERSIONS = """\
 name: Verify Versions
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-
+  # Basic check (sub-minute, no compile): runs after a squash merge, never on
+  # the pull request itself (2026-11-06 trigger policy).
+  push:
+    branches: [master]
+  workflow_dispatch:
 jobs:
   verify-versions:
     uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@__DEVTOOLS_REF__
@@ -511,11 +506,11 @@ _T_RULES_LINT = """\
 name: Rules Lint
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
-
+  # Basic check (sub-minute, no compile): runs after a squash merge, never on
+  # the pull request itself (2026-11-06 trigger policy).
+  push:
+    branches: [master]
+  workflow_dispatch:
 jobs:
   rules-lint:
     uses: celestia-island/celestia-devtools/.github/workflows/rules-lint.yml@__DEVTOOLS_REF__
@@ -528,9 +523,11 @@ _T_RELEASE_NOTES = """\
 name: Release Notes
 
 on:
+  # Release line: tags stay exactly as before; the manual entry is the only
+  # addition (2026-11-06 trigger policy — releases are never PR-driven).
   push:
     tags: ["v*"]
-
+  workflow_dispatch:
 jobs:
   release-notes:
     permissions:
@@ -548,15 +545,16 @@ _T_CNB_OVERFLOW = """\
 name: CNB Overflow Lane
 
 on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
+  # Overflow/mirror sync: runs after a squash merge and on demand, never on the
+  # pull request (2026-11-06 trigger policy).
+  push:
+    branches: [master]
   workflow_dispatch:
     inputs:
       target_sha:
-        description: "Commit SHA (empty = PR head / branch head)"
+        description: "Commit SHA (empty = branch head)"
         type: string
         default: ""
-
 permissions:
   statuses: write
   actions: read
