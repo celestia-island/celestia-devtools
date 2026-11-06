@@ -4,17 +4,17 @@ name: Family dependency identity
 #
 #   family-versions:
 #     name: Family dependency identity
-#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@2e76d373762dc6b36c1ab7625c1c34842c28ad4a
+#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@e66e9a86b464c197300795b315f72f9c079402f5
 #
 # to the repository's workflow. `with: strict: true` also fails on warnings.
 #
 # The same job also runs `celestia-devtools package-rules` (W0 package-surface
 # rules: kebab-case publishable crate names + one source per package name per
-# lockfile). It is ADVISORY for now — the 2026-11-06 org census had one stock
-# hit (hikari's `debug_glow` example crate), so it reports without failing and
-# flips to `--strict` once that is fixed. `|| echo` guards the step: under
-# `set -e` an exit-2 scan error (nothing scanned / unparsable manifest) must not
-# swallow the family result that follows.
+# lockfile). It runs `--strict`: the 2026-11-06 org census had a single stock
+# hit (hikari's orphaned `debug_glow` example manifest), removed 2026-11-07, and
+# every caller scanned clean afterwards. `|| echo` still guards only the exit-2
+# scan error (nothing scanned / unparsable manifest) so such an error cannot
+# swallow the family result that follows — real rule violations DO fail.
 on:
   workflow_call:
     inputs:
@@ -81,11 +81,17 @@ jobs:
           set -euo pipefail
           if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools family-versions --help >/dev/null 2>&1; then
             echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
-            # Package-surface rules first, ADVISORY (see the file header): they
+            # Package-surface rules first, STRICT (see the file header): they
             # still print when the family gate below is red. Guarded because a
             # stale preinstall may predate the command.
             if celestia-devtools package-rules --help >/dev/null 2>&1; then
-              celestia-devtools package-rules "$GITHUB_WORKSPACE" || echo "package-rules advisory failure (exit $?)"
+              rc=0
+              celestia-devtools package-rules --strict "$GITHUB_WORKSPACE" || rc=$?
+              # 2 = nothing scanned / unparsable manifest: surface it, but do
+              # not let a scan error stand in for the family gate's verdict.
+              [ "$rc" -eq 2 ] && echo "package-rules could not scan the tree (exit 2)"
+              [ "$rc" -eq 1 ] && exit 1
+              true
             else
               echo "package-rules unavailable on this devtools build; skipping the package-surface check"
             fi
@@ -107,11 +113,15 @@ jobs:
               git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
             fi
             cd /tmp/celestia-devtools-fv
-            # Package-surface rules first, ADVISORY (see the file header).
+            # Package-surface rules first, STRICT (see the file header).
             # The guard keeps pre-#263 pins green: an older devtools ref has no
             # package-rules command, and a re-pin is what upgrades it.
             if PYTHONPATH=src python3 -m celestia_devtools package-rules --help >/dev/null 2>&1; then
-              PYTHONPATH=src python3 -m celestia_devtools package-rules "$GITHUB_WORKSPACE" || echo "package-rules advisory failure (exit $?)"
+              rc=0
+              PYTHONPATH=src python3 -m celestia_devtools package-rules --strict "$GITHUB_WORKSPACE" || rc=$?
+              [ "$rc" -eq 2 ] && echo "package-rules could not scan the tree (exit 2)"
+              [ "$rc" -eq 1 ] && exit 1
+              true
             else
               echo "package-rules unavailable at devtools-ref '${DEVTOOLS_REF:-master}'; skipping the package-surface check"
             fi
