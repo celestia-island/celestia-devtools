@@ -9,17 +9,17 @@ from celestia_devtools.repo.family_versions import _FAMILY_LAYERS_PATH
 
 def test_bundled_table_is_pinned():
     layers = load_family_layers()
-    assert layers["updated_at"] == "2026-11-02"
+    assert layers["updated_at"] == "2026-11-06"
     assert layers["source"].startswith("plana/.github/workflows/publish.yml")
-    assert layers["plana_published"] == {"plana": (0, 2, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 1, 0), "plana-celestia-types": (0, 2, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 1, 0), "plana-build-info": (0, 1, 0), "plana-infra-utils": (0, 1, 0), "plana-llm-provider": (0, 1, 0), "plana-dispatch-client": (0, 1, 0), "plana-core": (0, 1, 0), "plana-text": (0, 1, 0), "plana-macros": (0, 1, 0), "plana-domain-agent": (0, 1, 0), "plana-state-sync": (0, 1, 0), "plana-domain-skills-permissions": (0, 1, 0), "plana-prompt": (0, 1, 0), "plana-domain-skills": (0, 1, 0)}
+    assert layers["plana_published"] == {"plana": (0, 3, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 2, 0), "plana-celestia-types": (0, 2, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 2, 0), "plana-build-info": (0, 2, 0), "plana-infra-utils": (0, 2, 0), "plana-llm-provider": (0, 2, 0), "plana-dispatch-client": (0, 1, 0), "plana-core": (0, 2, 0), "plana-text": (0, 2, 0), "plana-macros": (0, 2, 0), "plana-domain-agent": (0, 2, 0), "plana-state-sync": (0, 3, 0), "plana-domain-skills-permissions": (0, 2, 0), "plana-prompt": (0, 2, 0), "plana-domain-skills": (0, 2, 0), "plana-bootloader": (0, 2, 0), "plana-infra-services": (0, 2, 0), "plana-custom-agent": (0, 2, 0), "plana-timeline": (0, 2, 0), "plana-dev-server": (0, 2, 0), "plana-sibling": (0, 2, 0), "plana-i18n": (0, 2, 0), "plana-content-loader": (0, 2, 0), "plana-provider-catalog": (0, 2, 0)}
     assert [entry[0] for entry in layers["rust_layers"]] == ["kirino", "plana", "hikari"]
-    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 2, 0), "hikari": (0, 3, 0)}
-    assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 7, 0), layers["rust_overrides"]["kirino_session"][2])}
-    assert load_family_layers()["rust_overrides"]["kirino_session"][:2] == ("kirino", (0, 7, 0))
-    assert dict((name, line) for name, line, _why in layers["npm_layers"]) == {"@celestia-island/hikari": (0, 55, 0), "@celestia-island/kirino": (0, 7, 0), "@celestia-island/plana-types": (0, 1, 0), "@celestia-island/plana-rpc-client": (0, 1, 0)}
+    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 3, 0), "hikari": (0, 5, 0)}
+    assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 8, 0), layers["rust_overrides"]["kirino_session"][2])}
+    assert load_family_layers()["rust_overrides"]["kirino_session"][:2] == ("kirino", (0, 8, 0))
+    assert dict((name, line) for name, line, _why in layers["npm_layers"]) == {"@celestia-island/hikari": (0, 55, 0), "@celestia-island/kirino": (0, 9, 0), "@celestia-island/plana-types": (0, 1, 0), "@celestia-island/plana-rpc-client": (0, 1, 0)}
 
 def test_module_constants_come_from_the_data_file():
-    assert PLANA_PUBLISHED["plana"] == (0, 2, 0)
+    assert PLANA_PUBLISHED["plana"] == (0, 3, 0)
 
 def test_data_file_sits_next_to_the_module():
     assert _FAMILY_LAYERS_PATH.is_file()
