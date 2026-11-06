@@ -231,7 +231,7 @@ def main() -> int:
 #: writes the floating form (break-glass consumption of an unmerged fix); the
 #: audit reports every ``@master`` caller as a warning while the migration
 #: runs.
-PINNED_DEVTOOLS_REF = "2e76d373762dc6b36c1ab7625c1c34842c28ad4a"
+PINNED_DEVTOOLS_REF = "3779c1961f8f08bf60b21458894667a9b6c3599a"
 
 #: Rolling baseline tag shape (historical scheme). Used to order a caller's ref against the
 #: baseline when both are CalVer tags; anything else (a SHA included) takes
