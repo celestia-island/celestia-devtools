@@ -158,25 +158,30 @@ def _read_toml(path: Path, label: str) -> dict:
     except tomllib.TOMLDecodeError as exc:
         raise package_rules_error("%s: not valid TOML: %s" % (label, exc)) from exc
 
-def _publish_disabled(package: dict, data: dict) -> bool:
+def _publish_disabled(package: dict, data: dict, workspace_data: dict | None) -> bool:
     """True when the package carries no crates.io coordinate (``publish = false``).
 
-    ``publish.workspace = true`` inherits the value from
-    ``[workspace.package]``, which is the only workspace key involved here: a
-    package's ``name`` cannot be inherited, so ``[workspace.package].name`` is
-    not a package name and never enters check A.
+    ``publish.workspace = true`` inherits the value from ``[workspace.package]``
+    in the **workspace root manifest** — a member manifest never carries that
+    table, so resolving against ``data`` alone silently misclassifies every
+    inherited member as publishable (found on arona: root ``publish = false``,
+    members ``publish.workspace = true`` still flagged). ``workspace_data`` is
+    the parsed root manifest; when the scan root is a bare member (no root
+    manifest under it) the inheritance cannot be resolved and the package is
+    treated as publishable — fail closed.
     """
 
     publish = package.get("publish")
 
     if isinstance(publish, dict) and (publish.get("workspace") is True):
-        workspace = data.get("workspace")
+        source = workspace_data if workspace_data is not None else data
+        workspace = source.get("workspace")
         inherited = workspace.get("package") if isinstance(workspace, dict) else None
         publish = inherited.get("publish") if isinstance(inherited, dict) else None
 
     return publish is False
 
-def _manifest_violations(root: Path, path: Path, data: dict) -> list[violation]:
+def _manifest_violations(root: Path, path: Path, data: dict, workspace_data: dict | None) -> list[violation]:
     """Check A: a publishable ``[package].name`` must be kebab-case."""
 
     package = data.get("package")
@@ -189,7 +194,7 @@ def _manifest_violations(root: Path, path: Path, data: dict) -> list[violation]:
     if (not isinstance(name, str)) or (not name):
         raise package_rules_error("%s: [package] has no string 'name'" % _display(root, path))
 
-    if (UNDERSCORE not in name) or _publish_disabled(package, data):
+    if (UNDERSCORE not in name) or _publish_disabled(package, data, workspace_data):
         return []
 
     detail = "package name '%s' contains '_'; a publishable Cargo package name must be kebab-case" % name
@@ -267,9 +272,22 @@ def scan(root: Path, strict: bool = False) -> report:
 
     result = report(root = root.as_posix(), manifests = len(manifests), locks = len(locks), strict = strict)
 
+    # The workspace root manifest (``<root>/Cargo.toml``) is the only place
+    # ``[workspace.package]`` lives; load it once for ``publish.workspace``
+    # inheritance. Absent (scan root is a bare member) -> None, fail closed.
+    root_manifest = root / "Cargo.toml"
+    workspace_data: dict | None = None
+    if root_manifest.is_file():
+        try:
+            parsed = _read_toml(root_manifest, _display(root, root_manifest))
+            if isinstance(parsed.get("workspace"), dict):
+                workspace_data = parsed
+        except package_rules_error:
+            workspace_data = None
+
     for manifest in manifests:
         try:
-            result.violations.extend(_manifest_violations(root, manifest, _read_toml(manifest, _display(root, manifest))))
+            result.violations.extend(_manifest_violations(root, manifest, _read_toml(manifest, _display(root, manifest)), workspace_data))
         except package_rules_error as exc:
             result.errors.append(str(exc))
 

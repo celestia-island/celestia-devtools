@@ -90,6 +90,54 @@ def test_publish_false_inherited_from_the_workspace_package_is_exempt(tmp_path, 
     assert main([str(tmp_path)]) == 0
     assert "package-rules: 0 violation(s)" in capsys.readouterr().err
 
+def test_workspace_inheritance_resolves_from_the_root_manifest(tmp_path, capsys):
+    # The real-workspace shape (found on arona): the root manifest carries
+    # ``[workspace.package] publish = false`` in a *different file* than the
+    # member's ``publish.workspace = true``. Resolving the inheritance against
+    # the member manifest alone misclassifies every inherited member as
+    # publishable.
+    write_file(
+        tmp_path,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"packages/core\"]\n\n[workspace.package]\npublish = false\nversion = \"0.1.0\"\n",
+    )
+    write_file(
+        tmp_path,
+        "packages/core/Cargo.toml",
+        "[package]\nname = \"_core\"\nversion.workspace = true\npublish.workspace = true\n",
+    )
+    assert main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "package-rules: 0 violation(s) in 2 Cargo.toml" in captured.err
+    assert "warning:" not in captured.err
+
+def test_workspace_inheritance_with_publishable_root_still_flags(tmp_path, capsys):
+    # Inheritance is a resolution rule, not an exemption: when the root allows
+    # publishing (or says nothing), the inherited member stays publishable.
+    write_file(
+        tmp_path,
+        "Cargo.toml",
+        "[workspace]\nmembers = [\"packages/core\"]\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    write_file(
+        tmp_path,
+        "packages/core/Cargo.toml",
+        "[package]\nname = \"_core\"\nversion.workspace = true\npublish.workspace = true\n",
+    )
+    assert main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "warning: packages/core/Cargo.toml: [package-name]" in captured.err
+    assert "'_core'" in captured.err
+
+def test_bare_member_scan_without_a_root_manifest_fails_closed(tmp_path, capsys):
+    # Scanning a member directory directly (no root manifest above it) cannot
+    # resolve ``publish.workspace``: the package stays publishable — fail
+    # closed, never silently exempt.
+    write_package(tmp_path, 'name = "_core"\nversion = "0.1.0"\npublish.workspace = true\n')
+    assert main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "warning: Cargo.toml: [package-name]" in captured.err
+
 def test_workspace_package_name_is_not_a_package_name(tmp_path, capsys):
     # W0 says `[workspace.package]` is not a package: only a real
     # `[package].name` can own a crates.io coordinate.
