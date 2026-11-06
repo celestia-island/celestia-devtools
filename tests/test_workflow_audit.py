@@ -1105,8 +1105,8 @@ class test_canonical_caller:
         monkeypatch.chdir(tmp_path)
         assert main(["--json", "--strict"]) == 1
 
-    def test_missing_ready_for_review_is_reported(self, tmp_path, monkeypatch, capsys):
-        drifted = WORKFLOW_COMMIT_LINT.replace("reopened, ready_for_review, synchronize", "reopened, synchronize")
+    def test_dispatch_input_drift_is_reported(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
         _workflow(tmp_path, drifted, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 1
@@ -1115,7 +1115,7 @@ class test_canonical_caller:
         finding = report["findings"][0]
         assert finding["line"] == 1
         assert finding["severity"] == "error"
-        assert "ready_for_review" in finding["message"]
+        assert "workflow" in finding["message"].lower()
         assert "init --with-workflows --force" in finding["message"]
         assert report["summary"]["rules"][RULE_CALLER_NOT_CANONICAL] == 1
 
@@ -1165,7 +1165,7 @@ class test_canonical_caller:
     def test_same_content_under_another_name_is_reported(self, tmp_path, monkeypatch, capsys):
         # 字节比对按文件名定位 ⇒ 换个文件名就等于跳出比对，漂移从此无人看管。
         # 副本照样能跑（check 名只取决于作业 id），所以它能一直错下去：必须报「位置错」。
-        drifted = WORKFLOW_COMMIT_LINT.replace("reopened, ready_for_review, synchronize", "reopened, synchronize")
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
         _workflow(tmp_path, drifted, filename = "checks.yml")
         monkeypatch.chdir(tmp_path)
         assert main(["--json"]) == 1
@@ -1199,7 +1199,7 @@ class test_canonical_caller:
         # A semantic drift (the check would stop re-running) is an error, and the
         # human output must name the file and line. A whitespace-only drift is a
         # warning and covered by test_pure_whitespace_drift_is_a_warning_not_a_failure.
-        drifted = WORKFLOW_COMMIT_LINT.replace("reopened, ready_for_review, synchronize", "reopened, synchronize")
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
         _workflow(tmp_path, drifted, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main([]) == 1
@@ -1208,7 +1208,7 @@ class test_canonical_caller:
         assert RULE_CALLER_NOT_CANONICAL in out
 
     def test_allowlist_can_exempt_a_repository(self, tmp_path, monkeypatch, capsys):
-        drifted = WORKFLOW_COMMIT_LINT.replace("reopened, ready_for_review, synchronize", "reopened, synchronize")
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
         _workflow(tmp_path, drifted, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
         assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/{self.NAME}"]) == 0

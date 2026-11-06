@@ -32,16 +32,16 @@ from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMP
 #: check never reports, and a protected repository cannot be merged. Thirty
 #: repositories were missed when the org default token permissions were
 #: tightened on 2026-10-02.
-CANONICAL_SHA256 = "db6149fb21c34082ba88009d3f3a0dae08d80470d9733731bd14f65d6d580870"
-CANONICAL_BYTES = 1961
+CANONICAL_SHA256 = "d03dc7686bfdb5880399d7657ceadac41b36103d1a7c0e6b0a7bc7cf845f2925"
+CANONICAL_BYTES = 1865
 
 #: sha256 of the **master render** — the floating form the entire fleet carries
 #: today. This is the comparator that classifies un-migrated repositories as
 #: "unpinned" (warning) instead of "drifted" (error): if a template edit ever
 #: moves these bytes, the fleet turns red in one wave, which is exactly the
 #: outcome the pin migration must avoid. Frozen from the 2026-10-06 canonical.
-MASTER_SHA256 = "943a8f3564151a6569bc43330ea8e8e38b0885a43bdc383a135ad623fc1743d9"
-MASTER_BYTES = 1866
+MASTER_SHA256 = "727a3e9c17f29c436bdc1dc11653dd0b50f8dc3c12646f98fb7bc1e3e2de442e"
+MASTER_BYTES = 1770
 
 #: The lane-carrying template without the grant (2026-09-26 → 2026-10-06): audit
 #: reports it as a warning, because the check still cannot start.
@@ -268,35 +268,39 @@ class test_permission_grant:
         assert "permissions" not in doc["jobs"]["lint-commits"]
 
 class test_trigger_shape:
-    def test_every_lifecycle_event_is_covered(self):
-        doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
-        assert _on(doc)["pull_request"]["types"] == ["opened", "edited", "reopened", "ready_for_review", "synchronize"]
+    """The 2026-11-06 trigger policy: CI never runs on a pull request.
 
-    def test_ready_for_review_is_present(self):
-        """Its absence is the §8.3.6 deadlock: a draft PR marked ready never lints."""
-        types = _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["pull_request"]["types"]
-        assert "ready_for_review" in types
+    The commit-message lane is PR metadata, so it keeps only the manual entry —
+    with the `pr` input that makes a dispatched run able to name its target. The
+    format itself is held by review plus the squash subject.
+    """
 
-    def test_synchronize_is_present(self):
-        """Its absence means a re-pushed head never re-runs the required check."""
-        types = _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["pull_request"]["types"]
-        assert "synchronize" in types
+    def test_no_pull_request_trigger(self):
+        assert "pull_request" not in _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))
 
-    def test_merge_group_is_declared(self):
-        doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
-        assert _on(doc)["merge_group"]["types"] == ["checks_requested"]
+    def test_no_pull_request_target_trigger(self):
+        assert "pull_request_target" not in _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))
+
+    def test_no_merge_group_trigger(self):
+        assert "merge_group" not in _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))
 
     def test_no_push_trigger(self):
-        """Lint is a required check, not a master-post-processing step."""
+        """Lint is not a master-post-processing step either."""
         assert "push" not in _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))
+
+    def test_workflow_dispatch_is_the_only_trigger(self):
+        assert list(_on(yaml.safe_load(WORKFLOW_COMMIT_LINT))) == ["workflow_dispatch"]
+
+    def test_dispatch_declares_the_pr_input(self):
+        """Without it a dispatched run cannot name the pull request it judges."""
+        inputs = _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["workflow_dispatch"]["inputs"]
+        assert inputs["pr"]["required"] is True
 
     def test_per_pull_request_concurrency(self):
         """One in-flight lint per pull request (ci-ops 8.3.3).
 
-        A superseded push cancels its predecessor instead of queueing a second
-        lint on the lane the repository resolves — on the farm lane that is one
-        runner slot instead of many. Dispatch runs fall back to the run ref, so
-        a manual re-lint still cancels only its own predecessors.
+        Dispatch runs fall back to the run ref, so a manual re-lint still cancels
+        only its own predecessors.
         """
         doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
         assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "cancel-in-progress": True}
@@ -391,15 +395,15 @@ class test_callee_matches_the_template:
     def test_callee_file_is_present(self):
         assert CALLEE_PATH.is_file(), f"missing callee workflow: {CALLEE_PATH}"
 
-    def test_pull_request_types_match_the_template(self):
-        assert (_on(_callee())["pull_request"]["types"] == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["pull_request"]["types"])
+    def test_neither_side_declares_a_pull_request_trigger(self):
+        """The 2026-11-06 policy is repo-wide: the callee dropped it in #264."""
+        assert "pull_request" not in _on(_callee())
+        assert "pull_request" not in _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))
 
-    def test_merge_group_types_match_the_template(self):
-        assert (_on(_callee())["merge_group"]["types"] == _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["merge_group"]["types"])
-
-    def test_callee_declares_every_event_the_caller_waits_on(self):
-        caller_events = set(_on(yaml.safe_load(WORKFLOW_COMMIT_LINT)))
-        assert caller_events <= set(_on(_callee()))
+    def test_callee_still_accepts_the_call(self):
+        """A caller whose event the callee cannot serve never starts a job."""
+        assert "workflow_call" in _on(_callee())
+        assert "workflow_dispatch" in _on(_callee())
 
 class test_cache_policy_caller_template:
     """The second generated caller: same discipline as the commit-lint one.
@@ -416,21 +420,18 @@ class test_cache_policy_caller_template:
         assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@" + PINNED_DEVTOOLS_REF)
         assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF
 
-    def test_synchronize_is_present(self):
-        """Without it a re-pushed head never re-runs the check: the §8.3.6 deadlock."""
-        types = _on(yaml.safe_load(WORKFLOW_CI_CACHE))["pull_request"]["types"]
-        assert "synchronize" in types
+    def test_runs_on_master_pushes(self):
+        """A basic check runs after the squash merge, never on the pull request."""
+        on = _on(yaml.safe_load(WORKFLOW_CI_CACHE))
+        assert on["push"]["branches"] == ["master"]
 
-    def test_ready_for_review_is_present(self):
-        types = _on(yaml.safe_load(WORKFLOW_CI_CACHE))["pull_request"]["types"]
-        assert "ready_for_review" in types
+    def test_is_dispatchable(self):
+        assert "workflow_dispatch" in _on(yaml.safe_load(WORKFLOW_CI_CACHE))
 
-    def test_merge_group_is_declared(self):
-        doc = yaml.safe_load(WORKFLOW_CI_CACHE)
-        assert _on(doc)["merge_group"]["types"] == ["checks_requested"]
-
-    def test_no_push_trigger(self):
-        assert "push" not in _on(yaml.safe_load(WORKFLOW_CI_CACHE))
+    def test_no_pull_request_trigger(self):
+        on = _on(yaml.safe_load(WORKFLOW_CI_CACHE))
+        assert "pull_request" not in on
+        assert "merge_group" not in on
 
     def test_caller_job_carries_only_uses_and_with(self):
         """A caller job accepts nine keys; anything else makes the whole file invalid.
@@ -471,14 +472,14 @@ class test_pr_title_caller_template:
         assert job["uses"] == ("celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@" + PINNED_DEVTOOLS_REF)
         assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF
 
-    def test_synchronize_is_present(self):
-        types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
-        assert "synchronize" in types
+    def test_no_pull_request_trigger(self):
+        """PR metadata no longer runs on the pull request (2026-11-06 policy)."""
+        on = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))
+        assert "pull_request" not in on
+        assert "merge_group" not in on
 
-    def test_edited_is_present(self):
-        """Editing the title must re-run the check that validates it."""
-        types = _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))["pull_request"]["types"]
-        assert "edited" in types
+    def test_is_dispatchable(self):
+        assert list(_on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))) == ["workflow_dispatch"]
 
     def test_caller_job_carries_only_uses_and_with(self):
         job = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)["jobs"]["pr-title-check"]
@@ -495,11 +496,11 @@ class test_pr_title_caller_template:
         doc = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)
         assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "cancel-in-progress": True}
 
-    def test_callee_also_re_runs_on_synchronize(self):
-        """The reusable workflow's own trigger list must match, or the caller is useless."""
+    def test_callee_and_caller_agree_on_the_policy(self):
+        """Neither side may re-introduce a pull-request trigger."""
         callee = yaml.safe_load((Path(__file__).resolve().parent.parent / ".github/workflows/pr-title-check.yml").read_text(encoding = "utf-8"))
-        types = _on(callee)["pull_request"]["types"]
-        assert "synchronize" in types
+        assert "pull_request" not in _on(callee)
+        assert "pull_request" not in _on(yaml.safe_load(WORKFLOW_PR_TITLE_CHECK))
 
     def test_generator_writes_all_three_callers(self, tmp_path: Path):
         _ensure_workflows(tmp_path)
@@ -541,19 +542,21 @@ def test_every_opt_in_caller_is_canonicalisable_and_valid_yaml():
         else:
             assert job["with"]["devtools-ref"] == PINNED_DEVTOOLS_REF, gate
 
-def test_pr_triggering_gates_react_to_new_pushes():
-    # A required check that ignores `synchronize` never re-runs on the pushed
-    # head, and the protected branch then refuses the merge — the five-repository
-    # `pr-title-check` drift this wave found.
-    for gate in ("family", "verify", "rules", "cnb"):
-        parsed = yaml.safe_load(_OPT_IN[gate])
-        types = parsed[True]["pull_request"]["types"]
-        assert "synchronize" in types, gate
+def test_no_gate_caller_runs_on_a_pull_request():
+    # 2026-11-06: the whole caller family moved off pull_request. A gate that
+    # still declares it would spend farm time on every push to every PR.
+    for gate in ("family", "verify", "rules", "cnb", "p0"):
+        on = yaml.safe_load(_OPT_IN[gate])[True]
+        assert "pull_request" not in on, gate
+        assert "merge_group" not in on, gate
+        assert "workflow_dispatch" in on, gate
 
-def test_p0_gate_reacts_to_edited_bodies():
-    # The acknowledgment is written into the PR body, so `edited` must re-run it.
-    parsed = yaml.safe_load(WORKFLOW_P0_GATE)
-    assert "edited" in parsed[True]["pull_request"]["types"]
+def test_p0_gate_is_dispatch_only():
+    # The acknowledgment used to arrive via a PR-body edit; with PR triggers gone
+    # the gate is exercised by hand, so it must stay dispatchable.
+    on = yaml.safe_load(WORKFLOW_P0_GATE)[True]
+    assert "pull_request" not in on
+    assert "workflow_dispatch" in on
 
 def test_release_notes_keeps_its_write_permission():
     # The callee patches the release body; a caller that withholds
@@ -606,9 +609,9 @@ def test_the_p0_gate_caller_cannot_collide_with_the_callee_concurrency_group():
     caller_group = caller["concurrency"]["group"]
     callee_group = callee["concurrency"]["group"]
     assert caller_group != callee_group, ("the generated p0-gate caller must not reuse the callee's concurrency group: " "the callee evaluates it in the caller's context and cancels the very run " "that called it")
-    # `synchronize` keeps the required check alive on every push, and the
-    # dispatch entry is what lets an operator re-run the gate without a push.
-    assert "synchronize" in caller[True]["pull_request"]["types"]
+    # 2026-11-06: the gate no longer runs on pull requests at all, so the only
+    # live entry is the dispatch one — which is what keeps it exercisable.
+    assert "pull_request" not in caller[True]
     assert "workflow_dispatch" in caller[True]
 
 def test_short_hex_ref_is_rejected_with_the_fix_in_the_message(monkeypatch, tmp_path):
