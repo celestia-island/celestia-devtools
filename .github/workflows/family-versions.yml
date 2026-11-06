@@ -12,7 +12,9 @@ name: Family dependency identity
 # rules: kebab-case publishable crate names + one source per package name per
 # lockfile). It is ADVISORY for now — the 2026-11-06 org census had one stock
 # hit (hikari's `debug_glow` example crate), so it reports without failing and
-# flips to `--strict` once that is fixed.
+# flips to `--strict` once that is fixed. `|| echo` guards the step: under
+# `set -e` an exit-2 scan error (nothing scanned / unparsable manifest) must not
+# swallow the family result that follows.
 on:
   workflow_call:
     inputs:
@@ -83,7 +85,7 @@ jobs:
             # still print when the family gate below is red. Guarded because a
             # stale preinstall may predate the command.
             if celestia-devtools package-rules --help >/dev/null 2>&1; then
-              celestia-devtools package-rules "$GITHUB_WORKSPACE"
+              celestia-devtools package-rules "$GITHUB_WORKSPACE" || echo "package-rules advisory failure (exit $?)"
             else
               echo "package-rules unavailable on this devtools build; skipping the package-surface check"
             fi
@@ -109,7 +111,7 @@ jobs:
             # The guard keeps pre-#263 pins green: an older devtools ref has no
             # package-rules command, and a re-pin is what upgrades it.
             if PYTHONPATH=src python3 -m celestia_devtools package-rules --help >/dev/null 2>&1; then
-              PYTHONPATH=src python3 -m celestia_devtools package-rules "$GITHUB_WORKSPACE"
+              PYTHONPATH=src python3 -m celestia_devtools package-rules "$GITHUB_WORKSPACE" || echo "package-rules advisory failure (exit $?)"
             else
               echo "package-rules unavailable at devtools-ref '${DEVTOOLS_REF:-master}'; skipping the package-surface check"
             fi
