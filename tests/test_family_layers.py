@@ -17,6 +17,12 @@ def test_bundled_table_is_pinned():
     assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 8, 0), layers["rust_overrides"]["kirino_session"][2])}
     assert load_family_layers()["rust_overrides"]["kirino_session"][:2] == ("kirino", (0, 8, 0))
     assert dict((name, line) for name, line, _why in layers["npm_layers"]) == {"@celestia-island/hikari": (0, 55, 0), "@celestia-island/kirino": (0, 9, 0), "@celestia-island/plana-types": (0, 1, 0), "@celestia-island/plana-rpc-client": (0, 1, 0)}
+    weld = {"until": "external-beta", "reason": "plana 0.1 weld ruling 2026-11-07", "lines": ("plana", "kirino_session")}
+    assert layers["weld_window"] == {
+        "celestia-island/arona": weld,
+        "celestia-island/shittim-chest": weld,
+        "celestia-island/celestia-erp": weld,
+    }
 
 def test_module_constants_come_from_the_data_file():
     assert PLANA_PUBLISHED["plana"] == (0, 3, 0)
@@ -127,4 +133,42 @@ def test_leading_zero_line_is_rejected(tmp_path):
     path = _write(tmp_path, BASE.replace('plana = "0.2"', 'plana = "00.2"'))
 
     with pytest.raises(family_layers_error, match = "major.minor"):
+        load_family_layers(path)
+
+def _welded(body: str) -> str:
+    return body + '\n[weld_window]\n"celestia-island/arona" = { until = "external-beta", reason = "test", lines = ["plana"] }\n'
+
+def test_weld_window_defaults_to_empty(tmp_path):
+    assert load_family_layers(_write(tmp_path, BASE))["weld_window"] == {}
+
+def test_a_weld_entry_is_loaded_and_normalized(tmp_path):
+    layers = load_family_layers(_write(tmp_path, _welded(BASE)))
+    assert layers["weld_window"] == {"celestia-island/arona": {"until": "external-beta", "reason": "test", "lines": ("plana",)}}
+
+def test_a_weld_entry_needs_a_real_date_or_milestone(tmp_path):
+    body = _welded(BASE).replace('until = "external-beta"', 'until = "2026-13-01"')
+    path = _write(tmp_path, body)
+
+    with pytest.raises(family_layers_error, match = "real date"):
+        load_family_layers(path)
+
+def test_a_weld_entry_needs_a_reason(tmp_path):
+    body = _welded(BASE).replace('reason = "test"', 'reason = "  "')
+    path = _write(tmp_path, body)
+
+    with pytest.raises(family_layers_error, match = "reason"):
+        load_family_layers(path)
+
+def test_weld_lines_must_not_be_empty(tmp_path):
+    body = _welded(BASE).replace('lines = ["plana"]', "lines = []")
+    path = _write(tmp_path, body)
+
+    with pytest.raises(family_layers_error, match = "lines"):
+        load_family_layers(path)
+
+def test_a_weld_entry_must_be_a_table(tmp_path):
+    body = _welded(BASE).replace('"celestia-island/arona" = { until = "external-beta", reason = "test", lines = ["plana"] }', '"celestia-island/arona" = "x"')
+    path = _write(tmp_path, body)
+
+    with pytest.raises(family_layers_error, match = "table"):
         load_family_layers(path)

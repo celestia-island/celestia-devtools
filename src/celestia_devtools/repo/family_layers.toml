@@ -85,3 +85,26 @@ why = "shared protocol types (Layer 1, npm track)"
 [npm_layers."@celestia-island/plana-rpc-client"]
 line = "0.1"
 why = "RPC client (Layer 1, npm track)"
+
+[weld_window]
+# Dated exemptions for the family gate (2026-11-07 ruling: "weld" the known
+# plana 0.1 generation split with an expiry instead of silencing it).
+#
+# repo = { until = ..., reason = ..., lines = [...] }
+# - `until` is either `YYYY-MM-DD` (auto-expires after that day) or a milestone
+#   label such as `external-beta` (cannot be compared mechanically: the row is
+#   removed or re-dated when the milestone is reached). A value starting with a
+#   digit is held to strict ISO spelling — a malformed date would silently
+#   never expire;
+# - `lines` lists family tokens whose GENERATIONAL differences (declared line vs
+#   published line, and parked members) are downgraded from violation to an
+#   INFO line that names the weld; matching is prefix-based (`plana` covers every
+#   `plana-*` member). Everything else — wrong git source, rev pins, unpublished
+#   members consumed from crates.io, sibling path deps — stays a violation.
+# A deleted or expired row puts the violations straight back.
+# Keys are full `owner/repo`: a bare name would exempt any repository that
+# happens to be called `arona` (a fork, a scratch directory). A root whose
+# identity cannot be proved welds nothing — the gate does not guess.
+"celestia-island/arona" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }
+"celestia-island/shittim-chest" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }
+"celestia-island/celestia-erp" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }

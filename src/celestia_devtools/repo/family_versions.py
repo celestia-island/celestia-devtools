@@ -32,17 +32,25 @@ admit `0.7`, and reading a floor out of them is how a checker starts lying.
 Exit status: 0 clean, 1 violations (or warnings with ``--strict``), 2 when
 nothing was scanned at all — a path that is not a directory, or one holding
 no manifest, is an error rather than a clean repository.
+
+A repository can be parked in a dated ``[weld_window]`` entry of
+``family_layers.toml``: generational findings there are downgraded to INFO
+lines naming the weld ("welded until <until>"). An expired ``YYYY-MM-DD`` or a
+removed row restores the violations. The repository identity is
+``GITHUB_REPOSITORY`` in CI and the target root's git remote for local runs.
 """
 
 from __future__ import annotations
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
 import tomllib
 import yaml
 from dataclasses import asdict, dataclass
+from datetime import date
 from pathlib import Path
 from typing import Iterable, Sequence
 from celestia_devtools.core import envelope
@@ -75,6 +83,14 @@ REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
 #: this module) so a release wave updates data, not code — see that file's
 #: header for the update rule and the authority of each table.
 _FAMILY_LAYERS_PATH = Path(__file__).with_name("family_layers.toml")
+
+#: A `[weld_window]` deadline; any other `until` value is a milestone label.
+_WELD_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: Anything starting with a digit is treated as a date ATTEMPT (see the loader):
+#: it must then be exactly `_WELD_DATE`, never a milestone.
+_WELD_DATE_ATTEMPT = re.compile(r"^\d")
+#: `[weld_window]` keys: full `owner/repo`, so a bare name cannot self-exempt.
+_WELD_REPO_KEY = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 
 class family_layers_error(ValueError):
     """The data file is missing or does not match the documented schema."""
@@ -158,6 +174,67 @@ def load_family_layers(path: Path | None = None) -> dict:
         layers[name] = tuple(entries)
 
     layers["rust_overrides"] = dict(sorted(overrides.items()))
+    weld_raw = data.get("weld_window", {})
+
+    if not isinstance(weld_raw, dict):
+        raise family_layers_error("%s: [weld_window] must be a table of repository entries" % data_path)
+
+    weld_window: dict[str, dict] = {}
+
+    for repo_name, entry in weld_raw.items():
+        label = "weld_window.%s" % repo_name
+
+        if not isinstance(entry, dict):
+            raise family_layers_error("%s: [%s] must be a table with until/reason/lines" % (data_path, label))
+
+        until = entry.get("until")
+        reason = entry.get("reason")
+        lines_raw = entry.get("lines")
+
+        if (not isinstance(until, str)) or (not until.strip()):
+            raise family_layers_error("%s: [%s].until must be a date or milestone label" % (data_path, label))
+
+        # Dates must be ISO spelled. A malformed date is the worst case in this
+        # table: `_weld_active` treats anything that is not `YYYY-MM-DD` as a
+        # milestone, so `2026-11-7` would read as "never expires" while the
+        # message still says "welded until 2026-11-7" — a silent permanent
+        # exemption. Anything that starts with a digit is therefore a date
+        # attempt and is held to the ISO spelling + a real calendar day.
+        if _WELD_DATE_ATTEMPT.match(until.strip()):
+            if not _WELD_DATE.fullmatch(until.strip()):
+                raise family_layers_error(
+                    "%s: [%s].until %r looks like a date but is not ISO `YYYY-MM-DD` (a malformed date would never expire); use `YYYY-MM-DD` or a milestone label that does not start with a digit" % (data_path, label, until)
+                )
+
+            try:
+                date.fromisoformat(until.strip())
+            except ValueError as exc:
+                raise family_layers_error("%s: [%s].until is not a real date: %r" % (data_path, label, until)) from exc
+
+        if (not isinstance(reason, str)) or (not reason.strip()):
+            raise family_layers_error("%s: [%s].reason must be a non-empty string" % (data_path, label))
+
+        if (not isinstance(lines_raw, list)) or (not lines_raw):
+            raise family_layers_error("%s: [%s].lines must be a non-empty array of family tokens" % (data_path, label))
+
+        tokens = []
+
+        for token in lines_raw:
+            if (not isinstance(token, str)) or (not token.strip()):
+                raise family_layers_error("%s: [%s].lines entries must be non-empty strings" % (data_path, label))
+
+            tokens.append(token.strip().replace("-", "_").lower())
+
+        key = repo_name.strip().lower()
+
+        if _WELD_REPO_KEY.fullmatch(key) is None:
+            raise family_layers_error(
+                "%s: [%s] must be keyed `owner/repo` (e.g. `celestia-island/arona`); a bare name would exempt any repository that happens to be called %r" % (data_path, label, repo_name)
+            )
+
+        weld_window[key] = {"until": until.strip(), "reason": reason.strip(), "lines": tuple(tokens)}
+
+    layers["weld_window"] = weld_window
 
     return layers
 
@@ -167,6 +244,8 @@ RUST_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["rust_layers"
 #: ``crate → (family, line, why)`` for members deliberately parked on another line.
 RUST_OVERRIDES: dict[str, tuple[str, version, str]] = _FAMILY_LAYERS["rust_overrides"]
 NPM_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["npm_layers"]
+#: ``repo → {until, reason, lines}`` dated weld exemptions (see [weld_window]).
+WELD_WINDOW: dict[str, dict] = _FAMILY_LAYERS["weld_window"]
 
 #: `crate family → repository` for the git-source check.
 FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
@@ -189,9 +268,13 @@ NPM_DEP_SECTIONS = ("dependencies", "devDependencies", "peerDependencies", "opti
 
 @dataclass(frozen = True)
 class finding_record:
-    level: str  # "violation" | "warning"
+    level: str  # "violation" | "warning" | "info" (welded window)
     subject: str
     message: str
+    #: Crate/family token for `[weld_window]` matching; None = never welded.
+    weld_key: str | None = None
+    #: Set on INFO findings produced by a weld; names the deadline/milestone.
+    welded_until: str | None = None
 
 # ── requirement semantics ────────────────────────────────────────────────────
 
@@ -407,6 +490,119 @@ def _repo_name(root: Path) -> str:
 
     return root.name
 
+def _caller_repo(root: Path) -> str:
+    """The bare repository name this gate is judging, lower-cased.
+
+    Used by the rules that key off a repository NAME (currently the frozen
+    rev-pin allowance). ``[weld_window]`` needs the stricter ``owner/repo``
+    identity instead — see [`_weld_identity`].
+    """
+
+    return _repo_name(root).lower()
+
+def _weld_identity(root: Path) -> str | None:
+    """The ``owner/repo`` this gate is judging, or None when it cannot be proved.
+
+    CI names it explicitly (``GITHUB_REPOSITORY=owner/repo``): that wins because
+    the fresh-clone lane judges the CALLER's tree while running from a devtools
+    checkout. Local CLI runs parse the target root's git remote.
+
+    The full ``owner/repo`` is required — matching the bare repository name
+    would exempt any unrelated repository that happens to share it (a fork, a
+    scratch directory). A root with no recognisable GitHub remote returns None,
+    which welds nothing: guesses must not suppress violations.
+    """
+
+    declared = os.environ.get("GITHUB_REPOSITORY", "").strip().lower()
+
+    if declared:
+        return declared if _WELD_REPO_KEY.fullmatch(declared) else None
+
+    from_remote = _repo_identity_from_remote(root)
+
+    return from_remote
+
+def _repo_identity_from_remote(root: Path) -> str | None:
+    """Parse ``owner/repo`` out of the target's ``origin`` URL, or None."""
+
+    try:
+        out = subprocess.run(["git", "-C", str(root), "config", "--get", "remote.origin.url"], capture_output = True, text = True, timeout = 30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    url = out.stdout.strip()
+
+    if not url:
+        return None
+
+    # https://github.com/OWNER/REPO(.git) | ssh://git@github.com/OWNER/REPO(.git)
+    # | git@github.com:OWNER/REPO(.git)
+    candidate = url.removesuffix(".git")
+
+    if "://" in candidate:
+        candidate = candidate.split("://", 1)[1]
+        candidate = candidate.split("/", 1)[1] if "/" in candidate else ""
+    elif ":" in candidate and "@" in candidate.split(":", 1)[0]:
+        candidate = candidate.split(":", 1)[1]
+
+    parts = [part for part in candidate.split("/") if part]
+
+    if len(parts) != 2:
+        return None
+
+    identity = (parts[0] + "/" + parts[1]).lower()
+
+    return identity if _WELD_REPO_KEY.fullmatch(identity) else None
+
+def _weld_active(entry: dict, today: date | None = None) -> bool:
+    """Whether a ``[weld_window]`` entry still suppresses generational findings.
+
+    A ``YYYY-MM-DD`` deadline is inclusive: it expires AFTER that day. Any other
+    value (a milestone such as ``external-beta``) cannot be compared
+    mechanically, so it stays active until the row is removed or re-dated.
+    """
+
+    until = entry["until"]
+
+    if not _WELD_DATE.fullmatch(until):
+        return True
+
+    return (today or date.today()) <= date.fromisoformat(until)
+
+def _weld_for(repo: str | None, today: date | None = None) -> dict | None:
+    """The active weld entry for *repo* (``owner/repo``), or None."""
+
+    if not repo:
+        return None
+
+    entry = WELD_WINDOW.get(repo.strip().lower())
+
+    if (entry is None) or (not _weld_active(entry, today)):
+        return None
+
+    return entry
+
+def _weld_matches(weld_key: str, lines: tuple[str, ...]) -> bool:
+    """Prefix match on normalized names: ``plana`` covers every ``plana_*``."""
+
+    normalized = weld_key.replace("-", "_").lower()
+    return any((normalized == token) or normalized.startswith(token + "_") for token in lines)
+
+def _apply_weld(findings: list[finding_record], entry: dict) -> list[finding_record]:
+    """Downgrade welded generational violations to dated INFO lines."""
+
+    welded: list[finding_record] = []
+
+    for finding in findings:
+        if (finding.level != "violation") or (finding.weld_key is None) or (not _weld_matches(finding.weld_key, entry["lines"])):
+            welded.append(finding)
+            continue
+
+        message = finding.message + " — welded until " + entry["until"] + " (" + entry["reason"] + ")"
+        welded.append(finding_record("info", finding.subject, message, weld_key = finding.weld_key, welded_until = entry["until"]))
+
+    return welded
+
 def _family_crate(name: str) -> tuple[str, version, str] | None:
     normalized = name.replace("-", "_")
     # A parked member wins over its family: `kirino-session` stays on 0.7 while
@@ -533,7 +729,7 @@ def _check_cargo(path: Path, root: Path, findings: list[finding_record], repo: s
                 verdict = intersects(requirement, member, line)
 
                 if verdict is False:
-                    findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to this member's " f"published {member[0]}.{member[1]} line; 0.x carets do not overlap, " "so this is a different primitive, not an older build"))
+                    findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to this member's " f"published {member[0]}.{member[1]} line; 0.x carets do not overlap, " "so this is a different primitive, not an older build", weld_key = name.replace("-", "_").lower()))
                 elif verdict is None:
                     findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
 
@@ -595,7 +791,7 @@ def _check_cargo(path: Path, root: Path, findings: list[finding_record], repo: s
         verdict = intersects(requirement, canonical, line)
 
         if verdict is False:
-            findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line; 0.x carets do not overlap, so this " "is a different primitive, not an older build"))
+            findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line; 0.x carets do not overlap, so this " "is a different primitive, not an older build", weld_key = name.replace("-", "_").lower()))
         elif verdict is None:
             findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
 
@@ -873,11 +1069,20 @@ def _scanned_counts(root: Path) -> dict[str, int]:
     """How much was actually read — so `ok` cannot mean "found nothing"."""
     return {"Cargo.toml": len(list(_manifests(root, "Cargo.toml"))), "package.json": len(list(_manifests(root, "package.json"))), "Cargo.lock": len(list(_manifests(root, "Cargo.lock"))), "pnpm-lock.yaml": len(list(_manifests(root, "pnpm-lock.yaml")))}
 
-def check(root: Path) -> list[finding_record]:
-    """Every family-consumption finding in ``root``, violations first."""
+def check(root: Path, repo: str | None = None, today: date | None = None) -> list[finding_record]:
+    """Every family-consumption finding in ``root``, violations first.
+
+    *repo* / *today* exist for tests: production calls resolve the caller
+    identity from ``GITHUB_REPOSITORY`` (CI) or the target's git remote, and use
+    the wall clock for ``[weld_window]`` deadlines.
+    """
     root = Path(root).resolve()
     findings: list[finding_record] = []
-    repo = _repo_name(root)
+    identity = (repo if repo is not None else _weld_identity(root))
+    identity = identity.strip().lower() if identity else None
+    # The legacy rules key off the bare name (a frozen checkout of `scriptum`
+    # may carry no GitHub remote at all); only the weld needs `owner/repo`.
+    repo = identity.rsplit("/", 1)[-1] if identity else _caller_repo(root)
     rust_lines: dict[str, set[tuple[int, int]]] = {}
     npm_lines: dict[str, set[tuple[int, int]]] = {}
 
@@ -908,6 +1113,11 @@ def check(root: Path) -> list[finding_record]:
 
     findings.extend(_workspace_override_findings(root))
     findings.extend(_lock_findings(root))
+    weld = _weld_for(identity, today)
+
+    if weld is not None:
+        findings = _apply_weld(findings, weld)
+
     order = {"violation": 0, "warning": 1, "info": 2}
     unique: dict[tuple[str, str, str], finding_record] = {}
 
@@ -937,9 +1147,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     findings = check(root)
     violations = [f for f in findings if f.level == "violation"]
     warnings = [f for f in findings if f.level == "warning"]
+    welded = [f for f in findings if f.welded_until is not None]
 
     if args.json:
-        envelope.emit({"repo": str(root), "scanned": scanned, "findings": [asdict(f)for f in findings], "violations": len(violations), "warnings": len(warnings)})
+        envelope.emit({"repo": str(root), "scanned": scanned, "findings": [asdict(f)for f in findings], "violations": len(violations), "warnings": len(warnings), "welded": len(welded)})
     else:
         for finding in findings:
             stream = sys.stderr if finding.level == "violation" else sys.stdout
@@ -947,10 +1158,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         summary = ", ".join(f"{count} {name}" for name, count in scanned.items() if count)
 
+        welded_suffix = f", {len(welded)} welded" if welded else ""
+
         if not findings:
             print(f"ok: every family layer is consumed as one identity ({summary})")
         else:
-            print(f"{len(violations)} violation(s), {len(warnings)} warning(s) ({summary})", file = sys.stderr if violations else sys.stdout)
+            print(f"{len(violations)} violation(s), {len(warnings)} warning(s)" + welded_suffix + f" ({summary})", file = sys.stderr if violations else sys.stdout)
 
     if violations or (args.strict and warnings):
         return 1
