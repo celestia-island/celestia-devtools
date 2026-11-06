@@ -18,6 +18,9 @@ concurrency:
 # The runners are not ephemeral, so those caches duplicate work persistence already does.
 
 on:
+  push:
+    branches: [master]
+  workflow_dispatch:
   workflow_call:
     inputs:
       devtools-ref:
@@ -25,10 +28,6 @@ on:
         required: false
         type: string
         default: "master"
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
-  merge_group:
-    types: [checks_requested]
 
 jobs:
   cache:

@@ -18,6 +18,7 @@ name: PR Title Check
 # title checks red — see the 2026-09-11 migration.
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       # Lane override, mirroring commit-msg-lint.yml: caller input > LINT_RUNNER
@@ -37,9 +38,6 @@ on:
         default: "master"
   # Runs on this repo's own PRs too, which is also how the workflow is verified
   # before any caller adopts it.
-  pull_request:
-    types: [opened, edited, reopened, ready_for_review, synchronize]
-
 jobs:
   title:
     name: PR Title Check
