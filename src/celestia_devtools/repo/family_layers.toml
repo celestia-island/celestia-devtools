@@ -106,5 +106,7 @@ why = "RPC client (Layer 1, npm track)"
 # happens to be called `arona` (a fork, a scratch directory). A root whose
 # identity cannot be proved welds nothing — the gate does not guess.
 "celestia-island/arona" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }
-"celestia-island/shittim-chest" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }
+# shittim-chest migrated kirino-session ^0.7 → ^0.8 for real (chest#2230,
+# the Track B issuer flip), so its weld covers plana only now.
+"celestia-island/shittim-chest" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana"] }
 "celestia-island/celestia-erp" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }

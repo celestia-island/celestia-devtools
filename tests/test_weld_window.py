@@ -171,7 +171,9 @@ def test_the_shipped_table_welds_the_three_ruling_repos():
         assert entry["until"] == "external-beta", repo
         assert "plana" in entry["lines"], repo
 
-    assert "kirino_session" in fv.WELD_WINDOW["celestia-island/shittim-chest"]["lines"]
+    assert "kirino_session" not in fv.WELD_WINDOW["celestia-island/shittim-chest"]["lines"], (
+        "chest migrated kirino-session to 0.8 for real (chest#2230); its weld is plana-only"
+    )
     assert "kirino_session" in fv.WELD_WINDOW["celestia-island/arona"]["lines"]
     assert "kirino_session" in fv.WELD_WINDOW["celestia-island/celestia-erp"]["lines"]
 

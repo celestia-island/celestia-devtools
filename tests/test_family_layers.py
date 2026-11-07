@@ -20,7 +20,7 @@ def test_bundled_table_is_pinned():
     weld = {"until": "external-beta", "reason": "plana 0.1 weld ruling 2026-11-07", "lines": ("plana", "kirino_session")}
     assert layers["weld_window"] == {
         "celestia-island/arona": weld,
-        "celestia-island/shittim-chest": weld,
+        "celestia-island/shittim-chest": {**weld, "lines": ("plana",)},
         "celestia-island/celestia-erp": weld,
     }
 
