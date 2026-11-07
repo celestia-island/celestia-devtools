@@ -1,0 +1,176 @@
+name: PR Title Check
+
+# Validates the PR title, which becomes the squash-merge subject — the org rule
+# in AGENTS.md §3 applies to titles exactly as it does to commit subjects.
+#
+# Centralised here (reusable workflow) instead of copied per repo, so all of the
+# org lints titles with the same celestia-devtools linter on GitHub-hosted
+# runners. Repos call it with:
+#
+#   jobs:
+#     pr-title-check:
+#       uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@2e76d373762dc6b36c1ab7625c1c34842c28ad4a
+#
+# It supersedes the per-repo copies that downloaded the `noa` release binary:
+# that binary needs glibc 2.39 while the org self-hosted nodes run glibc 2.36,
+# and installing it into /usr/local/bin failed outright on the shared nodes
+# (`tar: noa: Cannot open: Permission denied` / `File exists`), which left the
+# title checks red — see the 2026-09-11 migration.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      # Lane override, mirroring commit-msg-lint.yml: caller input > LINT_RUNNER
+      # variable (org/repo) > hosted. Empty keeps the historical hosted runner.
+      runner:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: ""
+      # Which devtools snapshot the bootstrap installs when the CLI is absent
+      # (P2-3): pinned callers pass their anchor ref so the tool moves with
+      # the pin; floating callers keep master.
+      devtools-ref:
+        description: "celestia-devtools git ref the bootstrap installs when the CLI is absent"
+        required: false
+        type: string
+        default: "master"
+  # Runs on this repo's own PRs too, which is also how the workflow is verified
+  # before any caller adopts it.
+jobs:
+  title:
+    name: PR Title Check
+    # Fork PRs ARE served here — pinned to the hosted lane below.
+    # History: 466d207 skipped fork PRs outright to keep untrusted content off
+    # the shared farm. The cost was never accounted for: with the job skipped,
+    # the required check never reports for an outside contributor, so their PR
+    # stays BLOCKED forever and nobody can merge it without --admin. Found
+    # 2026-10-06: a public repo's seven outside patches had sat unmergeable for
+    # a month, i.e. it read as "we take no outside patches", which nobody had
+    # actually decided. Same guard exists in commit-msg-lint.yml.
+    # The farm still stays off-limits: forks are forced onto GitHub-hosted
+    # runners below, which are free and unlimited for public repos. This job
+    # never checks out the PR and only reads the title from the event payload.
+    # Guard applies both to direct pull_request triggers and to workflow_call
+    # callers (github.event then carries the caller's PR payload).
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      github.event.pull_request.head.repo.fork == true
+    # A title check is a seconds-long, stdlib-only job: GitHub-hosted runners
+    # provision instantly and in parallel, so it never queues behind real builds
+    # on the org self-hosted fleet. Public repos are free and unlimited;
+    # private-repo runs draw on the org's monthly included minutes.
+    # Same lane resolution as commit-msg-lint.yml: caller input > org/repo
+    # variable > hosted, so private repos stop drawing paid minutes when the
+    # quota fails while public repos keep free hosted minutes.
+    # A fork is served on whatever lane the repository resolves — the farm
+    # included. An earlier revision of this fix pinned forks to GitHub-hosted
+    # runners on the assumption that public-repo hosted minutes are free and
+    # always available; that assumption is dead in this org (the hosted lane
+    # went dark on 2026-09-24 over account payments and jobs now sit 15 minutes
+    # with no runner assigned), so pinning forks there would have kept every
+    # outside contribution BLOCKED while looking fixed. Owner decision
+    # 2026-10-06: serve forks on the same lane as everything else. The exposure
+    # is bounded and deliberate — this job never checks out the pull request at
+    # all; it reads the title straight from the event payload and holds no
+    # secrets on a fork run.
+    # Non-fork runs keep the documented order: caller input > LINT_RUNNER
+    # variable > hosted.
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      # No checkout: the title comes from the event payload, so this job needs
+      # nothing but the linter.
+
+      # No actions/setup-python: the hosted Ubuntu image already ships python3
+      # + pip, and the bootstrap below needs nothing more (its last resort is a
+      # stdlib-only PYTHONPATH invocation). The python-versions manifest ships
+      # no builds for the org's Debian 12 self-hosted nodes, so pulling
+      # setup-python in would break those hosts if the job were ever pinned
+      # back.
+
+      - name: Ensure celestia-devtools
+        # Keep this bootstrap in sync with the identical step in
+        # .github/workflows/commit-msg-lint.yml: both reusable workflows must
+        # work on a bare hosted runner, and a single shared composite action
+        # cannot be referenced here (a reusable workflow reaching
+        # `owner/repo/.github/actions/x@master` would resolve to master, so the
+        # action could not be verified in the PR that adds it).
+        #
+        # Fallback chain, each step degrading instead of dying: pip (primary on
+        # hosted runners, with the mirror-rewrite bypass — a rewritten git+https
+        # install stalls ~10min against stale local mirrors) → any pip flavor →
+        # a pip-less shallow clone driven through PYTHONPATH (the message-lint
+        # path is stdlib-only). The chosen invocation lands in DT_CMD.
+        #
+        # P2-3: DEVTOOLS_REF defaults to master, so a floating caller behaves
+        # exactly as before; a pinned caller passes its anchor ref and the
+        # tool moves with the pin instead of floating. Ref-determinism rule
+        # (H14, 2026-10): the preinstalled CLI is only trusted on the master
+        # default lane — a pinned ref names the exact CLI that must judge.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools)"
+            echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          PIP_BIN=""
+          if command -v pip >/dev/null 2>&1; then
+            PIP_BIN=pip
+          elif command -v pip3 >/dev/null 2>&1; then
+            PIP_BIN=pip3
+          elif python3 -c "import pip" >/dev/null 2>&1; then
+            PIP_BIN="python3 -m pip"
+          fi
+          if [ -n "$PIP_BIN" ]; then
+            # Unquoted on purpose: PIP_BIN may be "python3 -m pip".
+            # --user drops the console script into ~/.local/bin: put it on PATH
+            # for this step and register it for the lint step below, so an image
+            # that leaves ~/.local/bin off PATH cannot silently degrade to the
+            # slower clone fallback.
+            export PATH="$HOME/.local/bin:$PATH"
+            if GIT_CONFIG_COUNT=0 $PIP_BIN install --user --break-system-packages \
+                "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF:-master}" \
+              && command -v celestia-devtools >/dev/null 2>&1; then
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "pip install unavailable or failed; falling back to the pip-less clone"
+          fi
+          DT_SRC="$RUNNER_TEMP/celestia-devtools"
+          rm -rf "$DT_SRC"
+          # --branch takes a branch or tag ref (the pip branch above already
+          # covers SHA pins; this last-resort clone only needs to honor tags).
+          GIT_CONFIG_COUNT=0 git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" \
+            https://github.com/celestia-island/celestia-devtools.git "$DT_SRC"
+          if ! PYTHONPATH="$DT_SRC/src" python3 -m celestia_devtools --help >/dev/null 2>&1; then
+            echo "pip-less bootstrap failed (python3 missing or clone broken)" >&2
+            exit 1
+          fi
+          echo "PYTHONPATH=$DT_SRC/src" >> "$GITHUB_ENV"
+          echo "DT_CMD=python3 -m celestia_devtools" >> "$GITHUB_ENV"
+
+      - name: Lint PR title (squash merge subject)
+        # Dependabot PRs are exempt: machine-generated subjects cannot satisfy
+        # the gitmoji/period rules (same exemption as the commit lint job).
+        if: github.event.pull_request && github.actor != 'dependabot[bot]'
+        env:
+          # Passed via env so a user-controlled title is never interpolated into
+          # shell syntax (quotes, $() and backticks are inert in env).
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -o pipefail
+          [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
+          echo "PR title: $PR_TITLE"
+          # --repo enables the per-repo CJK exemption (easy-hydro writes
+          # Chinese subjects); celestia repos keep the English-only rule.
+          printf '%s\n' "$PR_TITLE" | \
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"

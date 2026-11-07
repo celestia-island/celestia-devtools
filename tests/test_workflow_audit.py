@@ -1,0 +1,1237 @@
+#!/usr/bin/env python3
+"""Tests for ``celestia_devtools.ci.workflow_audit`` (the ``celestia-ci-audit`` CLI).
+
+Covers the seven rules and the false-positive guards that keep the gate usable:
+
+1. the 2026-09-15 accident shape — a reusable-workflow caller job carrying
+   ``timeout-minutes`` — is reported, and the offending key is named;
+2. a caller job carrying **only** the nine legal keys is clean;
+3. a ``workflow_call`` callee's self-hosted job without ``timeout-minutes`` is reported,
+   with one is not (in all three ``on`` shapes);
+4. a plain self-hosted job without ``timeout-minutes`` is reported;
+5. a workflow flattened onto a single line (the real ``sysl`` shape) is **in the findings**
+   rather than silently skipped;
+6. the ``--json`` document and the exit codes;
+7. mutation style: taking a clean fixture and breaking it (dropping the timeout / adding the
+   illegal key back) turns the gate red again;
+8. a self-hosted job reachable by ``pull_request`` without the org's fork guard is a
+   ``warning`` — while caller jobs (guard in the callee) and non-PR triggers stay clean.
+
+Plus the guards a red gate depends on: a step-level ``timeout-minutes`` does not satisfy the
+job-level rule, ``- uses: actions/checkout`` inside ``steps`` does not make a job a caller,
+GitHub-hosted jobs are out of scope, the ``--allow`` list suppresses loudly, and every
+finding carries a repository-relative ``path:line``.
+"""
+
+import json
+import pytest
+from celestia_devtools.repo.init import WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY
+from celestia_devtools.ci import workflow_audit
+from celestia_devtools.repo.init import TEMPLATE_SOURCES, render_caller
+from celestia_devtools.ci.workflow_audit import (CALLER_LEGAL_KEYS, CANONICAL_CALLER_NAME, FORK_GUARD, RULE_CALLEE_MISSING_TIMEOUT, RULE_INVALID_CALLER_KEY, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_YAML_PARSE_ERROR, RULE_DEVTOOLS_REF_NOT_PINNED, RULE_NAMES, finding_record, _build_parser, audit_text, has_failure, main)
+import yaml as _yaml
+import os
+from pathlib import Path as _Path
+from celestia_devtools.ci.workflow_audit import main as entry
+
+# ── fixture 辅助 ─────────────────────────────────────────────────────────────
+
+def _workflow(root, text, filename = "ci.yml"):
+    """Write ``<root>/.github/workflows/<filename>`` (``newline=""`` to control endings exactly)."""
+    directory = root / ".github" / "workflows"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / filename
+
+    with path.open("w", encoding = "utf-8", newline = "") as handle:
+        handle.write(text)
+
+    return path
+
+def _read(path):
+    """Read with ``newline=""`` so universal newlines cannot hide a rewrite."""
+
+    with path.open("r", encoding = "utf-8", newline = "") as handle:
+        return handle.read()
+
+def _replace(path, old, new):
+    """Mutate a fixture on disk: the "make the fix wrong" primitive."""
+    text = _read(path)
+    assert old in text, f"mutation anchor not found: {old!r}"
+
+    with path.open("w", encoding = "utf-8", newline = "") as handle:
+        handle.write(text.replace(old, new, 1))
+
+    return path
+
+def _findings(capsys):
+    """Parse the ``--json`` report already printed to stdout."""
+    return json.loads(capsys.readouterr().out)
+
+def _run(argv, capsys):
+    """Run the CLI and return ``(exit_code, stdout, stderr)``, consuming the capture."""
+    code = main(argv)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+def _rules(findings):
+    return [finding["rule"] for finding in findings]
+
+#: The accident: a caller job plus the key GitHub rejects. This is a faithful
+#: reduction of ``shittim-chest/.github/workflows/ci.yml`` (PR #870 / #872).
+ACCIDENT = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@v2026.10\n" "    timeout-minutes: 90\n"
+
+#: A caller job carrying **only** the nine legal keys (every one of them, on purpose).
+#: The callee is deliberately *not* the shared lint workflow: rule 5 requires that caller to
+#: live in ``commit-msg-lint.yml``, so using it here would fold two rules into one fixture
+#: (变红时看不出是键集错还是位置错). Rule 5 has its own class below.
+LEGAL_CALLER = "name: CI\n" "on: [push, workflow_dispatch]\n" "jobs:\n" "  verify-versions:\n" "    name: Verify versions\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@v2026.10\n" "    with:\n" "      fetch-depth: 0\n" "    secrets: inherit\n" "    strategy:\n" "      fail-fast: false\n" "    needs: [build]\n" "    if: github.event_name == 'pull_request'\n" "    concurrency:\n" "      group: lint-${{ github.ref }}\n" "    permissions:\n" "      contents: read\n"
+
+#: A reusable-workflow callee whose self-hosted job has no upper bound.
+CALLEE_NO_TIMEOUT = "name: Verify versions\n" "on:\n" "  workflow_call:\n" "    inputs:\n" "      ref:\n" "        type: string\n" "jobs:\n" "  verify-versions:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - uses: actions/checkout@v7\n" "      - run: cargo run -p verify-versions\n"
+
+#: The same callee, fixed: the upper bound can only live here (a caller cannot set one).
+CALLEE_WITH_TIMEOUT = CALLEE_NO_TIMEOUT.replace("    runs-on: [self-hosted, linux, x64, local]\n", "    runs-on: [self-hosted, linux, x64, local]\n    timeout-minutes: 60\n")
+
+#: A plain (non-``workflow_call``) workflow with a self-hosted job.
+PLAIN_NO_TIMEOUT = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - run: cargo test --workspace\n"
+
+#: The real ``sysl/.github/workflows/validate.yml`` shape: the whole file on one line, so
+#: PyYAML stops at the second ``key: value`` and every parse-then-check auditor is blind to it.
+ONE_LINE_INVALID = "name: Validate on: push: branches: [master, dev] pull_request: branches: [master, dev] " "jobs: validate: runs-on: ubuntu-latest steps: - uses: actions/checkout@v4\n"
+
+# ── ① 真实事故形态：caller 作业带非法键 ──────────────────────────────────────
+
+class test_invalid_caller_key:
+    """Rule 1: ``uses:`` plus any key outside the nine caller keys."""
+
+    def test_accident_shape_is_reported(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_INVALID_CALLER_KEY]
+
+    def test_reported_line_points_at_the_offending_key(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        finding = _findings(capsys)["findings"][0]
+        assert finding["line"] == 8  # ``timeout-minutes: 90``
+        assert finding["path"] == ".github/workflows/ci.yml"
+
+    def test_message_names_the_key_and_the_job(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "'timeout-minutes'" in message  # 点名该键
+        assert "'verify-versions'" in message
+        assert "name/uses/with/secrets/strategy/needs/if/concurrency/permissions" in message
+
+    def test_severity_is_error_and_recomputable(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        finding = _findings(capsys)["findings"][0]
+        assert finding["severity"] == "error"
+        # 判据可复算：人读输出给出出错行原文。
+        assert "timeout-minutes: 90" in _human(tmp_path, monkeypatch, capsys)
+
+    def test_every_illegal_key_is_named_separately(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "jobs:\n" "  caller:\n" "    uses: ./.github/workflows/checks.yml\n" "    timeout-minutes: 30\n" "    runs-on: [self-hosted, linux]\n" "    env:\n" "      RUST_LOG: debug\n")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == ([RULE_INVALID_CALLER_KEY] * 3)
+        assert [finding["line"] for finding in report["findings"]] == [4, 5, 6]
+
+    def test_local_reusable_workflow_caller_is_covered(self, tmp_path, monkeypatch, capsys):
+        # aoba 的真实形态：`uses: ./.github/workflows/checks.yml` 同样是 caller 作业。
+        _workflow(tmp_path, "jobs:\n" "  checks:\n" "    uses: ./.github/workflows/checks.yml\n" "    timeout-minutes: 330\n")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_INVALID_CALLER_KEY]
+
+def _human(tmp_path, monkeypatch, capsys):
+    """Run the human (non-JSON) report and return stdout."""
+    monkeypatch.chdir(tmp_path)
+    main([])
+    return capsys.readouterr().out
+
+# ── ② 合法 caller 键不得命中（防假阳） ──────────────────────────────────────
+
+class test_legal_caller_is_clean:
+    """Rule 1 must not fire on the legal caller key set — the whole org is full of these."""
+
+    def test_all_nine_legal_keys_are_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, LEGAL_CALLER)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["failed"] is False
+
+    def test_legal_key_set_is_the_documented_nine(self):
+        # 判据写死在测试里：改动合法集必须先改这里，防止悄悄放宽。
+        assert set(CALLER_LEGAL_KEYS) == {"name", "uses", "with", "secrets", "strategy", "needs", "if", "concurrency", "permissions"}
+
+    def test_steps_uses_does_not_make_a_job_a_caller(self, tmp_path, monkeypatch, capsys):
+        # 关键防假阳：`- uses: actions/checkout` 是 step 不是 job 级 uses。
+        _workflow(tmp_path, "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    timeout-minutes: 300\n" "    steps:\n" "      - uses: actions/checkout@v7\n" "      - uses: pnpm/action-setup@v6\n")
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+
+    def test_hosted_workflow_with_many_uses_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "jobs:\n" "  lint:\n" "    runs-on: ubuntu-latest\n" "    steps:\n" "      - uses: actions/checkout@v7\n" "      - uses: actions/setup-python@v6\n")
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+
+# ── ③ callee 缺 timeout 命中、有 timeout 不命中 ────────────────────────────
+
+class test_callee_missing_timeout:
+    """Rule 2: a ``workflow_call`` callee's self-hosted job must carry the upper bound."""
+
+    def test_missing_timeout_is_reported(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, CALLEE_NO_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_CALLEE_MISSING_TIMEOUT
+        assert finding["line"] == 9  # the job's ``runs-on``
+        assert "self-hosted, linux, x64, local" in finding["message"]
+        assert "caller job cannot set one" in finding["message"]
+
+    def test_with_timeout_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, CALLEE_WITH_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    @pytest.mark.parametrize("on_block", ["on: workflow_call\n", "on: [push, workflow_call]\n", "on:\n  workflow_call:\n    inputs:\n      ref:\n        type: string\n"])
+    def test_all_workflow_call_shapes_are_detected(self, tmp_path, monkeypatch, capsys, on_block):
+        _workflow(tmp_path, on_block + CALLEE_NO_TIMEOUT.split("jobs:\n", 1)[0].split("on:", 1)[0] + "jobs:\n" + CALLEE_NO_TIMEOUT.split("jobs:\n", 1)[1])
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLEE_MISSING_TIMEOUT]
+
+    def test_callee_rule_wins_over_the_plain_rule(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, CALLEE_NO_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        assert RULE_SELF_HOSTED_MISSING_TIMEOUT not in _rules(_findings(capsys)["findings"])
+
+# ── ④ 普通自托管作业缺 timeout ──────────────────────────────────────────────
+
+class test_self_hosted_missing_timeout:
+    """Rule 3: the same check for workflows that are not ``workflow_call`` callees."""
+
+    def test_plain_self_hosted_job_is_reported(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_SELF_HOSTED_MISSING_TIMEOUT
+        assert finding["line"] == 7
+        assert "360-minute default" in finding["message"]
+
+    def test_with_timeout_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT.replace("    runs-on: [self-hosted, linux, x64, local]\n", "    runs-on: [self-hosted, linux, x64, local]\n    timeout-minutes: 300\n"))
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+
+    def test_block_sequence_runs_on_is_detected(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "jobs:\n" "  build:\n" "    runs-on:\n" "      - self-hosted\n" "      - linux\n" "    steps:\n" "      - run: cargo build\n")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_SELF_HOSTED_MISSING_TIMEOUT]
+
+    def test_scalar_self_hosted_label_is_detected(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "jobs:\n  build:\n    runs-on: self-hosted\n")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_SELF_HOSTED_MISSING_TIMEOUT]
+
+    def test_hosted_job_without_timeout_is_out_of_scope(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "jobs:\n  lint:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n")
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+
+    def test_step_level_timeout_does_not_count_as_job_level(self, tmp_path, monkeypatch, capsys):
+        # 判据是 **job 级** timeout-minutes；step 级的上界管不到 D 态进程。
+        _workflow(tmp_path, "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux]\n" "    steps:\n" "      - run: cargo test\n" "        timeout-minutes: 30\n")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_SELF_HOSTED_MISSING_TIMEOUT]
+
+    def test_matrix_expression_runs_on_is_not_guessed(self, tmp_path, monkeypatch, capsys):
+        # `runs-on: ${{ matrix.os }}` 无法离线判定自托管，不猜（与 celestia-job-timeouts 同口径）。
+        _workflow(tmp_path, "jobs:\n" "  clippy:\n" "    runs-on: ${{ matrix.os }}\n" "    strategy:\n" "      matrix:\n" "        os: [windows-latest, macos-latest]\n")
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+
+# ── ⑤ 单行非法 YAML 必须出现在 findings 里（禁止静默跳过） ──────────────────
+
+class test_yaml_parse_error:
+    """Rule 4: a file that cannot be parsed is reported, never skipped."""
+
+    def test_single_line_file_is_reported_not_skipped(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ONE_LINE_INVALID, filename = "validate.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert len(report["findings"]) == 1
+        finding = report["findings"][0]
+        assert finding["rule"] == RULE_YAML_PARSE_ERROR
+        assert finding["path"] == ".github/workflows/validate.yml"
+        assert finding["line"] == 1
+        assert finding["severity"] == "error"
+
+    def test_message_carries_the_first_line_summary(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ONE_LINE_INVALID, filename = "validate.yml")
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "first line:" in message
+        assert "name: Validate on: push:" in message
+        assert "mapping values are not allowed here" in message
+
+    def test_long_first_line_is_truncated(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "name: " + ("x" * 500) + " on: push: 1\n", filename = "long.yml")
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "..." in message
+        assert len(message) < 400
+
+    def test_broken_yaml_is_reported_even_with_a_legal_rest(self, tmp_path, monkeypatch, capsys):
+        # 解析失败的文件绝不能因为"看起来像 workflow"而被放过。
+        _workflow(tmp_path, "jobs:\n  build:\n    runs-on: [self-hosted\n", filename = "broken.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_YAML_PARSE_ERROR]
+
+    def test_tab_indentation_is_a_parse_error_not_a_skip(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "jobs:\n\tbuild:\n\t\truns-on: ubuntu-latest\n", filename = "tabs.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_YAML_PARSE_ERROR]
+
+    def test_invalid_utf8_is_reported_not_crashed(self, tmp_path, monkeypatch, capsys):
+        path = _workflow(tmp_path, "jobs:\n", filename = "binary.yml")
+        path.write_bytes(b"jobs:\n  build:\n    \xff\xfe runs-on: ubuntu-latest\n")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_YAML_PARSE_ERROR
+        assert "UTF-8" in finding["message"]
+
+    def test_parse_error_does_not_hide_a_sibling_file(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ONE_LINE_INVALID, filename = "validate.yml")
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT, filename = "ci.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert sorted(_rules(report["findings"])) == [RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR]
+        assert report["summary"]["files"] == 2
+
+    def test_empty_and_non_mapping_files_are_not_parse_errors(self, tmp_path, monkeypatch, capsys):
+        # 空文档/null 根能正常解析，不是 yaml-parse-error（规则 4 只覆盖"无法解析"）。
+        _workflow(tmp_path, "", filename = "empty.yml")
+        _workflow(tmp_path, "- just\n- a list\n", filename = "list.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+
+class test_yaml_duplicate_key:
+    """Rule 6: a mapping that defines the same key twice is reported, never deduped away.
+
+    PyYAML's ``safe_load`` silently keeps the last value, so every load-then-look auditor is
+    blind to the exact shape that made GitHub reject ``dev.celestia.world``'s ``docker`` job
+    (two ``if:`` keys → the whole file invalid → fourteen zero-job pseudo-runs). The check
+    walks the composed tree, which keeps every key — duplicates included.
+    """
+
+    # 1
+    # 2
+    # 3
+    # 4
+    # 5
+    # 6
+    # 7
+    # 8
+    # 9
+    # 10
+    # 11
+    # 12
+    TWO_IFS = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "jobs:\n" "  docker:\n" "    runs-on: [self-hosted, linux]\n" "    timeout-minutes: 30\n" "    if: github.event_name == 'push'\n" "    if: github.event_name == 'pull_request'\n" "    steps:\n" "      - run: echo hi\n"
+
+    def test_duplicate_job_key_is_reported_at_the_second_line(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_YAML_DUPLICATE_KEY]
+        finding = report["findings"][0]
+        assert finding["line"] == 10  # 第二个 `if:` 的行
+        assert finding["severity"] == "error"
+        assert report["summary"]["rules"][RULE_YAML_DUPLICATE_KEY] == 1
+
+    def test_message_names_the_key_and_both_lines(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "'if'" in message
+        assert ("line 10" in message) and ("line 9" in message)
+        assert "zero jobs" in message
+
+    def test_safe_load_keeps_the_last_value_is_why_the_rule_exists(self):
+        """The blindness demonstration: load-then-look sees one `if`, the walk sees two."""
+
+        doc = _yaml.safe_load(self.TWO_IFS)
+        assert list(doc["jobs"]["docker"]) .count("if") == 1  # load 视角：已静默去重
+        found = audit_text(self.TWO_IFS, ".github/workflows/ci.yml")
+        assert [f.rule for f in found] == [RULE_YAML_DUPLICATE_KEY]  # compose 视角：抓得到
+
+    def test_duplicate_top_level_key_is_reported(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, "name: A\non: push\nname: B\n", filename = "dup-top.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_YAML_DUPLICATE_KEY
+        assert finding["line"] == 3
+        assert "'name'" in finding["message"]
+
+    def test_duplicate_deep_in_a_step_env_is_reported(self, tmp_path, monkeypatch, capsys):
+        nested = "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux]\n" "    timeout-minutes: 30\n" "    steps:\n" "      - run: cargo build\n" "        env:\n" "          RUSTFLAGS: -D warnings\n" "          RUSTFLAGS: -C target-cpu=native\n"
+        _workflow(tmp_path, nested)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        finding = _findings(capsys)["findings"][0]
+        assert finding["rule"] == RULE_YAML_DUPLICATE_KEY
+        assert "'RUSTFLAGS'" in finding["message"]
+        assert finding["line"] == 9
+
+    def test_deduplicating_turns_it_green_again(self, tmp_path, monkeypatch, capsys):
+        # 前向修复方向：删掉重复键即归零（工具不是无条件红）。
+        path = _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        assert _run([], capsys)[0] == 1
+        _replace(path, "    if: github.event_name == 'pull_request'\n", "")
+        assert _run([], capsys)[0] == 0
+
+    def test_canonical_caller_has_no_duplicates(self, tmp_path, monkeypatch, capsys):
+        # 防误报：规范 caller（flow 风格 `types: [...]`）不含重复键，规则 5、6 互不干扰。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_missing_jobs_still_reports_the_duplicate(self, tmp_path, monkeypatch, capsys):
+        # 其他规则都会在"没有 jobs"时早退；重复键必须仍然被抓到（文件对 GitHub 依旧非法）。
+        _workflow(tmp_path, "name: A\non: push\non: workflow_dispatch\n", filename = "nojobs.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_YAML_DUPLICATE_KEY]
+
+    def test_allowlist_can_exempt_a_duplicate(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self.TWO_IFS)
+        monkeypatch.chdir(tmp_path)
+        argv = ["--json", f"--allow={RULE_YAML_DUPLICATE_KEY}=.github/workflows/ci.yml"]
+        assert main(argv) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+
+    def test_recursive_alias_does_not_recurse_forever(self, tmp_path, monkeypatch, capsys):
+        # `&x` 自引用的锚在 compose 里是环：walk 必须靠 seen 集合终止，而不是栈溢出。
+        _workflow(tmp_path, "a: &x\n  b: *x\n", filename = "alias.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+# ── ⑥ --json 结构与退出码 ───────────────────────────────────────────────────
+
+class test_json_contract_and_exit_codes:
+    """The frozen document CI consumes, and the 0/1/2 exit codes."""
+
+    def test_json_shape_is_exactly_the_contract(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT, filename = "ci2.yml")
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        report = _findings(capsys)
+        assert set(report) == {"findings", "summary"}
+
+        for finding in report["findings"]:
+            assert set(finding) == {"path", "line", "rule", "severity", "message"}
+            assert isinstance(finding["line"], int)
+            assert finding["severity"] in {"error", "warning"}
+
+        summary = report["summary"]
+        assert set(summary) == {"files", "findings", "errors", "warnings", "suppressed", "failed", "rules"}
+        assert summary["files"] == 2
+        assert summary["findings"] == 2
+        assert summary["errors"] == 2
+        assert summary["warnings"] == 0
+        assert summary["suppressed"] == 0
+        assert summary["failed"] is True
+        # 冻结的 JSON 契约：规则键集合 = RULE_NAMES（加规则是一次契约变更，必须同步这里）。
+        assert set(summary["rules"]) == set(RULE_NAMES)
+        assert set(summary["rules"]) == {RULE_INVALID_CALLER_KEY, RULE_CALLEE_MISSING_TIMEOUT, RULE_SELF_HOSTED_MISSING_TIMEOUT, RULE_YAML_PARSE_ERROR, RULE_CALLER_NOT_CANONICAL, RULE_YAML_DUPLICATE_KEY, RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD, RULE_DEVTOOLS_REF_NOT_PINNED}
+        assert summary["rules"][RULE_INVALID_CALLER_KEY] == 1
+
+    def test_stdout_is_pure_json(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)  # 整份 stdout 就是 JSON
+        assert "celestia-ci-audit:" in captured.err  # 摘要走 stderr
+
+    def test_clean_tree_exits_0(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, LEGAL_CALLER)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["summary"]["failed"] is False
+
+    def test_error_exits_1(self, tmp_path, monkeypatch):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 1
+
+    def test_missing_path_exits_2(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        assert main([str(tmp_path / "nope")]) == 2
+        assert "no such file or directory" in capsys.readouterr().err
+
+    def test_missing_default_workflows_directory_exits_2(self, tmp_path, monkeypatch, capsys):
+        # fail-closed：默认路径不存在时不能"扫了 0 个文件然后报绿"。
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 2
+        assert ".github/workflows" in capsys.readouterr().err
+
+    def test_directory_without_workflows_exits_0_with_a_note(self, tmp_path, monkeypatch, capsys):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(tmp_path)
+        assert main([str(empty)]) == 0
+        assert "no workflow file found" in capsys.readouterr().err
+
+    def test_strict_promotes_warnings_only(self):
+        warning = finding_record("a.yml", 1, RULE_SELF_HOSTED_MISSING_TIMEOUT, "warning", "w")
+        error = finding_record("a.yml", 1, RULE_INVALID_CALLER_KEY, "error", "e")
+        assert has_failure([warning]) is False
+        assert has_failure([warning], strict = True) is True
+        assert has_failure([error]) is True
+        assert has_failure([]) is False
+
+    def test_strict_is_accepted_and_clean_tree_still_exits_0(self, tmp_path, monkeypatch):
+        _workflow(tmp_path, CALLEE_WITH_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--strict"]) == 0
+
+    def test_human_output_lists_findings_then_summary(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        main([])
+        out = capsys.readouterr().out
+        assert ".github/workflows/ci.yml:8: [invalid-caller-key]" in out
+        assert "    timeout-minutes: 90" in out  # 原文摘录
+        assert "1 finding(s) in 1 workflow file(s)" in out
+
+    def test_clean_human_output_says_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, CALLEE_WITH_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        main([])
+        assert "celestia-ci-audit: clean (1 workflow file(s) scanned)" in capsys.readouterr().out
+
+# ── ⑦ 变异：把修复改坏必须变红 ──────────────────────────────────────────────
+
+class test_mutation_turns_the_gate_red:
+    """Start from a green tree, break the fix, and require the gate to notice."""
+
+    def test_dropping_the_callee_timeout_turns_it_red(self, tmp_path, monkeypatch, capsys):
+        path = _workflow(tmp_path, CALLEE_WITH_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert _run([], capsys)[0] == 0  # 绿色基线
+
+        _replace(path, "    timeout-minutes: 60\n", "")
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 1
+        finding = json.loads(out)["findings"][0]
+        assert finding["rule"] == RULE_CALLEE_MISSING_TIMEOUT
+        assert finding["line"] == 9
+
+    def test_adding_the_illegal_key_back_turns_it_red(self, tmp_path, monkeypatch, capsys):
+        path = _workflow(tmp_path, LEGAL_CALLER)
+        monkeypatch.chdir(tmp_path)
+        assert _run([], capsys)[0] == 0  # 绿色基线
+
+        _replace(path, "    permissions:\n      contents: read\n", "    permissions:\n      contents: read\n    timeout-minutes: 90\n")
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 1
+        finding = json.loads(out)["findings"][0]
+        assert finding["rule"] == RULE_INVALID_CALLER_KEY
+        assert "'timeout-minutes'" in finding["message"]
+        assert finding["line"] == 18  # 追加在 permissions 之后
+
+    def test_removing_the_illegal_key_turns_it_green_again(self, tmp_path, monkeypatch, capsys):
+        # 前向修复方向：删掉非法键即归零（工具不是无条件红）。
+        path = _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert _run([], capsys)[0] == 1
+
+        _replace(path, "    timeout-minutes: 90\n", "")
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_collapsing_a_valid_file_onto_one_line_turns_it_red(self, tmp_path, monkeypatch, capsys):
+        path = _workflow(tmp_path, CALLEE_WITH_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert _run([], capsys)[0] == 0
+
+        collapsed = " ".join(_read(path).split()) + "\n"  # 先读再写，别把文件截断成空
+
+        with path.open("w", encoding = "utf-8", newline = "") as handle:
+            handle.write(collapsed)
+
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 1
+        assert _rules(json.loads(out)["findings"]) == [RULE_YAML_PARSE_ERROR]
+
+# ── ⑧ 自托管作业在 PR 上没有 fork guard ─────────────────────────────────────
+
+class test_fork_guard:
+    """Rule 7 (``warning``): a self-hosted job reachable by ``pull_request``, unguarded.
+
+    Unlike the other rules this one does not describe a file GitHub refuses to run — it
+    describes an **exposure**: a fork pull request would run its code on the org's
+    self-hosted runner, inside the org network, on capacity other repositories need. It is a
+    ``warning`` on purpose, because the private half of the fleet still has to grow the guard
+    one repository at a time; ``--strict`` is how a repository that has finished says "keep it
+    that way".
+
+    The two shapes that must stay clean are as important as the one that fires: a **caller
+    job** (``uses:``) carries no guard of its own because the guard lives in the callee, and a
+    workflow that cannot be reached by a pull request has no fork head to judge.
+    """
+
+    #: The real ``evernight``/``entelecheia`` shape: self-hosted, PR-triggered, no ``if:``.
+    # 1
+    # 2
+    # 3
+    # 4
+    # 5
+    # 6
+    # 7
+    # 8
+    # 9
+    # 10
+    # 11
+    # 12
+    UNGUARDED = "name: CI\n" "on:\n" "  push:\n" "    branches: [master]\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  build:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    timeout-minutes: 60\n" "    steps:\n" "      - run: cargo test --workspace\n"
+
+    def _guarded(self, guard):
+        """The same workflow with *guard* added as the job's ``if:``."""
+        return self.UNGUARDED.replace("    runs-on: [self-hosted, linux, x64, local]\n", f"    if: {guard}\n    runs-on: [self-hosted, linux, x64, local]\n")
+
+    def test_unguarded_self_hosted_pr_job_is_a_warning(self, tmp_path, monkeypatch, capsys):
+        """基线：无 guard ⇒ 一条 warning，且**不**让退出码变红（warning 的语义就在这）。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        code, out, err = _run(["--json"], capsys)
+        assert code == 0, "warning 不该让默认运行失败"
+        report = json.loads(out)
+        assert _rules(report["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+        finding = report["findings"][0]
+        assert finding["severity"] == "warning"
+        assert finding["line"] == 9  # runs-on 那一行
+        assert report["summary"]["warnings"] == 1
+        assert report["summary"]["errors"] == 0
+        assert report["summary"]["failed"] is False
+        assert report["summary"]["rules"][RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD] == 1
+        assert "1 finding(s) in 1 workflow file(s)" in err
+
+    def test_message_explains_the_exposure_and_quotes_the_guard(self, tmp_path, monkeypatch, capsys):
+        """消息必须点名作业、说清后果，并给出**可直接粘贴**的 `if:` 字面量。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        main(["--json"])
+        message = _findings(capsys)["findings"][0]["message"]
+        assert "'build'" in message
+        assert "self-hosted, linux, x64, local" in message
+        assert "untrusted code inside the org network" in message
+        assert "shared runner capacity" in message
+        assert FORK_GUARD in message
+        # 豁免通道也要写进消息，否则被警告的仓不知道 --allow 就是退路。
+        assert f"--allow {RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD}=" in message
+
+    @pytest.mark.parametrize("guard", [FORK_GUARD, "github.event_name != 'pull_request' || " "github.event.pull_request.head.repo.fork == false"])
+    def test_guarded_job_is_clean(self, tmp_path, monkeypatch, capsys, guard):
+        """两种等价的守卫写法都必须算「有 guard」。"""
+        _workflow(tmp_path, self._guarded(guard))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_folded_guard_is_recognised(self, tmp_path, monkeypatch, capsys):
+        """`if: >-` 折行后空白位置变了，判据必须按去空白比较，否则会误报。"""
+        folded = "    if: >-\n" "      github.event_name != 'pull_request' ||\n" "      github.event.pull_request.head.repo.full_name == github.repository\n"
+        text = self.UNGUARDED.replace("    runs-on: [self-hosted, linux, x64, local]\n", folded + "    runs-on: [self-hosted, linux, x64, local]\n")
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_caller_job_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        """关键防误报：caller 作业的 guard 在 callee 里，报它就是给 34 个仓刷噪音。"""
+        caller = "name: Verify Versions\n" "on:\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@v2026.10\n"
+        _workflow(tmp_path, caller)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_canonical_commit_lint_caller_is_not_reported(self, tmp_path, monkeypatch, capsys):
+        """规范 caller 的真实字节也要干净（它是全 org 最常见的那份文件）。"""
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    @pytest.mark.parametrize("trigger", ["on: push\n", "on: workflow_call\n", "on:\n  workflow_dispatch:\n", "on: [push, workflow_dispatch]\n"])
+    def test_non_pull_request_trigger_is_clean(self, tmp_path, monkeypatch, capsys, trigger):
+        """push / dispatch / callee 里没有 fork head 可言：不适用，必须放过。"""
+        text = self.UNGUARDED.replace("on:\n  push:\n    branches: [master]\n  pull_request:\n    branches: [master]\n", trigger)
+        assert "pull_request" not in text
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_github_hosted_job_is_out_of_scope(self, tmp_path, monkeypatch, capsys):
+        """托管 runner 上跑 fork 代码是 GitHub 的隔离问题，不是本规则的问题。"""
+        text = self.UNGUARDED.replace("    runs-on: [self-hosted, linux, x64, local]\n", "    runs-on: ubuntu-latest\n")
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    @pytest.mark.parametrize("runs_on", ["    runs-on: ${{ fromJSON(vars.CI_RUNNER) }}\n", "    runs-on: ${{ vars.RUNNER_LABELS }}\n"])
+    def test_unresolvable_variable_expression_reads_as_self_hosted(self, tmp_path, monkeypatch, capsys, runs_on):
+        """仓储变量不在树里 ⇒ 静态无法判定 ⇒ 按自托管读（假阳性一条 warning，假阴性是事故）。"""
+        text = self.UNGUARDED.replace("    runs-on: [self-hosted, linux, x64, local]\n", runs_on)
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert _rules(json.loads(out)["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+
+    def test_if_without_the_head_repo_comparison_is_still_reported(self, tmp_path, monkeypatch, capsys):
+        """`if: github.event_name == 'pull_request'` 不是 guard：它恰好把 fork PR 放进来。"""
+        _workflow(tmp_path, self._guarded("github.event_name == 'pull_request'"))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert _rules(json.loads(out)["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+
+    def test_strict_turns_the_warning_into_a_failure(self, tmp_path, monkeypatch, capsys):
+        """`--strict` 是「我已经补完 guard，别再退回去」的开关。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--strict"]) == 1
+
+    def test_allowlist_exempts_the_rule(self, tmp_path, monkeypatch, capsys):
+        """豁免通道必须真的通，且留下痕迹（warning 级规则尤其需要这个逃生口）。"""
+        _workflow(tmp_path, self.UNGUARDED)
+        monkeypatch.chdir(tmp_path)
+        argv = ["--json", "--allow", f"{RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD}=*.yml"]
+        assert main(argv) == 0
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+        assert "suppressed 1 finding(s) via --allow" in captured.err
+
+    def test_dropping_the_guard_turns_it_back_on(self, tmp_path, monkeypatch, capsys):
+        """变异方向：从绿的树里删掉 `if:`，规则必须重新出声（否则它是死规则）。"""
+        path = _workflow(tmp_path, self._guarded(FORK_GUARD))
+        monkeypatch.chdir(tmp_path)
+        assert _run(["--strict"], capsys)[0] == 0  # 绿色基线（strict 下也绿）
+
+        _replace(path, f"    if: {FORK_GUARD}\n", "")
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0  # warning 默认不红
+        assert _rules(json.loads(out)["findings"]) == [RULE_SELF_HOSTED_PR_WITHOUT_FORK_GUARD]
+        assert _run(["--strict"], capsys)[0] == 1  # 但 strict 下它必须红
+
+# ── --allow 允许列表 ────────────────────────────────────────────────────────
+
+class test_allow_list:
+    """``--allow RULE=GLOB``: loud, rule-checked, counted — never a silent pass."""
+
+    def test_allow_suppresses_and_exits_0(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", "--allow", "invalid-caller-key=.github/workflows/ci.yml"]) == 0
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+        assert "suppressed 1 finding(s) via --allow" in captured.err
+
+    def test_allow_glob_matches_across_slashes(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", "--allow", "invalid-caller-key=*.yml"]) == 0
+        assert _findings(capsys)["summary"]["suppressed"] == 1
+
+    def test_wildcard_rule_suppresses_anything(self, tmp_path, monkeypatch):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--allow", "*=.github/workflows/ci.yml"]) == 0
+
+    def test_other_rule_does_not_suppress(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", "--allow", "yaml-parse-error=.github/workflows/ci.yml"]) == 1
+        assert _findings(capsys)["summary"]["suppressed"] == 0
+
+    def test_other_path_does_not_suppress(self, tmp_path, monkeypatch):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--allow", "invalid-caller-key=frozen-repo/*"]) == 1
+
+    def test_unknown_rule_is_a_usage_error(self, tmp_path, monkeypatch):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--allow", "typo-rule=*.yml"])
+
+        assert excinfo.value.code == 2
+
+    def test_malformed_allow_is_a_usage_error(self, tmp_path, monkeypatch):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["--allow", "no-equals-sign"])
+
+        assert excinfo.value.code == 2
+
+    def test_allow_does_not_mask_an_unlisted_finding(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT, filename = "ci2.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", "--allow", "invalid-caller-key=.github/workflows/ci.yml"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_SELF_HOSTED_MISSING_TIMEOUT]
+        assert report["summary"]["suppressed"] == 1
+
+    def test_help_lists_every_rule_name_and_no_stale_count(self):
+        """``--allow`` 的 help 必须由 RULE_NAMES 生成。
+
+        漂移史：规则从四条长到五条时，docstring 与 help 里的「four rule names」没跟着改，
+        用户照着 help 敲 `--allow` 会以为只剩四条可用。数词一律不要写进散文。
+        """
+        help_text = _build_parser().format_help()
+        # argparse 按宽度折行，且会在连字符处断词（`callee-missing-\ntimeout`）：
+        # 比较前把所有空白都去掉，否则测试会被"折行位置"这种无关变化弄红。
+        flat = "".join(help_text.split())
+        assert ",".join(RULE_NAMES) in flat
+
+        # 数词黑名单：条数变化时散文最容易烂掉（four→five 就烂过一次），一律不许写。
+        for word in ("oneofthefour", "oneofthefive", "oneofthesix", "threerule", "fourrule", "fiverule", "sixrule"):
+            assert word not in flat
+
+    @pytest.mark.parametrize("columns", ["40", "80", "100", "120", "200"])
+    def test_help_keeps_every_rule_name_whole(self, monkeypatch, columns):
+        """渲染出来的 help 必须**逐字**含每个规则名（宽度无关）。
+
+        默认 formatter 会在连字符处断词 ⇒ 80 列下打印成 `callee-missing-` + `timeout`：
+        用户从 `--help` 复制的规则名是残的，而 argparse 报错里给的却是完整的（两处不一致）。
+        `_WholeWordHelpFormatter` 禁掉 hyphen / 长词断词后，这条逐字判据在任何宽度都必须成立。
+        """
+        monkeypatch.setenv("COLUMNS", columns)
+        help_text = _build_parser().format_help()
+
+        for name in RULE_NAMES:
+            assert name in help_text, f"{name} 在 COLUMNS={columns} 下被折行切开"
+
+    def test_description_is_still_wrapped(self, monkeypatch):
+        """反向守卫：修 help 折行不得把 description 的换行一起关掉。
+
+        第一版 formatter 继承了 `RawDescriptionHelpFormatter`——它按定义原样返回 description，
+        292 字符挤成一行，比修复前更难读（独立验证者实测发现）。这里同时钉住"会折行"与"不超宽"。
+        """
+        monkeypatch.setenv("COLUMNS", "80")
+        help_text = _build_parser().format_help()
+        longest = max(len(line) for line in help_text.splitlines())
+        assert longest <= 80, f"help 有 {longest} 字符的长行，description 没折行"
+        assert "Fail GitHub Actions workflows" in help_text
+        assert "it belongs on the callee." in help_text
+        assert help_text.index("it belongs on the callee.") > (help_text.index("Fail GitHub Actions workflows") + 1), "description 仍挤在一行里"
+
+    def test_module_docstring_rule_count_follows_the_table(self):
+        """模块 docstring 里的条数必须等于 ``len(RULE_NAMES)``——它就是漂移的那一处。"""
+        doc = workflow_audit.__doc__ or ""
+        number = {3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}[len(RULE_NAMES)]
+        assert f"all {number} are" in doc
+        assert "one of the four rule names" not in doc
+
+# ── 规则 8：devtools ref 钉版（P2-3） ───────────────────────────────────────
+
+class test_devtools_ref_not_pinned:
+    """A ``uses:`` into a devtools reusable workflow at ``@master`` warns (never fails).
+
+    The fleet migrates repo by repo: a warning is schedulable, an error is a
+    red wave that gets reverted. Pins — tags or SHAs — stay silent; only
+    ``master`` floats.
+    """
+
+    def _caller(self, ref):
+        return "name: Verify Versions\n" "on:\n" "  pull_request:\n" "    branches: [master]\n" "jobs:\n" "  verify-versions:\n" f"    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@{ref}\n"
+
+    def test_master_ref_is_a_warning_not_an_error(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self._caller("master"))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        report = json.loads(out)
+        assert _rules(report["findings"]) == ["devtools-ref-not-pinned"]
+        assert report["summary"]["warnings"] == 1
+        assert report["summary"]["errors"] == 0
+
+    def test_tag_and_sha_refs_are_clean(self, tmp_path, monkeypatch, capsys):
+        for ref in ("v2026.10", "0123456789abcdef0123456789abcdef01234567"):
+            _workflow(tmp_path, self._caller(ref))
+            monkeypatch.chdir(tmp_path)
+            code, out, _err = _run(["--json"], capsys)
+            assert code == 0, ref
+            assert json.loads(out)["findings"] == [], ref
+
+    def test_commented_out_uses_does_not_count(self, tmp_path, monkeypatch, capsys):
+        text = "# a README snippet pasted into a header:\n" "#   uses: celestia-island/celestia-devtools/.github/workflows/ci-cache.yml@master\n" "name: CI\n" "on: [push]\n" "jobs:\n" "  build:\n" "    runs-on: ubuntu-latest\n" "    steps:\n" "      - run: echo hi\n"
+        _workflow(tmp_path, text)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+    def test_strict_turns_the_warning_into_a_failure(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self._caller("master"))
+        monkeypatch.chdir(tmp_path)
+        code, _out, _err = _run(["--strict"], capsys)
+        assert code == 1
+
+    def test_allow_suppresses_by_glob(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, self._caller("master"))
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json", "--allow", "devtools-ref-not-pinned=*ci.yml"], capsys)
+        assert code == 0
+        assert json.loads(out)["summary"]["suppressed"] == 1
+
+    def test_fleet_stock_commit_lint_caller_warns_under_the_canonical_name(self, tmp_path, monkeypatch, capsys):
+        """The entire fleet's current bytes: byte-canonical modulo the floating ref."""
+        fleet_bytes = render_caller(TEMPLATE_SOURCES["commit-msg-lint.yml"], "master")
+        _workflow(tmp_path, fleet_bytes, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        report = json.loads(out)
+        assert _rules(report["findings"]) == ["devtools-ref-not-pinned"], "fleet stock must warn, never error"
+
+    def test_stale_pin_commit_lint_caller_warns(self, tmp_path, monkeypatch, capsys):
+        stale = render_caller(TEMPLATE_SOURCES["commit-msg-lint.yml"], "v2026.9")
+        _workflow(tmp_path, stale, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        report = json.loads(out)
+        assert _rules(report["findings"]) == ["devtools-ref-not-pinned"]
+        assert "v2026.9" in report["findings"][0]["message"]
+
+    def test_pinned_canonical_commit_lint_caller_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = CANONICAL_CALLER_NAME)
+        monkeypatch.chdir(tmp_path)
+        code, out, _err = _run(["--json"], capsys)
+        assert code == 0
+        assert json.loads(out)["findings"] == []
+
+# ── 路径解析与 CLI 约定 ─────────────────────────────────────────────────────
+
+class test_paths_and_cli:
+    """PATHS handling: files, directories, repository roots, dedupe, relative reporting."""
+
+    def test_default_path_is_github_workflows(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, CALLEE_WITH_TIMEOUT)
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 0
+        assert "1 workflow file(s) scanned" in capsys.readouterr().out
+
+    def test_explicit_file_argument(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", ".github/workflows/ci.yml"]) == 1
+        assert len(_findings(capsys)["findings"]) == 1
+
+    def test_repository_root_means_dot_github_workflows(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", str(tmp_path)]) == 1
+        report = _findings(capsys)
+        # 仓库根参数只读 .github/workflows，不会把 docker-compose.yml 当 workflow。
+        assert report["summary"]["files"] == 1
+        assert report["findings"][0]["rule"] == RULE_INVALID_CALLER_KEY
+
+    def test_multiple_paths_and_dedupe(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT)
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT, filename = "other.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", ".", ".github/workflows/ci.yml"]) == 1
+        report = _findings(capsys)
+        assert report["summary"]["files"] == 2  # 重复参数不会重复计数
+
+    def test_paths_outside_cwd_are_absolute(self, tmp_path, monkeypatch, capsys):
+        outside = tmp_path / "elsewhere"
+        _workflow(outside, ACCIDENT)
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        monkeypatch.chdir(workdir)
+        assert main(["--json", str(outside)]) == 1
+        assert _findings(capsys)["findings"][0]["path"].startswith("/")
+
+    def test_findings_are_sorted_and_deterministic(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, ACCIDENT, filename = "b.yml")
+        _workflow(tmp_path, PLAIN_NO_TIMEOUT, filename = "a.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        paths = [finding["path"] for finding in _findings(capsys)["findings"]]
+        assert paths == sorted(paths)
+
+    def test_unreadable_directory_exits_2_instead_of_skipping(self, tmp_path, monkeypatch, capsys):
+        locked = tmp_path / "locked"
+        (locked / ".github" / "workflows").mkdir(parents = True)
+        os.chmod(locked, 0o000)
+
+        try:
+            monkeypatch.chdir(tmp_path)
+
+            if os.access(locked, os.R_OK):  # root 会无视权限位，跳过断言
+                pytest.skip("running as root: permission bits are not enforced")
+
+            assert main([str(locked)]) == 2
+            assert "locked" in capsys.readouterr().err
+        finally:
+            os.chmod(locked, 0o755)
+
+    def test_unreadable_workflows_dir_itself_exits_2(self, tmp_path, monkeypatch, capsys):
+        """回归（2026-09-15 独立验证者反例）：仓库根可读、但 `.github/workflows` 自身 chmod 000。
+
+        旧实现用 `Path.glob` 枚举 —— 它**吞掉 EACCES** 返回空列表 ⇒ 报 "clean (0 files)" / exit 0，
+        即"把不可读当成没有 workflow"。现改用 os.scandir，让 OSError 冒泡到 exit 2。
+        """
+
+        repo = tmp_path / "repo"
+        locked = repo / ".github" / "workflows"
+        locked.mkdir(parents = True)
+        _workflow(locked, PLAIN_NO_TIMEOUT)          # 真有一个"本该命中"的文件
+        os.chmod(locked, 0o000)
+
+        try:
+            if os.access(locked, os.R_OK):           # root 无视权限位
+                pytest.skip("running as root: permission bits are not enforced")
+
+            monkeypatch.chdir(tmp_path)
+            assert main([str(repo)]) == 2
+            err = capsys.readouterr().err
+            assert ("workflows" in err) and ("clean" not in err)
+        finally:
+            os.chmod(locked, 0o755)
+
+    def test_audit_text_helper_is_usable_directly(self):
+        findings = audit_text(ACCIDENT, "ci.yml")
+        assert [finding.rule for finding in findings] == [RULE_INVALID_CALLER_KEY]
+        assert findings[0].path == "ci.yml"
+        assert findings[0].to_json().keys() == {"path", "line", "rule", "severity", "message"}
+
+class test_canonical_caller:
+    """Rule 5: the shared commit-lint caller must equal the generator's template bytes.
+
+    2026-09-15: the fleet was unified to one 273-byte caller. Nothing compared a repository
+    against that file, so a hand-edited variant (or one written by an older generator) kept
+    a shape whose required check never re-runs — the §8.3.6 deadlock — while every other
+    rule stayed green.
+    """
+
+    NAME = "commit-msg-lint.yml"
+
+    def test_canonical_file_is_clean(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_legacy_caller_warns_but_does_not_fail(self, tmp_path, monkeypatch, capsys):
+        """2026-09-26 迁移路径：旧 273B 模板 = warning（非 error）。
+
+        38 个未迁移仓在 canonical 车道化之后必须保持可合并——否则一次模板升级
+        就把全群打成 38 红（红色常驻的门禁必然被忽略）。变异哨兵：把本函数的
+        severity 断言改成 error、或把 _canonical_caller_findings 的 LEGACY 分支
+        删掉，本用例变红。
+        """
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT_LEGACY, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0  # warnings alone keep the gate green
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["severity"] == "warning"
+        assert "legacy pre-lane template" in finding["message"]
+        assert "vars.LINT_RUNNER" in finding["message"]
+        assert report["summary"]["warnings"] == 1
+        assert report["summary"]["failed"] is False
+
+    def test_legacy_caller_fails_under_strict(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT_LEGACY, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", "--strict"]) == 1
+
+    def test_dispatch_input_drift_is_reported(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
+        _workflow(tmp_path, drifted, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["line"] == 1
+        assert finding["severity"] == "error"
+        assert "workflow" in finding["message"].lower()
+        assert "init --with-workflows --force" in finding["message"]
+        assert report["summary"]["rules"][RULE_CALLER_NOT_CANONICAL] == 1
+
+    def test_drifted_concurrency_group_is_reported(self, tmp_path, monkeypatch, capsys):
+        # The canonical caller HAS a per-PR concurrency block since 2026-10-25;
+        # drift now looks like a hand-tuned group string instead of an extra block.
+        canonical_group = "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+        drifted = WORKFLOW_COMMIT_LINT.replace(canonical_group, "group: lint-${{ github.ref }}")
+        assert drifted != WORKFLOW_COMMIT_LINT
+        _workflow(tmp_path, drifted, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_pure_whitespace_drift_is_a_warning_not_a_failure(self, tmp_path, monkeypatch, capsys):
+        # 2026-10-24: 一个结尾换行改变的是 git blob，不是 check 的行为。它仍要被
+        # 报出来（想逐字节一致就跑 init --force），但不能让仓库为了消红去动文件。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT + "\n", filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        finding = _findings(capsys)["findings"][0]
+        assert finding["severity"] == "warning"
+        assert ("comments" in finding["message"]) or ("whitespace" in finding["message"])
+
+    def test_comment_only_drift_is_a_warning(self, tmp_path, monkeypatch, capsys):
+        # shittim-chest (1618 B) 与 noa (1667 B) 的真实形态：triggers / permissions /
+        # uses / with 与 canonical 完全一致，只多了注释。门禁判 ERROR 等于教仓库
+        # 删注释换绿——把树变差来满足工具。必须是 warning。
+        inflated = WORKFLOW_COMMIT_LINT.replace("permissions:", "# why this caller grants what it grants\npermissions:")
+        assert inflated != WORKFLOW_COMMIT_LINT
+        _workflow(tmp_path, inflated, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        finding = _findings(capsys)["findings"][0]
+        assert finding["severity"] == "warning"
+        assert "comments" in finding["message"]
+        assert "do not delete the comments" in finding["message"]
+
+    def test_callee_host_is_never_reported(self, tmp_path, monkeypatch, capsys):
+        # celestia-devtools 自己那个同名文件是 callee（作业带 runs-on/steps），不是 caller。
+        callee = "name: Commit Message Lint\n" "on:\n" "  workflow_call: {}\n" "jobs:\n" "  lint:\n" "    runs-on: ubuntu-latest\n" "    steps:\n" "      - uses: actions/checkout@v7\n"
+        _workflow(tmp_path, callee, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 0
+        assert _findings(capsys)["findings"] == []
+
+    def test_same_content_under_another_name_is_reported(self, tmp_path, monkeypatch, capsys):
+        # 字节比对按文件名定位 ⇒ 换个文件名就等于跳出比对，漂移从此无人看管。
+        # 副本照样能跑（check 名只取决于作业 id），所以它能一直错下去：必须报「位置错」。
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
+        _workflow(tmp_path, drifted, filename = "checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        report = _findings(capsys)
+        assert _rules(report["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+        finding = report["findings"][0]
+        assert finding["path"].endswith("checks.yml")
+        assert finding["line"] == 1
+        assert CANONICAL_CALLER_NAME in finding["message"]
+        assert "init --with-workflows --force" in finding["message"]
+        # 位置错的判据是文件名，不是字节：消息不能串到「字节不一致」那条。
+        assert "byte-identical" not in finding["message"]
+
+    def test_canonical_bytes_under_another_name_is_still_reported(self, tmp_path, monkeypatch, capsys):
+        # 变异哨兵：把「文件名判定」改坏（退回只认同名文件），本用例必须变红——
+        # 即使字节完全正确，位置错的副本依然逃出比对。
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = "checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json"]) == 1
+        assert _rules(_findings(capsys)["findings"]) == [RULE_CALLER_NOT_CANONICAL]
+
+    def test_mislocated_caller_can_be_allowlisted(self, tmp_path, monkeypatch, capsys):
+        _workflow(tmp_path, WORKFLOW_COMMIT_LINT, filename = "checks.yml")
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/checks.yml"]) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+
+    def test_human_output_names_the_file_and_line(self, tmp_path, monkeypatch, capsys):
+        # A semantic drift (the check would stop re-running) is an error, and the
+        # human output must name the file and line. A whitespace-only drift is a
+        # warning and covered by test_pure_whitespace_drift_is_a_warning_not_a_failure.
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
+        _workflow(tmp_path, drifted, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main([]) == 1
+        out = capsys.readouterr().out
+        assert f"{self.NAME}:1" in out
+        assert RULE_CALLER_NOT_CANONICAL in out
+
+    def test_allowlist_can_exempt_a_repository(self, tmp_path, monkeypatch, capsys):
+        drifted = WORKFLOW_COMMIT_LINT.replace('  workflow_dispatch:\n    inputs:\n      pr:\n        description: "Pull request number to lint"\n', '  workflow_dispatch:\n')
+        _workflow(tmp_path, drifted, filename = self.NAME)
+        monkeypatch.chdir(tmp_path)
+        assert main(["--json", f"--allow={RULE_CALLER_NOT_CANONICAL}=**/{self.NAME}"]) == 0
+        report = _findings(capsys)
+        assert report["findings"] == []
+        assert report["summary"]["suppressed"] == 1
+
+class test_entry_point_registered:
+    """The console script must really be declared in ``pyproject.toml`` (and the version bumped)."""
+
+    def test_console_script_declared(self):
+        # 用文本断言而不是 tomllib：本包声明支持 3.9，而 tomllib 是 3.11+ 才有的。
+        pyproject = _Path(__file__).resolve().parent.parent / "pyproject.toml"
+        text = pyproject.read_text(encoding = "utf-8")
+        assert 'celestia-ci-audit = "celestia_devtools.ci.workflow_audit:main"' in text
+        scripts = text.split("[project.scripts]", 1)[1].split("\n[", 1)[0]
+        assert "celestia-ci-audit" in scripts
+
+    def test_pyyaml_is_a_runtime_dependency(self):
+        pyproject = _Path(__file__).resolve().parent.parent / "pyproject.toml"
+        text = pyproject.read_text(encoding = "utf-8")
+        dependencies = text.split("dependencies = [", 1)[1].split("]", 1)[0]
+        assert "PyYAML>=6" in dependencies
+
+    def test_entry_point_target_is_importable_and_callable(self):
+        assert callable(entry)

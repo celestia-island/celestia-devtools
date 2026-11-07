@@ -1,0 +1,112 @@
+# Family-layer baselines for `celestia-devtools family-versions`.
+#
+# Why this is data, not code (SR-20, 2026-10-25 structural audit): the three
+# tables below used to be literals inside family_versions.py, so every plana
+# release or npm-line change required editing Python and re-reading the release
+# workflow to know whether a member is really published. Keeping them in one
+# stamped TOML file makes the update a data change and lets the gate tell the
+# user WHICH baseline is stale.
+#
+# Update rule: when plana's publish.yml adds/removes a published member, or an
+# npm binding changes its published line, edit this file in the same wave.
+# `source` names the authority; `updated_at` is the manual re-check date.
+#
+# A family may ship more than one live line at once (`crates = { … }` under a
+# `[rust_layers.<family>]` table): a member deliberately parked on the previous
+# line must be listed there, otherwise the family's `line` is applied to it and
+# the gate reports a "different primitive" that does not exist.
+updated_at = "2026-11-06"
+source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.crates.io); npm dist-tags from registry.npmjs.org (all rows re-read 2026-11-06)"
+
+[plana_published]
+# member = published minor line (crates.io). A member that is not listed here
+# has not been published and must stay a git reference on master. `plana-sync`
+# (packages/sync) is the remaining such member: its manifest still carries
+# `publish = false` and crates.io has no coordinate for it.
+plana = "0.3"
+plana-rpc-client = "0.2"
+plana-rpc-server = "0.2"
+plana-celestia-types = "0.2"
+plana-tauri = "0.1"
+plana-config = "0.2"
+plana-build-info = "0.2"
+plana-infra-utils = "0.2"
+plana-llm-provider = "0.2"
+plana-dispatch-client = "0.1"
+plana-core = "0.2"
+plana-text = "0.2"
+plana-macros = "0.2"
+plana-domain-agent = "0.2"
+plana-state-sync = "0.3"
+plana-domain-skills-permissions = "0.2"
+plana-prompt = "0.2"
+plana-domain-skills = "0.2"
+# 2026-11 rename waves: the absorbed members and the res split ship kebab
+# crates at 0.2 (see the `publish_crate` list in plana's publish.yml).
+plana-bootloader = "0.2"
+plana-infra-services = "0.2"
+plana-custom-agent = "0.2"
+plana-timeline = "0.2"
+plana-dev-server = "0.2"
+plana-sibling = "0.2"
+plana-i18n = "0.2"
+plana-content-loader = "0.2"
+plana-provider-catalog = "0.2"
+# Dead coordinates are not rows: plana_res / plana-jsonrpc / plana-protocol-core
+# / plana-archive no longer exist as packages.
+
+[rust_layers.kirino]
+line = "0.9"
+why = "auth primitives: JWT/RBAC/sessions (Layer 0)"
+# kirino-session 0.8.0 is published (crates.io, 2026-11). Consumers that still
+# declare ^0.7 are real cross-generation drift (audit D5), not a baseline gap.
+crates = { kirino-session = "0.8" }
+
+[rust_layers.plana]
+line = "0.3"
+why = "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"
+
+[rust_layers.hikari]
+line = "0.5"
+why = "UI components, Rust track (Layer 2); cargo-v0.5.1 is the published line"
+
+[npm_layers."@celestia-island/hikari"]
+line = "0.55"
+why = "UI component library (Layer 2); npm dist-tag 0.55.305"
+
+[npm_layers."@celestia-island/kirino"]
+line = "0.9"
+why = "auth bindings (Layer 0, npm track); npm dist-tag 0.9.2"
+
+[npm_layers."@celestia-island/plana-types"]
+line = "0.1"
+why = "shared protocol types (Layer 1, npm track)"
+
+[npm_layers."@celestia-island/plana-rpc-client"]
+line = "0.1"
+why = "RPC client (Layer 1, npm track)"
+
+[weld_window]
+# Dated exemptions for the family gate (2026-11-07 ruling: "weld" the known
+# plana 0.1 generation split with an expiry instead of silencing it).
+#
+# repo = { until = ..., reason = ..., lines = [...] }
+# - `until` is either `YYYY-MM-DD` (auto-expires after that day) or a milestone
+#   label such as `external-beta` (cannot be compared mechanically: the row is
+#   removed or re-dated when the milestone is reached). A value starting with a
+#   digit is held to strict ISO spelling — a malformed date would silently
+#   never expire;
+# - `lines` lists family tokens whose GENERATIONAL differences (declared line vs
+#   published line, and parked members) are downgraded from violation to an
+#   INFO line that names the weld; matching is prefix-based (`plana` covers every
+#   `plana-*` member). Everything else — wrong git source, rev pins, unpublished
+#   members consumed from crates.io, sibling path deps — stays a violation.
+# A deleted or expired row puts the violations straight back.
+# Keys are full `owner/repo`: a bare name would exempt any repository that
+# happens to be called `arona` (a fork, a scratch directory). A root whose
+# identity cannot be proved welds nothing — the gate does not guess.
+"celestia-island/arona" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }
+# shittim-chest migrated kirino-session ^0.7 → ^0.8 for real (chest#2230,
+# the Track B issuer flip), so its weld covers plana only now.
+"celestia-island/shittim-chest" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana"] }
+"celestia-island/celestia-erp" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }

@@ -1,0 +1,78 @@
+name: Verify Versions
+
+on:
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: "celestia-devtools git ref to judge with: any ref other than the master default is honored by cloning that exact ref (H14 determinism; pinned callers pass their anchor — a full 40-hex SHA or a tag)."
+        required: false
+        type: string
+        default: "master"
+
+jobs:
+  verify:
+    name: Verify version consistency
+    # Fork PRs must not consume self-hosted runner capacity or execute
+    # untrusted code on the shared node; they need maintainer approval anyway.
+    # For workflow_call callers, github.event carries the caller's PR payload,
+    # so the same guard applies.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier; the
+    # shared node also preinstalls celestia-devtools for fast starts).
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+        # Defensive: the runner env rewrites github.com/celestia-island/* to
+        # local bare mirrors (per-repo exact-prefix rules). Mirrors may lack
+        # fresh refs, so bypass the rewriting and clone straight from github.com.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      # No actions/setup-python: the python-versions manifest ships no Debian
+      # 12 builds, so it fails deterministically on the org's self-hosted
+      # runners. Node-1 preinstalls python3; the fallback below avoids pip
+      # entirely (pip builds against github.com have proven unreliable on the
+      # shared runners) and runs straight from a shallow devtools clone.
+
+      - name: Verify versions
+        # Ref-determinism rule (H14, 2026-10): a caller that pins
+        # `devtools-ref` names the EXACT CLI whose rules judge this tree. The
+        # H14 incident was a stale preinstalled snapshot vs master on node-1
+        # (the editable install there was the remediation, and it still is
+        # not the CLI a tag pin names). Any ref other than the master default
+        # always runs from a fresh clone at that ref; the preinstalled fast
+        # path survives only for the master default, echoing which binary and
+        # version ran. Drift always fails the job (CHANGELOG.md is
+        # deliberately not consulted: the org bans maintained changelogs,
+        # squashed PRs are the changelog). The checked-out repo is the target.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools verify-versions --help >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
+            celestia-devtools verify-versions .
+          else
+            echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the rules match the pin"
+            # Branch/tag refs clone with --branch; a 40-hex SHA pin cannot take
+            # that flag, so fetch the exact object instead (GitHub serves
+            # allow-anySHA1InWant) and check it out. SHA pins are the canonical
+            # caller pin since 2026-10-31 (user ruling; the CalVer tags remain
+            # as historical wave markers).
+            rm -rf /tmp/celestia-devtools
+            if [[ "${DEVTOOLS_REF:-master}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              git init -q /tmp/celestia-devtools
+              git -C /tmp/celestia-devtools remote add origin https://github.com/celestia-island/celestia-devtools.git
+              git -C /tmp/celestia-devtools fetch -q --depth 1 origin "${DEVTOOLS_REF}"
+              git -C /tmp/celestia-devtools checkout -q FETCH_HEAD
+            else
+              git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools
+            fi
+            cd /tmp/celestia-devtools && PYTHONPATH=src python3 -m celestia_devtools verify-versions "$GITHUB_WORKSPACE"
+          fi

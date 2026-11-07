@@ -1,0 +1,816 @@
+<p align="center"><img src="https://celestia.world/logos/celestia.webp" alt="celestia-devtools" width="200" /></p>
+
+<h1 align="center">celestia-devtools</h1>
+
+<p align="center"><strong>Shared build and devtool scripts for the Celestia ecosystem</strong></p>
+
+<div align="center">
+
+[![License: SySL](https://img.shields.io/badge/license-SySL%201.0-blue)](./LICENSE)
+[![GitHub](https://img.shields.io/badge/github-celestia--island%2Fcelestia--devtools-blue)](https://github.com/celestia-island/celestia-devtools)
+
+</div>
+
+<div align="center">
+
+**English** ·
+[简体中文](./docs/zhs/README.md) ·
+[繁體中文](./docs/zht/README.md) ·
+[日本語](./docs/ja/README.md) ·
+[한국어](./docs/ko/README.md) ·
+[Français](./docs/fr/README.md) ·
+[Español](./docs/es/README.md) ·
+[Русский](./docs/ru/README.md) ·
+[العربية](./docs/ar/README.md)
+
+</div>
+
+## Introduction
+
+`celestia-devtools` is a shared Python toolkit of build and devtool scripts for the Celestia ecosystem. It decouples devtooling from individual crates and is consumed by `entelecheia`, `shittim-chest`, `evernight`, and other repos via justfile.
+
+It provides cargo cache management (`cache-guard`), Markdown formatting (`format-markdown`), offline-build dependency pre-staging (`prefetch`), cross-compilation prerequisite checks (`check-cross-deps`), and generic sibling-crate location utilities (`locate`).
+
+> Still in development; commands and recipes may change in the future.
+
+## Quick Start
+
+```bash
+# Install (editable, for development)
+pip install -e .
+
+# Or install from git
+pip install git+https://github.com/celestia-island/celestia-devtools.git
+
+# Unified CLI
+celestia-devtools cache-guard .        # manage cargo target/ disk usage
+celestia-devtools format-markdown .    # format + lint Markdown files
+celestia-devtools prefetch .           # pre-stage deps for offline builds
+celestia-devtools check-cross-deps     # check cross-compilation prerequisites
+celestia-devtools locate               # locate a celestia-island crate checkout
+celestia-devtools commit-msg-lint check .git/COMMIT_EDITMSG  # lint a commit message
+celestia-devtools hook install         # install the org commit-msg hook
+```
+
+## justfile integration
+
+The shared recipes live in `common.just` and are **staged on demand** into each repo's gitignored `.just/` directory — never committed, so they never drift or duplicate across repos (no `gradlew`-style per-repo copy).
+
+Run `celestia-devtools init` in a repo. It stages `.just/celestia-devtools.just`, adds `/.just/` to `.gitignore`, installs the commit-msg hook, and prints the import line. Add near the top of your justfile:
+
+```just
+set shell := ["bash", "-c"]
+set windows-shell := ["bash.exe", "-c"]   # Git Bash; required on Windows
+set unstable
+set lists
+
+import? "./.just/celestia-devtools.just"   # `?` = optional: parses before staging
+```
+
+Then add a `fetch` recipe so anyone can (re)stage the shared file:
+
+```just
+[script('bash')]
+fetch URL='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=.just/celestia-devtools.just; mkdir -p .just
+    if command -v celestia-devtools >/dev/null 2>&1; then cp "$(celestia-devtools include-path)" "$out"
+    else curl -fsSL "https://raw.githubusercontent.com/celestia-island/celestia-devtools/dev/src/celestia_devtools/common.just" -o "$out"; fi
+```
+
+`import?` (optional import) lets a fresh clone parse the justfile before staging, so your own recipes always work. Run `just fetch` (or `celestia-devtools init`) to stage the shared recipes — `cache-guard`, `fmt-markdown`, `prefetch`, `cross-check`, `locate`, `pglite`, `wsl-ensure`, `dev-watch`, `devenv`, etc. All recipes are overridable — redefine any after the `import?` line.
+
+**Windows note:** if `bash` resolves to WSL (`just windows-shell-check` reports a hijack), prepend Git's `usr/bin` to PATH:
+
+```powershell
+[Environment]::SetEnvironmentVariable('PATH','C:\Program Files\Git\usr\bin;' + $env:PATH,'User')
+```
+
+## Dev-mode gateway environment
+
+Production fronts its services at `*.celestia.world` hosts (`.cw` is only the fleet's short alias), and cloud-built clients bake those gateways in — the shittim-chest desktop defaults to `https://auth.celestia.ac.cn`. Local iteration does **not** reproduce the domain shape (no hosts files, no reverse proxy, no certificates): instead, a `DEBUG_`-prefixed variable set replaces the gateway addresses, read **only in debug builds** (`cfg!(debug_assertions)` in Rust), so dev builds talk to the local stack while shipped binaries cannot be redirected. The tradeoff is inherent: environment injection is per-process and local — it cannot serve public-internet traffic the way the production vhosts do.
+
+`devenv` computes the set for a run profile and launches commands with it injected (caller-set variables are never overwritten):
+
+```bash
+just devenv print                     # export lines, native profile
+just devenv print --profile mock      # the mock-stack addresses
+just devenv run -- cargo tauri dev    # desktop dev build → local chest
+```
+
+| Variable | Read by | `native` | `daemon` | `mock` |
+| --- | --- | --- | --- | --- |
+| `DEBUG_CHEST_URL` (`SHITTIM_CHEST_URL`) | chest desktop (debug builds) | `:3000` | `:8400` | `:8428` |
+| `DEBUG_SCEPTER_URL` / `_WS_URL` (`ENTELECHEIA_SCEPTER_URL` / `_WS_URL`) | chest core outbound | `:8424` | `:8410` | `:8424` |
+| `DEBUG_ARONA_URL` | arona-facing clients | `:8420` | `:8405` | `:8429` |
+| `DEBUG_EVERNIGHT_URL` (`ARONA_EVERNIGHT_URL`) | evernight bridge clients | `:8443` | `:8443` | `:8443` |
+
+The parenthesised names are the pre-existing per-repo variables, injected with identical values so unmodified checkouts work today. Custom ports live in a `devenv.toml` (cwd or the celestia config dir) with `[profiles.<name>]` tables.
+
+## Per-app port allocation
+
+Two tauri debug apps on one machine fight over the same two sockets: the WebView2 CDP port (`9222` — first app to boot owns it, the other's devtools silently die) and the vite devUrl server (`5173` — the second app's webview loads the **first** app's frontend; seen live between WoWSP and shittim-chest). `ports` gives every app deterministic-but-unique ports, coordinated through a per-user registry:
+
+```bash
+just ports acquire --app shittim-chest --kind vite   # bare port, script-friendly
+just ports env --app shittim-chest                   # CELESTIA_VITE_PORT / CELESTIA_CDP_PORT + the WebView2 CDP line
+just ports list                                      # live claims
+just ports release --app shittim-chest
+```
+
+Same app → same ports across runs (URLs and CDP targets feel permanent); different apps → different ports; claims owned by dead pids are garbage-collected automatically. Consumers: pass the allocated port to `vite-serve --port`, and for WebView2 shells export `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` (the `env` output carries it) so each app's CDP lands on its own port.
+
+## Driving a desktop debug build (`app-drive`)
+
+The desktop debug loop used to be hand-written CDP scripts per investigation: launch the Tauri debug binary with `--remote-debugging-port`, poll `/json/list`, evaluate JavaScript, capture screenshots, click through settings, record the boot-chrome lifecycle, and hope the window and its child processes got closed. `app-drive` standardizes that channel: one command group, one JSON protocol, and a close path that only ever touches a process it launched and can prove it launched. `close` and `--replace` are the only user-facing subcommands that terminate a process; `launch` failure cleanup may also terminate the child it just spawned, but only through the identity it recorded - never an already-exited child, never a bare pid.
+
+The CDP port comes from the ports facility above, so a debug shell never collides with another app's:
+
+```console
+$ celestia-devtools app-drive launch target/debug/shittim_chest_tauri
+{"ok": true, "protocol": 2, "cmd": "launch", "app": "exe-3f9a1c7d2e4b", "pid": 41992, "cdp_port": 9222, "page": {"id": "CC44...", "url": "http://localhost:5173/"}, ...}
+```
+
+`launch` sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<cdp port>` (pre-existing flags are preserved), waits for its target page, records the process identity, and writes a per-app state file under `%LOCALAPPDATA%/celestia/app-drive` (the XDG twin on POSIX). the app key is `--app` when given, otherwise a hash of the resolved executable path, so two same-stem executables never share a state file. Extra app arguments are passed after a bare `--` separator (for example `app-drive launch my_app -- --window second`); without it an unknown argument is a usage error.
+
+Scope: **CDP only.** `app-drive` allocates and claims the CDP port; it does not allocate a vite port and does not start or verify the frontend server. A compiled debug build keeps the `devUrl` baked in at build time, so exporting a vite port it never reads would only pretend to prevent cross-wiring. Serve the frontend with `vite-serve`/`ports` and point the build at it at build time. `--env` refuses to override `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` / `CELESTIA_CDP_PORT` (app-drive derives those from the allocated port).
+
+### Safe close: the identity contract
+
+`close` and `--replace` are the only user-facing subcommands that terminate a process at the operator's request, and they have to justify it. `launch` records the resolved full executable path, the process creation token (Windows `GetProcessTimes` FILETIME, Linux `/proc/<pid>` starttime) and the token kind. Both are re-read and compared before the graceful signal and AGAIN after the graceful attempt times out, immediately before any forced signal. When any piece is missing, unreadable or different, the command **fails closed**: exit 1, state file and port claim kept, and no signal sent to the process. A state file from an older schema is refused as `state-outdated`; recover that wedged handle with `close --app <key> --discard-state` or `close --state-file <path> --discard-state` (drops the state and CDP claim without touching the process - close the old process manually), and pass `--discard-state` to `launch` instead of refusing to start. Discarding a CURRENT-schema handle additionally needs `--force`, because it records a live identity. When the recorded pid cannot be confirmed alive (exit status unavailable AND identity unreadable, e.g. access-denied), `close` fails closed, keeps the state, and reports the probe reason (access-denied vs no-such-process); `--force` is the explicit unverified break-glass - it kills the recorded pid without verification, or drops an unconfirmable state without touching it; `--pid N --force` signals that pid directly (through its process group when it leads one, otherwise the pid itself), so it also works for processes that are not group leaders. An app that exited normally also leaves its state behind: `close` reports `process-unconfirmed` and needs `--force` before the handle is removed. The Windows recorded path comes from Python's `resolve()` while the live path comes from `QueryFullProcessImageNameW`, so a symlinked or 8.3-short launch path can differ textually: comparison also tries `realpath` and still fails closed when equality cannot be proven (relaunch through the canonical path). Platforms without `/proc` (macOS) cannot expose the identity, so `close`/`--replace` fail closed there. `--replace` also refuses when the recorded executable differs from the one being launched (`replace-exe-mismatch`).
+
+A launch state file (schema 2) looks like this:
+
+```json
+{"schema": 2, "protocol": 2, "app": "exe-3f9a1c7d2e4b", "pid": 41992, "exe": "C:/work/chest/target/debug/shittim_chest_tauri.exe", "create_token": "133670000000000000", "create_kind": "windows-filetime", "cdp_port": 9222, "cwd": "C:/work/chest", "launched_at": "2026-10-28T15:00:00Z", "log_dir": "...", "command": ["..."]}
+```
+
+Launch hygiene: `--env` and an explicit `--log-dir` are validated before a port is acquired, so a bad value cannot leak a CLI-owned claim (the timestamped default log directory is created only after the port is acquired). If writing the state or the port claim fails, `launch` terminates the child it just spawned through its recorded identity; if the child had already exited it sends no kill at all, and if no identity was ever recorded it refuses to blind-kill a bare pid (a reused pid could belong to anything) - it keeps a closable state file and reports the pid instead. A direct Popen child is observed through `wait()`/`poll()` rather than pid liveness, so a POSIX zombie is reaped instead of being mistaken for a running process. Ctrl+C before the spawn leaves nothing to clean; after it, the same cleanup path runs, prints the envelope and exits 130.
+
+### Protocol
+
+Every subcommand prints exactly one ASCII JSON object to stdout and exits `0` on success, `1` on a runtime failure, or `2` on a usage error; progress and diagnostics go to stderr, so `| jq` stays clean. Envelopes use `ensure_ascii`, so a gbk/cp936 stdout cannot crash on out-of-codepage page text:
+
+```json
+{"ok": true, "protocol": 2, "cmd": "status", "port": 9222, "target": {"id": "...", "url": "..."}, "state": {"boot_chrome": "claimed", "has_bar": false, "tauri": true}}
+{"ok": false, "protocol": 2, "cmd": "wait", "error": {"code": "timeout", "message": "condition not satisfied within 10s"}}
+```
+
+`protocol` is the envelope version and `error.code` is the stable discriminant (`cdp-unreachable`, `cdp-protocol`, `js-exception`, `selector-not-found`, `identity-unavailable`, `pid-mismatch`, `timeout`, ...). `--pretty` indents the envelope for humans; `--raw` (eval only) prints the bare ASCII JSON value instead of the envelope. The `state` object behind `status` / `wait` / `watch` is the desktop debug contract: `boot_chrome` (the `data-hk-boot-chrome` attribute: `active` / `claimed` / absent), `has_bar` / `bar_driver` (the `#hk-boot-chrome` element), `degraded`, `ready_state`, `title`, `url`, `tauri` (whether `window.__TAURI__.core.invoke` exists), `body_text_head`, and friends.
+
+| Command | What it does |
+| --- | --- |
+| `app-drive targets` | list the `/json/list` targets even when no page target exists (`--prefer-url` / `--target` select one) |
+| `app-drive status` | selected target + boot-chrome/page state |
+| `app-drive eval "JS"` | evaluate JS (promises awaited, result by value); `--raw` prints the bare value, `--out FILE` saves it |
+| `app-drive shot out.png` | capture a PNG/JPEG screenshot |
+| `app-drive click "CSS"` | click a selector (`element.click()`, or `--mouse` for real mouse events at the element center) |
+| `app-drive wait --selector/--expr/--boot-chrome` | poll until a condition matches; `--timeout` is the condition deadline, `--shot FILE` captures on match |
+| `app-drive watch --out DIR` | record state transitions and screenshots; `--reload` captures a fresh boot-chrome lifecycle |
+| `app-drive launch <exe>` | allocate the CDP port, launch with the CDP environment, wait for the page |
+| `app-drive close` | identity-verified graceful then forced close of the launched pid only; `--force` = explicit unverified break-glass, `--discard-state` drops a stale/outdated handle (a current-schema handle needs `--force` too) |
+
+### Typical desktop verification loop
+
+```console
+$ celestia-devtools app-drive launch packages/app/tauri/target/debug/shittim_chest_tauri --app shittim-chest
+$ celestia-devtools app-drive watch --app shittim-chest --reload --out _scratch/boot --stop-boot-chrome claimed
+$ celestia-devtools app-drive shot --app shittim-chest _scratch/boot/final.png
+$ celestia-devtools app-drive eval --app shittim-chest --out _scratch/report.json "window.__TAURI__.core.invoke('local_suite_report')"
+$ celestia-devtools app-drive close --app shittim-chest
+```
+
+`watch` writes `timeline.jsonl` (one JSON sample per line), `watch.json` (transitions, screenshots, final state, stop reason) and `shot-NN-<ms>.png` on every change. It stops early with `--stop-boot-chrome claimed` or `--stop-selector CSS`, otherwise when `--duration` elapses.
+
+### Attaching to a running app
+
+`--port` attaches to any CDP endpoint directly (no launch state needed). Attach commands never allocate or claim a port, and `--app` without a launch state fails with `no-launch-state` instead of inventing one. `--prefer-url` picks between several page targets and `--target ID` pins an exact target on every attach command (status/eval/shot/click/wait/watch). `--timeout` bounds connect/response waits (and is the condition deadline for `wait`).
+
+That is also the documented path outside Windows: WebView2 exposes CDP, but WebKitGTK on Linux and WKWebView on macOS do not, so serve the built webui (`vite-serve`) and drive it in a Chromium/Edge started with `--remote-debugging-port=N`. The client itself is stdlib-only (a minimal RFC 6455 implementation in `env/cdp.py` that validates server frames instead of trusting them, and refuses `wss://` rather than pretending to own a TLS trust policy): the channel needs text frames over loopback, so no new runtime dependency is added to a package consumed by the whole fleet, and the subset is pinned by unit tests plus a fake CDP endpoint. A second instance of the same WebView2 app needs `--env WEBVIEW2_USER_DATA_FOLDER=<dir>`; sharing the running instance's profile makes WebView2 fail to create the webview (`0x8007139F`).
+
+## Commit Message Governance
+
+`celestia-devtools` enforces the org gitmoji convention — every commit and PR merge must start with a gitmoji, use uppercase English, and end with a period (`.`). See `celestia-devtools commit-msg-lint check --help` for the full rule set.
+
+### Why?
+
+`gh pr merge --squash --subject "..."` bypasses ALL validation — the subject you type becomes the merge commit directly. Without a gate, bad messages slip through.
+
+### Local protection (recommended)
+
+After `pip install celestia-devtools`, run `celestia-devtools init` in your repo. This installs a `commit-msg` hook that rejects bad messages at `git commit` time.
+
+For PR merge protection, add a shell function to `~/.bashrc`:
+
+```bash
+gh() { celestia-devtools gh "$@"; }
+```
+
+After `source ~/.bashrc`, `gh pr merge` validates the subject before forwarding to the real `gh` binary. All other commands (`gh pr list`, `gh issue`, `gh repo`, etc.) pass through untouched. The real binary at `/usr/bin/gh` is never modified.
+
+For CI or non-interactive shells (where `.bashrc` is not sourced), use the proxy directly:
+
+```bash
+celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
+```
+
+### CI protection (optional, opt-in)
+
+To add automatic PR validation via GitHub Actions:
+
+```bash
+celestia-devtools init --with-workflows
+```
+
+This generates `.github/workflows/commit-msg-lint.yml`. Commit and push it.
+
+For enforcement, enable branch protection on your default branch via GitHub Settings → Branches → "Require status checks to pass before merging" → choose `lint-commits / Lint commit messages`.
+
+> **Note:** private repos need GitHub Team ($4/mo) for branch protection. Public repos get it free.
+
+### Pinned reusable-workflow refs
+
+Callers generated by `init --with-workflows` reference the reusable workflows at
+a **pinned commit** (a 40-hex SHA since the 2026-10-31 ruling; a CalVer tag also
+remains a legal pin), not `@master`:
+
+```yaml
+jobs:
+  lint-commits:
+    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@v2026.10
+    with:
+      devtools-ref: v2026.10
+```
+
+Why: ~46 repositories consume devtools gates through one ref. A floating
+`@master` means a single bad commit redefines gate semantics for the whole
+family at once — and it happened (a verify-versions regression reported
+`ok:true` against a null baseline, running vacuously on half the fleet).
+
+Semantics:
+
+- **The pin freezes both layers.** The `uses:` ref fixes which workflow file
+  GitHub loads, and `devtools-ref` tells the callee's runtime bootstrap which
+  devtools snapshot to install — pinning the YAML while the tool floats from
+  master would be cosmetic. `p0-gate` is the deliberate exception: its P0
+  ledger is live policy state and stays on master even from a pinned caller.
+- **The pin is a commit SHA** (the canonical form since the 2026-10-31 scheme
+  ruling; the earlier CalVer tags `v<YYYY.MM>` remain in the repo as historical
+  wave markers and stay legal pins). A SHA is maximally deterministic, is the
+  standard supply-chain pin, and cannot be moved by anything. The anchor
+  advances by regeneration. `fleet-audit` labels every SHA pin with its
+  nearest containing tag + commit date (resolved against the local devtools
+  checkout), so the cohort census stays readable without tag ceremony. The
+  first SHA anchor must point at a commit whose own workflow files can
+  bootstrap a SHA (the clone lanes fetch-the-exact-object).
+- **Upgrading is regeneration.** `celestia-devtools init --with-workflows
+  --force` (add `--gate <name>` for opt-in callers) rewrites the callers at
+  the current pin. Never hand-edit the ref.
+- **Escape hatch.** `celestia-devtools init --with-workflows --ref master`
+  writes the floating form for break-glass consumption of an unmerged fix.
+- **Migration status is auditable, and enforceable.** `celestia-ci-audit`
+  reports every `@master` caller as a `devtools-ref-not-pinned` warning (not an
+  error, while the fleet migrates), and `celestia-devtools fleet-audit` prints a
+  census plus the offending repository list:
+  `devtools refs (pin @v2026.10): pinned=N master=M stale=K none=J`.
+  `fleet-audit --strict-pins` fails on the **floating** half of that census (a
+  tag or a SHA is a pin — older or newer pins stay warnings, never a
+  downgrade), which is what a migration wave (or a future required check) runs:
+  the pin buys nothing until something enforces it. It also fails a caller whose
+  `uses:` ref is pinned while its `devtools-ref` input still floats, because the
+  pin only freezes both layers when both move together.
+
+One honest limit, now scoped: the preinstalled CLI wins over the bootstrap
+fetch **only on the `master` default lane** (a forced reinstall on the farm has
+proven unreliable). A caller that pins `devtools-ref` to anything else always
+gets a fresh clone or install at exactly that ref — the H14 determinism rule:
+the pin names the CLI that must judge the tree, and the farm image (an
+ops-controlled supply line advanced by the mirror sync) must never override it.
+
+### All commands
+
+| Command | Purpose |
+| --- | --- |
+| `celestia-devtools init` | Stage justfiles + install commit-msg hook |
+| `celestia-devtools init --with-workflows` | Also generate CI workflow (opt-in) |
+| `celestia-devtools commit-msg-lint check --subject "..."` | Validate a message string |
+| `celestia-devtools pr-merge --subject "..." --squash` | Validate then merge (standalone) |
+| `celestia-devtools gh pr merge --subject "..."` | Transparent gh proxy |
+| `celestia-devtools gate` | Run the local CI gate (see below) |
+| `celestia-devtools gate credential-scan` | Sweep `.git/config` + source trees for literal secrets |
+| `celestia-devtools p0-gate` | Fail a repo covered by an unresolved P0 (see below) |
+| `celestia-devtools type-escapes` | Fail a tree that reintroduces TypeScript type escape hatches (see below) |
+| `celestia-devtools ts-policy check` | Is the tsconfig at policy, and is every tier B flag decided? |
+| `celestia-devtools ts-policy coverage` | Which in-scope source files never enter the compiler's program? |
+| `celestia-devtools ts-policy probe` | What would turning on one strictness flag cost today? |
+| `celestia-devtools ts-surface emit-scan` | Scan a package's emitted declaration surface for escapes |
+| `celestia-devtools py-style check .` | Check Python sources against the custom style rules (see below) |
+| `celestia-devtools py-style fix .` | Apply the safe auto-fixes in place (`--dry-run` previews) |
+| `celestia-devtools cpp-style check .` | Check C and C++ sources against the custom style rules (see below) |
+| `celestia-devtools release-notes` | Generate categorized GitHub release notes for a tag (see below) |
+
+## Style Checkers
+
+`py-style` and `cpp-style` enforce the org's custom Python and C/C++ layout rules
+(keyword-argument spacing, single-line statements, block blank lines, import
+layout, naming, ...). Each module ships its rule catalog as data —
+`py-style list-rules` / `cpp-style list-rules` is the authoritative spec
+(id, source clause, severity, auto-fixability, judgment and exceptions).
+
+```bash
+celestia-devtools py-style check src tests     # report violations (exit 1)
+celestia-devtools py-style fix src tests       # safe auto-fixes, AST-verified
+celestia-devtools py-style list-rules          # the rule catalog
+celestia-devtools cpp-style check src          # C and C++ lexical subset
+```
+
+The division of labour is deliberate:
+
+- **The handwritten stdlib checker is the authority for layout.** ruff's
+  formatter and its preview-only whitespace rules (`E251`, `E3xx`, `W391`, ...)
+  encode the opposite conventions, so `ruff format` is not part of a repo's
+  style gate once it adopts these rules.
+- **ruff keeps the stable semantic checks** (`F`, `E7`, `W1`, `E4`, ...) with an
+  explicit, commented `ignore` list for anything that contradicts the style.
+  Preview rules are never enabled: they drift between releases, and the one that
+  covers keyword `=` spacing (`E251`) argues for the opposite of this style.
+- **Auto-fix is conservative**: only `autofix` rules run, every rewrite is
+  checked for AST equality and unchanged string tokens, and `check` never writes.
+
+This repository itself is fully migrated to these conventions: `gate python`
+runs `ruff check → py-style → pytest → lint-commits`, CI runs the same blocking
+`py-style` step, and `ruff format` is deliberately absent (see the style-policy
+block in `pyproject.toml`). File-level exemptions stay exceptional and every one
+carries a reason: the CLI's lazy command dispatcher (`core/cli.py`) is the only
+code exemption, and seven test modules exempt `imports-at-top` because
+`sys.path.insert` must precede the package import when tests run against a
+source checkout.
+
+Both checkers are **opt-in**: no repository calls `style-lint.yml` yet — this
+repository's CI runs `py-style check` directly instead. `py-style` is the
+primary checker. `cpp-style` is **active but secondary** (2026-10-31 ruling,
+superseding the 2026-10-30 freeze): the family writes Rust, and this checker is
+the fallback layer for the native C/C++ pieces a service grows when it needs a
+lower-level high-performance path — not a first-class investment target, but no
+longer frozen either. It also checks **C** sources (`.c` is scanned): the rules
+are lexical and apply to C as-is apart from C++-only sugar. Adopting either is
+one `uses:` line on `style-lint.yml@<pin>` with `tool: py-style` /
+`tool: cpp-style`.
+
+Repos that adopt the conventions opt in with the reusable workflow (sub-minute,
+stdlib-only, safe on hosted runners):
+
+```yaml
+jobs:
+  py-style:
+    uses: celestia-island/celestia-devtools/.github/workflows/style-lint.yml@v2026.10
+    with:
+      tool: py-style          # or cpp-style
+      paths: .
+      devtools-ref: v2026.10  # pin the runtime fetch with the workflow file
+```
+
+## Local Gate
+
+`celestia-devtools gate` reproduces the CI checklist in one local command, so
+"local verification == CI" before opening a PR. It encodes three design
+elements: **modes**, **dependency ordering**, and a **concurrency budget**.
+
+```bash
+celestia-devtools gate              # auto-detect the repo's mode
+celestia-devtools gate rust         # cargo fmt/clippy/test/deny + lint-commits
+celestia-devtools gate web          # pnpm install/lint/build/test + lint-commits
+celestia-devtools gate python       # ruff check + py-style + pytest + lint-commits
+celestia-devtools gate all          # every mode detectable in the repo
+celestia-devtools gate rust --list  # print the resolved step graph (dry-run)
+celestia-devtools gate web --jobs 2 # cap parallel execution at 2 workers
+celestia-devtools gate rust --coverage  # enable cargo tarpaulin coverage
+```
+
+- **Modes** — no argument auto-detects from the repo (`Cargo.toml` → rust,
+  `package.json`/`pnpm-workspace.yaml` → web, `pyproject.toml` → python).
+- **Dependency ordering** — each mode is a DAG (e.g. rust:
+  `fmt → clippy → test → deny → coverage → lint-commits`). A step runs only
+  after its dependencies pass; a failed step aborts its dependents.
+- **Concurrency budget** — `--jobs N` (default: CPU count capped at 4) bounds
+  parallel execution of independent steps via a generic topological scheduler.
+
+`gate rust` / `gate web` also run a **credential scan** pre-step: files changed
+vs `origin/master` are grepped for `password|secret|token|api_key|BEGIN …
+PRIVATE KEY`, failing only on literal non-placeholder values (`CHANGE_ME`,
+`<your-password>`, `test-password`, `sk-xxx`, `192.0.2.x`, … are whitelisted).
+Two secret shapes carry no credential word and are matched directly: a token
+embedded in a URL's userinfo (the `.git/config` remote form
+`https://oauth2:gho_…@github.com/org/repo.git`) and a bare provider token
+(`gho_…` / `ghp_…` / `github_pat_…`).
+
+`celestia-devtools gate credential-scan` runs that same classifier over the
+surfaces no org workflow visits: each checkout's own `.git/config` and the
+source trees of the `langyo/*` business repos (`easy-hydro-*`). It reports —
+never rewrites a checkout.
+
+```bash
+celestia-devtools gate credential-scan --repo arona --repo easy-hydro-erp
+celestia-devtools gate credential-scan --all-langyo --scan-root /mnt/codespace
+celestia-devtools gate credential-scan --git-config-only   # remotes only
+celestia-devtools gate credential-scan --fail-on-skip      # an unreadable path fails
+```
+
+Paths the sweep cannot read (a root-owned `lost+found`, a broken symlink, a
+socket, a file the user cannot open) are never dropped silently: each is printed
+with its reason, and `--fail-on-skip` turns an incomplete sweep into a failure.
+`--git-config-only` and `--no-git-config` are mutually exclusive.
+
+A hit is a **violation** only when the value is a literal secret: a provider
+token shape (`gho_…`, `github_pat_…`, `glpat-…`, `sk-…`, `xox…`, `AKIA…`,
+`AIza…`, `cli_…`), a URL userinfo that is credential-shaped, or a
+credential-named key (`*_SECRET` / `*_TOKEN` / `*_PASSWORD` / `api_key` / …)
+whose value is a quoted literal, carries a digit, or is a long mixed blob.
+Identifiers, call expressions, control words (`write`), dependency names
+(`jsonwebtoken = "^10"`) and placeholders are reported, not failed — a scanner
+that flags `token = path.strip()` gets ignored, and an ignored scanner protects
+nothing.
+
+`celestia-devtools gate precheck` runs the safety diagnostics from the workspace
+postmortem follow-ups: NFS mount-point warnings (a `findmnt` scan for `_worktree`
+paths at `rm -rf` risk) and a large-download heuristic scan (`hf_hub_download` /
+`huggingface_hub` / `modelscope` without `HF_HUB_DISABLE_XET=1` / `no_proxy`
+hints). Both are advisory warnings, never failures.
+
+Exit codes: `0` all steps passed, `1` any step failed, `2` usage error.
+
+## Fleet Judgement (`judge-fleet`)
+
+`celestia-devtools judge-fleet` samples a malkuth fleet through its **MCP read tools**
+(`malkuth_status`, `malkuth_logs`, `malkuth_probe`) over a few ticks and reports
+mechanical verdicts with the evidence behind each one.
+
+**What it can see.** A malkuth server's run registry is *in process*: it holds the runs
+that server itself started, and there is no attach mechanism. An external client
+therefore **cannot observe a fleet somebody else holds** — not a limitation of this tool
+but of the transport. So `judge-fleet` offers a **bring-your-own-fleet** demo path
+(`--supervise`) and otherwise reports `no fleet`. A platform-side judge that must watch a
+running fleet has to own the MCP session itself (that embedding is the follow-up slice).
+
+```bash
+celestia-devtools judge-fleet                                   # judge a session it spawns (usually: no fleet)
+celestia-devtools judge-fleet --supervise "sleep 600"           # DEMO: supervise a command, judge that fleet
+celestia-devtools judge-fleet --supervise "my-service --port 3005" --probe-url http://127.0.0.1:3005
+celestia-devtools judge-fleet --ticks 5 --interval 30 --json    # longer window, machine-readable
+celestia-devtools judge-fleet --mcp-cmd "malkuth mcp"           # explicit server command (shlex-split)
+```
+
+**The executor (`judge-fleet act`)** is the only path that acts, and it needs a handoff
+bundle — scepter's `Export` output for one *approved* proposal — on **stdin** (never
+argv: the gate token is an execution right). It registers the gate approval
+(`malkuth_approve`), performs exactly one `malkuth_restart`/`malkuth_drain`, and prints one
+JSON result. It holds **no scepter credential** and writes no state: the durable audit row
+is scepter's, written back by the platform session.
+
+```bash
+celestia-devtools judge-fleet act --handoff bundle.json --dry-run   # preflight only
+celestia-devtools judge-fleet act < approved-handoff.json --json     # one approved action
+celestia-devtools judge-fleet act --supervise "sleep 600" < handoff # DEMO: bring a fleet, act on it
+```
+
+`--supervise` is a **demo path, not a production action surface**: malkuth's run registry is
+in-process, so a CLI can only act on a fleet *it* supervises. The switch starts one through the
+server, binds the handoff's target identity (`run_id`/`worker_id`/`pid`/`starttime`) to that
+run, acts, and then drains it — the same lifecycle the judge's `--supervise` uses, because
+both share `demo_fleet.supervision`. Production runs on the platform's own supervising
+session (`act.run_act(bundle, session)`), never through this switch. The handoff still
+authorises the action: `--supervise` supplies the target, not the approval.
+
+Its tool allowlist is separate and disjoint from the judge's (`ACTION_TOOLS` =
+`status`/`approve`/`restart`/`drain`): the judgement session cannot reach a mutating tool,
+and the executor cannot read logs or probes. Preflight refusals carry stable codes —
+`bundle_invalid`, `action_not_supported`, `action_not_justified`, `window_expired`,
+`target_unknown`/`target_gone`, `identity_missing`, `target_changed` — and gate refusals
+pass malkuth's own codes through (`approval_required` / `expired` / `consumed` /
+`blocked`) with the operator's next move in `hint`. Exit codes: `0` executed, `2` usage,
+`3` refused, `4` execution failed, `5` malkuth unavailable.
+
+`--supervise` is a **demo path, not an action surface**: it is the only place the package
+sends `malkuth_supervise` (isolated in `judge/demo_fleet.py`), it always drains at the end
+(`--supervise-timeout`, default `max(10s, ticks×interval + 8s)`), and it sweeps the
+processes it spawned.
+
+| Code | Mechanical condition | Source |
+| --- | --- | --- |
+| A1 | readiness non-2xx/3xx for N ticks while running | `malkuth_probe` |
+| A2 | identical log tail for N ticks while uptime rises (after a warm-up floor) | `malkuth_logs` |
+| B1 | `restart_count` delta inside the window **or** a saturated rate (catches a loop that filled before the window opened) | `malkuth_status` |
+| B2 | `running -> restarting` transitions inside the window | `malkuth_status` |
+| B3 | run draining for N ticks with a worker still running | `malkuth_status` |
+| C1 | readiness down + long uptime + frozen log tail (all three) | `probe` + `logs` |
+| C2 | `last_error` set while the worker has **never** reached `running` inside the window (never came up) | `malkuth_status` |
+
+A3 (no-progress) is reserved: it needs a platform-provided progress endpoint.
+
+**Status — a finding is never "ok", and "not evaluated" is never "healthy".**
+
+| status | meaning | text output |
+| --- | --- | --- |
+| `ok` | every applicable predicate was evaluated and nothing fired (an empty registry is `ok` too) | `结论: 健康` |
+| `indeterminate` | nothing fired, but at least one predicate could not be evaluated (no `--probe-url`, unreadable logs, a probe that never answered) | `结论: 未判定` + the list |
+| `failed` | at least one predicate fired (severity per verdict: `critical` / `suspicious`) | `结论: 失败` + the verdicts |
+| `unavailable` | nothing could be read at all (transport, non-JSON framing, missing capability) — no judgement exists | `无法判定: <reason>` |
+
+The order is `failed` > `indeterminate` > `ok`: a consumer that gates on `status == "ok"`
+will never act on a fleet that has a finding, and will never treat a half-observed fleet
+as healthy. A probe that *answered* non-2xx is a readiness signal; a probe that never
+answered goes to `indeterminate` instead of producing an A1 verdict. Exit status is `0`
+for any report (including "no fleet" and "cannot judge") and `2` for usage errors.
+
+**Suggested actions (advisory only).** Every report also carries `suggested_actions`:
+`{run_id, worker_id, action, confidence, reason, evidence}`, where `action` is one of
+`observe` / `notify` / `restart` / `drain`. There is exactly **one action per target**,
+chosen by this fixed priority (two contradicting actions for one worker would be worse than
+none) — `fleet` produces verdicts only, `judge/advice.py` is the single suggestion source:
+
+| Priority | Trigger | Suggestion | Why |
+| --- | --- | --- | --- |
+| 1 | `C2` (`last_error` set and the worker never came up in the window) | `notify` | a spawn failure is configuration; restarting reproduces it, draining ends the run |
+| 2 | `B3` critical | `drain` | the run is already draining and stuck — escalate rather than restart |
+| 3 | `C1` while the run is already draining | `drain` | restarting a worker on its way out is busy-work |
+| 4 | `B1` / `C1` | `restart` | a fresh child is the smallest action for a crash loop or a silent hang |
+| 5 | any `suspicious` verdict | `notify` | worth a human look, not an automated action |
+| 6 | any unevaluated signal | `observe` | reported **even alongside a verdict** — an unjudged signal must not be swallowed |
+| 7 | `unavailable` | `observe` | no judgement exists, and it is not an empty observation |
+| — | `ok` | *none* (`[]`) | nothing fired |
+
+`confidence` is a mechanical tier (`high` for a critical finding, `low` for a suspicion,
+`none` for "could not judge"), not a probability. **Nothing is executed**: the judge has no
+transport for actions, and the only MCP tools it may call are the three read tools.
+
+**Known boundaries.** `last_error` only covers spawn/wait failures, so a crash is inferred
+from `restart_count`/phase and never from an exit code. The judge cannot subtract the
+restarts a platform itself requested (the status payload has no such field): a fleet that
+is being restarted on purpose during the window can look like a crash loop — the follow-up
+slice reconciles this against its action audit. And because the status payload carries no
+worker spec, a drained run cannot be replayed from the judge's data alone.
+
+## P0 Ledger Gate
+
+A finding that lives only in a report nobody is obliged to read costs nothing to
+bypass. `celestia-devtools p0-gate` turns unresolved P0 findings into a red
+check: the ledger (`src/celestia_devtools/lint/p0_ledger.toml`, shipped with the
+package) lists each finding with an `id`, `title`, `severity`, `scope` (the
+repos it covers), `status`, `opened_at`, `closed_by`, and a one-line `evidence`
+for the current status.
+
+```bash
+celestia-devtools p0-gate --repo entelecheia   # exit 1 while an open P0 covers it
+celestia-devtools p0-gate --list               # whole ledger, grouped by status
+celestia-devtools p0-gate --repo entelecheia --ack P0-A
+celestia-devtools p0-gate --repo arona --pr-body-file pr-body.md
+```
+
+- **Blocking** — any entry with `status = "open"` whose `scope` matches the repo
+  (fnmatch patterns such as `easy-hydro-*` are supported) exits non-zero and
+  prints `id` + `title` + `evidence`. Repo names are normalized, so
+  `owner/repo`, a full URL, `repo.git` or different casing all resolve to the
+  same check.
+- **Escape hatch** — an acknowledgment has to be written by someone: `--ack ID`,
+  `$CELESTIA_P0_ACK`, or a `P0-ACK: <id> [reason]` line in the PR body
+  (`--pr-body` / `--pr-body-file` / `$CELESTIA_P0_PR_BODY`). Acknowledged entries
+  are echoed to stderr with their source and stop blocking; unacknowledged ones
+  still fail. The gate never guesses, and never passes silently.
+- **Closing** — a `closed` entry must name the PR that closed it (`closed_by`);
+  an open entry must leave it empty.
+- **Fail-closed** — a missing, unreadable, unparsable, schema-invalid, or empty
+  ledger exits `2` instead of passing. Exit codes: `0` clear, `1` blocked by an
+  open P0, `2` usage/ledger error.
+
+The ledger ships inside the package, so any repo can adopt the check by adding a
+workflow step. Override it per checkout with `--ledger`, `$CELESTIA_P0_LEDGER`,
+or a `p0-ledger.toml` at the repo root.
+
+### Adopting the gate in a repo
+
+Call the org reusable workflow (pinned like every caller — see "Pinned
+reusable-workflow refs" above). The ledger read stays on `@master` **by
+design**: the P0 ledger is live policy state, so a pin that froze it would gate
+against an outdated list of open findings.
+
+```yaml
+name: P0 Ledger Gate
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+concurrency:
+  group: p0-gate-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  p0-gate:
+    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@v2026.10
+```
+
+`edited` is required: adding a `P0-ACK:` line to the PR body has to re-run the
+check. An open P0 then blocks the repo's PRs until someone closes the ledger
+entry or writes the acknowledgment.
+
+## Domain Leak Gate
+
+A strategy of "one generic host, many vertical instances" degrades in small steps:
+industry vocabulary seeps into the host core until a second domain can no longer be
+plugged in. A rule nobody can run is a suggestion, so
+`celestia-devtools domain-leak` makes the criterion executable. It scans the
+host-core repositories listed in `SCOPE` (whole repository; `domain_*` packages are
+the legitimate domain zone) for the industry terms listed in `TERMS`, and exits
+non-zero on any hit that the baseline does not cover.
+
+```bash
+celestia-devtools domain-leak                  # full scan (human or weekly sweep)
+celestia-devtools domain-leak --staged         # pre-commit: this repo's staged content
+celestia-devtools domain-leak --pushed         # pre-push: ref lines on stdin
+celestia-devtools domain-leak --pushed-range B H # CI: the diff of B..H
+celestia-devtools domain-leak --json           # machine-readable
+celestia-devtools domain-leak --selftest       # 34 assertions: patterns, hooks, prune
+```
+
+- **Reach** — each repository in `SCOPE` is scanned in full (any tracked-file
+  extension in `EXTS`, and the file *name* counts too, since `hydrogen_flow.rs`
+  leaks just as loudly as its contents). The empty include prefix means "whole
+  repository", so nothing hides in `res/`, `scripts/`, `examples/`, `benches/` or
+  `tests/`.
+- **Word list** — CJK terms match literally, ASCII terms match case-insensitively,
+  and the localized forms are listed so a translated document cannot carry the word
+  that the English one may not. Adding a term means editing `TERMS` **and** the
+  matching self-test positive, in the same pull request.
+- **Baseline** — `src/celestia_devtools/lint/domain_leak_baseline.json` ships inside
+  the package and records the tracked debt. **Baseline changes are pull requests
+  against this repository**: the review is the gate, and no consumer can edit a
+  local copy and expect it to hold. A fix PR runs `--prune-baseline` in the same
+  batch so a repaired entry never lingers.
+- **Fail-closed** — hook mode refuses (`rc 2`) when the repository cannot be
+  identified by path or by a family `origin`, instead of silently passing; a
+  violation is always printed to stderr even under `--quiet`, and so is every
+  warning (a missing repository, a refusal reason): `--quiet` silences the *report*
+  body and the summary line, never the fact that the scan could not see everything
+  it claims to cover. The full scan refuses
+  (`rc 2`) too when **no root was declared and no workspace markers were found**
+  (an installed wheel, a checkout outside the workspace): scanning anyway would
+  report a green pass over zero reachable repositories. Declaring the root with
+  `--workspace` / `$CELESTIA_WORKSPACE` opts out — the caller then owns a wrong
+  root, and missing repositories stay warnings. `--prune-baseline` refuses (`rc 2`)
+  in the same way when **any scanned repository is missing under the resolved
+  root**: the missing repositories' entries would look stale and be deleted from a
+  committed file, so the refusal leaves it byte-for-byte untouched. Exit
+  codes: `0` clean or baseline-only, `1` a hit outside the baseline, `2`
+  configuration, usage or git error.
+
+The workspace is located from the checkout layout (the nearest ancestor holding
+`_tools/claim.py` plus `_ledger/`), overridable with `--workspace` or
+`$CELESTIA_WORKSPACE`; the baseline likewise via `--baseline` or
+`$CELESTIA_DOMAIN_LEAK_BASELINE`. The self-test builds a throwaway workspace and a
+real git repository, so it needs neither network nor the workspace itself.
+
+## Type Gate (TypeScript)
+
+A word-level `any` ban removes only the escapes that spell themselves out. The
+2026-11-01 review found the rest: the shapes that launder `any` (`type Any = any`,
+`JSON.parse`), the authored assertions nobody counted (`as HTMLElement`, `!`), and
+the two blind spots no scan could see — repositories whose TypeScript never
+compiled on a live lane, and files that never enter the compiler's program at
+all. Four commands cover those:
+
+| Command | The question it answers |
+| --- | --- |
+| `type-escapes` | Does any escape hatch stand in for a check? |
+| `ts-policy check` | Are the mandatory flags on, and is every optional one decided? |
+| `ts-policy coverage` | Which claimed source files silently fail to enter the program? |
+| `ts-policy probe` | What would a stricter flag cost right now? |
+| `ts-surface emit-scan` | Does the published type surface leak `any` to consumers? |
+
+```bash
+celestia-devtools type-escapes --ruleset strict --baseline .type-escapes-baseline.json
+celestia-devtools type-escapes --inventory          # per-rule, per-profile counts
+celestia-devtools ts-policy check --tsconfig tsconfig.json
+celestia-devtools ts-policy coverage --tsconfig tsconfig.json
+celestia-devtools ts-policy probe --tsconfig tsconfig.json
+celestia-devtools ts-surface emit-scan --tsconfig tsconfig.json
+```
+
+Three conventions make the gate adoptable instead of all-or-nothing:
+
+- **Rulesets.** `core` is always-on; `strict` adds the shapes whose fix costs a
+  migration (`JSON.parse`/`.json()`, `: Function`, event-target casts). A
+  repository opts in after paying it down. (`as never` is core but
+  profile-scoped: a lie in `src`, deliberately bad input in `tests`.)
+- **Profiles.** Every file is classified `src` / `test` / `generated` / `dts`.
+  `as never` in a test is deliberate bad-input injection, not debt, and Vue's
+  `emits: [...]` array form only matters in component sources.
+- **Ratchet.** Plain `as` assertions and non-null assertions are too numerous to
+  ban (~1.8k and ~2.8k in hikari alone), so they are *counted*: `--baseline`
+  freezes the per-file counts and refuses growth. `--update-baseline` rewrites
+  the ledger, and its diff is the debt a PR took on.
+
+`type-escapes` refuses a file-level exemption unless the marker carries a ledger
+id AND the file carries a generator header (`ledger=L40`), so a hand-written file
+cannot paste itself out of the gate:
+
+```ts
+// Auto-generated by build_npm_glue_packages.py
+// ts-escape-allow-file: generated WASM glue, retires with L40 ledger=L40
+```
+
+The reusable workflow wraps all of it in one self-hosted job. Pin `devtools-ref`
+to a full SHA (org rule H14) so a rule tightened on master judges nobody until
+that repository bumps its anchor:
+
+```yaml
+type-gate:
+  uses: celestia-island/celestia-devtools/.github/workflows/ts-gate.yml@<40-hex>
+  with:
+    devtools-ref: <40-hex>
+    ruleset: core
+    working-directory: packages/vue
+    install-command: pnpm install --frozen-lockfile
+    # `tsconfig` resolves against `working-directory`; the escape scan's
+    # `paths`/`baseline` resolve against the workspace root.
+    tsconfig: tsconfig.json
+    typecheck-command: pnpm --filter @celestia-island/hikari lint
+```
+
+The strictness policy itself lives in `src/celestia_devtools/lint/ts_policy.toml`
+(catalog + the all-undecided default); a repository answers it in its own
+`ts-policy.toml`, where every optional flag must appear in `on` or `off` with a
+reason. An undecided flag fails, and so does a decision the tsconfig contradicts
+— a stale ledger that reads as compliance is worse than none.
+
+## Release Notes
+
+Every org repo squashes its PRs and lints their titles, so master history is
+already a changelog — `celestia-devtools release-notes` turns it into the
+standard release body: every merged PR since the previous tag, grouped by the
+leading gitmoji of its subject.
+
+```bash
+celestia-devtools release-notes --repo celestia-island/shun --tag v0.2.16   # print
+celestia-devtools release-notes --tag v0.2.16 --apply                       # upload (draft if new)
+```
+
+The previous tag auto-resolves as the highest semver tag below `--tag`
+(`prefix-vX.Y.Z` shapes count; floating tags like `res-latest` never match).
+Bundle several versions into one release with `--previous-tag v0.1.0`; list
+the full history with `--no-previous`. Commits without a `(#N)` squash
+reference (direct pushes, reverts) are skipped.
+
+Repos get this automatically on tag push through the shared reusable workflow
+— one job in the tag-triggered release workflow, after the artifacts upload:
+
+```yaml
+release-notes:
+  needs: release              # whatever job creates/uploads to the release
+  permissions:
+    contents: write
+  uses: celestia-island/celestia-devtools/.github/workflows/release-notes.yml@v2026.10
+  with:
+    devtools-ref: v2026.10
+```
+
+The job patches the body onto the release the build job created (keeping its
+draft/published state); when no release exists it creates one as a draft so a
+human can curate before publishing. Because the categorization keys off the
+gitmoji, the notes are only as good as the PR titles — which is exactly the
+discipline the commit-msg governance already enforces.
+
+## Deploy (production targets)
+
+`env/*` commands own **development** machines (foreground supervision,
+embedded PG, WSL/QEMU bring-up). The `deploy` group owns **production
+targets**: a fresh single-host box goes from zero to a systemd-resident
+service, then gets verified, backed up, upgraded. Deploy commands never hold a
+foreground process and never touch mock stacks; cross-host deployment scripts
+live in `deploy/` and only here.
+
+Current surface:
+
+```console
+$ celestia-devtools deploy doctor     # read-only: proxy / python deps / system tools
+```
+
+`doctor` reports, never installs (auto-install of missing system tools, when
+it arrives, stays behind an explicit consent flag). Proxy detection is a
+five-level cascade (env vars and git's own http.proxy -> loopback listeners ->
+default gateway -> DNS suffixes -> WPAD) with credentials redacted in every report line, and `NO_PROXY`
+always covers loopback plus RFC1918/ULA ranges so a same-LAN database never
+routes through an egress proxy.
+
+Boxes whose Python is older than 3.11 are rescued by `pyshim` (shipped in this
+package): it warns, asks consent, installs the **newest** available Python
+(uv -> python-build-standalone -> system packages, in that order), brings up
+`/opt/celestia-devtools/venv`, and re-execs the original command line. The
+shim itself is held to Python 3.6 syntax with zero third-party imports -- its
+tests enforce that grammar floor.
+
+The bare `deploy` wizard runs today and stops loudly (exit 2) at the first
+stage that belongs to a later slice — `artifact`, `verify`, `backup`,
+`restore`, `upgrade`, `rollback`, `status`, `secrets`, `uninstall` land with
+their own slices and fail loudly until then.
+
+## License
+
+Licensed under the [Synthetic Source License (SySL), Version 1.0](./LICENSE).

@@ -1,0 +1,26 @@
+# Dependency radar watch-list — the upgrade point of the self-hosted radar.
+# Each entry mirrors what the retired dependabot covered for that repo:
+#   actions: true                    probe pinned third-party GitHub Actions
+#   cargo: true                      probe Cargo.toml registry dependencies
+#   cargo_manifests / npm_manifests  extra manifest paths (default "Cargo.toml" / "package.json")
+# Add a repo entry and the next run covers it. The radar reports drift on the
+# rolling "Dependency radar" issue in this repository; it never opens PRs.
+repos:
+  - repo: langyo/wowsp
+    actions: true
+    cargo: true
+    npm_manifests:
+      - package.json
+      - packages/webui/package.json
+      - packages/website/package.json
+      - packages/holo/package.json
+      - packages/console/package.json
+  - repo: langyo/github-follower-watchdog
+    actions: true
+    npm_manifests:
+      - package.json
+      - site/package.json
+  - repo: langyo/0721
+    actions: true
+  - repo: langyo/arona
+    actions: true

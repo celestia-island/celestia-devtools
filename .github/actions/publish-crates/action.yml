@@ -1,0 +1,49 @@
+name: Publish workspace crates to crates.io
+description: Smart cargo publish with pre-check, fail-fast error detection, and index waiting
+inputs:
+  token:
+    description: crates.io API token
+    required: true
+  max-wait-per-crate:
+    description: Seconds to wait per crate for crates.io indexing
+    required: false
+    default: "120"
+  dry-run:
+    description: Print plan without publishing
+    required: false
+    default: "false"
+  working-directory:
+    description: Path to the workspace root
+    required: false
+    default: "."
+  toolchain:
+    description: Rust toolchain
+    required: false
+    default: stable
+  exclude:
+    description: Space-separated list of package names to skip
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install celestia-devtools
+      shell: bash
+      run: pip install git+https://github.com/celestia-island/celestia-devtools.git@v0.2.0
+
+    - name: Cargo login
+      if: inputs.dry-run != 'true'
+      shell: bash
+      run: echo "${{ inputs.token }}" | cargo login
+      working-directory: ${{ inputs.working-directory }}
+
+    - name: Publish crates
+      shell: bash
+      env:
+        PUBLISH_MAX_WAIT_PER_CRATE: ${{ inputs.max-wait-per-crate }}
+      run: >
+        python -m celestia_devtools.publish.crates
+        ${{ inputs.dry-run == 'true' && '--dry-run' || '' }}
+        --max-wait ${{ inputs.max-wait-per-crate }}
+        ${{ inputs.exclude != '' && format('--exclude {0}', inputs.exclude) || '' }}
+      working-directory: ${{ inputs.working-directory }}

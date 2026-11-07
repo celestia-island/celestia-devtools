@@ -1,0 +1,129 @@
+name: Family dependency identity
+
+# Callers: add
+#
+#   family-versions:
+#     name: Family dependency identity
+#     uses: celestia-island/celestia-devtools/.github/workflows/family-versions.yml@e66e9a86b464c197300795b315f72f9c079402f5
+#
+# to the repository's workflow. `with: strict: true` also fails on warnings.
+#
+# The same job also runs `celestia-devtools package-rules` (W0 package-surface
+# rules: kebab-case publishable crate names + one source per package name per
+# lockfile). It runs `--strict`: the 2026-11-06 org census had a single stock
+# hit (hikari's orphaned `debug_glow` example manifest), removed 2026-11-07, and
+# every caller scanned clean afterwards. `|| echo` still guards only the exit-2
+# scan error (nothing scanned / unparsable manifest) so such an error cannot
+# swallow the family result that follows — real rule violations DO fail.
+on:
+  workflow_call:
+    inputs:
+      strict:
+        description: Fail on warnings as well as violations
+        type: boolean
+        default: false
+      devtools-ref:
+        description: "celestia-devtools git ref to judge with: any ref other than the master default is honored by cloning that exact ref (H14 determinism; pinned callers pass their anchor — a full 40-hex SHA or a tag)."
+        required: false
+        type: string
+        default: "master"
+
+jobs:
+  family-versions:
+    name: Family dependency identity
+    # Fork PRs must not consume self-hosted runner capacity or execute
+    # untrusted code on the shared node; they need maintainer approval anyway.
+    # For workflow_call callers, github.event carries the caller's PR payload,
+    # so the same guard applies.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier).
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # The check reads every lock and manifest in the tree, including the
+          # locks of second workspaces (fuzz/ and the like), so it needs the
+          # whole checkout rather than a sparse one.
+          fetch-depth: 0
+        # Defensive: the runner env rewrites github.com/celestia-island/* to
+        # local bare mirrors (per-repo exact-prefix rules), and mirrors may lack
+        # fresh refs — clone straight from github.com instead.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Family versions
+        # Ref-determinism rule (H14, 2026-10): a caller that pins
+        # `devtools-ref` names the EXACT CLI whose baselines judge this tree.
+        # The H14 incident: node-1's preinstall was a stale 0.14.2 snapshot
+        # whose family data lagged master, so one checkout drew opposite
+        # conclusions from two CLIs (the editable install now on node-1 was
+        # the remediation — a preinstall that tracks master still is NOT the
+        # CLI a tag pin names). So: any ref other than the master default
+        # always runs from a fresh clone at that ref; the preinstalled fast
+        # path survives only for the master default, echoing which binary and
+        # version ran (the version string alone did not distinguish the two
+        # CLIs in the incident — the stale baseline data did; the clone lane
+        # is the actual determinism guarantee).
+        #
+        # Violations fail the job; warnings (a lock linking two generations, an
+        # unbounded npm range, a binding behind its crate) are printed and only
+        # fail when the caller opts into `strict`. The package-rules run above
+        # adds no failure until its stock census is zero (flip to --strict).
+        env:
+          STRICT: ${{ inputs.strict && '--strict' || '' }}
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          set -euo pipefail
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools family-versions --help >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
+            # Package-surface rules first, STRICT (see the file header): they
+            # still print when the family gate below is red. Guarded because a
+            # stale preinstall may predate the command.
+            if celestia-devtools package-rules --help >/dev/null 2>&1; then
+              rc=0
+              celestia-devtools package-rules --strict "$GITHUB_WORKSPACE" || rc=$?
+              # 2 = nothing scanned / unparsable manifest: surface it, but do
+              # not let a scan error stand in for the family gate's verdict.
+              [ "$rc" -eq 2 ] && echo "package-rules could not scan the tree (exit 2)"
+              [ "$rc" -eq 1 ] && exit 1
+              true
+            else
+              echo "package-rules unavailable on this devtools build; skipping the package-surface check"
+            fi
+            celestia-devtools family-versions $STRICT "$GITHUB_WORKSPACE"
+          else
+            echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the baselines match the pin"
+            # Branch/tag refs clone with --branch; a 40-hex SHA pin cannot take
+            # that flag, so fetch the exact object instead (GitHub serves
+            # allow-anySHA1InWant) and check it out. SHA pins are the canonical
+            # caller pin since 2026-10-31 (user ruling; the CalVer tags remain
+            # as historical wave markers).
+            rm -rf /tmp/celestia-devtools-fv
+            if [[ "${DEVTOOLS_REF:-master}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              git init -q /tmp/celestia-devtools-fv
+              git -C /tmp/celestia-devtools-fv remote add origin https://github.com/celestia-island/celestia-devtools.git
+              git -C /tmp/celestia-devtools-fv fetch -q --depth 1 origin "${DEVTOOLS_REF}"
+              git -C /tmp/celestia-devtools-fv checkout -q FETCH_HEAD
+            else
+              git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools-fv
+            fi
+            cd /tmp/celestia-devtools-fv
+            # Package-surface rules first, STRICT (see the file header).
+            # The guard keeps pre-#263 pins green: an older devtools ref has no
+            # package-rules command, and a re-pin is what upgrades it.
+            if PYTHONPATH=src python3 -m celestia_devtools package-rules --help >/dev/null 2>&1; then
+              rc=0
+              PYTHONPATH=src python3 -m celestia_devtools package-rules --strict "$GITHUB_WORKSPACE" || rc=$?
+              [ "$rc" -eq 2 ] && echo "package-rules could not scan the tree (exit 2)"
+              [ "$rc" -eq 1 ] && exit 1
+              true
+            else
+              echo "package-rules unavailable at devtools-ref '${DEVTOOLS_REF:-master}'; skipping the package-surface check"
+            fi
+            PYTHONPATH=src python3 -m celestia_devtools family-versions $STRICT "$GITHUB_WORKSPACE"
+          fi

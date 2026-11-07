@@ -1,0 +1,235 @@
+# Engine packs (`tools/engine_pack.py`)
+
+Declarative install/verify tool for local inference engine packs (LLM/ASR) on
+GPU nodes. Single file, Python **3.11+ stdlib only** — no third-party
+dependencies. Run it as root on the target node.
+
+## Pack layout
+
+```text
+<pack-dir>/
+├── engine.meta        # TOML manifest (required)
+├── asr_server.py      # engine entrypoint — whatever the engine needs
+└── ...                # remaining engine files (code, vendored binary, ...)
+```
+
+After `install`, the persistent footprint is exactly: one systemd unit in
+`/etc/systemd/system`, the conda env prefix (none for native-binary packs) and
+the pack directory itself. The tool can be deleted afterwards without
+affecting the running service.
+
+## `engine.meta` schema
+
+| Section | Field | Type | Required | Notes |
+| --- | --- | --- | --- | --- |
+| `[pack]` | `name` | string | yes | pack id; used for the env dir name |
+| `[pack]` | `engine` | string | yes | free-form engine family tag |
+| `[pack]` | `version` | string | yes | pack version |
+| `[env]` | `python` | string | if `[env]` | python version for the conda env |
+| `[env]` | `packages` | string list | if `[env]` | pip packages, pinned versions |
+| `[service]` | `unit` | string | yes | systemd unit name → `<unit>.service` |
+| `[service]` | `command` | string list | yes | argv, cwd = pack dir; first token may be `python` (→ env python) or an absolute path; with no `[env]` it must be absolute |
+| `[service]` | `port` | integer | yes | local service port |
+| `[service]` | `health_path` | string | yes | health path, starts with `/` |
+| `[systemd]` | `user` | string | no | default `root` |
+| `[systemd]` | `after` | string | no | default `network-online.target` |
+| `[systemd]` | `description` | string | no | default derived from pack/engine |
+
+Omit `[env]` entirely for native-binary engines (conda is skipped completely).
+
+## Commands
+
+```bash
+python3 tools/engine_pack.py plan   <pack-dir>               # parse + print planned actions, offline
+python3 tools/engine_pack.py install <pack-dir>              # env + unit + service + health check
+python3 tools/engine_pack.py verify  <pack-dir> --timeout 60 # poll http://127.0.0.1:<port><health_path>
+```
+
+`install` options: `--miniforge-root`, `--env-root`, `--unit-dir`,
+`--mirror-base`, `--force-env` (recreate an existing env), `--timeout`
+(health check seconds, default 120). Exit code is non-zero when any step
+fails; every step prints a `[PASS]`/`[SKIP]`/`[FAIL]` line
+(conda / env / pip / unit / service / health).
+
+## Miniforge bootstrap
+
+- If `<miniforge-root>/bin/mamba` is missing, the installer
+  (`Miniforge3-Linux-<arch>.sh`) is downloaded from the Tsinghua mirror
+  `https://mirrors.tuna.tsinghua.edu.cn/github-release/conda-forge/miniforge/LatestRelease/`
+  (direct connection, no proxy) and run as `bash <installer> -b -p <root>`.
+- Default roots: miniforge `/mnt/work/miniforge3`, envs `/mnt/work/engine-envs`.
+- Envs are created at an explicit prefix: `mamba create -y -p
+  /mnt/work/engine-envs/<pack-name> python=<ver>`. `conda activate` is never
+  used; the service runs `<prefix>/bin/python` and pip is
+  `<prefix>/bin/pip`.
+
+## Idempotency
+
+Re-running `install` is safe: an existing env with matching packages is
+skipped (the installed set is recorded in
+`<prefix>/.engine-pack-installed.json` and compared against `engine.meta`),
+the unit file is always re-rendered, and the service is reloaded, re-enabled
+and restarted, followed by a fresh health check.
+
+## CI farm heartbeat (`tools/ci_farm_heartbeat_referee.py` + `tools/ci_farm_heartbeat_receiver.py`)
+
+Self-hosted CI farm watchdog pair: dead-guest detection with automatic
+hypervisor snapshot rollback. Python 3.9+ stdlib only. Every node runs the
+same scripts; every site-specific value comes from environment variables
+(nothing hardcoded).
+
+- **receiver** (management node): HTTP endpoint recording guest heartbeats.
+  Guests hit `GET /beat/<name>` once a minute (systemd timer + curl);
+  the last-beat time is the mtime of `<beat-dir>/<name>`.
+  `GET /status` dumps the mtimes. Env: `CI_HB_PORT`, `CI_HB_BEAT_DIR`.
+- **referee** (management node, 1-minute timer): a guest whose beat is older
+  than `CI_HB_STALE_SEC` (default 300) for `CI_HB_STALE_ROUNDS` (default 2)
+  consecutive rounds is force-rolled-back on the hypervisor:
+  `power off → revert to the single baseline snapshot → power on`, then the
+  beat unit is re-installed (baselines predate the beat unit). Env:
+  `CI_HB_ESXI_HOST/_USER/_KEY_FILE`, `CI_HB_BEAT_DIR/_STATE_FILE/_LEDGER_FILE/
+  _LOCK_FILE/_INVENTORY`, `CI_HB_NODE1_ADDR` (receiver URL used in the
+  re-installed unit), `CI_HB_GUEST_USER/_PASSWORD_FILE`,
+  `CI_HB_STALE_SEC/_ROUNDS`, `CI_HB_REVERT_BUDGET_24H` (default 3),
+  `CI_HB_COOLDOWN_SEC` (default 900), `CI_HB_REARM_WAIT_SEC/_TRIES`,
+  `CI_HB_CONNECT_TIMEOUT`.
+- **beat** (guest side): keep it dead simple — a oneshot systemd service
+  `curl -fsS -m 10 http://<receiver>/beat/<guest-name>` on a 60s timer
+  (the referee's re-arm re-installs exactly this unit after a revert).
+
+Safety rails: first-beat registration (a node without a beat file is never
+touched), snapshot invariant (exactly one snapshot or refuse), 24h revert
+budget per guest, post-action cooldown, hypervisor-reachability probe with
+exponential backoff (probing with valid credentials DURING an account
+lockout refreshes the lock window — back off silently instead), flock.
+Hypervisor auth is SSH public key only: ESXi runs FIPS (ed25519 denied —
+use RSA) and password auth turns account lockout into a self-extending
+lock loop.
+
+Example guest beat units and the systemd units for both roles are in the
+receiver/referee module docstrings.
+
+## e2e-sandbox（统一 e2e 临时目录设施，2026-09-21）
+
+**背景**：全工作区验证作业的 Playwright/chromium profile 落在 `/tmp`，被 timeout/kill
+时无人清理——2026-09-21 实测累计 **43GB 残骸**把 node-1 根盘吃到 97%（ENOSPC 实错）。
+
+**用法**（agent 写 e2e 脚本时一行接线）：
+
+```bash
+# 包装任意命令（正常/失败/超时/SIGTERM 都清）
+celestia-devtools e2e-sandbox run --label my-e2e -- node probe.cjs
+
+# 调试时保留
+celestia-devtools e2e-sandbox run --keep -- node probe.cjs
+
+# 带超时
+celestia-devtools e2e-sandbox run --timeout 120 -- pytest -q tests/e2e
+
+# 兜底：清扫沙箱根下陈旧目录（默认 >6h）
+celestia-devtools e2e-sandbox sweep
+
+# 兜底：清扫 /tmp 里的孤儿 chromium profile（默认 >60min 未动、当前用户、名字形态匹配）
+celestia-devtools e2e-sandbox sweep-tmp
+```
+
+**机制**：chromium 与 Playwright 都尊重 `TMPDIR`（实测验证：`os.tmpdir()` →
+`pw-<hash>` 临时目录在 TMPDIR 下创建）。包装器把每个运行的 `TMPDIR`/`TMP`/`TEMP`
+指到 `/mnt/work/e2e-sandbox/<时间戳-PID-标签>/tmp`，结束用 `finally` 语义无条件清除。
+`sweep-tmp` 只删「≥20 位随机名 + 超过 max-age 未动 + 当前用户所有」的**目录**，
+不碰文件、不碰 systemd/X11 套接字、权限不足自动跳过。
+
+**建议**：e2e 作业的 cron / 农场看门狗定期跑 `sweep-tmp` 作为最后防线。
+
+## engine_drop 三步流水（`stage` → `gates` → `apply`）
+
+引擎在干净 worktree 写完后，宿主机侧一条线走完：
+
+```bash
+python3 tools/engine_drop.py stage <worktree> --repo <仓名> \
+    --description "<gitmoji> 英文陈述句."
+python3 tools/engine_drop.py gates  <drop-root>/<仓名>/<drop-id>   # 只读预检
+python3 tools/engine_drop.py apply  <drop-root>/<仓名>/<drop-id>   # 门禁→worktree→push→PR
+```
+
+`stage` 从 `git status --porcelain --untracked-files=all` 取改动清单（删除的文件与
+重命名的旧侧不进 drop——drop 只承载现存内容文件，删除类改动留给人工；untracked
+文件视作新内容文件正常入 drop）。条目级 fail-closed：G3 禁区、符号链接（防借道读
+worktree 之外的文件）、目录（嵌套 git 仓/子模）一律拒；`--base` 只收 `origin/*`、
+`--description` 同 G6 格式（与 gates 同口径，不产死 drop）；`--drop-id` 只收单段名。
+改动集合 = porcelain ∪ `git diff --name-only <base>`（**领先提交的内容也进 drop**，
+去重排序），drop id 默认 `auto-<UTC 时间戳>-<diff 短哈希>`，绝不覆盖已存在的 drop
+目录。stage 自身零 git 写操作；合并仍由人做。
+
+## engine_drop sweep（巡航 → 装配线宿主侧，2026-10-24）
+
+```bash
+python3 tools/engine_drop.py sweep                 # dry：只 stage + gates
+python3 tools/engine_drop.py sweep --apply         # 过门后开 PR + 回收工作区
+python3 tools/engine_drop.py sweep --ws-root PATH  # 默认 /mnt/work/engine-ws
+```
+
+定时器驱动的自动巡航：遍历 `<ws-root>/<repo>/` 一级子目录（每个应是**管线自有**
+的引擎暂存 git worktree/checkout），逐仓走完 fetch → 检测 → stage → gates →
+（`--apply`）PR → 回收：
+
+- **fetch**：`git fetch origin master --quiet` 失败 → warn 跳过该仓，不中断整轮；
+  非 git 目录 / 非法目录名同样 warn 跳过。
+- **改动检测**：porcelain（`-uall`）非空 **或** `origin/master..HEAD` 有领先提交
+  （引擎 SoP 以 gitmoji 提交）。两者皆空 → `clean` info 跳过。
+- **描述**（绝不编造）：领先提交标题（`git log --format=%s -1 origin/master..HEAD`）；
+  无领先提交回落工作区根 `.drop-description` 首行；须过 G6；皆无 / 不过 →
+  warn 跳过（`.drop-description` 本身不进 drop）。
+- **stage**：与 `stage` CLI 同一内部实现；drop id 内容寻址 `sweep-<diff 哈希>` →
+  同内容重复 sweep 命中「已存在」→ 视为本轮已处理，info 跳过（幂等，不是错误）。
+- **gates**：违禁（含 stage 条目级禁区/链接/目录拒绝）→ warn 跳过且**不回收**
+  工作区——留人看。
+- **`--apply`**：调 apply 内部开 PR；PR 开成才回收（`git reset --hard origin/master`
+  + `git clean -fd`）——这是**管线自有暂存 worktree** 的生命周期（引擎写一轮、
+  sweep 收一轮），与人类 worktree 的只读/新建纪律无关；apply 失败同样不回收。
+
+每仓一行进 audit.jsonl（`event: "sweep"` 与 apply 自己的运行记录区分）：
+`staged` / `gates-failed` / `pr-opened` / `clean` / `skipped-no-description`，
+另有 `already-staged`（幂等跳过）、`skipped-bad-description`、`not-git`、
+`invalid-name`、`fetch-failed`、`status-failed`、`skipped-deletions-only`、
+`apply-failed`、`recycle-failed`、`error` 等边缘结果。整轮 exit 0（逐仓结果以
+审计流水为准）；只有 ws-root 不存在才是 exit 2。
+
+### 定时器示例（node-1，每 5 分钟一轮）
+
+```ini
+# /etc/systemd/system/engine-drop-sweep.service
+[Unit]
+Description=engine_drop sweep over the engine staging worktrees
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lab
+# systemd 单元默认 PATH 通常不含 gh / 用户级 git——必须显式注明（gh 需已以
+# lab 身份完成 gh auth login；凭据留在 lab 的 gh config 里，不进本单元/仓树）
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/lab/.local/bin
+ExecStart=/usr/bin/python3 /mnt/codespace/celestia-devtools/tools/engine_drop.py sweep --apply
+
+# /etc/systemd/system/engine-drop-sweep.timer
+[Timer]
+OnCalendar=*:0/5
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+```
+
+启用：`systemctl enable --now engine-drop-sweep.timer`。
+
+## engine_drop exit codes（`tools/engine_drop.py`）
+
+进程退出码只有三枚，由 `EXIT_OK` / `EXIT_FAILURE` / `EXIT_USAGE` 三个常量定义，`__main__` 以 `sys.exit(main())` 收口：
+
+- `0`（`EXIT_OK`）成功：`gates` 门禁全过；`apply --dry-run` 走到 diff 为止（不提交、不 push、不开 PR）；`apply` 已推送并开成 PR；`audit` 正常输出（含「暂无审计流水」的空流水情形）；`sweep` 一轮巡航完成（逐仓结果看 audit.jsonl 的 `event: sweep` 行——单仓 warn/跳过不是整轮失败）。
+- `1`（`EXIT_FAILURE`）失败：门禁违禁（`gates` 与 `apply` 同判，`apply` 此时不做任何 git 操作）；worktree 路径已被占用；`apply` 阶段 git/gh 抛错——若分支已 push 但 PR 未开成，需人工对该分支执行 `gh pr create`（本工具按设计绝不删分支）。
+- `2`（`EXIT_USAGE`）用法错误：`die()` 统一抛出（drop 目录不存在、`sweep` 的 ws-root 不存在）；未给子命令时打印帮助后返回。
+
+## sweep 审计粒度
+
+`sweep` 每轮对 ws-root 下的每个仓只写一行审计记录（`event: "sweep"`），该行的 `outcome` 字段即该仓本轮的处置结果，取值见上节枚举；整轮汇总只打印各 outcome 的计数，逐仓细节一律以 audit.jsonl 为准。

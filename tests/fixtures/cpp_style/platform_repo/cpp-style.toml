@@ -1,0 +1,2 @@
+# Only the driver layer may include platform headers.
+platform_paths = ["driver/**"]

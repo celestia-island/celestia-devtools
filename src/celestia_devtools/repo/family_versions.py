@@ -1,0 +1,1174 @@
+#!/usr/bin/env python3
+"""Check that the family's shared layers are consumed as ONE identity.
+
+The family shares three upstream layers — `kirino` (auth primitives),
+`plana` (platform/RPC), `hikari` (UI) — and until 2026-09-25 nothing compared
+how the repositories consume them.  The workspace audit then found the result:
+
+* **`kirino` at two incompatible majors in one product surface**: `^0.7` in
+  plana/shittim-chest, `^0.6` in e.celestia.world / erp.celestia.world /
+  evernight (`kirino` and `kirino-session`).  `^0.6` and `^0.7` do not overlap
+  (0.x carets pin the minor), so the family ships two generations of the auth
+  primitive whose tokens its services exchange.
+* **`plana` consumed as `branch = "master"`** and resolved to seven different
+  commits across repositories, so the version string `0.2.1` names seven
+  different trees.
+
+Since the 2026-10-24 ruling that registry-first (AGENTS §3.2.2) applies to plana
+as well, that last bullet is now split in two: plana's **published** members are
+expected from crates.io as `version = "^0.2"`, while the members whose manifests
+carry `publish = false` still have to come from git master.  The check therefore
+judges the plana family by publication status instead of demanding git for all
+of it.
+* **`@celestia-island/hikari` declared `^*`** in four consumers — a range
+  node-semver reads as `*`, i.e. any future major, in a 0.x line where every
+  minor is breaking by the project's own experience.
+
+This command reports those shapes and fails on the ones the workspace rules
+already require.  The judgement is "does this requirement ADMIT the family's
+canonical version?", not "what is its floor": `>=0.6, <1.0` and `^0.*` both
+admit `0.7`, and reading a floor out of them is how a checker starts lying.
+
+Exit status: 0 clean, 1 violations (or warnings with ``--strict``), 2 when
+nothing was scanned at all — a path that is not a directory, or one holding
+no manifest, is an error rather than a clean repository.
+
+A repository can be parked in a dated ``[weld_window]`` entry of
+``family_layers.toml``: generational findings there are downgraded to INFO
+lines naming the weld ("welded until <until>"). An expired ``YYYY-MM-DD`` or a
+removed row restores the violations. The repository identity is
+``GITHUB_REPOSITORY`` in CI and the target root's git remote for local runs.
+"""
+
+from __future__ import annotations
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+import yaml
+from dataclasses import asdict, dataclass
+from datetime import date
+from pathlib import Path
+from typing import Iterable, Sequence
+from celestia_devtools.core import envelope
+
+version = tuple[int, int, int]
+
+PLANA_REPO = "https://github.com/celestia-island/plana.git"
+#: Repositories the freeze list allows to pin a `plana` revision.  Everyone else
+#: tracks master (for the unpublished members) or the registry (for the
+#: published ones) so the family at least shares one identity instead of seven
+#: stationary ones.
+REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
+
+#: plana workspace members that `plana/.github/workflows/publish.yml` actually
+#: publishes to crates.io.  Registry-first (AGENTS §3.2.2, 2026-10-20; extended
+#: to plana by the 2026-10-24 ruling) lets these be consumed as
+#: `version = "^0.2"` — the lockfile still pins the exact build.  Every other
+#: member carries `publish = false` in its manifest, so a registry requirement
+#: for one of those cannot resolve and has to stay a git reference on master.
+#:
+#: Names are compared with `-` for `_` because Cargo lets a manifest alias the
+#: crate (`plana_celestia_types = { package = "plana-celestia-types", … }`).
+#: `member → canonical version of ITS OWN published line`.  The members do not
+#: share one line: `plana` / `plana-rpc-client` / `plana-celestia-types` ride 0.2
+#: while `plana-rpc-server` / `plana-tauri` are still on 0.1, so a single 0.2
+#: comparison would fail a correct `plana-rpc-server = "^0.1"`.  The comparison
+#: is per member: declaring below a member's recorded line is as much a
+#: violation as declaring above it.
+#: The published/consumed family lines live in ``family_layers.toml`` (next to
+#: this module) so a release wave updates data, not code — see that file's
+#: header for the update rule and the authority of each table.
+_FAMILY_LAYERS_PATH = Path(__file__).with_name("family_layers.toml")
+
+#: A `[weld_window]` deadline; any other `until` value is a milestone label.
+_WELD_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: Anything starting with a digit is treated as a date ATTEMPT (see the loader):
+#: it must then be exactly `_WELD_DATE`, never a milestone.
+_WELD_DATE_ATTEMPT = re.compile(r"^\d")
+#: `[weld_window]` keys: full `owner/repo`, so a bare name cannot self-exempt.
+_WELD_REPO_KEY = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
+
+class family_layers_error(ValueError):
+    """The data file is missing or does not match the documented schema."""
+
+def parse_layer_line(text: object, where: str) -> version:
+    """Parse ``"major.minor"`` (a published line) into ``(major, minor, 0)``."""
+
+    if not isinstance(text, str):
+        raise family_layers_error("%s: expected a string line, got %r" % (where, text))
+
+    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)", text.strip())
+
+    if match is None:
+        raise family_layers_error("%s: expected a major.minor line, got %r" % (where, text))
+
+    return (int(match.group(1)), int(match.group(2)), 0)
+
+def load_family_layers(path: Path | None = None) -> dict:
+    """Load and validate the family-layer data file."""
+    data_path = path or _FAMILY_LAYERS_PATH
+
+    if not data_path.is_file():
+        raise family_layers_error("family layer data not found at %s" % data_path)
+
+    try:
+        data = tomllib.loads(data_path.read_bytes().decode("utf-8"))
+    except Exception as exc:
+        raise family_layers_error("%s is not valid TOML: %s: %s" % (data_path, type(exc).__name__, exc)) from exc
+
+    for key in ("updated_at", "source"):
+        if not isinstance(data.get(key), str) or not data[key].strip():
+            raise family_layers_error("%s: [%s] must be a non-empty string" % (data_path, key))
+
+    overrides: dict[str, tuple[str, version, str]] = {}
+    published_raw = data.get("plana_published")
+
+    if not isinstance(published_raw, dict) or not published_raw:
+        raise family_layers_error("%s: [plana_published] must be a non-empty table" % data_path)
+
+    plana_published = {member.replace("_", "-"): parse_layer_line(line, "plana_published.%s" % member) for member, line in published_raw.items()}
+    layers: dict = {"updated_at": data["updated_at"], "source": data["source"], "plana_published": plana_published}
+
+    for table, name in (("rust_layers", "rust_layers"), ("npm_layers", "npm_layers")):
+        raw = data.get(table)
+
+        if not isinstance(raw, dict) or not raw:
+            raise family_layers_error("%s: [%s] must be a non-empty table" % (data_path, name))
+
+        entries = []
+
+        for key, entry in raw.items():
+            if not isinstance(entry, dict):
+                raise family_layers_error("%s: [%s.%s] must be a table with line/why" % (data_path, name, key))
+
+            if not isinstance(entry.get("why"), str) or not entry["why"].strip():
+                raise family_layers_error("%s: [%s.%s].why must be a non-empty string" % (data_path, name, key))
+
+            line = parse_layer_line(entry.get("line"), "%s.%s.line" % (name, key))
+            entries.append((key, line, entry["why"]))
+
+            if "crates" in entry:
+                if table != "rust_layers":
+                    raise family_layers_error("%s: [%s.%s] cannot carry a `crates` column: only Rust families ship more than one live line per member" % (data_path, name, key))
+
+                per_crate = entry["crates"]
+
+                if not isinstance(per_crate, dict) or not per_crate:
+                    raise family_layers_error("%s: [%s.%s.crates] must be a non-empty table of member = line" % (data_path, name, key))
+
+                for member, member_line in per_crate.items():
+                    normalized = str(member).replace("-", "_")
+
+                    if normalized == key:
+                        raise family_layers_error("%s: [%s.%s.crates.%s] overrides the family itself; set `line` instead" % (data_path, name, key, member))
+
+                    if not normalized.startswith(f"{key}_"):
+                        raise family_layers_error("%s: [%s.%s.crates.%s] is not a member of the %r family" % (data_path, name, key, member, key))
+
+                    overrides[normalized] = (key, parse_layer_line(member_line, "%s.%s.crates.%s" % (name, key, member)), entry["why"])
+
+        layers[name] = tuple(entries)
+
+    layers["rust_overrides"] = dict(sorted(overrides.items()))
+    weld_raw = data.get("weld_window", {})
+
+    if not isinstance(weld_raw, dict):
+        raise family_layers_error("%s: [weld_window] must be a table of repository entries" % data_path)
+
+    weld_window: dict[str, dict] = {}
+
+    for repo_name, entry in weld_raw.items():
+        label = "weld_window.%s" % repo_name
+
+        if not isinstance(entry, dict):
+            raise family_layers_error("%s: [%s] must be a table with until/reason/lines" % (data_path, label))
+
+        until = entry.get("until")
+        reason = entry.get("reason")
+        lines_raw = entry.get("lines")
+
+        if (not isinstance(until, str)) or (not until.strip()):
+            raise family_layers_error("%s: [%s].until must be a date or milestone label" % (data_path, label))
+
+        # Dates must be ISO spelled. A malformed date is the worst case in this
+        # table: `_weld_active` treats anything that is not `YYYY-MM-DD` as a
+        # milestone, so `2026-11-7` would read as "never expires" while the
+        # message still says "welded until 2026-11-7" — a silent permanent
+        # exemption. Anything that starts with a digit is therefore a date
+        # attempt and is held to the ISO spelling + a real calendar day.
+        if _WELD_DATE_ATTEMPT.match(until.strip()):
+            if not _WELD_DATE.fullmatch(until.strip()):
+                raise family_layers_error(
+                    "%s: [%s].until %r looks like a date but is not ISO `YYYY-MM-DD` (a malformed date would never expire); use `YYYY-MM-DD` or a milestone label that does not start with a digit" % (data_path, label, until)
+                )
+
+            try:
+                date.fromisoformat(until.strip())
+            except ValueError as exc:
+                raise family_layers_error("%s: [%s].until is not a real date: %r" % (data_path, label, until)) from exc
+
+        if (not isinstance(reason, str)) or (not reason.strip()):
+            raise family_layers_error("%s: [%s].reason must be a non-empty string" % (data_path, label))
+
+        if (not isinstance(lines_raw, list)) or (not lines_raw):
+            raise family_layers_error("%s: [%s].lines must be a non-empty array of family tokens" % (data_path, label))
+
+        tokens = []
+
+        for token in lines_raw:
+            if (not isinstance(token, str)) or (not token.strip()):
+                raise family_layers_error("%s: [%s].lines entries must be non-empty strings" % (data_path, label))
+
+            tokens.append(token.strip().replace("-", "_").lower())
+
+        key = repo_name.strip().lower()
+
+        if _WELD_REPO_KEY.fullmatch(key) is None:
+            raise family_layers_error(
+                "%s: [%s] must be keyed `owner/repo` (e.g. `celestia-island/arona`); a bare name would exempt any repository that happens to be called %r" % (data_path, label, repo_name)
+            )
+
+        weld_window[key] = {"until": until.strip(), "reason": reason.strip(), "lines": tuple(tokens)}
+
+    layers["weld_window"] = weld_window
+
+    return layers
+
+_FAMILY_LAYERS = load_family_layers()
+PLANA_PUBLISHED: dict[str, version] = _FAMILY_LAYERS["plana_published"]
+RUST_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["rust_layers"]
+#: ``crate → (family, line, why)`` for members deliberately parked on another line.
+RUST_OVERRIDES: dict[str, tuple[str, version, str]] = _FAMILY_LAYERS["rust_overrides"]
+NPM_LAYERS: tuple[tuple[str, version, str], ...] = _FAMILY_LAYERS["npm_layers"]
+#: ``repo → {until, reason, lines}`` dated weld exemptions (see [weld_window]).
+WELD_WINDOW: dict[str, dict] = _FAMILY_LAYERS["weld_window"]
+
+#: `crate family → repository` for the git-source check.
+FAMILY_REPOS = {"kirino": "kirino", "plana": "plana", "hikari": "hikari"}
+
+#: `layer → (rust crate family, npm package)` for the cross-track check: the same
+#: layer shipped on two tracks has to agree on which generation it is.
+CROSS_TRACK = (("kirino", "kirino", "@celestia-island/kirino"),)
+
+UNBOUNDED = {"", "*", "^*", "x", "X", "latest", ">=0.0.0"}
+#: Sibling-directory dependencies — retired family-wide (§3.5). `link:` and
+#: `portal:` are the same shape as `file:` (a path outside the package), so they
+#: are judged the same way instead of one warning and one silence.
+SIBLING_PROTOCOLS = ("file:", "link:", "portal:")
+#: Resolution the package manager owns: not a family-version decision.
+SKIP_PROTOCOLS = ("workspace:", "catalog:")
+SKIP_DIRS = {"node_modules", "target", "dist", ".git", ".generated", "vendor"}
+
+CARGO_DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+NPM_DEP_SECTIONS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
+
+@dataclass(frozen = True)
+class finding_record:
+    level: str  # "violation" | "warning" | "info" (welded window)
+    subject: str
+    message: str
+    #: Crate/family token for `[weld_window]` matching; None = never welded.
+    weld_key: str | None = None
+    #: Set on INFO findings produced by a weld; names the deadline/milestone.
+    welded_until: str | None = None
+
+# ── requirement semantics ────────────────────────────────────────────────────
+
+def _parse_version(text: str) -> tuple[int, int | None, int | None] | None:
+    """`0.7`, `0.7.1`, `0.7.*`, `0` → (major, minor, patch); None = unparsable."""
+    match = re.match(r"^v?(\d+)(?:\.(\d+|\*|x|X))?(?:\.(\d+|\*|x|X))?$", text.strip())
+
+    if not match:
+        return None
+
+    parts: list[int | None] = []
+
+    for group in match.groups():
+        if (group is None) or (group in ("*", "x", "X")):
+            parts.append(None)
+        else:
+            parts.append(int(group))
+
+    while len(parts) < 3:
+        parts.append(None)
+
+    return parts[0], parts[1], parts[2]  # type: ignore[return-value]
+
+def _hyphen_bounds(first: str, last: str) -> tuple[version, version] | None:
+    """`1.2.3 - 2.3.4` — both ends parse as versions, the upper end inclusive."""
+    low = _parse_version(first)
+    high = _parse_version(last)
+
+    if (low is None) or (high is None):
+        return None
+
+    lower = (low[0], low[1] or 0, low[2] or 0)
+
+    if high[2] is not None:
+        upper = (high[0], high[1] or 0, high[2] + 1)
+    elif high[1] is not None:
+        upper = (high[0], high[1] + 1, 0)
+    else:
+        upper = (high[0] + 1, 0, 0)
+
+    return lower, upper
+
+def _bounds(part: str) -> tuple[version, version] | None:
+    """The `[lower, upper)` interval one comma-separated comparator admits."""
+    part = part.strip()
+
+    if part in UNBOUNDED:
+        return (0, 0, 0), (10 ** 9, 0, 0)
+
+    operator = ""
+
+    for candidate in (">=", "<=", "^", "~", ">", "<", "="):
+        if part.startswith(candidate):
+            operator, part = candidate, part[len(candidate):].strip()
+            break
+
+    parsed = _parse_version(part)
+
+    if parsed is None:
+        return None
+
+    major, minor, patch = parsed
+    low: version = (major, minor or 0, patch or 0)
+
+    if operator == "^":
+        if major > 0:
+            high = (major + 1, 0, 0)
+        elif (minor is not None) and (minor > 0):
+            high = (0, minor + 1, 0)
+        elif patch is not None:
+            high = (0, 0, patch + 1)  # ^0.0.3 is >=0.0.3 <0.0.4
+        elif minor is not None:
+            high = (0, 1, 0)  # ^0.0 is >=0.0.0 <0.1.0
+        else:
+            high = (1, 0, 0)  # ^0 / ^0.x admits every 0.x
+    elif operator == "~":
+        # `~1` is `>=1.0.0 <2.0.0`; only `~1.2` pins the minor.
+        high = (major, minor + 1, 0) if minor is not None else (major + 1, 0, 0)
+    elif operator == ">=":
+        return low, (10 ** 9, 0, 0)
+    elif operator == ">":
+        # node-semver: `>1.2.3` is `>=1.2.4`, `>1.2` is `>=1.3.0`, `>1` is `>=2.0.0`
+        if patch is not None:
+            return (major, minor or 0, patch + 1), (10 ** 9, 0, 0)
+
+        if minor is not None:
+            return (major, minor + 1, 0), (10 ** 9, 0, 0)
+
+        return (major + 1, 0, 0), (10 ** 9, 0, 0)
+    elif operator == "<":
+        return (0, 0, 0), low
+    elif operator == "<=":
+        return (0, 0, 0), (major, minor or 0, (patch or 0) + 1)
+    elif minor is None:
+        high = (major + 1, 0, 0)
+    elif patch is None:
+        high = (major, minor + 1, 0)
+    else:
+        high = (major, minor, patch + 1)
+
+    return low, high
+
+def intersects(requirement: str, low: version, high: version) -> bool | None:
+    """Whether ``requirement`` can resolve to SOME version in ``[low, high)``.
+
+    This is the question that matters: `^0.55.71` is a perfectly good member of
+    the 0.55 line even though it cannot resolve to `0.55.0` exactly.
+    """
+    bounds = _requirement_bounds(requirement)
+
+    if bounds is None:
+        return None
+
+    return max(bounds[0], low) < min(bounds[1], high)
+
+def admits(requirement: str, target: version) -> bool | None:
+    """Whether ``requirement`` can resolve to ``target``.  None = cannot tell."""
+    bounds = _requirement_bounds(requirement)
+
+    if bounds is None:
+        return None
+
+    return bounds[0] <= target < bounds[1]
+
+def _requirement_bounds(requirement: str) -> tuple[version, version] | None:
+    """The `[lower, upper)` interval a whole requirement admits; None = unknown."""
+    text = requirement.strip().strip("'\"")
+
+    if text.startswith(("file:", "workspace:", "catalog:", "link:", "portal:")):
+        return None
+
+    if text.startswith("npm:"):
+        text = text[len("npm:"):].rpartition("@")[2] or "*"  # npm:alias@range → range
+
+    # `a || b` and `a - b` are unions: the requirement admits anything either
+    # alternative admits, so the intervals are merged rather than intersecting.
+    if ("||" in text) or (" - " in text):
+        merged: tuple[version, version] | None = None
+        alternatives = text.split("||") if "||" in text else [text]
+
+        for alternative in alternatives:
+            if " - " in alternative:
+                first, _, last = alternative.partition(" - ")
+                bounds = _hyphen_bounds(first, last)
+            else:
+                bounds = _requirement_bounds(alternative)
+
+            if bounds is None:
+                return None
+
+            merged = bounds if merged is None else (min(merged[0], bounds[0]), max(merged[1], bounds[1]))
+
+        return merged
+
+    low: version = (0, 0, 0)
+    high: version = (10 ** 9, 0, 0)
+
+    for part in re.split(r"[,\s]+", text):
+        if "||" in part:
+            return None
+
+        if not part.strip():
+            continue
+
+        bounds = _bounds(part)
+
+        if bounds is None:
+            return None
+
+        low = max(low, bounds[0])
+        high = min(high, bounds[1])
+
+    return low, high
+
+# ── scanning ─────────────────────────────────────────────────────────────────
+
+def _manifests(root: Path, name: str) -> Iterable[Path]:
+    """Every manifest under ``root``, pruned WHILE walking.
+
+    Pruning matters twice over: `node_modules` of a frontend checkout is tens of
+    thousands of directories, and a `SKIP_DIRS` test against the absolute path
+    silently skips a repository that merely *lives* under a directory called
+    `target` or `vendor`.
+    """
+    stack = [root]
+
+    while stack:
+        current = stack.pop()
+
+        try:
+            entries = sorted(current.iterdir())
+        except OSError:
+            continue
+
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name in SKIP_DIRS:
+                    continue
+
+                stack.append(entry)
+            elif entry.name == name:
+                yield entry
+
+def _repo_name(root: Path) -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "config", "--get", "remote.origin.url"], capture_output = True, text = True, timeout = 30)
+        url = out.stdout.strip()
+
+        if url:
+            return Path(url).name.removesuffix(".git")
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return root.name
+
+def _caller_repo(root: Path) -> str:
+    """The bare repository name this gate is judging, lower-cased.
+
+    Used by the rules that key off a repository NAME (currently the frozen
+    rev-pin allowance). ``[weld_window]`` needs the stricter ``owner/repo``
+    identity instead — see [`_weld_identity`].
+    """
+
+    return _repo_name(root).lower()
+
+def _weld_identity(root: Path) -> str | None:
+    """The ``owner/repo`` this gate is judging, or None when it cannot be proved.
+
+    CI names it explicitly (``GITHUB_REPOSITORY=owner/repo``): that wins because
+    the fresh-clone lane judges the CALLER's tree while running from a devtools
+    checkout. Local CLI runs parse the target root's git remote.
+
+    The full ``owner/repo`` is required — matching the bare repository name
+    would exempt any unrelated repository that happens to share it (a fork, a
+    scratch directory). A root with no recognisable GitHub remote returns None,
+    which welds nothing: guesses must not suppress violations.
+    """
+
+    declared = os.environ.get("GITHUB_REPOSITORY", "").strip().lower()
+
+    if declared:
+        return declared if _WELD_REPO_KEY.fullmatch(declared) else None
+
+    from_remote = _repo_identity_from_remote(root)
+
+    return from_remote
+
+def _repo_identity_from_remote(root: Path) -> str | None:
+    """Parse ``owner/repo`` out of the target's ``origin`` URL, or None."""
+
+    try:
+        out = subprocess.run(["git", "-C", str(root), "config", "--get", "remote.origin.url"], capture_output = True, text = True, timeout = 30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    url = out.stdout.strip()
+
+    if not url:
+        return None
+
+    # https://github.com/OWNER/REPO(.git) | ssh://git@github.com/OWNER/REPO(.git)
+    # | git@github.com:OWNER/REPO(.git)
+    candidate = url.removesuffix(".git")
+
+    if "://" in candidate:
+        candidate = candidate.split("://", 1)[1]
+        candidate = candidate.split("/", 1)[1] if "/" in candidate else ""
+    elif ":" in candidate and "@" in candidate.split(":", 1)[0]:
+        candidate = candidate.split(":", 1)[1]
+
+    parts = [part for part in candidate.split("/") if part]
+
+    if len(parts) != 2:
+        return None
+
+    identity = (parts[0] + "/" + parts[1]).lower()
+
+    return identity if _WELD_REPO_KEY.fullmatch(identity) else None
+
+def _weld_active(entry: dict, today: date | None = None) -> bool:
+    """Whether a ``[weld_window]`` entry still suppresses generational findings.
+
+    A ``YYYY-MM-DD`` deadline is inclusive: it expires AFTER that day. Any other
+    value (a milestone such as ``external-beta``) cannot be compared
+    mechanically, so it stays active until the row is removed or re-dated.
+    """
+
+    until = entry["until"]
+
+    if not _WELD_DATE.fullmatch(until):
+        return True
+
+    return (today or date.today()) <= date.fromisoformat(until)
+
+def _weld_for(repo: str | None, today: date | None = None) -> dict | None:
+    """The active weld entry for *repo* (``owner/repo``), or None."""
+
+    if not repo:
+        return None
+
+    entry = WELD_WINDOW.get(repo.strip().lower())
+
+    if (entry is None) or (not _weld_active(entry, today)):
+        return None
+
+    return entry
+
+def _weld_matches(weld_key: str, lines: tuple[str, ...]) -> bool:
+    """Prefix match on normalized names: ``plana`` covers every ``plana_*``."""
+
+    normalized = weld_key.replace("-", "_").lower()
+    return any((normalized == token) or normalized.startswith(token + "_") for token in lines)
+
+def _apply_weld(findings: list[finding_record], entry: dict) -> list[finding_record]:
+    """Downgrade welded generational violations to dated INFO lines."""
+
+    welded: list[finding_record] = []
+
+    for finding in findings:
+        if (finding.level != "violation") or (finding.weld_key is None) or (not _weld_matches(finding.weld_key, entry["lines"])):
+            welded.append(finding)
+            continue
+
+        message = finding.message + " — welded until " + entry["until"] + " (" + entry["reason"] + ")"
+        welded.append(finding_record("info", finding.subject, message, weld_key = finding.weld_key, welded_until = entry["until"]))
+
+    return welded
+
+def _family_crate(name: str) -> tuple[str, version, str] | None:
+    normalized = name.replace("-", "_")
+    # A parked member wins over its family: `kirino-session` stays on 0.7 while
+    # `kirino` itself moved to 0.9, and judging it by the family line would
+    # report a "different primitive" that does not exist.
+    parked = RUST_OVERRIDES.get(normalized)
+
+    if parked is not None:
+        return parked
+
+    for prefix, canonical, why in RUST_LAYERS:
+        if (normalized == prefix) or normalized.startswith(f"{prefix}_"):
+            return prefix, canonical, why
+
+    return None
+
+def _cargo_deps(document: dict) -> Iterable[tuple[str, object, str]]:
+    """`(key, spec, section-label)` for every dependency table we can see."""
+
+    for section in CARGO_DEP_SECTIONS:
+        table = document.get(section)
+
+        if isinstance(table, dict):
+            yield from ((key, spec, section) for key, spec in table.items())
+
+    workspace = document.get("workspace")
+
+    if isinstance(workspace, dict):
+        table = workspace.get("dependencies")
+
+        if isinstance(table, dict):
+            yield from ((key, spec, "workspace.dependencies") for key, spec in table.items())
+
+    targets = document.get("target")
+
+    if isinstance(targets, dict):
+        for cfg, tables in targets.items():
+            if isinstance(tables, dict):
+                for section in CARGO_DEP_SECTIONS:
+                    table = tables.get(section)
+
+                    if isinstance(table, dict):
+                        yield from ((key, spec, f"target.{cfg}.{section}") for key, spec in table.items())
+
+    patches = document.get("patch")
+
+    if isinstance(patches, dict):
+        for source, table in patches.items():
+            if isinstance(table, dict):
+                yield from ((key, spec, f"patch.{source}") for key, spec in table.items())
+
+    # `[replace]` is flat: "name:version" = { path = … } (Cargo's older spelling
+    # of a patch). Reading it as patch-shaped made the whole section dead code.
+    replaces = document.get("replace")
+
+    if isinstance(replaces, dict):
+        for key, spec in replaces.items():
+            yield key.split(":")[0], spec, "replace"
+
+def _crate_name(key: str, spec: object) -> str:
+    if isinstance(spec, dict) and isinstance(spec.get("package"), str):
+        return spec["package"]
+
+    return key
+
+def _check_cargo(path: Path, root: Path, findings: list[finding_record], repo: str, rust_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
+    try:
+        document = tomllib.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover - unreadable manifest
+        findings.append(finding_record("warning", str(path.relative_to(root)), f"unreadable: {exc}"))
+        return
+
+    for key, raw_spec, section in _cargo_deps(document):
+        name = _crate_name(key, raw_spec)
+        family = _family_crate(name)
+
+        if family is None:
+            continue
+
+        prefix, canonical, _why = family
+        spec = raw_spec if isinstance(raw_spec, dict) else {"version": raw_spec}
+        subject = f"{name} @ {path.relative_to(root)} ({section})"
+
+        if spec.get("workspace") is True:
+            # The requirement lives at the workspace root, which this scan also
+            # reads; reporting the inheritance site would flag the same
+            # declaration twice.
+            continue
+
+        if "path" in spec:
+            target = (path.parent / str(spec["path"])).resolve()
+
+            if (target == root) or (root in target.parents):
+                continue  # inside this repository: not a cross-repo dependency
+
+            findings.append(finding_record("violation", subject, f"local path dependency to {spec['path']!r} outside this repository; " "cross-repo Rust dependencies must be git references on master"))
+            continue
+
+        if prefix == "plana":
+            # Plana is judged by publication status (2026-10-24 ruling): the
+            # members publish.yml ships may come from crates.io, the
+            # `publish = false` members may not.
+            member = PLANA_PUBLISHED.get(name.replace("_", "-"))
+            published = member is not None
+
+            if "git" not in spec:
+                if not published:
+                    findings.append(finding_record("violation", subject, "consumed from crates.io, but this plana member is not published; " "members whose manifest carries `publish = false` must come from " f'{PLANA_REPO} on branch = "master"'))
+                    continue
+
+                requirement = spec.get("version")
+
+                if not isinstance(requirement, str) or not requirement.strip():
+                    findings.append(finding_record("violation", subject, "no version requirement"))
+                    continue
+
+                if (rust_lines is not None) and _parse_version(requirement.lstrip("^~>=< ")):
+                    parsed = _parse_version(requirement.lstrip("^~>=< "))
+
+                    if parsed and (parsed[1] is not None):
+                        rust_lines.setdefault(prefix, set()).add((parsed[0], parsed[1]))
+
+                line = (member[0], member[1] + 1, 0)
+                verdict = intersects(requirement, member, line)
+
+                if verdict is False:
+                    findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to this member's " f"published {member[0]}.{member[1]} line; 0.x carets do not overlap, " "so this is a different primitive, not an older build", weld_key = name.replace("-", "_").lower()))
+                elif verdict is None:
+                    findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
+
+                continue
+
+            url = str(spec.get("git", ""))
+
+            if "celestia-island/plana" not in url:
+                findings.append(finding_record("violation", subject, f"git source {url!r} is not the family's {PLANA_REPO}"))
+                continue
+
+            if "rev" in spec:
+                if repo not in REV_PIN_ALLOWED:
+                    findings.append(finding_record("violation", subject, f"pins plana to rev {spec['rev']!r}; only the frozen repositories " f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin"))
+            elif spec.get("branch") != "master":
+                findings.append(finding_record("violation", subject, f"tracks {spec.get('branch') or spec.get('tag') or 'an unnamed ref'}; " 'the family tracks branch = "master"'))
+            elif published:
+                # Migration signal, not a failure: every consumer that has not
+                # moved yet shows up here until it declares the registry line.
+                findings.append(finding_record("warning", subject, f"published on crates.io at {member[0]}.{member[1]}; prefer " f"version = \"^0.{member[1]}\" (registry-first, AGENTS §3.2.2) so the " "build stops following master"))
+
+            continue
+
+        # kirino and friends: one major, or it is a different primitive.
+        if "git" in spec:
+            # §3.3 prescribes git references on master for cross-repo Rust
+            # dependencies, and entelecheia consumes kirino that way on purpose —
+            # so the consumption MODE is not a finding. Which repository it
+            # points at, and which ref it follows, still is: `plana` was checked
+            # and `kirino` was not, which let `{ git = "…/other/kirino.git",
+            # branch = "0.4-legacy" }` through.
+            url = str(spec.get("git", ""))
+            repository = FAMILY_REPOS.get(prefix, prefix)
+
+            if f"celestia-island/{repository}" not in url:
+                findings.append(finding_record("violation", subject, f"git source {url!r} is not the family's " f"https://github.com/celestia-island/{repository}.git"))
+                continue
+
+            if ("rev" in spec) and (repo not in REV_PIN_ALLOWED):
+                findings.append(finding_record("violation", subject, f"pins {prefix} to rev {spec['rev']!r}; only the frozen repositories " f"({', '.join(sorted(REV_PIN_ALLOWED))}) may pin"))
+            elif ("rev" not in spec) and (spec.get("branch") not in (None, "master")):
+                findings.append(finding_record("violation", subject, f"tracks {spec.get('branch') or spec.get('tag')!r}; the family tracks " 'branch = "master"'))
+
+            continue
+
+        requirement = spec.get("version")
+
+        if not isinstance(requirement, str):
+            findings.append(finding_record("violation", subject, "no version requirement"))
+            continue
+
+        if (rust_lines is not None) and _parse_version(requirement.lstrip("^~>=< ")):
+            parsed = _parse_version(requirement.lstrip("^~>=< "))
+
+            if parsed and (parsed[1] is not None):
+                rust_lines.setdefault(prefix, set()).add((parsed[0], parsed[1]))
+
+        line = (canonical[0], canonical[1] + 1, 0)
+        verdict = intersects(requirement, canonical, line)
+
+        if verdict is False:
+            findings.append(finding_record("violation", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line; 0.x carets do not overlap, so this " "is a different primitive, not an older build", weld_key = name.replace("-", "_").lower()))
+        elif verdict is None:
+            findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
+
+def _npm_values(table: object, package: str) -> list[str]:
+    """Every declaration of ``package`` in one table.
+
+    All of them, not the first: `{"hk": "npm:<pkg>@^0.55", "<pkg>": "file:../x"}`
+    declares the package twice, and returning on the alias hid the `file:`
+    violation behind it.
+    """
+
+    if not isinstance(table, dict):
+        return []
+
+    found: list[str] = []
+
+    for key, value in table.items():
+        if isinstance(value, dict):
+            # pnpm writes a nested override as `{"<pkg>": {".": "range"}}`.
+            if key != package:
+                continue
+
+            for nested_key in (".", "", "*"):
+                nested = value.get(nested_key)
+
+                if isinstance(nested, str):
+                    found.append(nested)
+
+            continue
+
+        if not isinstance(value, str):
+            continue
+
+        if (key == package) or value.startswith(f"npm:{package}@"):
+            found.append(value)
+
+    return found
+
+def _check_npm(path: Path, root: Path, findings: list[finding_record], npm_lines: dict[str, set[tuple[int, int]]] | None = None) -> None:
+    try:
+        document = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:  # pragma: no cover - unreadable manifest
+        findings.append(finding_record("warning", str(path.relative_to(root)), f"unreadable: {exc}"))
+        return
+
+    tables: list[tuple[str, object]] = [(section, document.get(section))for section in NPM_DEP_SECTIONS]
+    tables.append(("overrides", document.get("overrides")))
+    pnpm = document.get("pnpm")
+
+    if isinstance(pnpm, dict):
+        tables.append(("pnpm.overrides", pnpm.get("overrides")))
+
+    tables.append(("resolutions", document.get("resolutions")))
+
+    for package, canonical, _why in NPM_LAYERS:
+        for section, table in tables:
+            for requirement in _npm_values(table, package):
+                subject = f"{package} @ {path.relative_to(root)} ({section})"
+
+                if requirement.startswith(SIBLING_PROTOCOLS):
+                    findings.append(finding_record("violation", subject, f"declares {requirement!r} — a sibling-directory dependency, " "retired family-wide in favour of the published package"))
+                    continue
+
+                if requirement.startswith(SKIP_PROTOCOLS):
+                    continue
+
+                if requirement.strip() in UNBOUNDED:
+                    findings.append(finding_record("warning", subject, f"declares {requirement!r}, which node-semver reads as `*` — any " "future major is admitted on a fresh resolve"))
+                    continue
+
+                if npm_lines is not None:
+                    parsed = _parse_version(requirement.lstrip("^~>=< "))
+
+                    if parsed and (parsed[1] is not None):
+                        npm_lines.setdefault(package, set()).add((parsed[0], parsed[1]))
+
+                verdict = intersects(requirement, canonical, (canonical[0], canonical[1] + 1, 0))
+
+                if verdict is False:
+                    findings.append(finding_record("warning", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line"))
+                elif verdict is None:
+                    findings.append(finding_record("warning", subject, f"cannot judge the requirement {requirement!r}"))
+
+def _own_cargo_line(root: Path) -> tuple[int, int] | None:
+    """This repository's own Rust version line, from its root manifest."""
+    manifest = root / "Cargo.toml"
+
+    if not manifest.is_file():
+        return None
+
+    try:
+        document = tomllib.loads(manifest.read_text(encoding = "utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    for table in (document.get("workspace", {}).get("package", {}), document.get("package", {})):
+        parsed = _parse_version(str(table.get("version", "")))
+
+        if (parsed is not None) and (parsed[1] is not None):
+            return (parsed[0], parsed[1])
+
+    return None
+
+def _published_family_lines(root: Path) -> dict[str, set[tuple[int, int]]]:
+    """The family npm packages this repository PUBLISHES, and on which line."""
+    published: dict[str, set[tuple[int, int]]] = {}
+    names = {package for _crate, _prefix, package in CROSS_TRACK}
+
+    for path in _manifests(root, "package.json"):
+        try:
+            document = json.loads(path.read_text(encoding = "utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        name = document.get("name")
+        parsed = _parse_version(str(document.get("version", "")))
+
+        if (name in names) and (parsed is not None) and (parsed[1] is not None):
+            published.setdefault(name, set()).add((parsed[0], parsed[1]))
+
+    return published
+
+def _workspace_override_findings(root: Path) -> list[finding_record]:
+    """`pnpm-workspace.yaml` carries `overrides` for the pnpm 11 layout.
+
+    The family moved `pnpm.overrides` there (see the frontend skill), so a check
+    that only reads package.json cannot see a forced family version.
+    """
+    path = root / "pnpm-workspace.yaml"
+
+    if not path.is_file():
+        return []
+
+    try:
+        document = yaml.safe_load(path.read_text(encoding = "utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:  # pragma: no cover - unreadable manifest
+        return [finding_record("warning", path.name, f"unreadable: {exc}")]
+
+    overrides = document.get("overrides") if isinstance(document, dict) else None
+    findings: list[finding_record] = []
+
+    for package, canonical, _why in NPM_LAYERS:
+        for requirement in _npm_values(overrides, package):
+            subject = f"{package} @ pnpm-workspace.yaml (overrides)"
+
+            if requirement.startswith(SIBLING_PROTOCOLS):
+                findings.append(finding_record("violation", subject, f"declares {requirement!r} — a sibling-directory dependency, " "retired family-wide in favour of the published package"))
+            elif requirement.strip() in UNBOUNDED:
+                findings.append(finding_record("warning", subject, f"declares {requirement!r}, which node-semver reads as `*`"))
+            elif intersects(requirement, canonical, (canonical[0], canonical[1] + 1, 0)) is False:
+                findings.append(finding_record("warning", subject, f"declares {requirement}, which cannot resolve to the family's " f"{canonical[0]}.{canonical[1]} line"))
+
+    return findings
+
+def _lock_findings(root: Path) -> list[finding_record]:
+    """What the LOCKFILES resolved, which is what actually gets built.
+
+    A declaration can be satisfied by a version the auditor did not expect: four
+    consumers declare `^*` and resolve to 0.40.27 / 0.41.3 / 0.41.9 / 0.55.0,
+    and one `Cargo.lock` can link three generations of the auth crate while every
+    declaration looks fine. These are warnings: a transitive dependency can pin
+    the split, so they are evidence to act on rather than a gate.
+    """
+    findings: list[finding_record] = []
+    # What every lock resolved, so the workspaces can be compared WITH EACH
+    # OTHER. Reading each lock on its own still reported a repository as clean
+    # when its root locked one generation and a second workspace locked another
+    # — which is exactly the shape this check exists to catch, and exactly the
+    # shape evernight had.
+    across: dict[str, dict[tuple[int, int], set[str]]] = {}
+
+    for cargo_lock in _manifests(root, "Cargo.lock"):
+        where = cargo_lock.relative_to(root).as_posix()
+
+        if where not in ("Cargo.lock",):
+            # A nested lock is a second workspace. Reporting only the root one
+            # let a repository whose root locked cleanly while `fuzz/Cargo.lock`
+            # held an older generation print `ok` — and that output gets cited
+            # as evidence, so it must not be able to miss one.
+            findings.append(finding_record("info", where, "this is a separate workspace's lockfile, checked on its own below"))
+
+        try:
+            data = tomllib.loads(cargo_lock.read_text(encoding = "utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover
+            findings.append(finding_record("warning", where, f"unreadable: {exc}"))
+            data = {}
+
+        # Grouped by crate NAME, not by family prefix: `kirino-macro` and
+        # `plana-celestia-types` keep their own version tracks, so lumping them
+        # in reported a "second generation" that does not exist. What matters is
+        # one name resolving to two lines (kirino 0.6.3 + 0.6.5 + 0.7.2 is the
+        # real finding).
+        lines: dict[str, set[tuple[int, int]]] = {}
+        seen: dict[str, set[str]] = {}
+
+        for package in data.get("package", []) or []:
+            name = str(package.get("name", ""))
+            parsed = _parse_version(str(package.get("version", "")))
+
+            if (_family_crate(name) is None) or (parsed is None) or (parsed[1] is None):
+                continue
+
+            lines.setdefault(name, set()).add((parsed[0], parsed[1]))
+            seen.setdefault(name, set()).add(f"{name} {package.get('version')}")
+
+        for crate, versions in sorted(lines.items()):
+            for line in versions:
+                across.setdefault(crate, {}).setdefault(line, set()).add(where)
+
+            if len(versions) > 1:
+                findings.append(finding_record("warning", f"{crate} @ {where}", "the lock links " + ", ".join(f"{m}.{n}" for m, n in sorted(versions)) + " of the same crate (" + ", ".join(sorted(seen[crate])) + ") — more than one generation in one binary"))
+
+    for crate, per_line in sorted(across.items()):
+        # Only when the generations come from DIFFERENT locks: one lock linking
+        # two lines is already reported above, and calling that "different
+        # workspaces" would be wrong.
+        locks_involved = {path for paths in per_line.values() for path in paths}
+
+        if (len(per_line) < 2) or (len(locks_involved) < 2):
+            continue
+
+        where = ", ".join(f"{m}.{n} in {', '.join(sorted(paths))}" for (m, n), paths in sorted(per_line.items()))
+        findings.append(finding_record("warning", crate, "different workspaces in this repository lock different generations " f"of the same crate ({where}) — each build is internally consistent, " "so only a comparison across them can see it"))
+
+    for lock in _manifests(root, "pnpm-lock.yaml"):
+        where = lock.relative_to(root).as_posix()
+
+        try:
+            data = yaml.safe_load(lock.read_text(encoding = "utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:  # pragma: no cover
+            findings.append(finding_record("warning", where, f"unreadable: {exc}"))
+            data = {}
+
+        importers = data.get("importers") if isinstance(data, dict) else None
+        resolved: dict[str, dict[str, set[tuple[int, int]]]] = {}
+
+        for importer, tables in (importers or {}).items():
+            if not isinstance(tables, dict):
+                continue
+
+            for section in NPM_DEP_SECTIONS:
+                table = tables.get(section)
+
+                if not isinstance(table, dict):
+                    continue
+
+                for package, _canonical, _why in NPM_LAYERS:
+                    entry = table.get(package)
+
+                    if not isinstance(entry, dict):
+                        continue
+
+                    parsed = _parse_version(str(entry.get("version", "")).split("(")[0])
+
+                    if (parsed is None) or (parsed[1] is None):
+                        continue
+
+                    resolved.setdefault(package, {}).setdefault(importer, set()).add((parsed[0], parsed[1]))
+
+        for package, per_importer in sorted(resolved.items()):
+            canonical = next(c for n, c, _why in NPM_LAYERS if n == package)
+            lines = {line for found in per_importer.values() for line in found}
+            below = sorted(line for line in lines if line < canonical[:2])
+
+            if below:
+                findings.append(finding_record("warning", f"{package} @ {where}", "the lock resolves " + ", ".join(f"{m}.{n}" for m, n in below) + f" while the family line is {canonical[0]}.{canonical[1]}"))
+
+            if len(lines) > 1:
+                where = ", ".join(f"{imp}: {', '.join(f'{m}.{n}' for m, n in sorted(found))}" for imp, found in sorted(per_importer.items()))
+                findings.append(finding_record("warning", f"{package} @ {where}", f"the lock resolves {len(lines)} different lines across importers ({where})"))
+
+    return findings
+
+def _scanned_counts(root: Path) -> dict[str, int]:
+    """How much was actually read — so `ok` cannot mean "found nothing"."""
+    return {"Cargo.toml": len(list(_manifests(root, "Cargo.toml"))), "package.json": len(list(_manifests(root, "package.json"))), "Cargo.lock": len(list(_manifests(root, "Cargo.lock"))), "pnpm-lock.yaml": len(list(_manifests(root, "pnpm-lock.yaml")))}
+
+def check(root: Path, repo: str | None = None, today: date | None = None) -> list[finding_record]:
+    """Every family-consumption finding in ``root``, violations first.
+
+    *repo* / *today* exist for tests: production calls resolve the caller
+    identity from ``GITHUB_REPOSITORY`` (CI) or the target's git remote, and use
+    the wall clock for ``[weld_window]`` deadlines.
+    """
+    root = Path(root).resolve()
+    findings: list[finding_record] = []
+    identity = (repo if repo is not None else _weld_identity(root))
+    identity = identity.strip().lower() if identity else None
+    # The legacy rules key off the bare name (a frozen checkout of `scriptum`
+    # may carry no GitHub remote at all); only the weld needs `owner/repo`.
+    repo = identity.rsplit("/", 1)[-1] if identity else _caller_repo(root)
+    rust_lines: dict[str, set[tuple[int, int]]] = {}
+    npm_lines: dict[str, set[tuple[int, int]]] = {}
+
+    for path in _manifests(root, "Cargo.toml"):
+        _check_cargo(path, root, findings, repo, rust_lines)
+
+    for path in _manifests(root, "package.json"):
+        _check_npm(path, root, findings, npm_lines)
+
+    published = _published_family_lines(root)
+
+    for crate, _prefix, package in CROSS_TRACK:
+        rust = rust_lines.get(crate, set())
+        npm = npm_lines.get(package, set())
+
+        if rust and npm and not (rust & npm):
+            findings.append(finding_record("warning", f"{package} (npm) vs {crate} (cargo)", "the two tracks of " f"{crate} are on different generations (cargo " + ", ".join(f"{m}.{n}" for m, n in sorted(rust)) + " vs npm " + ", ".join(f"{m}.{n}" for m, n in sorted(npm)) + "); the binding lags the crate until it is republished, so a " "consumer cannot align on its own"))
+
+        # The actionable side: a repository that PUBLISHES the binding while its
+        # own crates have moved on is the one that has to republish. Its own
+        # crate line comes from its root manifest — kirino does not declare a
+        # dependency on kirino, so the declaration scan sees nothing there.
+        ours = rust or ({own} if (own := _own_cargo_line(root)) else set())
+
+        for line in sorted(published.get(package, set())):
+            if ours and (line not in ours):
+                findings.append(finding_record("warning", f"{package} @ published here", "this repository publishes the binding on " + f"{line[0]}.{line[1]} while its Rust crates are on " + ", ".join(f"{m}.{n}" for m, n in sorted(ours)) + " — the binding is behind the crates it wraps"))
+
+    findings.extend(_workspace_override_findings(root))
+    findings.extend(_lock_findings(root))
+    weld = _weld_for(identity, today)
+
+    if weld is not None:
+        findings = _apply_weld(findings, weld)
+
+    order = {"violation": 0, "warning": 1, "info": 2}
+    unique: dict[tuple[str, str, str], finding_record] = {}
+
+    for finding in findings:
+        unique.setdefault((finding.level, finding.subject, finding.message), finding)
+
+    return sorted(unique.values(), key = lambda f: (order[f.level], f.subject, f.message))
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog = "celestia-devtools family-versions", description = "Check that the family's shared layers are consumed as one identity.")
+    parser.add_argument("repo", nargs = "?", default = ".", help = "repository root to check (default: current directory)")
+    parser.add_argument("--json", action = "store_true", help = "emit a machine-readable report")
+    parser.add_argument("--strict", action = "store_true", help = "treat warnings as failures too")
+    args = parser.parse_args(argv)
+    root = Path(args.repo).resolve()
+
+    if not root.is_dir():
+        print(f"::error::family-versions: {root} is not a directory — nothing was " "scanned, so there is nothing to report", file = sys.stderr)
+        return 2
+
+    scanned = _scanned_counts(root)
+
+    if not any(scanned.values()):
+        print(f"::error::family-versions: no manifest was found under {root} — " "an empty scan is not a clean repository", file = sys.stderr)
+        return 2
+
+    findings = check(root)
+    violations = [f for f in findings if f.level == "violation"]
+    warnings = [f for f in findings if f.level == "warning"]
+    welded = [f for f in findings if f.welded_until is not None]
+
+    if args.json:
+        envelope.emit({"repo": str(root), "scanned": scanned, "findings": [asdict(f)for f in findings], "violations": len(violations), "warnings": len(warnings), "welded": len(welded)})
+    else:
+        for finding in findings:
+            stream = sys.stderr if finding.level == "violation" else sys.stdout
+            print(f"{finding.level:9s} {finding.subject}: {finding.message}", file = stream)
+
+        summary = ", ".join(f"{count} {name}" for name, count in scanned.items() if count)
+
+        welded_suffix = f", {len(welded)} welded" if welded else ""
+
+        if not findings:
+            print(f"ok: every family layer is consumed as one identity ({summary})")
+        else:
+            print(f"{len(violations)} violation(s), {len(warnings)} warning(s)" + welded_suffix + f" ({summary})", file = sys.stderr if violations else sys.stdout)
+
+    if violations or (args.strict and warnings):
+        return 1
+
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

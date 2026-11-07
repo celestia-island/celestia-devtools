@@ -1,0 +1,380 @@
+name: Commit Message Lint
+
+on:
+  workflow_call:
+    inputs:
+      # Which lane serves this required check. GitHub evaluates a required
+      # context as "every check run with this name must be successful" (probed
+      # 2026-09-24: a pass alongside a pending or failing duplicate leaves the PR
+      # BLOCKED), so the three lanes — hosted / self-hosted farm / CNB-dispatched
+      # — can never report at the same time. The lane is picked, not raced.
+      # Callers that pass nothing keep the historical hosted behaviour.
+      runner:
+        description: 'JSON array of runner labels, e.g. ["ubuntu-latest"] or ["self-hosted","linux","x64","local"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      lane:
+        description: "Human label for logs (hosted / farm / cnb)"
+        required: false
+        type: string
+        default: "hosted"
+      # Set when a caller is dispatched (e.g. by CNB) and has no PR payload of
+      # its own: the lint then resolves that PR number and lints the same head.
+      pr:
+        description: "Pull request number to lint (empty on normal events)"
+        required: false
+        type: string
+        default: ""
+      # Which devtools snapshot the bootstrap installs when the CLI is absent.
+      # Callers pinned to an anchor pass that ref so the gate semantics and
+      # the tool version move together (P2-3); floating callers keep master.
+      devtools-ref:
+        description: "celestia-devtools git ref the bootstrap installs when the CLI is absent"
+        required: false
+        type: string
+        default: "master"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to lint"
+        required: true
+        type: string
+      runner:
+        description: 'JSON array of runner labels'
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","local"]'
+      lane:
+        description: "Human label for logs"
+        required: false
+        type: string
+        default: "cnb"
+
+permissions:
+  # The reusable lint resolves the PR on its dispatch path, which needs
+  # pull-requests: read; a called workflow cannot grant itself a
+  # permission the caller withholds — the mismatch reads as
+  # startup_failure (the org's documented trap).
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    name: Lint commit messages
+    # Fork PRs ARE served here — pinned to the hosted lane below.
+    # History: 466d207 skipped fork PRs outright to keep untrusted content off
+    # the shared farm. The cost was never accounted for: with the job skipped,
+    # the required check never reports for an outside contributor, so their PR
+    # stays BLOCKED forever and nobody can merge it without --admin. Found
+    # 2026-10-06: a public repo's seven outside patches had sat unmergeable for
+    # a month, i.e. it read as "we take no outside patches", which nobody had
+    # actually decided. Same guard exists in pr-title-check.yml.
+    # The farm still stays off-limits: forks are forced onto GitHub-hosted
+    # runners below, which are free and unlimited for public repos. This job
+    # only reads commit messages, holds `contents: read` + `pull-requests: read`,
+    # and a fork run gets no secrets.
+    # Guard applies both to direct pull_request triggers and to workflow_call
+    # callers (github.event then carries the caller's PR payload).
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository ||
+      github.event.pull_request.head.repo.fork == true
+    # Message lint is a sub-minute, stdlib-only job. Hosted stays the default:
+    # provisioning is instant and parallel, and a queued lint check must never
+    # hold a PR behind real builds (the 4-VM node-ci pool produced ~1h queues for
+    # exactly this check). Private repos draw on the org's monthly included
+    # minutes, though, and when that quota fails the hosted lane cannot start at
+    # all — so a caller may pin another lane through `runner`, which a repository
+    # variable can flip without touching the repo's tree.
+    # `inputs` is empty outside workflow_call/dispatch, hence the fallback:
+    # a bare pull_request on this repo keeps the hosted default.
+    # Lane resolution order: caller input > LINT_RUNNER variable (org/repo;
+    # `vars` resolves against the CALLER repository, so one org variable
+    # re-lanes every caller at once) > hosted. With the org variable set to
+    # the farm labels and visible to private repos only, public repos keep
+    # free hosted minutes while private repos stop drawing paid minutes.
+    # A fork is served on whatever lane the repository resolves — the farm
+    # included. An earlier revision of this fix pinned forks to GitHub-hosted
+    # runners on the assumption that public-repo hosted minutes are free and
+    # always available; that assumption is dead in this org (the hosted lane
+    # went dark on 2026-09-24 over account payments and jobs now sit 15 minutes
+    # with no runner assigned), so pinning forks there would have kept every
+    # outside contribution BLOCKED while looking fixed. Owner decision
+    # 2026-10-06: serve forks on the same lane as everything else. The exposure
+    # is bounded and deliberate — this job reads commit messages only, never
+    # executes the pull request's code, holds `contents: read` +
+    # `pull-requests: read`, and gets no secrets on a fork run.
+    # Non-fork runs keep the documented order: caller input > LINT_RUNNER
+    # variable > hosted.
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # The dispatched "Resolve the pull request" step calls
+      # gh api .../pulls/N; with only contents:read the GitHub App token
+      # answers 403 "Resource not accessible by integration" (observed live on
+      # the CNB dispatch path), so the PR lookup needs this grant too.
+      pull-requests: read
+    steps:
+      - name: Lane
+        run: echo "commit-message lint served by lane ${{ inputs.lane || vars.LINT_LANE || 'hosted' }} on ${{ join(fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]'), ', ') }}"
+
+      - name: Resolve the pull request under a dispatched run
+        # pull_request and workflow_call carry the PR payload in the event; a
+        # workflow_dispatch does not, so the CNB lane passes the number and the
+        # same lint then runs against the same head SHA.
+        if: github.event.pull_request == null && inputs.pr != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -o pipefail
+          gh api "repos/${{ github.repository }}/pulls/$PR" \
+            --jq '{title: .title, head_sha: .head.sha, base_ref: .base.ref, base_sha: .base.sha}' \
+            > "$RUNNER_TEMP/pr.json"
+          python3 - "$RUNNER_TEMP/pr.json" >> "$GITHUB_ENV" <<'PY'
+          import json, sys
+          pr = json.load(open(sys.argv[1]))
+          print(f"PR_TITLE={pr['title']}")
+          print(f"PR_HEAD_SHA={pr['head_sha']}")
+          print(f"PR_BASE_REF={pr['base_ref']}")
+          print(f"PR_BASE_SHA={pr['base_sha']}")
+          PY
+
+      - name: Resolve the checkout ref
+        # The merge ref is the RIGHT tree to judge — it is what GitHub would
+        # actually merge. It is also the tree that disappears the instant the
+        # PR is merged: `refs/pull/<n>/merge` is deleted, so any run that
+        # starts afterwards (an `edited` fired a second before the merge is
+        # the common case) dies in Checkout with
+        #   fatal: couldn't find remote ref refs/pull/<n>/merge
+        # — a red required check on a PR whose actual lint was green twice
+        # minutes earlier (observed on hikari #1085/#1086, 2026-11-05).
+        # Probe the ref instead of assuming it: keep merge-ref semantics while
+        # it exists, degrade to the head SHA afterwards (the commits being
+        # linted are the same objects).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || env.PR_HEAD_SHA }}
+        run: |
+          set -o pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${HEAD_SHA:-}" ]; then
+            echo "CHECKOUT_REF=${HEAD_SHA}" >> "$GITHUB_ENV"
+            echo "dispatched run: checking out resolved head SHA ${HEAD_SHA}"
+            exit 0
+          fi
+          # Probe through the API, not `git ls-remote`: private repos would
+          # make an unauthenticated ls-remote fail even when the ref EXISTS,
+          # silently downgrading every private-repo run to the head SHA.
+          # `timeout` is load-bearing: this resolver is on the critical path of a
+          # required check, and a hung proxy would otherwise hold it pending for
+          # the whole job timeout (60 min here).
+          if [ -n "${PR_NUMBER:-}" ] && \
+             timeout 20 gh api \
+               "repos/${GITHUB_REPOSITORY}/git/ref/pull/${PR_NUMBER}/merge" \
+               >/dev/null 2>&1; then
+            echo "CHECKOUT_REF=refs/pull/${PR_NUMBER}/merge" >> "$GITHUB_ENV"
+            echo "merge ref present: checking out refs/pull/${PR_NUMBER}/merge"
+            exit 0
+          fi
+          if [ -n "${HEAD_SHA:-}" ]; then
+            echo "CHECKOUT_REF=${HEAD_SHA}" >> "$GITHUB_ENV"
+            echo "merge ref not found (merged, conflicting, or probe failed): falling back to head SHA ${HEAD_SHA}"
+            exit 0
+          fi
+          echo "CHECKOUT_REF=${GITHUB_REF}" >> "$GITHUB_ENV"
+          echo "no PR payload: checking out ${GITHUB_REF}"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          # Resolved by the step above: the merge ref while it exists (the tree
+          # GitHub would merge), the head SHA once the PR is merged (the merge
+          # ref is deleted then), and the dispatch/head SHA on CNB runs.
+          ref: ${{ env.CHECKOUT_REF }}
+        # Defensive: the org self-hosted runner env rewrites
+        # github.com/celestia-island/* to local bare mirrors (per-repo
+        # exact-prefix rules). Those mirrors may lack fresh PR merge refs
+        # (observed "not our ref" failures), so bypass the rewriting and clone
+        # straight from github.com — a no-op on hosted runners, which rewrite
+        # nothing, but still correct if the job is ever pinned back.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      # No actions/setup-python: the hosted Ubuntu image already ships python3
+      # + pip, and the bootstrap below needs nothing more (its last resort is a
+      # stdlib-only PYTHONPATH invocation). The python-versions manifest ships
+      # no builds for the org's Debian 12 self-hosted nodes, so pulling
+      # setup-python in would break those hosts if the job were ever pinned
+      # back. The pip step uses the system interpreter with --user +
+      # --break-system-packages (PEP 668).
+
+      - name: Ensure celestia-devtools
+        # Keep this bootstrap in sync with the identical step in
+        # .github/workflows/pr-title-check.yml: a single shared composite action
+        # cannot be referenced from a reusable workflow (an
+        # `owner/repo/.github/actions/x@master` reference resolves to master, so
+        # the action could not be verified in the PR that adds it).
+        #
+        # Hosted runners start empty, so this step is the real bootstrap now;
+        # the command -v branch stays for the org self-hosted nodes (and local
+        # runs), which preinstall the CLI via the mirror sync — a forced
+        # reinstall there has proven unreliable, so keep the preinstalled
+        # binary when present.
+        #
+        # P2-3: DEVTOOLS_REF defaults to master, so a floating caller behaves
+        # exactly as before; a pinned caller passes its anchor ref and the
+        # tool moves with the pin instead of floating. Ref-determinism rule
+        # (H14, 2026-10): the preinstalled CLI is only trusted on the master
+        # default lane — a pinned ref names the exact CLI that must judge the
+        # tree (on node-1 the preinstall tracks master, so the pin would
+        # otherwise be overridden by whatever master carried that day).
+        #
+        # Fallback chain, each step degrading instead of dying: pip (primary on
+        # hosted runners, with the same mirror-rewrite bypass as checkout — a
+        # rewritten git+https install stalls ~10min against stale local
+        # mirrors) → any pip flavor → a pip-less shallow clone driven
+        # through PYTHONPATH (the commit-msg-lint path is stdlib-only).
+        # The chosen invocation lands in DT_CMD for the lint steps.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools)"
+            echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          PIP_BIN=""
+          if command -v pip >/dev/null 2>&1; then
+            PIP_BIN=pip
+          elif command -v pip3 >/dev/null 2>&1; then
+            PIP_BIN=pip3
+          elif python3 -c "import pip" >/dev/null 2>&1; then
+            PIP_BIN="python3 -m pip"
+          fi
+          if [ -n "$PIP_BIN" ]; then
+            # Unquoted on purpose: PIP_BIN may be "python3 -m pip".
+            # --user drops the console script into ~/.local/bin: put it on PATH
+            # for this step and register it for the lint steps below, so an
+            # image that leaves ~/.local/bin off PATH cannot silently degrade
+            # to the slower clone fallback.
+            export PATH="$HOME/.local/bin:$PATH"
+            if GIT_CONFIG_COUNT=0 $PIP_BIN install --user --break-system-packages \
+                "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF:-master}" \
+              && command -v celestia-devtools >/dev/null 2>&1; then
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "pip install unavailable or failed; falling back to the pip-less clone"
+          fi
+          DT_SRC="$RUNNER_TEMP/celestia-devtools"
+          rm -rf "$DT_SRC"
+          # --branch takes a branch or tag ref (the pip branch above already
+          # covers SHA pins; this last-resort clone only needs to honor tags).
+          GIT_CONFIG_COUNT=0 git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" \
+            https://github.com/celestia-island/celestia-devtools.git "$DT_SRC"
+          if ! PYTHONPATH="$DT_SRC/src" python3 -m celestia_devtools --help >/dev/null 2>&1; then
+            echo "pip-less bootstrap failed (python3 missing or clone broken)" >&2
+            exit 1
+          fi
+          echo "PYTHONPATH=$DT_SRC/src" >> "$GITHUB_ENV"
+          echo "DT_CMD=python3 -m celestia_devtools" >> "$GITHUB_ENV"
+
+      - name: Lint PR title (squash merge subject)
+        # Fires on the repo's own pull_request events, via workflow_call when the
+        # CALLER was triggered by a pull_request, and on a dispatched (CNB) run,
+        # where the title was resolved from the PR number above. Dependabot PRs
+        # are exempt: machine-generated subjects cannot satisfy the rules.
+        if: (github.event.pull_request || inputs.pr != '') && github.actor != 'dependabot[bot]'
+        env:
+          # Passed via env so a user-controlled title is never interpolated
+          # into shell syntax (quotes, $() and backticks are inert in env).
+          PR_TITLE: ${{ github.event.pull_request.title || env.PR_TITLE }}
+        run: |
+          set -o pipefail
+          [ -n "$(printf '%s' "$PR_TITLE" | tr -d '[:space:]')" ] || { echo "empty PR title"; exit 1; }
+          echo "PR title: $PR_TITLE"
+          # --repo enables the per-repo CJK exemption (easy-hydro writes
+          # Chinese subjects); celestia repos keep the English-only rule.
+          printf '%s\n' "$PR_TITLE" | \
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"
+
+      - name: Lint all commits in the PR
+        if: (github.event.pull_request || inputs.pr != '') && github.actor != 'dependabot[bot]'
+        env:
+          # Passed via env: a branch name must never be interpolated into
+          # shell syntax (same pattern as PR_TITLE above). BASE_SHA and
+          # HEAD_SHA come from the resolved PR payload on a dispatched run.
+          BASE_NAME: ${{ github.event.pull_request.base.ref || env.PR_BASE_REF }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || env.PR_BASE_SHA }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || env.PR_HEAD_SHA }}
+        run: |
+          set -o pipefail
+          # The event snapshot of base.sha can go stale after squash merges
+          # advance the base branch (the old base commit disappears from
+          # history, making `base..head` an invalid range). Resolve the real
+          # fork point against the checked-out BASE branch (works for any
+          # default-branch name, e.g. master or main), falling back to the
+          # snapshot the payload carried.
+          BASE_REF="$(git rev-parse --verify -q "origin/${BASE_NAME}" || echo "$BASE_SHA")"
+          git fetch --quiet origin "$BASE_REF" 2>/dev/null || true
+          MERGE_BASE="$(git merge-base "$BASE_REF" "$HEAD_SHA" 2>/dev/null || echo "$BASE_REF")"
+          RANGE="${MERGE_BASE}..${HEAD_SHA}"
+          echo "Linting commits in range: $RANGE"
+          git log --format='%s' "$RANGE" | \
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"
+
+      - name: Lint all new commits on push
+        # github.event.before is a 40-hex string on push payloads (inherited by
+        # workflow_call callers) and empty otherwise — a universal trigger.
+        if: github.event.before
+        run: |
+          set -o pipefail
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.event.after }}"
+          # A branch deletion (after = zero sha) has nothing to lint —
+          # without this guard the happy-path range below becomes
+          # "$BEFORE..0000…" and git log dies with exit 128.
+          if [ "$AFTER" = "0000000000000000000000000000000000000000" ]; then
+            echo "branch deletion — nothing to lint"
+            exit 0
+          fi
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            # `^!` = exactly this commit, none of its parents. A BARE sha
+            # would make `git log` walk the FULL ancestor history and fail
+            # on pre-rule subjects (observed live: chest PRs whose history
+            # contains the pre-2026-09 #682 subject; 2026-10-03 ledger).
+            RANGE="${AFTER}^!"
+          else
+            # A force-push rewrites the previous head away, so the event's
+            # `before` can point at a commit the clone does not carry as an
+            # object. A plain `rev-parse --verify` can still accept the full
+            # hex without reading the object, and `git log` then dies with
+            # "Invalid revision range" (exit 128) instead of degrading —
+            # observed live on a force-pushed PR whose unreachable before was
+            # still nameable. The `^{commit}` peel forces the object read the
+            # range actually needs; the PR-wide step above already covers the
+            # full PR range with a merge-base fallback, so linting just the
+            # new head remains a safe degradation.
+            if ! git rev-parse --verify -q "$BEFORE^{commit}" >/dev/null 2>&1; then
+              # Same trap as the new-branch branch above: the degradation
+              # is "lint just the new head", and a bare sha does NOT mean
+              # that — `git log <sha>` walks every ancestor. `^!` keeps
+              # the degradation honest (single subject) while the PR-wide
+              # step above still covers the full range with merge-base
+              # fallback.
+              RANGE="${AFTER}^!"
+            else
+              RANGE="${BEFORE}..${AFTER}"
+            fi
+          fi
+          echo "Linting commits in range: $RANGE"
+          git log --format='%s' "$RANGE" | \
+          $DT_CMD commit-msg-lint check --stdin-subjects \
+            --repo "${GITHUB_REPOSITORY##*/}"
