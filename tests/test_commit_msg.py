@@ -20,6 +20,12 @@ class test_gitmoji_whitelist:
         assert "\U0001f512" in GITMOJI_WHITELIST  # 🔒
         assert "\u267b\ufe0f" in GITMOJI_WHITELIST  # ♻️
         assert "\U0001f504" in GITMOJI_WHITELIST  # 🔄 (org extension)
+        assert "\u23f3" in GITMOJI_WHITELIST      # ⏳ (org extension)
+
+    def test_hourglass_org_extension_accepted(self):
+        """⏳ (org: retry) subjects pass every rule."""
+
+        assert lint("⏳ Retry the flaky e2e case.") == []
 
 class test_merge_banned:
     def test_merge_branch_subject_rejected(self):
