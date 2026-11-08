@@ -57,13 +57,21 @@ SUPPORTED_ACTIONS = (ACTION_RESTART, ACTION_DRAIN)
 #: under their own code (``identity_missing``) so the two failures stay distinguishable.
 #: Keys whose absence is a pure shape error. ``expires_at`` is checked separately: a bundle
 #: with no deadline is well-formed but cannot prove its approval is live (``window_expired``).
-REQUIRED_FIELDS = ("proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "severity")
+#: ``gate_sig``/``gate_issued_at`` are the issuer's ed25519 grant (P0b): an allow/review
+#: approval without them is refused by the gate (``approval_unattested``), so a bundle that
+#: never carried them fails closed here, at shape time, with the clearer code.
+REQUIRED_FIELDS = ("proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "severity", "gate_sig", "gate_issued_at")
 
 #: Scepter's internal proposal id: ``judge:`` + a UUID.
 PROPOSAL_PREFIX = "judge:"
 
 #: The gate token is a bare 32-character lowercase hex string (malkuth treats it as opaque).
 GATE_TOKEN = re.compile(r"[0-9a-f]{32}")
+
+#: The issuer's ed25519 grant signature: a bare 128-character lowercase hex string
+#: (malkuth refuses anything else with ``approval_unattested`` — lowercase-strict like
+#: every other hex contract on that boundary).
+GATE_SIG = re.compile(r"[0-9a-f]{128}")
 
 #: The judge report status that may be acted on at all. A report that is ``ok``,
 #: ``indeterminate`` or ``unavailable`` has no finding to act on — ``unavailable`` especially:
@@ -79,7 +87,7 @@ STATUS_REFUSED = "refused"
 STATUS_DRY_RUN = "dry_run"
 
 #: Gate answers that mean "the approval itself is not usable", with the operator's next move.
-GATE_HINTS = {"approval_required": "no live approval for this (proposal, worker) pair: re-run act to register it, or check the bundle", "approval_expired": "the gate window (300 s) closed: approve the proposal again in scepter", "approval_consumed": "this approval was already spent on an action: a new approval is required", "approval_blocked": "an operator blocked this pair: only a fresh allow can unblock it", "approval_action_mismatch": "the gate approval names a different action: approve the proposal for this exact action, or re-run act with the bundle that matches it", "approval_action_required": "the approval registration did not name an action (stale executor?): re-run act with a current celestia-devtools", "approval_decision_required": "the approval registration did not name a decision (stale executor?): re-run act with a current celestia-devtools"}
+GATE_HINTS = {"approval_required": "no live approval for this (proposal, worker) pair: re-run act to register it, or check the bundle", "approval_expired": "the gate window (300 s) closed: approve the proposal again in scepter", "approval_consumed": "this approval was already spent on an action: a new approval is required", "approval_blocked": "an operator blocked this pair: only a fresh allow can unblock it", "approval_unattested": "the gate rejected the grant: the bundle's signature does not verify against the gate's issuer key (or no single live worker identity exists to bind it to): get a fresh bundle from scepter", "approval_epoch_stale": "the grant's issued_at is outside the gate clock window (60 s future skew, 300 s TTL): the bundle is stale — get a fresh one from scepter", "approval_action_mismatch": "the gate approval names a different action: approve the proposal for this exact action, or re-run act with the bundle that matches it", "approval_action_required": "the approval registration did not name an action (stale executor?): re-run act with a current celestia-devtools", "approval_decision_required": "the approval registration did not name a decision (stale executor?): re-run act with a current celestia-devtools"}
 GATE_REFUSALS = frozenset(GATE_HINTS)
 
 class act_error(RuntimeError):
@@ -103,6 +111,8 @@ class handoff:
     verdict_code: str
     codes: tuple[str, ...]
     severity: str
+    gate_sig: str
+    gate_issued_at: int
     pid: int | None
     starttime: int | None
     report_status: str | None
@@ -207,7 +217,17 @@ def parse_handoff(payload: Any) -> handoff:
     if drain_kind not in ("graceful", "immediate"):
         raise act_error("bundle_invalid", "`drain_kind` must be `graceful` or `immediate`")
 
-    parsed = handoff(proposal_id = proposal_id, gate_proposal_id = gate, run_id = _string(payload, "run_id") or "", worker_id = _string(payload, "worker_id") or "", action = (_string(payload, "action") or "").lower(), verdict_code = (_string(payload, "verdict_code") or "").upper(), codes = _codes(payload), severity = severity.lower(), pid = _optional_int(payload, "pid"), starttime = _optional_int(payload, "starttime"), report_status = (report_status or "").lower() or None, expires_at = horizon, drain_kind = drain_kind)
+    gate_sig = _string(payload, "gate_sig") or ""
+
+    if GATE_SIG.fullmatch(gate_sig) is None:
+        raise act_error("bundle_invalid", "`gate_sig` must be exactly 128 lowercase hex characters (the issuer's ed25519 grant signature)")
+
+    gate_issued_at = payload.get("gate_issued_at")
+
+    if isinstance(gate_issued_at, bool) or not isinstance(gate_issued_at, int) or (gate_issued_at < 0):
+        raise act_error("bundle_invalid", "`gate_issued_at` must be a non-negative integer (unix seconds)")
+
+    parsed = handoff(proposal_id = proposal_id, gate_proposal_id = gate, run_id = _string(payload, "run_id") or "", worker_id = _string(payload, "worker_id") or "", action = (_string(payload, "action") or "").lower(), verdict_code = (_string(payload, "verdict_code") or "").upper(), codes = _codes(payload), severity = severity.lower(), gate_sig = gate_sig, gate_issued_at = gate_issued_at, pid = _optional_int(payload, "pid"), starttime = _optional_int(payload, "starttime"), report_status = (report_status or "").lower() or None, expires_at = horizon, drain_kind = drain_kind)
     return parsed
 
 def check_action_supported(bundle: handoff) -> None:
@@ -329,7 +349,7 @@ def run_act(bundle: handoff, session: action_session, *, dry_run: bool = False) 
     if dry_run:
         return {"status": STATUS_DRY_RUN, "checks": checks, "would_approve": bundle.gate_proposal_id, "would_call": _execute_arguments(bundle)}
 
-    approval = session.call_tool("malkuth_approve", {"proposal_id": bundle.gate_proposal_id, "worker_id": bundle.worker_id, "decision": "allow", "action": bundle.action})
+    approval = session.call_tool("malkuth_approve", {"proposal_id": bundle.gate_proposal_id, "worker_id": bundle.worker_id, "decision": "allow", "action": bundle.action, "sig": bundle.gate_sig, "issued_at": bundle.gate_issued_at})
 
     if (not isinstance(approval, dict)) or (approval.get("ok") is not True):
         code = approval.get("code") if isinstance(approval, dict) else None
