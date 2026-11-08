@@ -419,16 +419,20 @@ def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, caps
         assert unknown_action["code"] == "unsupported_action"
         unknown_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "maybe", "action": "restart"})
         assert unknown_decision["code"] == "unsupported_decision"
-        # P0b seam: an allow without the issuer's grant is refused unattested, and a
-        # signed grant registers — exactly the malkuth wire contract.
+        # P0b seam: an allow without the issuer's grant is refused unattested; a grant
+        # for a worker that is not live is refused the same way (the identity scan);
+        # a signed grant for the live worker registers — exactly the malkuth wire
+        # contract.
         grant_proposal = "b" * 32
         issued_at = int(time.time())
-        unsigned = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "w", "decision": "allow", "action": "drain"})
+        unsigned = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain"})
         assert unsigned["code"] == "approval_unattested"
-        sig = gate_grant.sign_grant(grant_proposal, "w", "drain", 4242, 99, issued_at)
-        bound = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "w", "decision": "allow", "action": "drain", "sig": sig, "issued_at": issued_at})
+        unknown_worker = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "elsewhere", "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(grant_proposal, "elsewhere", "drain", 4242, 99, issued_at), "issued_at": issued_at})
+        assert unknown_worker["code"] == "approval_unattested", "a grant must name one live worker of this fleet"
+        sig = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at)
+        bound = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig, "issued_at": issued_at})
         assert bound["ok"] is True
-        mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "w", "proposal_id": grant_proposal})
+        mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "app", "proposal_id": grant_proposal})
         assert mismatch["code"] == "approval_action_mismatch"
 
 def test_a_file_handoff_works_without_stdin(monkeypatch, capsys, tmp_path) -> None:
@@ -487,6 +491,21 @@ def test_the_demo_switch_acts_on_the_fleet_it_brings(monkeypatch, capsys) -> Non
     assert code == act.EXIT_OK, document
     assert document["status"] == "executed"
     assert document["target"] == {"run_id": "run-1", "worker_id": "demo-0"}
+
+def test_the_demo_switch_refuses_a_bundle_minted_for_another_fleet(monkeypatch, capsys) -> None:
+    """A bundle that arrives with the platform's identity baked in cannot be spent on
+    a demo fleet: the rebind would rewrite the identity but only scepter re-signs, so
+    the gate's unattested refusal (and its "mint a fresh bundle" hint) could never be
+    satisfied. The executor names the real reason instead of looping the operator."""
+
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("act-ok", capsys, argv = ["--supervise", "sleep 30", "--supervise-timeout", "1"])
+
+    assert code == act.EXIT_REFUSED, document
+    assert document["status"] == "refused"
+    assert document["code"] == "gate_bundle_foreign_fleet"
+    assert "worker_id" in document["message"]
+    assert "platform" in document["hint"]
 
 def test_without_the_demo_switch_a_missing_fleet_is_still_target_unknown(monkeypatch, capsys) -> None:
     """No `--supervise` means no fleet: the existing refusal is unchanged."""

@@ -61,6 +61,14 @@ def _require_gate_binary() -> str:
         if not ACTION_TOOLS <= set(session.tools):
             pytest.skip(f"malkuth at {binary} predates the action gate ({sorted(session.tools)})")
 
+        # The grant seam: names alone cannot tell a pre-grant build (same four tools,
+        # unknown sig/issued_at silently dropped by serde) from a grant-aware one —
+        # the advertised schema can.
+        approve_fields = set(session.tool_schema("malkuth_approve").get("properties") or {})
+
+        if not {"sig", "issued_at"} <= approve_fields:
+            pytest.skip(f"malkuth at {binary} predates the grant seam (malkuth_approve schema lacks sig/issued_at)")
+
     return binary
 
 #: The exact keys `Cli.JudgeActionExport` returns (entelecheia `export_bundle`,
@@ -259,10 +267,14 @@ def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(monkeypatch, tmp_pa
 
         # Drain through the same gate so the supervision ends promptly — signed over
         # the post-restart identity (`after`), because the grant binds the live worker.
+        # call_tool does not raise on ok:false, so the payloads are asserted too: a
+        # mutated grant must fail HERE, not slip through an unchecked return.
         drain_token = _gate_token(f"drain/{run_id}")
         drain_issued = int(time.time())
-        session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": after["id"], "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(drain_token, after["id"], "drain", after["pid"], after["starttime"], drain_issued), "issued_at": drain_issued})
-        session.call_tool("malkuth_drain", {"run_id": run_id, "worker_id": worker["id"], "proposal_id": drain_token, "kind": "graceful", "timeout_secs": 10})
+        approve_out = session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": after["id"], "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(drain_token, after["id"], "drain", after["pid"], after["starttime"], drain_issued), "issued_at": drain_issued})
+        assert approve_out.get("ok") is True, f"the drain approval must register: {approve_out}"
+        drain_out = session.call_tool("malkuth_drain", {"run_id": run_id, "worker_id": worker["id"], "proposal_id": drain_token, "kind": "graceful", "timeout_secs": 10})
+        assert drain_out.get("ok") is True, f"the drain must be accepted: {drain_out}"
         thread.join(timeout = 20)
         assert "error" not in supervised, supervised.get("error")
 

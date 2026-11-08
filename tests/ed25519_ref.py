@@ -154,5 +154,12 @@ def verify(public: bytes, msg: bytes, sig: bytes) -> bool:
 
     k = sha512(sig[:32] + public + msg) % L
     left = _scalarmult(_BASE, s)
-    right = _edwards_add(rpoint, _scalarmult(apoint, k))
-    return (left is not None) and (right is not None) and (encode_point(left) == encode_point(right))
+    agel = _scalarmult(apoint, k)
+
+    # k == 0 (mod L) makes the scalar multiply yield None: fail closed instead of
+    # letting the addition below raise on it.
+    if (left is None) or (agel is None):
+        return False
+
+    right = _edwards_add(rpoint, agel)
+    return encode_point(left) == encode_point(right)

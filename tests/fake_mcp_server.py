@@ -51,8 +51,14 @@ def _run(workers, *, draining = False, drain_kind = None, finished = False) -> d
 def _grant_refusal(action: str, args: dict, identity: tuple[int, int | None], *, now: float | None = None) -> dict | None:
     """The P0b grant gate for allow/review approvals, mirroring malkuth's ``mcp.rs``
     approve order field for field: sig presence -> issued_at presence -> token shape
-    -> worker identity -> epoch window -> signature verification. Returns the refusal
-    payload, or ``None`` when the grant attests (the caller registers the approval).
+    -> worker identity -> signature verification -> epoch window (in the real gate the
+    epoch check lives INSIDE the registry approve, i.e. strictly after the signature
+    verify). Returns the refusal payload, or ``None`` when the grant attests (the
+    caller registers the approval).
+
+    Known deliberate divergences from the real gate: no ``invalid_request`` pre-check
+    on empty proposal/worker ids (the regex refusals cover them), no ``RegistryFull``
+    path, and the clock is a float ``time.time`` where malkuth reads whole seconds.
     """
 
     sig = args.get("sig")
@@ -73,15 +79,15 @@ def _grant_refusal(action: str, args: dict, identity: tuple[int, int | None], *,
     if (pid is None) or (starttime is None):
         return {"ok": False, "code": "approval_unattested", "message": "no single live supervised worker with that id to bind the grant to (none found)"}
 
-    clock = time.time() if now is None else now
-
-    if (issued_at > (clock + 60)) or ((issued_at + 300) < clock):
-        return {"ok": False, "code": "approval_epoch_stale", "message": "the grant is outside the gate clock window (60 s future skew, 300 s TTL)"}
-
     message = gate_grant.grant_message(proposal, str(args.get("worker_id")), action, pid, starttime, issued_at).encode()
 
     if not ed.verify(bytes.fromhex(gate_grant.GATE_TEST_VERIFY_KEY_HEX), message, bytes.fromhex(sig)):
         return {"ok": False, "code": "approval_unattested", "message": "the grant signature does not verify against this gate's key"}
+
+    clock = time.time() if now is None else now
+
+    if (issued_at > (clock + 60)) or ((issued_at + 300) < clock):
+        return {"ok": False, "code": "approval_epoch_stale", "message": "the grant is outside the gate clock window (60 s future skew, 300 s TTL)"}
 
     return None
 
@@ -94,14 +100,15 @@ class fake_server:
         self.approved_actions: dict[tuple[str | None, str | None], str] = {}
         self.supervised = False
 
-    def act_identity(self) -> tuple[int, int | None]:
-        """The worker identity the action-gate modes report for ``app`` (mirrors ``status``):
-        a supervised run reports the demo worker's fixed identity; otherwise the mode
-        adjusts it (``act-changed`` = a new incarnation, ``act-no-starttime`` = none).
+    def act_identity(self, worker_id: object) -> tuple[int, int | None]:
+        """The worker identity the action gate binds a grant to for ``worker_id``
+        (mirrors malkuth's identity scan): the grant must name ONE live worker of
+        this fleet — an unknown id answers "none found" exactly like the real gate's
+        scan. ``act-changed`` = a new incarnation, ``act-no-starttime`` = none.
         """
 
-        if self.supervised:
-            return ACT_PID, ACT_STARTTIME
+        if not (worker_id == ("demo-0" if self.supervised else "app")):
+            return (None, None)
 
         if self.mode == "act-changed":
             return ACT_PID, ACT_STARTTIME + 1
@@ -127,7 +134,7 @@ class fake_server:
                 # brought is what the executor acts on.
                 return {"ok": True, "runs": [_run([_worker(id = "demo-0", pid = ACT_PID, starttime = ACT_STARTTIME)])]}
 
-            pid, starttime = self.act_identity()
+            pid, starttime = self.act_identity("demo-0" if self.supervised else "app")
             return {"ok": True, "runs": [_run([_worker(pid = pid, starttime = starttime)])]}
 
         if self.supervised:
@@ -175,12 +182,17 @@ class fake_server:
 
         return [{"url": "http://x/healthz", "ok": True, "status": 200}, {"url": "http://x/readyz", "ok": True, "status": 200}]
 
+#: The wire fields malkuth_approve accepts (mirrors the real build's advertised
+#: inputSchema: the grant fields are Option-al, so they sit in `properties` but
+#: never in `required` — exactly the shape the executor's staleness probe reads).
+_APPROVE_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}, "sig": {"type": ["string", "null"]}, "issued_at": {"type": ["integer", "null"]}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
+
 def _tool_list(mode: str) -> list:
     if mode == "missing-tools":
         return [{"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
 
     if mode in ACTION_MODES:
-        return [{"name": "malkuth_status"}, {"name": "malkuth_approve"}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
+        return [{"name": "malkuth_status"}, {"name": "malkuth_approve", "inputSchema": _APPROVE_SCHEMA}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
 
     return [{"name": "malkuth_status"}, {"name": "malkuth_logs"}, {"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
 
@@ -259,7 +271,7 @@ def main(argv: list[str]) -> int:
                 elif decision not in ("allow", "approved", "review", "block", "blocked"):
                     payload = {"ok": False, "code": "unsupported_decision", "message": f"unknown decision {decision!r}"}
                 elif decision not in ("block", "blocked"):
-                    refusal = _grant_refusal(action, args, backend.act_identity())
+                    refusal = _grant_refusal(action, args, backend.act_identity(args.get("worker_id")))
 
                     if refusal is not None:
                         payload = refusal

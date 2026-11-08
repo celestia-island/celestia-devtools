@@ -446,6 +446,18 @@ def main(argv: list[str] | None = None) -> int:
             if missing:
                 return _fail(args, None, act_error("malkuth_unavailable", f"the MCP server does not advertise {missing}: it predates the action gate"))
 
+            # The P0b grant seam: tool NAMES cannot prove the build knows the grant
+            # fields. A pre-grant build advertises the same four tools, its ApproveArgs
+            # has no sig/issued_at, and serde silently drops unknown fields — the
+            # approval would register unattested and the action would run, failing
+            # open on exactly the seam this executor exists to enforce. Probe the
+            # advertised schema: only a grant-aware build lists the two fields.
+            approve_fields = set(session.tool_schema("malkuth_approve").get("properties") or {})
+            absent = sorted({"sig", "issued_at"} - approve_fields)
+
+            if absent:
+                return _fail(args, None, act_error("malkuth_unavailable", f"malkuth_approve does not accept {absent}: the gate binary predates the grant seam"))
+
             if args.supervise:
                 # DEMO PATH. malkuth's run registry is in-process, so a CLI can only act on a
                 # fleet IT supervises: production runs on the platform's own supervising
@@ -460,10 +472,18 @@ def main(argv: list[str] | None = None) -> int:
                     if not demo.run_seen:
                         return _fail(args, None, act_error("target_unknown", f"--supervise started but no run appeared within the settle window ({args.supervise_settle:g}s)"))
 
+                    minted_identity = {field: payload[field] for field in ("worker_id", "pid", "starttime") if isinstance(payload, dict) and (field in payload)}
+
                     try:
                         payload = bind_to_supervised_fleet(payload, session)
                     except act_error as error:
                         return _fail(args, None, error)
+
+                    if minted_identity:
+                        try:
+                            _reject_foreign_fleet_grant(minted_identity, payload)
+                        except act_error as error:
+                            return _fail(args, None, error)
 
                     return _execute(payload, session, args)
 
@@ -534,6 +554,24 @@ def bind_to_supervised_fleet(payload: object, session: action_session, *, attemp
         time.sleep(backoff)
 
     raise act_error("target_unknown", "the supervised fleet has no stable running worker to act on", hint = "a crash-looping demo worker never holds one identity: supervise a command that stays up")
+
+def _reject_foreign_fleet_grant(minted: dict, bound: dict) -> None:
+    """Refuse a grant minted for a fleet other than the one supervised here.
+
+    The rebind rewrites run/worker/pid/starttime to the fleet this CLI just started,
+    but only scepter mints grants — the executor cannot re-sign. A bundle that arrived
+    with its own identity baked in names the platform's fleet: its signature would be
+    answered ``approval_unattested`` with a "mint a fresh bundle" hint that can never
+    succeed on a demo fleet (every fresh bundle names the platform's fleet again).
+    Refuse with the real reason. A bundle that omits the identity fields is the demo
+    pattern — the bind supplies them — and passes untouched.
+    """
+
+    for identity_field in ("worker_id", "pid", "starttime"):
+        if minted.get(identity_field) != bound.get(identity_field):
+            message = f"the grant was signed over a different {identity_field} ({minted.get(identity_field)!r}) than the supervised fleet's live worker ({bound.get(identity_field)!r})"
+            hint = "a supervised demo fleet can only spend a grant minted for ITS identity — mint the grant over the demo worker, or run this bundle on the platform's supervising session"
+            raise act_error("gate_bundle_foreign_fleet", message, hint = hint)
 
 def _supervise_budget(args: argparse.Namespace) -> float:
     return args.supervise_timeout if args.supervise_timeout > 0 else 30.0
