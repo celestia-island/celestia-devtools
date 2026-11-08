@@ -337,7 +337,9 @@ def test_a_real_run_calls_status_approve_execute(monkeypatch, capsys, tmp_path) 
 
 def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, capsys, tmp_path) -> None:
     """Seam control: the fake gate must refuse an approval that defaults the
-    required fields, exactly like the real malkuth gate does."""
+    required fields, exactly like the real malkuth gate does — same parse
+    order (action before decision) and same stable codes for missing and
+    unknown values."""
 
     from celestia_devtools.judge.mcp_stdio import action_session
 
@@ -346,8 +348,12 @@ def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, caps
         assert missing_action["code"] == "approval_action_required"
         missing_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "action": "restart"})
         assert missing_decision["code"] == "approval_decision_required"
+        both_missing = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w"})
+        assert both_missing["code"] == "approval_action_required", "the gate names the action first"
         unknown_action = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow", "action": "hibernate"})
-        assert unknown_action["code"] == "approval_action_required"
+        assert unknown_action["code"] == "unsupported_action"
+        unknown_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "maybe", "action": "restart"})
+        assert unknown_decision["code"] == "unsupported_decision"
         bound = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow", "action": "drain"})
         assert bound["ok"] is True
         mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "w", "proposal_id": "p"})

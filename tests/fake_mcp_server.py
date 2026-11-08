@@ -189,13 +189,20 @@ def main(argv: list[str]) -> int:
             elif name == "malkuth_probe":
                 payload = backend.probe()
             elif name == "malkuth_approve":
-                # Mirrors the real gate: neither decision nor action may be defaulted.
-                decision = str(args.get("decision") or "")
-                action = str(args.get("action") or "")
-                if not decision:
-                    payload = {"ok": False, "code": "approval_decision_required", "message": "the decision field is required"}
+                # Mirrors the real gate's parse order and stable codes exactly:
+                # the action is validated before the decision, a missing/empty
+                # field is refused as *_required, and an unknown non-empty value
+                # as unsupported_*.
+                action = str(args.get("action") or "").strip().lower()
+                decision = str(args.get("decision") or "").strip().lower()
+                if not action:
+                    payload = {"ok": False, "code": "approval_action_required", "message": "the action field is required"}
                 elif action not in ("restart", "drain"):
-                    payload = {"ok": False, "code": "approval_action_required", "message": f"the action field is required, not {action!r}"}
+                    payload = {"ok": False, "code": "unsupported_action", "message": f"unknown action {action!r}"}
+                elif not decision:
+                    payload = {"ok": False, "code": "approval_decision_required", "message": "the decision field is required"}
+                elif decision not in ("allow", "approved", "review", "block", "blocked"):
+                    payload = {"ok": False, "code": "unsupported_decision", "message": f"unknown decision {decision!r}"}
                 else:
                     backend.approved_actions[(args.get("proposal_id"), args.get("worker_id"))] = action
                     payload = {"ok": True, "registered": True, "action": action, "expires_in_secs": 300}
