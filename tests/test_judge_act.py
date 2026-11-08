@@ -268,6 +268,16 @@ def test_a_spent_approval_needs_a_new_ruling(monkeypatch, capsys) -> None:
     assert document["code"] == "approval_consumed"
     assert "new approval" in document["hint"]
 
+def test_an_approval_for_the_other_action_is_a_gate_refusal(monkeypatch, capsys) -> None:
+    """The action-bound refusal must classify as a gate refusal (exit 3), not an
+    execution failure — the gate refused, the executor did not break."""
+
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("act-mismatch", capsys)
+    assert code == act.EXIT_REFUSED
+    assert document["code"] == "approval_action_mismatch"
+    assert "different action" in document["hint"]
+
 def test_a_blocked_pair_can_only_be_unblocked_by_an_operator(monkeypatch, capsys) -> None:
     _stdin(monkeypatch, _bundle())
     code, document, _ = _run("act-blocked", capsys)
@@ -316,8 +326,38 @@ def test_a_real_run_calls_status_approve_execute(monkeypatch, capsys, tmp_path) 
     _stdin(monkeypatch, _bundle())
     code, _, _ = _run("act-ok", capsys)
     assert code == act.EXIT_OK
-    calls = [json.loads(line)["name"] for line in log.read_text().splitlines()]
-    assert calls == ["malkuth_status", "malkuth_approve", "malkuth_restart"]
+    entries = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [entry["name"] for entry in entries] == ["malkuth_status", "malkuth_approve", "malkuth_restart"]
+    # The gate registration must name the pair AND the action it authorizes —
+    # neither the decision nor the action may be defaulted (a stale executor
+    # that omits them is refused by the gate, not silently waved through).
+    approve_args = entries[1]["arguments"]
+    assert approve_args["decision"] == "allow"
+    assert approve_args["action"] == "restart", "the approval must be bound to the executed action"
+
+def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, capsys, tmp_path) -> None:
+    """Seam control: the fake gate must refuse an approval that defaults the
+    required fields, exactly like the real malkuth gate does — same parse
+    order (action before decision) and same stable codes for missing and
+    unknown values."""
+
+    from celestia_devtools.judge.mcp_stdio import action_session
+
+    with action_session(["python3", "-m", "tests.fake_mcp_server", "act-ok"]) as session:
+        missing_action = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow"})
+        assert missing_action["code"] == "approval_action_required"
+        missing_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "action": "restart"})
+        assert missing_decision["code"] == "approval_decision_required"
+        both_missing = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w"})
+        assert both_missing["code"] == "approval_action_required", "the gate names the action first"
+        unknown_action = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow", "action": "hibernate"})
+        assert unknown_action["code"] == "unsupported_action"
+        unknown_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "maybe", "action": "restart"})
+        assert unknown_decision["code"] == "unsupported_decision"
+        bound = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow", "action": "drain"})
+        assert bound["ok"] is True
+        mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "w", "proposal_id": "p"})
+        assert mismatch["code"] == "approval_action_mismatch"
 
 def test_a_file_handoff_works_without_stdin(monkeypatch, capsys, tmp_path) -> None:
     path = tmp_path / "bundle.json"

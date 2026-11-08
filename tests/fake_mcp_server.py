@@ -29,7 +29,7 @@ ACT_PID = 4242
 ACT_STARTTIME = 99
 
 #: Modes that drive the executor: status payload + gate answers per mode.
-ACTION_MODES = frozenset({"act-ok", "act-required", "act-consumed", "act-blocked", "act-expired", "act-changed", "act-no-starttime", "act-drain-ok", "act-empty"})
+ACTION_MODES = frozenset({"act-ok", "act-required", "act-consumed", "act-blocked", "act-expired", "act-changed", "act-no-starttime", "act-drain-ok", "act-empty", "act-mismatch"})
 
 def _content(payload) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
@@ -46,6 +46,9 @@ class fake_server:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self.calls = 0
+        # (proposal_id, worker_id) -> action, mirroring the real gate: an approval
+        # is registered for one exact action, and the executor must match it.
+        self.approved_actions: dict[tuple[str | None, str | None], str] = {}
         self.supervised = False
 
     def status(self) -> dict:
@@ -174,6 +177,7 @@ def main(argv: list[str]) -> int:
             result = {"tools": _tool_list(mode)}
         elif method == "tools/call":
             name = message.get("params", {}).get("name")
+            args = message.get("params", {}).get("arguments") or {}
 
             if name == "malkuth_supervise":
                 backend.supervised = True
@@ -185,7 +189,23 @@ def main(argv: list[str]) -> int:
             elif name == "malkuth_probe":
                 payload = backend.probe()
             elif name == "malkuth_approve":
-                payload = {"ok": True, "registered": True, "expires_in_secs": 300}
+                # Mirrors the real gate's parse order and stable codes exactly:
+                # the action is validated before the decision, a missing/empty
+                # field is refused as *_required, and an unknown non-empty value
+                # as unsupported_*.
+                action = str(args.get("action") or "").strip().lower()
+                decision = str(args.get("decision") or "").strip().lower()
+                if not action:
+                    payload = {"ok": False, "code": "approval_action_required", "message": "the action field is required"}
+                elif action not in ("restart", "drain"):
+                    payload = {"ok": False, "code": "unsupported_action", "message": f"unknown action {action!r}"}
+                elif not decision:
+                    payload = {"ok": False, "code": "approval_decision_required", "message": "the decision field is required"}
+                elif decision not in ("allow", "approved", "review", "block", "blocked"):
+                    payload = {"ok": False, "code": "unsupported_decision", "message": f"unknown decision {decision!r}"}
+                else:
+                    backend.approved_actions[(args.get("proposal_id"), args.get("worker_id"))] = action
+                    payload = {"ok": True, "registered": True, "action": action, "expires_in_secs": 300}
             elif name == "malkuth_restart":
                 if mode == "act-required":
                     payload = {"ok": False, "code": "approval_required", "message": "no live approval"}
@@ -195,10 +215,20 @@ def main(argv: list[str]) -> int:
                     payload = {"ok": False, "code": "approval_blocked", "message": "blocked by operator"}
                 elif mode == "act-expired":
                     payload = {"ok": False, "code": "approval_expired", "message": "gate window closed"}
+                elif mode == "act-mismatch":
+                    payload = {"ok": False, "code": "approval_action_mismatch", "message": "the approval authorizes drain, not restart"}
                 else:
-                    payload = {"ok": True, "accepted": True, "phase": "restarting"}
+                    bound = backend.approved_actions.get((args.get("proposal_id"), args.get("worker_id")))
+                    if bound == "drain":
+                        payload = {"ok": False, "code": "approval_action_mismatch", "message": "the approval authorizes drain, not restart"}
+                    else:
+                        payload = {"ok": True, "accepted": True, "phase": "restarting"}
             elif name == "malkuth_drain":
-                payload = {"ok": True, "accepted": True, "already": False, "kind": "graceful", "workers": []}
+                bound = backend.approved_actions.get((args.get("proposal_id"), args.get("worker_id")))
+                if bound == "restart":
+                    payload = {"ok": False, "code": "approval_action_mismatch", "message": "the approval authorizes restart, not drain"}
+                else:
+                    payload = {"ok": True, "accepted": True, "already": False, "kind": "graceful", "workers": []}
             else:
                 payload = {"ok": False, "code": "unknown_tool"}
 
