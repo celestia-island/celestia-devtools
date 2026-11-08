@@ -247,7 +247,7 @@ def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(tmp_path: Path) -> 
 
         # Drain through the same gate so the supervision ends promptly.
         drain_token = _gate_token(f"drain/{run_id}")
-        session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": worker["id"], "decision": "allow"})
+        session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": worker["id"], "decision": "allow", "action": "drain"})
         session.call_tool("malkuth_drain", {"run_id": run_id, "worker_id": worker["id"], "proposal_id": drain_token, "kind": "graceful", "timeout_secs": 10})
         thread.join(timeout = 20)
         assert "error" not in supervised, supervised.get("error")

@@ -79,7 +79,7 @@ STATUS_REFUSED = "refused"
 STATUS_DRY_RUN = "dry_run"
 
 #: Gate answers that mean "the approval itself is not usable", with the operator's next move.
-GATE_HINTS = {"approval_required": "no live approval for this (proposal, worker) pair: re-run act to register it, or check the bundle", "approval_expired": "the gate window (300 s) closed: approve the proposal again in scepter", "approval_consumed": "this approval was already spent on an action: a new approval is required", "approval_blocked": "an operator blocked this pair: only a fresh allow can unblock it"}
+GATE_HINTS = {"approval_required": "no live approval for this (proposal, worker) pair: re-run act to register it, or check the bundle", "approval_expired": "the gate window (300 s) closed: approve the proposal again in scepter", "approval_consumed": "this approval was already spent on an action: a new approval is required", "approval_blocked": "an operator blocked this pair: only a fresh allow can unblock it", "approval_action_mismatch": "the gate approval names a different action: approve the proposal for this exact action, or re-run act with the bundle that matches it", "approval_action_required": "the approval registration did not name an action (stale executor?): re-run act with a current celestia-devtools", "approval_decision_required": "the approval registration did not name a decision (stale executor?): re-run act with a current celestia-devtools"}
 GATE_REFUSALS = frozenset(GATE_HINTS)
 
 class act_error(RuntimeError):
@@ -329,7 +329,7 @@ def run_act(bundle: handoff, session: action_session, *, dry_run: bool = False) 
     if dry_run:
         return {"status": STATUS_DRY_RUN, "checks": checks, "would_approve": bundle.gate_proposal_id, "would_call": _execute_arguments(bundle)}
 
-    approval = session.call_tool("malkuth_approve", {"proposal_id": bundle.gate_proposal_id, "worker_id": bundle.worker_id, "decision": "allow"})
+    approval = session.call_tool("malkuth_approve", {"proposal_id": bundle.gate_proposal_id, "worker_id": bundle.worker_id, "decision": "allow", "action": bundle.action})
 
     if (not isinstance(approval, dict)) or (approval.get("ok") is not True):
         code = approval.get("code") if isinstance(approval, dict) else None
