@@ -20,9 +20,10 @@ The chain the test walks:
 7. map the executor's result into the shape ``Cli.JudgeActionReport`` accepts.
 
 The bundle's three field gaps are asserted explicitly rather than papered over: the export
-carries the gate token, target, identity, action, verdict and codes/evidence, but not the
-row id, the severity or the execution deadline — the platform session supplies those from
-the row it exported.
+carries the gate token, target, identity, action, verdict, codes/evidence and — since P0b —
+the issuer's grant signature (``gate_sig`` + ``gate_issued_at``: what scepter signs when the
+operator allows), but not the row id, the severity or the execution deadline — the platform
+session supplies those from the row it exported.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import time
 import uuid
 from pathlib import Path
 import pytest
+import gate_grant
 from celestia_devtools.judge import act, advice, demo_fleet, fleet
 from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, READ_ONLY_TOOLS, action_session, mcp_session
 
@@ -59,12 +61,21 @@ def _require_gate_binary() -> str:
         if not ACTION_TOOLS <= set(session.tools):
             pytest.skip(f"malkuth at {binary} predates the action gate ({sorted(session.tools)})")
 
+        # The grant seam: names alone cannot tell a pre-grant build (same four tools,
+        # unknown sig/issued_at silently dropped by serde) from a grant-aware one —
+        # the advertised schema can.
+        approve_fields = set(session.tool_schema("malkuth_approve").get("properties") or {})
+
+        if not {"sig", "issued_at"} <= approve_fields:
+            pytest.skip(f"malkuth at {binary} predates the grant seam (malkuth_approve schema lacks sig/issued_at)")
+
     return binary
 
 #: The exact keys `Cli.JudgeActionExport` returns (entelecheia `export_bundle`,
-#: packages/scepter/src/services/judge_actions.rs @ 436595db). Anything added or removed
-#: there must show up here as a change to this list, not as a silently-passing test.
-EXPORT_BUNDLE_FIELDS = ("gate_proposal_id", "run_id", "worker_id", "pid", "starttime", "action", "verdict_code", "codes", "evidence")
+#: packages/scepter/src/services/judge_actions.rs @ 436595db + the P0b grant fields the
+#: scepter leg adds when it signs). Anything added or removed there must show up here as
+#: a change to this list, not as a silently-passing test.
+EXPORT_BUNDLE_FIELDS = ("gate_proposal_id", "run_id", "worker_id", "pid", "starttime", "action", "verdict_code", "codes", "evidence", "gate_sig", "gate_issued_at")
 
 #: Fields the platform session adds from the row it exported (they are NOT in the bundle).
 PLATFORM_SUPPLIES = ("proposal_id", "severity", "expires_at")
@@ -83,7 +94,7 @@ def _export_bundle(row: dict) -> dict:
     submitter, the ruling and the timestamps stay in scepter's own row.
     """
 
-    return {"gate_proposal_id": row["gate_proposal_id"], "run_id": row["run_id"], "worker_id": row["worker_id"], "pid": row["pid"], "starttime": row["starttime"], "action": row["action"], "verdict_code": row["verdict_code"], "codes": row["codes"], "evidence": row["evidence"]}
+    return {"gate_proposal_id": row["gate_proposal_id"], "run_id": row["run_id"], "worker_id": row["worker_id"], "pid": row["pid"], "starttime": row["starttime"], "action": row["action"], "verdict_code": row["verdict_code"], "codes": row["codes"], "evidence": row["evidence"], "gate_sig": row["gate_sig"], "gate_issued_at": row["gate_issued_at"]}
 
 def _crashes(counter: Path) -> int:
     try:
@@ -146,7 +157,8 @@ def _report_payload(proposal_id: str, result: dict) -> dict:
 def test_the_export_contract_is_the_one_the_executor_receives() -> None:
     """Shape pin, no malkuth needed: the bundle is the export's fields, plus three from the row."""
 
-    row = {"gate_proposal_id": _gate_token("pin"), "run_id": "run-1", "worker_id": "w", "pid": 1, "starttime": 2, "action": "restart", "verdict_code": "B1", "codes": ["B1"], "evidence": {"codes": ["B1"]}}
+    issued_at = int(time.time())
+    row = {"gate_proposal_id": _gate_token("pin"), "run_id": "run-1", "worker_id": "w", "pid": 1, "starttime": 2, "action": "restart", "verdict_code": "B1", "codes": ["B1"], "evidence": {"codes": ["B1"]}, "gate_issued_at": issued_at, "gate_sig": gate_grant.sign_grant(_gate_token("pin"), "w", "restart", 1, 2, issued_at)}
     hand_off = _export_bundle(row)
     assert tuple(hand_off) == EXPORT_BUNDLE_FIELDS, "the fixture drifted from the export contract"
 
@@ -162,8 +174,13 @@ def test_the_export_contract_is_the_one_the_executor_receives() -> None:
     bundle = act.parse_handoff(complete)
     assert bundle.gate_proposal_id == row["gate_proposal_id"]
 
-def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(tmp_path: Path) -> None:
+def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(monkeypatch, tmp_path: Path) -> None:
     binary = _require_gate_binary()
+    # The gate verifies grants against the published RFC 8032 test key for this run
+    # (malkuth's documented env override); the bundle's grant is signed with the
+    # matching seed. Production embeds its own key and scepter signs with the issuer
+    # seed — the wire contract is identical either way.
+    monkeypatch.setenv("MALKUTH_GATE_VERIFY_KEY", gate_grant.GATE_TEST_VERIFY_KEY_HEX)
     counter = tmp_path / "crash-counter"
     proposal_id = f"judge:{uuid.uuid4()}"
     session = action_session([binary, "mcp"], timeout = 10)
@@ -190,8 +207,11 @@ def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(tmp_path: Path) -> 
         assert "B1" in suggestion.evidence["codes"], suggestion.evidence
         assert verdicts, "a critical verdict must exist for the advice to rest on"
 
-        # Step 4: the row scepter would export for this target.
-        row = {"gate_proposal_id": _gate_token(f"{run_id}/{worker['id']}/{proposal_id}"), "run_id": run_id, "worker_id": worker["id"], "pid": worker["pid"], "starttime": worker["starttime"], "action": suggestion.action, "verdict_code": "B1", "codes": list(suggestion.evidence["codes"]), "evidence": {"codes": list(suggestion.evidence["codes"]), "verdicts": [{"code": "B1", "severity": "critical"}], "worker": {"phase": worker["phase"], "pid": worker["pid"], "starttime": worker["starttime"]}}}
+        # Step 4: the row scepter would export for this target — including the grant
+        # scepter signs at allow time (P0b): the executor presents it verbatim.
+        gate_proposal = _gate_token(f"{run_id}/{worker['id']}/{proposal_id}")
+        issued_at = int(time.time())
+        row = {"gate_proposal_id": gate_proposal, "run_id": run_id, "worker_id": worker["id"], "pid": worker["pid"], "starttime": worker["starttime"], "action": suggestion.action, "verdict_code": "B1", "codes": list(suggestion.evidence["codes"]), "evidence": {"codes": list(suggestion.evidence["codes"]), "verdicts": [{"code": "B1", "severity": "critical"}], "worker": {"phase": worker["phase"], "pid": worker["pid"], "starttime": worker["starttime"]}}, "gate_issued_at": issued_at, "gate_sig": gate_grant.sign_grant(gate_proposal, worker["id"], suggestion.action, worker["pid"], worker["starttime"], issued_at)}
         hand_off = _export_bundle(row)
 
         # The export is NOT a complete executor bundle: the row id, the severity and the
@@ -245,10 +265,16 @@ def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(tmp_path: Path) -> 
         with pytest.raises(AssertionError):
             _report_payload(proposal_id, {"status": "refused", "code": "target_changed"})
 
-        # Drain through the same gate so the supervision ends promptly.
+        # Drain through the same gate so the supervision ends promptly — signed over
+        # the post-restart identity (`after`), because the grant binds the live worker.
+        # call_tool does not raise on ok:false, so the payloads are asserted too: a
+        # mutated grant must fail HERE, not slip through an unchecked return.
         drain_token = _gate_token(f"drain/{run_id}")
-        session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": worker["id"], "decision": "allow", "action": "drain"})
-        session.call_tool("malkuth_drain", {"run_id": run_id, "worker_id": worker["id"], "proposal_id": drain_token, "kind": "graceful", "timeout_secs": 10})
+        drain_issued = int(time.time())
+        approve_out = session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": after["id"], "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(drain_token, after["id"], "drain", after["pid"], after["starttime"], drain_issued), "issued_at": drain_issued})
+        assert approve_out.get("ok") is True, f"the drain approval must register: {approve_out}"
+        drain_out = session.call_tool("malkuth_drain", {"run_id": run_id, "worker_id": worker["id"], "proposal_id": drain_token, "kind": "graceful", "timeout_secs": 10})
+        assert drain_out.get("ok") is True, f"the drain must be accepted: {drain_out}"
         thread.join(timeout = 20)
         assert "error" not in supervised, supervised.get("error")
 
