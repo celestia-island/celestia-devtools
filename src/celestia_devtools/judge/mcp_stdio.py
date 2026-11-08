@@ -64,6 +64,7 @@ class mcp_session:
         self._closed = False
         self._reader: threading.Thread | None = None
         self._tools: frozenset[str] = frozenset()
+        self._schemas: dict[str, dict] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def __enter__(self) -> mcp_session:
@@ -96,6 +97,16 @@ class mcp_session:
         names = {t.get("name") for t in tools if isinstance(t, dict)}
         self._tools = frozenset(n for n in names if isinstance(n, str))
 
+        # Keep each tool's advertised inputSchema: a name proves the tool exists, but
+        # only its properties prove which wire fields the build understands (the
+        # grant-seam staleness probe reads them).
+        for tool in tools:
+            if not (isinstance(tool, dict) and isinstance(tool.get("name"), str)):
+                continue
+
+            schema = tool.get("inputSchema")
+            self._schemas[tool["name"]] = schema if isinstance(schema, dict) else {}
+
     def close(self) -> None:
         self._closed = True
         proc = self._proc
@@ -124,6 +135,10 @@ class mcp_session:
     def tools(self) -> frozenset[str]:
         """Tool names the server advertised at initialize time."""
         return self._tools
+
+    def tool_schema(self, name: str) -> dict:
+        """The advertised inputSchema for one tool (an empty dict when none was listed)."""
+        return self._schemas.get(name, {})
 
     def call_tool(self, name: str, arguments: dict | None = None, *, timeout: float | None = None) -> Any:
         """Call one tool from this session's allowlist and return its parsed JSON payload.

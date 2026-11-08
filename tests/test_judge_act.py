@@ -20,8 +20,10 @@ import threading
 import time
 from pathlib import Path
 import pytest
+import fake_mcp_server
+import gate_grant
 from celestia_devtools.judge import act, advice, cli, demo_fleet
-from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, READ_ONLY_TOOLS, action_session, mcp_error, mcp_session
+from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, READ_ONLY_TOOLS, action_session, mcp_error, mcp_session, open_session
 
 HERE = Path(__file__).resolve().parent
 FAKE_SERVER = HERE / "fake_mcp_server.py"
@@ -31,6 +33,12 @@ GATE = "0" * 32
 def _bundle(**overrides) -> dict:
     bundle = {"proposal_id": "judge:0190f0f0-0000-7000-8000-000000000001", "gate_proposal_id": GATE, "run_id": "run-1", "worker_id": "app", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": 4242, "starttime": 99, "report_status": "failed", "expires_at": 2_000_000_000}
     bundle.update(overrides)
+    # P0b: the bundle carries the issuer's grant, signed over its own final (gate token,
+    # worker, action, identity) at build time — so every fixture stays attested against
+    # the fake gate by default. Tests that want an unattested or stale grant pass
+    # `gate_sig`/`gate_issued_at` explicitly and thereby opt out of this default.
+    bundle.setdefault("gate_issued_at", int(time.time()))
+    bundle.setdefault("gate_sig", gate_grant.sign_grant(bundle["gate_proposal_id"], bundle["worker_id"], bundle["action"], bundle.get("pid") or 0, bundle.get("starttime") or 0, bundle["gate_issued_at"]))
     return bundle
 
 def _cmd(mode: str) -> str:
@@ -54,7 +62,7 @@ def test_a_complete_bundle_parses() -> None:
     assert bundle.codes == ("B1",)
     assert (bundle.pid, bundle.starttime) == (4242, 99)
 
-@pytest.mark.parametrize("missing", ["proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes"])
+@pytest.mark.parametrize("missing", ["proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "gate_sig", "gate_issued_at"])
 def test_a_missing_field_is_bundle_invalid(missing: str) -> None:
     payload = _bundle()
     payload.pop(missing)
@@ -90,6 +98,26 @@ def test_a_proposal_id_without_its_prefix_is_refused(proposal_id: str) -> None:
 
     assert caught.value.code == "bundle_invalid"
     assert "judge:" in caught.value.message
+
+@pytest.mark.parametrize("sig", ["A" * 128, "0" * 127, "0" * 129, "z" * 128, "0x" + ("0" * 126)])
+def test_a_malformed_grant_signature_is_refused(sig: str) -> None:
+    """The grant signature is shape-checked at parse time (128 lowercase hex, exactly
+    like the real gate) so a garbage bundle answers ``bundle_invalid`` here, with the
+    clearer code, instead of bouncing off the gate as ``approval_unattested``."""
+
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(_bundle(gate_sig = sig))
+
+    assert caught.value.code == "bundle_invalid"
+    assert "gate_sig" in caught.value.message
+
+@pytest.mark.parametrize("issued_at", ["1762610000", 1762610000.5, -1, True, None])
+def test_a_bad_gate_issued_at_is_refused(issued_at) -> None:
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(_bundle(gate_issued_at = issued_at))
+
+    assert caught.value.code == "bundle_invalid"
+    assert "gate_issued_at" in caught.value.message
 
 def test_a_bundle_without_a_deadline_cannot_prove_its_approval_live() -> None:
     payload = _bundle()
@@ -291,6 +319,81 @@ def test_an_expired_gate_window_needs_re_approval(monkeypatch, capsys) -> None:
     assert code == act.EXIT_REFUSED
     assert document["code"] == "approval_expired"
 
+def test_an_unverifiable_grant_is_refused_unattested(monkeypatch, capsys) -> None:
+    """P0b seam: a bundle whose signature does not verify against the gate's issuer key
+    is the GATE's refusal, surfaced as ``gate_register_failed`` naming the gate's own
+    code (``approval_unattested``) with a hint that says what to do — get a fresh
+    bundle, not a new approval for this one."""
+
+    _stdin(monkeypatch, _bundle(gate_sig = "0" * 128))
+    code, document, _ = _run("act-ok", capsys)
+    assert code == act.EXIT_FAILED
+    assert document["code"] == "gate_register_failed"
+    assert "approval_unattested" in document["message"]
+    assert "fresh bundle" in document["hint"]
+
+def test_a_stale_grant_is_refused_by_epoch(monkeypatch, capsys) -> None:
+    """A correctly-signed grant older than the 300 s TTL answers ``approval_epoch_stale``
+    (the fake mirror implements the same strict window as malkuth: 60 s future skew,
+    300 s past TTL) — the signature being valid does not resurrect a stale grant."""
+
+    issued = int(time.time()) - 400
+    sig = gate_grant.sign_grant(GATE, "app", "restart", 4242, 99, issued)
+    _stdin(monkeypatch, _bundle(gate_sig = sig, gate_issued_at = issued))
+    code, document, _ = _run("act-ok", capsys)
+    assert code == act.EXIT_FAILED
+    assert document["code"] == "gate_register_failed"
+    assert "approval_epoch_stale" in document["message"]
+    assert "stale" in document["hint"]
+
+def test_a_stale_grant_with_a_bad_signature_is_unattested_not_epoch_stale(monkeypatch, capsys) -> None:
+    """Order pin (P0b round-1 S2): the signature verifies BEFORE the epoch window,
+    so a garbage sig on a stale grant answers ``approval_unattested``. Answering
+    ``epoch_stale`` here would mean the epoch check moved ahead of the signature —
+    the exact defect shape this seam must never regress into."""
+
+    issued = int(time.time()) - 400
+    _stdin(monkeypatch, _bundle(gate_sig = "0" * 128, gate_issued_at = issued))
+    code, document, _ = _run("act-ok", capsys)
+    assert code == act.EXIT_FAILED
+    assert document["code"] == "gate_register_failed"
+    assert "approval_unattested" in document["message"]
+
+def test_a_gate_binary_predating_the_grant_seam_is_refused(monkeypatch, capsys) -> None:
+    """Probe pin: tool NAMES prove nothing — a build advertising the same four
+    tools but without sig/issued_at in malkuth_approve's schema would serde-drop
+    the grant and register the approval unattested (fail-open). The executor
+    must refuse it as unavailable BEFORE any action call is issued."""
+
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("act-pre-grant", capsys)
+    assert code == act.EXIT_UNAVAILABLE
+    assert document["code"] == "malkuth_unavailable"
+    assert "predates the grant seam" in document["message"]
+
+def test_the_schema_store_fails_closed_for_missing_or_non_dict_schemas() -> None:
+    """Unit pin for the store the staleness probe reads: an unadvertised name
+    and a NON-dict inputSchema must both surface as ``{}`` — anything else
+    (KeyError, a string leaking through) would crash or mislead the probe
+    instead of failing closed."""
+
+    with open_session([sys.executable, str(FAKE_SERVER), "act-pre-grant"]) as session:
+        assert session.tool_schema("never-advertised") == {}
+        assert session.tool_schema("malkuth_status") == {}, "non-dict inputSchema normalizes to {}"
+        assert set(session.tool_schema("malkuth_approve").get("properties") or {}) == {"proposal_id", "worker_id", "decision", "action"}
+
+def test_a_grant_signed_over_another_target_is_refused_unattested(monkeypatch, capsys, tmp_path) -> None:
+    """The grant binds the target identity: a signature over a different starttime
+    (a recycled-pid attempt) must not verify against the gate's own scan."""
+
+    issued = int(time.time())
+    sig = gate_grant.sign_grant(GATE, "app", "restart", 4242, 100, issued)
+    _stdin(monkeypatch, _bundle(gate_sig = sig, gate_issued_at = issued))
+    code, document, _ = _run("act-ok", capsys)
+    assert code == act.EXIT_FAILED
+    assert document["code"] == "gate_register_failed"
+    assert "approval_unattested" in document["message"]
+
 def test_a_recycled_pid_is_refused_before_any_action(monkeypatch, capsys) -> None:
     _stdin(monkeypatch, _bundle())
     code, document, _ = _run("act-changed", capsys)
@@ -341,9 +444,7 @@ def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, caps
     order (action before decision) and same stable codes for missing and
     unknown values."""
 
-    from celestia_devtools.judge.mcp_stdio import action_session
-
-    with action_session(["python3", "-m", "tests.fake_mcp_server", "act-ok"]) as session:
+    with action_session([sys.executable, str(FAKE_SERVER), "act-ok"]) as session:
         missing_action = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow"})
         assert missing_action["code"] == "approval_action_required"
         missing_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "action": "restart"})
@@ -354,9 +455,20 @@ def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, caps
         assert unknown_action["code"] == "unsupported_action"
         unknown_decision = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "maybe", "action": "restart"})
         assert unknown_decision["code"] == "unsupported_decision"
-        bound = session.call_tool("malkuth_approve", {"proposal_id": "p", "worker_id": "w", "decision": "allow", "action": "drain"})
+        # P0b seam: an allow without the issuer's grant is refused unattested; a grant
+        # for a worker that is not live is refused the same way (the identity scan);
+        # a signed grant for the live worker registers — exactly the malkuth wire
+        # contract.
+        grant_proposal = "b" * 32
+        issued_at = int(time.time())
+        unsigned = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain"})
+        assert unsigned["code"] == "approval_unattested"
+        unknown_worker = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "elsewhere", "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(grant_proposal, "elsewhere", "drain", 4242, 99, issued_at), "issued_at": issued_at})
+        assert unknown_worker["code"] == "approval_unattested", "a grant must name one live worker of this fleet"
+        sig = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at)
+        bound = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig, "issued_at": issued_at})
         assert bound["ok"] is True
-        mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "w", "proposal_id": "p"})
+        mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "app", "proposal_id": grant_proposal})
         assert mismatch["code"] == "approval_action_mismatch"
 
 def test_a_file_handoff_works_without_stdin(monkeypatch, capsys, tmp_path) -> None:
@@ -391,14 +503,23 @@ def test_the_executor_refuses_a_server_without_the_gate(monkeypatch, capsys) -> 
 # ── demo switch: --supervise ───────────────────────────────────────────────
 
 def test_the_demo_switch_acts_on_the_fleet_it_brings(monkeypatch, capsys) -> None:
-    """`--supervise` starts a fleet, binds the bundle to it and executes there."""
+    """`--supervise` starts a fleet, binds the bundle to it and executes there.
 
-    # The demo bundle authorises the action only: the target identity comes from the
-    # fleet this CLI just started.
+    The demo bundle authorises the fleet it will bring: the grant is signed over the
+    identity the fake gate reports for its supervised run (worker ``demo-0``, the
+    fixed ACT identity) — the same whole-identity binding malkuth's gate demands. A
+    bundle minted for the pre-fleet ``app`` worker would be refused unattested, which
+    is the point of the gate: the grant names who it blesses.
+    """
+
     payload = _bundle()
 
     for field in ("run_id", "worker_id", "pid", "starttime"):
         payload.pop(field)
+
+    issued = int(time.time())
+    payload["gate_issued_at"] = issued
+    payload["gate_sig"] = gate_grant.sign_grant(GATE, "demo-0", "restart", fake_mcp_server.ACT_PID, fake_mcp_server.ACT_STARTTIME, issued)
 
     _stdin(monkeypatch, payload)
     code, document, _ = _run("act-ok", capsys, argv = ["--supervise", "sleep 30", "--supervise-timeout", "1"])
@@ -406,6 +527,21 @@ def test_the_demo_switch_acts_on_the_fleet_it_brings(monkeypatch, capsys) -> Non
     assert code == act.EXIT_OK, document
     assert document["status"] == "executed"
     assert document["target"] == {"run_id": "run-1", "worker_id": "demo-0"}
+
+def test_the_demo_switch_refuses_a_bundle_minted_for_another_fleet(monkeypatch, capsys) -> None:
+    """A bundle that arrives with the platform's identity baked in cannot be spent on
+    a demo fleet: the rebind would rewrite the identity but only scepter re-signs, so
+    the gate's unattested refusal (and its "mint a fresh bundle" hint) could never be
+    satisfied. The executor names the real reason instead of looping the operator."""
+
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("act-ok", capsys, argv = ["--supervise", "sleep 30", "--supervise-timeout", "1"])
+
+    assert code == act.EXIT_REFUSED, document
+    assert document["status"] == "refused"
+    assert document["code"] == "gate_bundle_foreign_fleet"
+    assert "worker_id" in document["message"]
+    assert "platform" in document["hint"]
 
 def test_without_the_demo_switch_a_missing_fleet_is_still_target_unknown(monkeypatch, capsys) -> None:
     """No `--supervise` means no fleet: the existing refusal is unchanged."""
@@ -500,10 +636,11 @@ def test_the_judgement_modules_name_no_action_tool() -> None:
         literals = _tool_literals(JUDGE_SOURCES / name)
         assert not (literals & forbidden), f"{name} must not call {sorted(literals & forbidden)}"
 
-def test_the_demo_switch_leaves_no_supervised_process_behind(tmp_path) -> None:
+def test_the_demo_switch_leaves_no_supervised_process_behind(monkeypatch, tmp_path) -> None:
     """The demo switch owns the fleet it brings: after the act, nothing of it runs on."""
 
     binary = _require_gate_binary()
+    monkeypatch.setenv("MALKUTH_GATE_VERIFY_KEY", gate_grant.GATE_TEST_VERIFY_KEY_HEX)
     counter = tmp_path / "crash-counter"
     # Two crashes then a long run: the demo is a real (short) crash loop that settles, and
     # the teardown must remove the settled child.
@@ -514,6 +651,11 @@ def test_the_demo_switch_leaves_no_supervised_process_behind(tmp_path) -> None:
         with demo_fleet.supervision(session, command, timeout_secs = 5, max_restarts = 10) as demo:
             assert demo.run_seen, demo.error
             bound = act.bind_to_supervised_fleet(_bundle_missing_target(), session)
+            # The test plays scepter for the live identity: a grant minted anywhere
+            # else could not cover the pid this crash loop settled on.
+            issued = int(time.time())
+            bound["gate_issued_at"] = issued
+            bound["gate_sig"] = gate_grant.sign_grant(bound["gate_proposal_id"], bound["worker_id"], bound["action"], bound["pid"], bound["starttime"], issued)
             bundle = act.parse_handoff(bound)
             act.check_action_supported(bundle)
             act.check_justification(bundle)
@@ -593,10 +735,18 @@ def _running_target(session: action_session, *, deadline: float = 15.0) -> act.l
 
     raise AssertionError("the supervised worker never reached a running state with pid+starttime")
 
-def test_a_real_malkuth_restart_executes_through_the_gate() -> None:
-    """The executor against a real gate: supervise, act, and read the tool's own answer."""
+def test_a_real_malkuth_restart_executes_through_the_gate(monkeypatch) -> None:
+    """The executor against a real gate: supervise, act, and read the tool's own answer.
+
+    The gate's verify key is the published RFC 8032 test key for this run (the env
+    override malkuth documents for non-production deployments): the grant in the
+    bundle is signed with the matching seed in ``tests/gate_grant.py``. Production
+    malkuth embeds its own key and scepter signs with the issuer seed — the wire
+    contract this test pins is identical either way.
+    """
 
     binary = _require_gate_binary()
+    monkeypatch.setenv("MALKUTH_GATE_VERIFY_KEY", gate_grant.GATE_TEST_VERIFY_KEY_HEX)
     session = action_session([binary, "mcp"], timeout = 10)
     supervised: dict = {}
 
@@ -622,7 +772,8 @@ def test_a_real_malkuth_restart_executes_through_the_gate() -> None:
 
         assert run_id, "the supervision never appeared in the registry"
         target = _running_target(session)
-        bundle = act.parse_handoff({"proposal_id": "judge:real-1", "gate_proposal_id": "a" * 32, "run_id": run_id, "worker_id": "demo-0", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": target.pid, "starttime": target.starttime, "report_status": "failed", "expires_at": 2_000_000_000})
+        issued_at = int(time.time())
+        bundle = act.parse_handoff({"proposal_id": "judge:real-1", "gate_proposal_id": "a" * 32, "run_id": run_id, "worker_id": "demo-0", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": target.pid, "starttime": target.starttime, "report_status": "failed", "expires_at": 2_000_000_000, "gate_issued_at": issued_at, "gate_sig": gate_grant.sign_grant("a" * 32, "demo-0", "restart", target.pid, target.starttime, issued_at)})
         act.check_action_supported(bundle)
         act.check_justification(bundle)
         outcome = act.run_act(bundle, session)

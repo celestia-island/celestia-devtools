@@ -21,8 +21,14 @@ real malkuth.
 from __future__ import annotations
 import json
 import os
+import re
 import sys
 import time
+# The ed25519 reference and the grant fixtures live beside this script: reachable
+# both when it runs as a script (the interpreter puts this directory first on
+# sys.path) and when the suite imports it (pytest inserts the test directory).
+import ed25519_ref as ed
+import gate_grant
 
 #: Worker identity the action-gate modes report (the bundles in the tests quote it).
 ACT_PID = 4242
@@ -42,6 +48,53 @@ def _worker(**overrides) -> dict:
 def _run(workers, *, draining = False, drain_kind = None, finished = False) -> dict:
     return {"run_id": "run-1", "started_unix_secs": 1_750_000_000, "elapsed_secs": 120, "finished": finished, "finished_unix_secs": None, "draining": draining, "drain_kind": drain_kind, "worker_count": len(workers), "workers": workers}
 
+def _grant_refusal(action: str, args: dict, identity: tuple[int, int | None], *, now: float | None = None) -> dict | None:
+    """The P0b grant gate for allow/review approvals, mirroring malkuth's ``mcp.rs``
+    approve order field for field: sig presence -> issued_at presence -> token shape
+    -> worker identity -> signature verification -> epoch window (in the real gate the
+    epoch check lives INSIDE the registry approve, i.e. strictly after the signature
+    verify). Returns the refusal payload, or ``None`` when the grant attests (the
+    caller registers the approval).
+
+    Known deliberate divergences from the real gate: no ``invalid_request`` pre-check
+    on empty proposal/worker ids (the regex refusals cover them), no ``RegistryFull``
+    path, and the clock is a float ``time.time`` where malkuth reads whole seconds.
+    Type-level refusals (non-int ``issued_at``, non-string ids) also answer tool-level
+    ``approval_unattested`` where the real gate's serde layer would answer
+    ``invalid_request`` — unreachable from the executor, which rejects a non-conforming
+    bundle as ``bundle_invalid`` before any tool call is issued.
+    """
+
+    sig = args.get("sig")
+    issued_at = args.get("issued_at")
+    proposal = args.get("proposal_id")
+
+    if not isinstance(sig, str) or (re.fullmatch(r"[0-9a-f]{128}", sig) is None):
+        return {"ok": False, "code": "approval_unattested", "message": "an allow/review approval must carry the issuer's grant signature (`sig` + `issued_at`)"}
+
+    if isinstance(issued_at, bool) or not isinstance(issued_at, int) or (issued_at < 0):
+        return {"ok": False, "code": "approval_unattested", "message": "an allow/review approval must carry the grant's `issued_at` (unix seconds)"}
+
+    if not isinstance(proposal, str) or (re.fullmatch(r"[0-9a-f]{32}", proposal) is None):
+        return {"ok": False, "code": "approval_unattested", "message": "proposal_id must be the bare 32-hex gate_proposal_id for a signed grant"}
+
+    pid, starttime = identity
+
+    if (pid is None) or (starttime is None):
+        return {"ok": False, "code": "approval_unattested", "message": "no single live supervised worker with that id to bind the grant to (none found)"}
+
+    message = gate_grant.grant_message(proposal, str(args.get("worker_id")), action, pid, starttime, issued_at).encode()
+
+    if not ed.verify(bytes.fromhex(gate_grant.GATE_TEST_VERIFY_KEY_HEX), message, bytes.fromhex(sig)):
+        return {"ok": False, "code": "approval_unattested", "message": "the grant signature does not verify against this gate's key"}
+
+    clock = time.time() if now is None else now
+
+    if (issued_at > (clock + 60)) or ((issued_at + 300) < clock):
+        return {"ok": False, "code": "approval_epoch_stale", "message": "the grant is outside the gate clock window (60 s future skew, 300 s TTL)"}
+
+    return None
+
 class fake_server:
     def __init__(self, mode: str) -> None:
         self.mode = mode
@@ -50,6 +103,24 @@ class fake_server:
         # is registered for one exact action, and the executor must match it.
         self.approved_actions: dict[tuple[str | None, str | None], str] = {}
         self.supervised = False
+
+    def act_identity(self, worker_id: object) -> tuple[int, int | None]:
+        """The worker identity the action gate binds a grant to for ``worker_id``
+        (mirrors malkuth's identity scan): the grant must name ONE live worker of
+        this fleet — an unknown id answers "none found" exactly like the real gate's
+        scan. ``act-changed`` = a new incarnation, ``act-no-starttime`` = none.
+        """
+
+        if not (worker_id == ("demo-0" if self.supervised else "app")):
+            return (None, None)
+
+        if self.mode == "act-changed":
+            return ACT_PID, ACT_STARTTIME + 1
+
+        if self.mode == "act-no-starttime":
+            return ACT_PID, None
+
+        return ACT_PID, ACT_STARTTIME
 
     def status(self) -> dict:
         self.calls += 1
@@ -67,14 +138,7 @@ class fake_server:
                 # brought is what the executor acts on.
                 return {"ok": True, "runs": [_run([_worker(id = "demo-0", pid = ACT_PID, starttime = ACT_STARTTIME)])]}
 
-            pid, starttime = ACT_PID, ACT_STARTTIME
-
-            if self.mode == "act-changed":
-                starttime = ACT_STARTTIME + 1
-
-            if self.mode == "act-no-starttime":
-                starttime = None
-
+            pid, starttime = self.act_identity("demo-0" if self.supervised else "app")
             return {"ok": True, "runs": [_run([_worker(pid = pid, starttime = starttime)])]}
 
         if self.supervised:
@@ -122,12 +186,28 @@ class fake_server:
 
         return [{"url": "http://x/healthz", "ok": True, "status": 200}, {"url": "http://x/readyz", "ok": True, "status": 200}]
 
+#: The wire fields malkuth_approve accepts (mirrors the real build's advertised
+#: inputSchema: the grant fields are Option-al, so they sit in `properties` but
+#: never in `required` — exactly the shape the executor's staleness probe reads).
+_APPROVE_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}, "sig": {"type": ["string", "null"]}, "issued_at": {"type": ["integer", "null"]}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
+
+#: A pre-seam build of the gate: the same four action tools and a schema with
+#: every field the old ApproveArgs knew — but no `sig`/`issued_at`. Tool names
+#: cannot prove grant awareness (serde would silently drop the grant fields and
+#: the approval would register unattested), so the executor's probe must refuse
+#: this shape. `malkuth_status` additionally advertises a NON-dict inputSchema
+#: to pin the session-side normalization (a non-dict schema must read as {}).
+_PRE_GRANT_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
+
 def _tool_list(mode: str) -> list:
     if mode == "missing-tools":
         return [{"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
 
+    if mode == "act-pre-grant":
+        return [{"name": "malkuth_status", "inputSchema": "not-a-dict"}, {"name": "malkuth_approve", "inputSchema": _PRE_GRANT_SCHEMA}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
+
     if mode in ACTION_MODES:
-        return [{"name": "malkuth_status"}, {"name": "malkuth_approve"}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
+        return [{"name": "malkuth_status"}, {"name": "malkuth_approve", "inputSchema": _APPROVE_SCHEMA}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
 
     return [{"name": "malkuth_status"}, {"name": "malkuth_logs"}, {"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
 
@@ -192,9 +272,11 @@ def main(argv: list[str]) -> int:
                 # Mirrors the real gate's parse order and stable codes exactly:
                 # the action is validated before the decision, a missing/empty
                 # field is refused as *_required, and an unknown non-empty value
-                # as unsupported_*.
+                # as unsupported_*. Allow/review then walk the grant path (P0b);
+                # a block records a refusal and needs no grant, like malkuth.
                 action = str(args.get("action") or "").strip().lower()
                 decision = str(args.get("decision") or "").strip().lower()
+
                 if not action:
                     payload = {"ok": False, "code": "approval_action_required", "message": "the action field is required"}
                 elif action not in ("restart", "drain"):
@@ -203,8 +285,15 @@ def main(argv: list[str]) -> int:
                     payload = {"ok": False, "code": "approval_decision_required", "message": "the decision field is required"}
                 elif decision not in ("allow", "approved", "review", "block", "blocked"):
                     payload = {"ok": False, "code": "unsupported_decision", "message": f"unknown decision {decision!r}"}
+                elif decision not in ("block", "blocked"):
+                    refusal = _grant_refusal(action, args, backend.act_identity(args.get("worker_id")))
+
+                    if refusal is not None:
+                        payload = refusal
+                    else:
+                        backend.approved_actions[(args.get("proposal_id"), args.get("worker_id"))] = action
+                        payload = {"ok": True, "registered": True, "action": action, "expires_in_secs": 300}
                 else:
-                    backend.approved_actions[(args.get("proposal_id"), args.get("worker_id"))] = action
                     payload = {"ok": True, "registered": True, "action": action, "expires_in_secs": 300}
             elif name == "malkuth_restart":
                 if mode == "act-required":
@@ -219,12 +308,14 @@ def main(argv: list[str]) -> int:
                     payload = {"ok": False, "code": "approval_action_mismatch", "message": "the approval authorizes drain, not restart"}
                 else:
                     bound = backend.approved_actions.get((args.get("proposal_id"), args.get("worker_id")))
+
                     if bound == "drain":
                         payload = {"ok": False, "code": "approval_action_mismatch", "message": "the approval authorizes drain, not restart"}
                     else:
                         payload = {"ok": True, "accepted": True, "phase": "restarting"}
             elif name == "malkuth_drain":
                 bound = backend.approved_actions.get((args.get("proposal_id"), args.get("worker_id")))
+
                 if bound == "restart":
                     payload = {"ok": False, "code": "approval_action_mismatch", "message": "the approval authorizes restart, not drain"}
                 else:
