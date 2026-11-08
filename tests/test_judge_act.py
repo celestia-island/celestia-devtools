@@ -23,7 +23,7 @@ import pytest
 import fake_mcp_server
 import gate_grant
 from celestia_devtools.judge import act, advice, cli, demo_fleet
-from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, READ_ONLY_TOOLS, action_session, mcp_error, mcp_session
+from celestia_devtools.judge.mcp_stdio import ACTION_TOOLS, READ_ONLY_TOOLS, action_session, mcp_error, mcp_session, open_session
 
 HERE = Path(__file__).resolve().parent
 FAKE_SERVER = HERE / "fake_mcp_server.py"
@@ -345,6 +345,42 @@ def test_a_stale_grant_is_refused_by_epoch(monkeypatch, capsys) -> None:
     assert document["code"] == "gate_register_failed"
     assert "approval_epoch_stale" in document["message"]
     assert "stale" in document["hint"]
+
+def test_a_stale_grant_with_a_bad_signature_is_unattested_not_epoch_stale(monkeypatch, capsys) -> None:
+    """Order pin (P0b round-1 S2): the signature verifies BEFORE the epoch window,
+    so a garbage sig on a stale grant answers ``approval_unattested``. Answering
+    ``epoch_stale`` here would mean the epoch check moved ahead of the signature —
+    the exact defect shape this seam must never regress into."""
+
+    issued = int(time.time()) - 400
+    _stdin(monkeypatch, _bundle(gate_sig = "0" * 128, gate_issued_at = issued))
+    code, document, _ = _run("act-ok", capsys)
+    assert code == act.EXIT_FAILED
+    assert document["code"] == "gate_register_failed"
+    assert "approval_unattested" in document["message"]
+
+def test_a_gate_binary_predating_the_grant_seam_is_refused(monkeypatch, capsys) -> None:
+    """Probe pin: tool NAMES prove nothing — a build advertising the same four
+    tools but without sig/issued_at in malkuth_approve's schema would serde-drop
+    the grant and register the approval unattested (fail-open). The executor
+    must refuse it as unavailable BEFORE any action call is issued."""
+
+    _stdin(monkeypatch, _bundle())
+    code, document, _ = _run("act-pre-grant", capsys)
+    assert code == act.EXIT_UNAVAILABLE
+    assert document["code"] == "malkuth_unavailable"
+    assert "predates the grant seam" in document["message"]
+
+def test_the_schema_store_fails_closed_for_missing_or_non_dict_schemas() -> None:
+    """Unit pin for the store the staleness probe reads: an unadvertised name
+    and a NON-dict inputSchema must both surface as ``{}`` — anything else
+    (KeyError, a string leaking through) would crash or mislead the probe
+    instead of failing closed."""
+
+    with open_session([sys.executable, str(FAKE_SERVER), "act-pre-grant"]) as session:
+        assert session.tool_schema("never-advertised") == {}
+        assert session.tool_schema("malkuth_status") == {}, "non-dict inputSchema normalizes to {}"
+        assert set(session.tool_schema("malkuth_approve").get("properties") or {}) == {"proposal_id", "worker_id", "decision", "action"}
 
 def test_a_grant_signed_over_another_target_is_refused_unattested(monkeypatch, capsys, tmp_path) -> None:
     """The grant binds the target identity: a signature over a different starttime

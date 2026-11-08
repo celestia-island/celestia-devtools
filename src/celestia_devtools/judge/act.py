@@ -536,7 +536,7 @@ def bind_to_supervised_fleet(payload: object, session: action_session, *, attemp
 
         for run in status.get("runs") or []:
             for worker in run.get("workers") or []:
-                if (worker.get("phase") == "running") and worker.get("pid") and worker.get("starttime"):
+                if (worker.get("phase") == "running") and ("pid" in worker) and ("starttime" in worker):
                     current = (run["run_id"], worker["id"], worker["pid"], worker["starttime"])
 
                     break

@@ -51,6 +51,15 @@ def test_malleated_signature_rejected():
     r_flipped = bytes([sig[0] ^ 1]) + sig[1:]
     assert not ed.verify(pub, msg, r_flipped + sig[32:])
 
+def test_zero_scalar_half_rejected():
+    # P0b hardening pin: a well-formed R followed by s = 0 must fail closed
+    # (the ref's verify returns False when either scalarmult lands on None) —
+    # [0]B is the identity and can never equal R + [k]A for this message.
+    _seed_h, pub_h, msg_h, sig_h = RFC_8032_VECTORS[0]
+    pub, msg, sig = (bytes.fromhex(x) for x in (pub_h, msg_h, sig_h))
+    zero_s = sig[:32] + (b"\x00" * 32)
+    assert not ed.verify(pub, msg, zero_s)
+
 # --- the malkuth gate cross-pins (P0b) ---------------------------------------
 #
 # The two pins below are the cross-repo seam malkuth's gate_grant.rs:232-235

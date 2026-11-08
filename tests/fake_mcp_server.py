@@ -59,6 +59,10 @@ def _grant_refusal(action: str, args: dict, identity: tuple[int, int | None], *,
     Known deliberate divergences from the real gate: no ``invalid_request`` pre-check
     on empty proposal/worker ids (the regex refusals cover them), no ``RegistryFull``
     path, and the clock is a float ``time.time`` where malkuth reads whole seconds.
+    Type-level refusals (non-int ``issued_at``, non-string ids) also answer tool-level
+    ``approval_unattested`` where the real gate's serde layer would answer
+    ``invalid_request`` — unreachable from the executor, which rejects a non-conforming
+    bundle as ``bundle_invalid`` before any tool call is issued.
     """
 
     sig = args.get("sig")
@@ -187,9 +191,20 @@ class fake_server:
 #: never in `required` — exactly the shape the executor's staleness probe reads).
 _APPROVE_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}, "sig": {"type": ["string", "null"]}, "issued_at": {"type": ["integer", "null"]}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
 
+#: A pre-seam build of the gate: the same four action tools and a schema with
+#: every field the old ApproveArgs knew — but no `sig`/`issued_at`. Tool names
+#: cannot prove grant awareness (serde would silently drop the grant fields and
+#: the approval would register unattested), so the executor's probe must refuse
+#: this shape. `malkuth_status` additionally advertises a NON-dict inputSchema
+#: to pin the session-side normalization (a non-dict schema must read as {}).
+_PRE_GRANT_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
+
 def _tool_list(mode: str) -> list:
     if mode == "missing-tools":
         return [{"name": "malkuth_probe"}, {"name": "malkuth_supervise"}]
+
+    if mode == "act-pre-grant":
+        return [{"name": "malkuth_status", "inputSchema": "not-a-dict"}, {"name": "malkuth_approve", "inputSchema": _PRE_GRANT_SCHEMA}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
 
     if mode in ACTION_MODES:
         return [{"name": "malkuth_status"}, {"name": "malkuth_approve", "inputSchema": _APPROVE_SCHEMA}, {"name": "malkuth_restart"}, {"name": "malkuth_drain"}]
