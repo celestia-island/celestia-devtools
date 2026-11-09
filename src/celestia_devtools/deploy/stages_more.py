@@ -286,7 +286,16 @@ def stage_verify(ctx: "bootstrap.stage_context") -> stage_result:
     if failures:
         return stage_result("verify", FAILED, "; ".join("{}: {}".format(c.name, c.detail)for c in failures))
 
-    return stage_result("verify", OK, "; ".join("{} ok".format(c.name)for c in checks))
+    # A pass that needed the operator's override must stay on the record ON
+    # THE SUCCESS PATH too: this branch is what the console and --json print,
+    # and an override you only see when it fails is not a record at all.
+    overrides = ["{}: {}".format(c.name, c.detail)for c in checks if c.overridden]
+    detail = "; ".join("{} ok".format(c.name)for c in checks)
+
+    if overrides:
+        detail += " | allowed by --allow-degraded: " + "; ".join(overrides)
+
+    return stage_result("verify", OK, detail)
 
 # ── registration: the stage machine becomes complete ───────────────────
 

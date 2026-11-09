@@ -55,8 +55,11 @@ class stage_context:
     executor: Callable[..., subprocess.CompletedProcess] = subprocess.run
     assume_root: bool = False   # tests: precheck skips the euid gate
     dry_run: bool = False
-    allow_degraded: bool = False  # operator override: ship over a KNOWN degraded face
     actions: list[str] = field(default_factory = list)  # dry-run plan transcript
+    # operator override: ship over a KNOWN degraded face. Declared AFTER
+    # `actions` on purpose — inserted earlier it would shift a positional
+    # caller's list into a truthy bool and silently open the override.
+    allow_degraded: bool = False
 
     def run(self, cmd: list[str], **kw) -> subprocess.CompletedProcess:
         self.actions.append(" ".join(cmd))

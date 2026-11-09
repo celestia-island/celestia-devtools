@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from unittest import mock
 import pytest
 from celestia_devtools.deploy import bootstrap, ops, stages_more
 from celestia_devtools.deploy.artifact import build as artifact_build
@@ -39,6 +40,7 @@ class _fake_check:
         self.name = name
         self.ok = True
         self.detail = "fake ok"
+        self.overridden = False
 
 class _fake_pw:
     pw_uid = 1000
@@ -322,6 +324,45 @@ class test_verify_and_uninstall:
 
         still_red = {c.name: c for c in ops.verify(prof, http_get = unhealthy, allow_degraded = True, pause = lambda _s: None)}
         assert not still_red["health"].ok, "the override covers degradation, not a dying face"
+
+    def test_the_override_stays_on_the_record_after_a_successful_verify(self, tmp_path):
+        """The flag exists so a human's decision is auditable. The stage's OK
+        branch used to print only `"{name} ok"`, dropping the detail — so the
+        override was visible ONLY when the deployment had already failed."""
+        prof = _profile(tmp_path)
+        ctx = bootstrap.stage_context(profile = prof, allow_degraded = True)
+
+        def fake_verify(p, **kw):
+            assert kw.get("allow_degraded") is True, "the stage must pass the flag through"
+            return [
+                ops.check("health", True, 'status="degraded" (allowed by --allow-degraded)', overridden = True),
+                ops.check("epoch", True, "main-Ab12Cd34.js"),
+                ops.check("ledger", True, "3 entries"),
+            ]
+
+        with mock.patch.object(ops, "verify", fake_verify):
+            result = stages_more.stage_verify(ctx)
+
+        assert result.status == bootstrap.OK
+        assert "allowed by --allow-degraded" in result.detail
+        assert "world-sync" not in result.detail  # nothing invented
+        # A plain green verify must not sprout the override marker.
+        with mock.patch.object(ops, "verify", lambda p, **kw: [ops.check("health", True, "status=ok")]):
+            plain = stages_more.stage_verify(ctx)
+
+        assert plain.status == bootstrap.OK
+        assert "allowed" not in plain.detail
+        assert plain.detail == "health ok"
+
+    def test_a_positional_caller_cannot_smuggle_the_override(self, tmp_path):
+        """`allow_degraded` sits AFTER `actions` so the 5th positional argument
+        (a dry-run transcript list) can never bind to it — a non-empty list is
+        truthy and would silently open the override."""
+        prof = _profile(tmp_path)
+        transcript = ["would do things"]
+        ctx = bootstrap.stage_context(prof, subprocess.run, False, False, transcript)
+        assert ctx.actions == transcript
+        assert ctx.allow_degraded is False
 
     def test_verify_health_down_is_a_red_check(self, tmp_path):
         prof = _profile(tmp_path)

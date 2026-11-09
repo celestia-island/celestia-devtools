@@ -69,6 +69,10 @@ class check:
     name: str
     ok: bool
     detail: str = ""
+    # True when the check passed only because the operator allowed a known
+    # degraded face: the stage machine must print that on the SUCCESS path
+    # too, or the override is only ever visible when it fails.
+    overridden: bool = False
 
 def health_verdict(status: int, body: str, allow_degraded: bool = False) -> tuple[bool, str]:
     """The `/api/health` judgement: 200 is NOT health.
@@ -194,7 +198,7 @@ def verify(
     base = "http://127.0.0.1:{}".format(prof.host.listen)
     checks: list[check] = []
     healthy, detail = _probe_health(base, http_get, allow_degraded, samples, pause)
-    checks.append(check("health", healthy, detail))
+    checks.append(check("health", healthy, detail, overridden = "allowed by --allow-degraded" in detail))
     status, body = http_get(base + "/")
     epoch = ""
 
