@@ -30,15 +30,26 @@ GATE_TEST_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031c
 #: (``MALKUTH_GATE_VERIFY_KEY`` set to this value, or the fake server's builtin key).
 GATE_TEST_VERIFY_KEY_HEX = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 
-def grant_message(proposal_id: str, worker_id: str, action: str, pid: int, starttime: int, issued_at: int) -> str:
-    """The canonical grant message, byte for byte as malkuth's ``grant_message`` builds it."""
+def grant_message(proposal_id: str, worker_id: str, action: str, pid: int, starttime: int, issued_at: int, budget: int = 0) -> str:
+    """The canonical grant message, byte for byte as malkuth's ``grant_message`` builds it.
 
-    return f"malkuth-gate-grant/v1\nproposal_id:{proposal_id}\nworker_id:{worker_id}\naction:{action}\npid:{pid}\nstarttime:{starttime}\nissued_at:{issued_at}\n"
+    ``budget`` is the v2 spend envelope: a drain grant names the maximum drain budget
+    the approval may ever be spent with (scepter issues malkuth's service default 30),
+    a restart grant carries the documented no-envelope shape (0). ``/v1`` signatures
+    are no longer accepted anywhere.
+    """
 
-def sign_grant(proposal_id: str, worker_id: str, action: str, pid: int, starttime: int, issued_at: int | None = None) -> str:
-    """Sign the canonical message with the RFC 8032 test key (128 lowercase hex)."""
+    return f"malkuth-gate-grant/v2\nproposal_id:{proposal_id}\nworker_id:{worker_id}\naction:{action}\npid:{pid}\nstarttime:{starttime}\nissued_at:{issued_at}\nbudget:{budget}\n"
+
+def sign_grant(proposal_id: str, worker_id: str, action: str, pid: int, starttime: int, issued_at: int | None = None, budget: int = 0) -> str:
+    """Sign the canonical message with the RFC 8032 test key (128 lowercase hex).
+
+    Drain callers pass ``budget=30`` (the service default envelope scepter signs);
+    restart callers keep the ``0`` default. The budget MUST match the ``budget_secs``
+    the approve payload carries — malkuth binds the payload to the signed message.
+    """
 
     if issued_at is None:
         issued_at = int(time.time())
 
-    return ed.sign(bytes.fromhex(GATE_TEST_SEED_HEX), grant_message(proposal_id, worker_id, action, pid, starttime, issued_at).encode()).hex()
+    return ed.sign(bytes.fromhex(GATE_TEST_SEED_HEX), grant_message(proposal_id, worker_id, action, pid, starttime, issued_at, budget).encode()).hex()
