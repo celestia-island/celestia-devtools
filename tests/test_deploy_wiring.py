@@ -168,6 +168,89 @@ class test_verify_and_uninstall:
         assert checks["epoch"].ok and (checks["epoch"].detail == "main-Ab12Cd34.js")
         assert not checks["backup-freshness"].ok  # no backups yet
 
+    def test_verify_rejects_a_lying_ok_above_a_red_census(self, tmp_path):
+        """The 2026-11-09 defect, at the gate: the face answered 200 with
+        `status:"ok"` while three channels were red, and `deploy verify`
+        called it healthy. The census is now part of the judgement."""
+        prof = _profile(tmp_path)
+        red = json.dumps({
+            "status": "degraded",
+            "channels": {
+                "census_ok": True,
+                "tracked": 6,
+                "healthy": 3,
+                "failing": 3,
+                "channels": [
+                    {"name": "scepter-live", "consecutive_failures": 12},
+                    {"name": "plugin-agent-sync", "consecutive_failures": 1},
+                    {"name": "world-sync", "consecutive_failures": 4},
+                ],
+            },
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, red
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get)}
+        assert not checks["health"].ok, "a degraded face must fail the health check"
+        assert "scepter-live" in checks["health"].detail
+        assert "plugin-agent-sync" in checks["health"].detail
+        assert "world-sync" in checks["health"].detail
+
+    def test_verify_rejects_ok_beside_red_channels(self, tmp_path):
+        """Belt and braces for faces built before the fix: they still report
+        `status:"ok"` next to a red census, and the gate must not trust the
+        top-level field alone."""
+        prof = _profile(tmp_path)
+        body = json.dumps({
+            "status": "ok",
+            "channels": {"census_ok": True, "tracked": 5, "healthy": 4, "failing": 1, "channels": [{"name": "world-sync", "consecutive_failures": 3}]},
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, body
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get)}
+        assert not checks["health"].ok
+        assert "world-sync" in checks["health"].detail
+
+    def test_verify_accepts_a_green_census(self, tmp_path):
+        prof = _profile(tmp_path)
+        body = json.dumps({
+            "status": "ok",
+            "channels": {"census_ok": True, "tracked": 6, "healthy": 6, "failing": 0, "channels": []},
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, body
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get)}
+        assert checks["health"].ok, checks["health"].detail
+        assert checks["health"].detail == "status=ok"
+
+    def test_verify_rejects_an_unparseable_health_body(self, tmp_path):
+        """200 plus a proxy's HTML error page is not health either."""
+        prof = _profile(tmp_path)
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, "<html>Malkuth — service restarting</html>"
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get)}
+        assert not checks["health"].ok
+        assert "not JSON" in checks["health"].detail
+
     def test_verify_health_down_is_a_red_check(self, tmp_path):
         prof = _profile(tmp_path)
 
