@@ -33,6 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dry-run", action = "store_true", help = "print the plan, change nothing")
     ap.add_argument("--non-interactive", action = "store_true", help = "never prompt; missing answers are a hard error")
     ap.add_argument("--json", action = "store_true", help = "machine-readable stage results")
+    ap.add_argument("--allow-degraded", action = "store_true", help = "verify: ship over a face that reports status=degraded (recorded in the check detail)")
     return ap
 
 def _seed_from_args(args, parsed_profile: profile_mod.deploy_profile | None) -> dict[str, str]:
@@ -121,7 +122,7 @@ def _run_bootstrap_inner(argv: list[str]) -> int:
         sys.stdout = sys.stderr
 
     try:
-        ctx = bootstrap.stage_context(profile = prof, assume_root = False, dry_run = args.dry_run)
+        ctx = bootstrap.stage_context(profile = prof, assume_root = False, dry_run = args.dry_run, allow_degraded = args.allow_degraded)
         code, results = bootstrap.run_stages(ctx)
     finally:
         sys.stdout = real_stdout
