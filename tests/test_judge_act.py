@@ -476,6 +476,19 @@ def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, caps
         unknown_worker = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "elsewhere", "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(grant_proposal, "elsewhere", "drain", 4242, 99, issued_at, 30), "issued_at": issued_at, "budget_secs": 30})
         assert unknown_worker["code"] == "approval_unattested", "a grant must name one live worker of this fleet"
         sig = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at, 30)
+        # The v2 budget shape fires BEFORE crypto, exactly as malkuth's boundary
+        # does: a drain grant without (or outside) `budget_secs`, or a restart
+        # grant with one, is a shape refusal — invalid_request, not unattested.
+        sig30 = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at, 30)
+        missing_budget = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig30, "issued_at": issued_at})
+        assert missing_budget["code"] == "invalid_request", "a drain grant must name budget_secs"
+        assert "budget_secs" in missing_budget["message"]
+        oversized = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig30, "issued_at": issued_at, "budget_secs": 400})
+        assert oversized["code"] == "invalid_request"
+        sig_r = gate_grant.sign_grant(grant_proposal, "app", "restart", 4242, 99, issued_at)
+        restart_budget = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "restart", "sig": sig_r, "issued_at": issued_at, "budget_secs": 500})
+        assert restart_budget["code"] == "invalid_request"
+        assert "no per-spend budget" in restart_budget["message"]
         bound = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig, "issued_at": issued_at, "budget_secs": 30})
         assert bound["ok"] is True
         mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "app", "proposal_id": grant_proposal})
