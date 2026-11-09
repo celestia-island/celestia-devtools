@@ -13,6 +13,7 @@ stage).
 
 from __future__ import annotations
 import json
+import time
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,13 +60,17 @@ def _rpc(base: str, method: str, params: dict | None = None) -> tuple[int, dict]
     except (OSError, json.JSONDecodeError) as exc:
         return 0, {"error": str(exc)}
 
+# How long to wait between health samples: short enough that a blip heals
+# inside one deployment, long enough for a channel's next probe to run.
+SAMPLE_GAP_SECS = 2.0
+
 @dataclass
 class check:
     name: str
     ok: bool
     detail: str = ""
 
-def health_verdict(status: int, body: str) -> tuple[bool, str]:
+def health_verdict(status: int, body: str, allow_degraded: bool = False) -> tuple[bool, str]:
     """The `/api/health` judgement: 200 is NOT health.
 
     The probe answers HTTP 200 whatever is wrong with the face — the code
@@ -93,12 +98,56 @@ def health_verdict(status: int, body: str) -> tuple[bool, str]:
     failing = _failing_channels(payload)
 
     if verdict != "ok":
-        return False, "status={} {}".format(json.dumps(verdict), failing[1]).rstrip()
+        detail = "status={} {}".format(json.dumps(verdict), failing[1]).rstrip()
+
+        # An operator may choose to ship over a face that is KNOWN degraded
+        # (the classic case: the fix for the thing that is degraded can only
+        # arrive through this gate). The override is explicit, recorded in the
+        # check detail, and never covers a face that is not answering.
+        if allow_degraded and verdict == "degraded":
+            return True, detail + " (allowed by --allow-degraded)"
+
+        return False, detail
 
     if failing[0]:
-        return False, "status=ok but {} channel(s) red: {}".format(failing[0], failing[1]).rstrip()
+        detail = "status=ok but {} channel(s) red: {}".format(failing[0], failing[1]).rstrip()
+
+        if allow_degraded:
+            return True, detail + " (allowed by --allow-degraded)"
+
+        return False, detail
 
     return True, "status=ok"
+
+def _probe_health(
+    base: str,
+    http_get,
+    allow_degraded: bool,
+    samples: int,
+    pause,
+) -> tuple[bool, str]:
+    """Sample health, re-reading a RED verdict a few times before failing.
+
+    The verdict is built from "the last recorded outcome" of each channel, so
+    a three-second blip can make a perfectly good deployment fail a gate that
+    nobody retries afterwards. A dead face (non-200 / unparseable) is not
+    re-sampled: that is not a blip.
+    """
+    healthy = False
+    detail = ""
+    attempts = max(1, samples)
+
+    for attempt in range(attempts):
+        status, body = http_get(base + "/api/health")
+        healthy, detail = health_verdict(status, body, allow_degraded)
+
+        if healthy or status != 200:
+            return healthy, detail
+
+        if attempt + 1 < attempts:
+            pause(SAMPLE_GAP_SECS)
+
+    return healthy, detail
 
 def _failing_channels(payload: dict) -> tuple[int, str]:
     """(count, human list) of the census entries the face itself calls red.
@@ -135,11 +184,16 @@ def _is_zero(value) -> bool:
     """True only for a real zero — a missing field is not evidence of health."""
     return isinstance(value, int) and value == 0
 
-def verify(prof: deploy_profile, http_get = _http_get) -> list[check]:
+def verify(
+    prof: deploy_profile,
+    http_get = _http_get,
+    allow_degraded: bool = False,
+    samples: int = 3,
+    pause = time.sleep,
+) -> list[check]:
     base = "http://127.0.0.1:{}".format(prof.host.listen)
     checks: list[check] = []
-    status, body = http_get(base + "/api/health")
-    healthy, detail = health_verdict(status, body)
+    healthy, detail = _probe_health(base, http_get, allow_degraded, samples, pause)
     checks.append(check("health", healthy, detail))
     status, body = http_get(base + "/")
     epoch = ""

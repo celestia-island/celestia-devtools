@@ -55,6 +55,7 @@ class stage_context:
     executor: Callable[..., subprocess.CompletedProcess] = subprocess.run
     assume_root: bool = False   # tests: precheck skips the euid gate
     dry_run: bool = False
+    allow_degraded: bool = False  # operator override: ship over a KNOWN degraded face
     actions: list[str] = field(default_factory = list)  # dry-run plan transcript
 
     def run(self, cmd: list[str], **kw) -> subprocess.CompletedProcess:

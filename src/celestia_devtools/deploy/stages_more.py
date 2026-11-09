@@ -280,7 +280,7 @@ def stage_verify(ctx: "bootstrap.stage_context") -> stage_result:
         ctx.actions.append("would verify health/epoch/ledger")
         return stage_result("verify", OK, "dry-run: verification planned")
 
-    checks = ops.verify(ctx.profile)
+    checks = ops.verify(ctx.profile, allow_degraded = ctx.allow_degraded)
     failures = [c for c in checks if not c.ok]
 
     if failures:
