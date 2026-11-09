@@ -314,6 +314,12 @@ class test_verify_and_uninstall:
         assert allowed["health"].ok
         assert "allowed by --allow-degraded" in allowed["health"].detail
         assert "world-sync" in allowed["health"].detail, "the override must still record what it covered"
+        # The flag is DERIVED from that marker text (`overridden = marker in
+        # detail`), and the stage layer reads only the flag — so a reworded
+        # marker would silently drop the audit line while this test stayed
+        # green. Both directions are asserted here.
+        assert allowed["health"].overridden is True
+        assert strict["health"].overridden is False
 
         # `unhealthy` is not a state to ship over, override or not.
         def unhealthy(url, timeout = 15):
