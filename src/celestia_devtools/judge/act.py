@@ -60,7 +60,7 @@ SUPPORTED_ACTIONS = (ACTION_RESTART, ACTION_DRAIN)
 #: ``gate_sig``/``gate_issued_at`` are the issuer's ed25519 grant (P0b): an allow/review
 #: approval without them is refused by the gate (``approval_unattested``), so a bundle that
 #: never carried them fails closed here, at shape time, with the clearer code.
-REQUIRED_FIELDS = ("proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "severity", "gate_sig", "gate_issued_at")
+REQUIRED_FIELDS = ("proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "severity", "gate_sig", "gate_issued_at", "gate_budget")
 
 #: Scepter's internal proposal id: ``judge:`` + a UUID.
 PROPOSAL_PREFIX = "judge:"
@@ -113,6 +113,11 @@ class handoff:
     severity: str
     gate_sig: str
     gate_issued_at: int
+    #: The v2 grant's signed spend envelope (scepter mints malkuth's service
+    #: default 30 for drain, the documented 0 shape for restart). Echoed back as
+    #: ``budget_secs`` in the approve call — malkuth binds the payload to the
+    #: signed message.
+    gate_budget: int
     pid: int | None
     starttime: int | None
     report_status: str | None
@@ -226,8 +231,11 @@ def parse_handoff(payload: Any) -> handoff:
 
     if isinstance(gate_issued_at, bool) or not isinstance(gate_issued_at, int) or (gate_issued_at < 0):
         raise act_error("bundle_invalid", "`gate_issued_at` must be a non-negative integer (unix seconds)")
+    gate_budget = payload.get("gate_budget")
+    if isinstance(gate_budget, bool) or not isinstance(gate_budget, int) or not (0 <= gate_budget <= 300):
+        raise act_error("bundle_invalid", "`gate_budget` must be the v2 spend envelope (an integer 0..=300; scepter mints 30 for drain, 0 for restart)")
 
-    parsed = handoff(proposal_id = proposal_id, gate_proposal_id = gate, run_id = _string(payload, "run_id") or "", worker_id = _string(payload, "worker_id") or "", action = (_string(payload, "action") or "").lower(), verdict_code = (_string(payload, "verdict_code") or "").upper(), codes = _codes(payload), severity = severity.lower(), gate_sig = gate_sig, gate_issued_at = gate_issued_at, pid = _optional_int(payload, "pid"), starttime = _optional_int(payload, "starttime"), report_status = (report_status or "").lower() or None, expires_at = horizon, drain_kind = drain_kind)
+    parsed = handoff(proposal_id = proposal_id, gate_proposal_id = gate, run_id = _string(payload, "run_id") or "", worker_id = _string(payload, "worker_id") or "", action = (_string(payload, "action") or "").lower(), verdict_code = (_string(payload, "verdict_code") or "").upper(), codes = _codes(payload), severity = severity.lower(), gate_sig = gate_sig, gate_issued_at = gate_issued_at, gate_budget = gate_budget, pid = _optional_int(payload, "pid"), starttime = _optional_int(payload, "starttime"), report_status = (report_status or "").lower() or None, expires_at = horizon, drain_kind = drain_kind)
     return parsed
 
 def check_action_supported(bundle: handoff) -> None:
@@ -349,7 +357,7 @@ def run_act(bundle: handoff, session: action_session, *, dry_run: bool = False) 
     if dry_run:
         return {"status": STATUS_DRY_RUN, "checks": checks, "would_approve": bundle.gate_proposal_id, "would_call": _execute_arguments(bundle)}
 
-    approval = session.call_tool("malkuth_approve", {"proposal_id": bundle.gate_proposal_id, "worker_id": bundle.worker_id, "decision": "allow", "action": bundle.action, "sig": bundle.gate_sig, "issued_at": bundle.gate_issued_at})
+    approval = session.call_tool("malkuth_approve", {"proposal_id": bundle.gate_proposal_id, "worker_id": bundle.worker_id, "decision": "allow", "action": bundle.action, "sig": bundle.gate_sig, "issued_at": bundle.gate_issued_at, "budget_secs": bundle.gate_budget})
 
     if (not isinstance(approval, dict)) or (approval.get("ok") is not True):
         code = approval.get("code") if isinstance(approval, dict) else None
@@ -453,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
             # open on exactly the seam this executor exists to enforce. Probe the
             # advertised schema: only a grant-aware build lists the two fields.
             approve_fields = set(session.tool_schema("malkuth_approve").get("properties") or {})
-            absent = sorted({"sig", "issued_at"} - approve_fields)
+            absent = sorted({"sig", "issued_at", "budget_secs"} - approve_fields)
 
             if absent:
                 return _fail(args, None, act_error("malkuth_unavailable", f"malkuth_approve does not accept {absent}: the gate binary predates the grant seam"))

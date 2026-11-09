@@ -68,9 +68,9 @@ def test_zero_scalar_half_rejected():
 # embeds as DEFAULT_GATE_VERIFY_KEY_HEX. If either side rotates, these tests
 # fail on this side too — no silent drift across the repos.
 #: malkuth src/gate_grant.rs GOLDEN: the canonical message, its sha256 digest, and the signature.
-GOLDEN_MESSAGE = "malkuth-gate-grant/v1\nproposal_id:0123456789abcdef0123456789abcdef\nworker_id:w-alpha-1\naction:restart\npid:4242\nstarttime:987654\nissued_at:1762610000\n"
-GOLDEN_DIGEST = "3fc9ff018ff2baba21c744ec2ce4867db493048af4df11bf9ae501af4eef48d5"
-GOLDEN_SIG = "17d864db178f5ee0d72a12d6d69a5b3a558027e3679d08ac332f93368142f34382084fd0f26a0af523ef467658bb13fa292bd94cdb0ab363a7a123f3b55c520c"
+GOLDEN_MESSAGE = "malkuth-gate-grant/v2\nproposal_id:0123456789abcdef0123456789abcdef\nworker_id:w-alpha-1\naction:restart\npid:4242\nstarttime:987654\nissued_at:1762610000\nbudget:0\n"
+GOLDEN_DIGEST = "14bd74290ea816427c318773170191be77aa5a16938979dae52bb3d183a4eb48"
+GOLDEN_SIG = "2b8a563965ec4dbd53da9590adb89dd300a14ef6e6d810185ad7ef1501184a631f01cadefa84fbbc354cc2673ed7264a265b5562728bdc5e4aae063d2a31910a"
 
 def test_malkuth_golden_grant_vector():
     message = GOLDEN_MESSAGE

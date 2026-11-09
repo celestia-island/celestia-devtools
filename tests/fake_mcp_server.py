@@ -83,7 +83,19 @@ def _grant_refusal(action: str, args: dict, identity: tuple[int, int | None], *,
     if (pid is None) or (starttime is None):
         return {"ok": False, "code": "approval_unattested", "message": "no single live supervised worker with that id to bind the grant to (none found)"}
 
-    message = gate_grant.grant_message(proposal, str(args.get("worker_id")), action, pid, starttime, issued_at).encode()
+    # The v2 spend envelope, shape-checked before any crypto — malkuth's boundary
+    # answers invalid_request for a shape breach; the fake answers the same code.
+    # A drain grant MUST name `budget_secs` (1..=300 — the signed spend envelope
+    # scepter puts in the grant); a restart grant carries none (a nonzero one is
+    # a shape breach, and the message mints 0).
+    budget_secs = args.get("budget_secs")
+    if action == "drain":
+        if isinstance(budget_secs, bool) or not isinstance(budget_secs, int) or not (1 <= budget_secs <= 300):
+            return {"ok": False, "code": "invalid_request", "message": "a drain grant must carry `budget_secs` (1..=300) — the maximum drain budget this approval may be spent with"}
+    elif budget_secs not in (None, 0):
+        return {"ok": False, "code": "invalid_request", "message": "a restart grant carries no per-spend budget envelope; omit `budget_secs`"}
+
+    message = gate_grant.grant_message(proposal, str(args.get("worker_id")), action, pid, starttime, issued_at, budget_secs if action == "drain" else 0).encode()
 
     if not ed.verify(bytes.fromhex(gate_grant.GATE_TEST_VERIFY_KEY_HEX), message, bytes.fromhex(sig)):
         return {"ok": False, "code": "approval_unattested", "message": "the grant signature does not verify against this gate's key"}
@@ -189,7 +201,7 @@ class fake_server:
 #: The wire fields malkuth_approve accepts (mirrors the real build's advertised
 #: inputSchema: the grant fields are Option-al, so they sit in `properties` but
 #: never in `required` — exactly the shape the executor's staleness probe reads).
-_APPROVE_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}, "sig": {"type": ["string", "null"]}, "issued_at": {"type": ["integer", "null"]}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
+_APPROVE_SCHEMA = {"type": "object", "properties": {"proposal_id": {"type": "string"}, "worker_id": {"type": "string"}, "decision": {"type": "string"}, "action": {"type": "string"}, "sig": {"type": ["string", "null"]}, "issued_at": {"type": ["integer", "null"]}, "budget_secs": {"type": ["integer", "null"]}}, "required": ["proposal_id", "worker_id", "decision", "action"]}
 
 #: A pre-seam build of the gate: the same four action tools and a schema with
 #: every field the old ApproveArgs knew — but no `sig`/`issued_at`. Tool names

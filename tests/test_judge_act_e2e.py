@@ -75,7 +75,7 @@ def _require_gate_binary() -> str:
 #: packages/scepter/src/services/judge_actions.rs @ 436595db + the P0b grant fields the
 #: scepter leg adds when it signs). Anything added or removed there must show up here as
 #: a change to this list, not as a silently-passing test.
-EXPORT_BUNDLE_FIELDS = ("gate_proposal_id", "run_id", "worker_id", "pid", "starttime", "action", "verdict_code", "codes", "evidence", "gate_sig", "gate_issued_at")
+EXPORT_BUNDLE_FIELDS = ("gate_proposal_id", "run_id", "worker_id", "pid", "starttime", "action", "verdict_code", "codes", "evidence", "gate_sig", "gate_issued_at", "gate_budget")
 
 #: Fields the platform session adds from the row it exported (they are NOT in the bundle).
 PLATFORM_SUPPLIES = ("proposal_id", "severity", "expires_at")
@@ -90,11 +90,12 @@ def _export_bundle(row: dict) -> dict:
 
     Shape pinned against entelecheia's `export_bundle` (packages/scepter/src/services/
     judge_actions.rs): `gate_proposal_id`, `run_id`, `worker_id`, `pid`, `starttime`,
-    `action`, `verdict_code`, `codes`, `evidence` — and deliberately nothing else: the
+    `action`, `verdict_code`, `codes`, `evidence`, `gate_sig`, `gate_issued_at`,
+    `gate_budget` (the v2 spend envelope) — and deliberately nothing else: the
     submitter, the ruling and the timestamps stay in scepter's own row.
     """
 
-    return {"gate_proposal_id": row["gate_proposal_id"], "run_id": row["run_id"], "worker_id": row["worker_id"], "pid": row["pid"], "starttime": row["starttime"], "action": row["action"], "verdict_code": row["verdict_code"], "codes": row["codes"], "evidence": row["evidence"], "gate_sig": row["gate_sig"], "gate_issued_at": row["gate_issued_at"]}
+    return {"gate_proposal_id": row["gate_proposal_id"], "run_id": row["run_id"], "worker_id": row["worker_id"], "pid": row["pid"], "starttime": row["starttime"], "action": row["action"], "verdict_code": row["verdict_code"], "codes": row["codes"], "evidence": row["evidence"], "gate_sig": row["gate_sig"], "gate_issued_at": row["gate_issued_at"], "gate_budget": row["gate_budget"]}
 
 def _crashes(counter: Path) -> int:
     try:
@@ -158,7 +159,7 @@ def test_the_export_contract_is_the_one_the_executor_receives() -> None:
     """Shape pin, no malkuth needed: the bundle is the export's fields, plus three from the row."""
 
     issued_at = int(time.time())
-    row = {"gate_proposal_id": _gate_token("pin"), "run_id": "run-1", "worker_id": "w", "pid": 1, "starttime": 2, "action": "restart", "verdict_code": "B1", "codes": ["B1"], "evidence": {"codes": ["B1"]}, "gate_issued_at": issued_at, "gate_sig": gate_grant.sign_grant(_gate_token("pin"), "w", "restart", 1, 2, issued_at)}
+    row = {"gate_proposal_id": _gate_token("pin"), "run_id": "run-1", "worker_id": "w", "pid": 1, "starttime": 2, "action": "restart", "verdict_code": "B1", "codes": ["B1"], "evidence": {"codes": ["B1"]}, "gate_issued_at": issued_at, "gate_budget": 0, "gate_sig": gate_grant.sign_grant(_gate_token("pin"), "w", "restart", 1, 2, issued_at)}
     hand_off = _export_bundle(row)
     assert tuple(hand_off) == EXPORT_BUNDLE_FIELDS, "the fixture drifted from the export contract"
 
@@ -211,7 +212,7 @@ def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(monkeypatch, tmp_pa
         # scepter signs at allow time (P0b): the executor presents it verbatim.
         gate_proposal = _gate_token(f"{run_id}/{worker['id']}/{proposal_id}")
         issued_at = int(time.time())
-        row = {"gate_proposal_id": gate_proposal, "run_id": run_id, "worker_id": worker["id"], "pid": worker["pid"], "starttime": worker["starttime"], "action": suggestion.action, "verdict_code": "B1", "codes": list(suggestion.evidence["codes"]), "evidence": {"codes": list(suggestion.evidence["codes"]), "verdicts": [{"code": "B1", "severity": "critical"}], "worker": {"phase": worker["phase"], "pid": worker["pid"], "starttime": worker["starttime"]}}, "gate_issued_at": issued_at, "gate_sig": gate_grant.sign_grant(gate_proposal, worker["id"], suggestion.action, worker["pid"], worker["starttime"], issued_at)}
+        row = {"gate_proposal_id": gate_proposal, "run_id": run_id, "worker_id": worker["id"], "pid": worker["pid"], "starttime": worker["starttime"], "action": suggestion.action, "verdict_code": "B1", "codes": list(suggestion.evidence["codes"]), "evidence": {"codes": list(suggestion.evidence["codes"]), "verdicts": [{"code": "B1", "severity": "critical"}], "worker": {"phase": worker["phase"], "pid": worker["pid"], "starttime": worker["starttime"]}}, "gate_issued_at": issued_at, "gate_budget": 0, "gate_sig": gate_grant.sign_grant(gate_proposal, worker["id"], suggestion.action, worker["pid"], worker["starttime"], issued_at)}
         hand_off = _export_bundle(row)
 
         # The export is NOT a complete executor bundle: the row id, the severity and the
@@ -271,7 +272,7 @@ def test_the_wave4_chain_runs_end_to_end_against_a_real_gate(monkeypatch, tmp_pa
         # mutated grant must fail HERE, not slip through an unchecked return.
         drain_token = _gate_token(f"drain/{run_id}")
         drain_issued = int(time.time())
-        approve_out = session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": after["id"], "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(drain_token, after["id"], "drain", after["pid"], after["starttime"], drain_issued), "issued_at": drain_issued})
+        approve_out = session.call_tool("malkuth_approve", {"proposal_id": drain_token, "worker_id": after["id"], "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(drain_token, after["id"], "drain", after["pid"], after["starttime"], drain_issued, 30), "issued_at": drain_issued, "budget_secs": 30})
         assert approve_out.get("ok") is True, f"the drain approval must register: {approve_out}"
         drain_out = session.call_tool("malkuth_drain", {"run_id": run_id, "worker_id": worker["id"], "proposal_id": drain_token, "kind": "graceful", "timeout_secs": 10})
         assert drain_out.get("ok") is True, f"the drain must be accepted: {drain_out}"
