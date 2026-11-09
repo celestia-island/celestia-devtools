@@ -64,7 +64,7 @@ def test_a_complete_bundle_parses() -> None:
     assert bundle.codes == ("B1",)
     assert (bundle.pid, bundle.starttime) == (4242, 99)
 
-@pytest.mark.parametrize("missing", ["proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "gate_sig", "gate_issued_at"])
+@pytest.mark.parametrize("missing", ["proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "gate_sig", "gate_issued_at", "gate_budget"])
 def test_a_missing_field_is_bundle_invalid(missing: str) -> None:
     payload = _bundle()
     payload.pop(missing)
@@ -120,6 +120,14 @@ def test_a_bad_gate_issued_at_is_refused(issued_at) -> None:
 
     assert caught.value.code == "bundle_invalid"
     assert "gate_issued_at" in caught.value.message
+
+@pytest.mark.parametrize("budget", [True, "30", 1.5, -1, 301, None])
+def test_a_bad_gate_budget_is_refused(budget) -> None:
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(_bundle(gate_budget = budget))
+
+    assert caught.value.code == "bundle_invalid"
+    assert "gate_budget" in caught.value.message
 
 def test_a_bundle_without_a_deadline_cannot_prove_its_approval_live() -> None:
     payload = _bundle()

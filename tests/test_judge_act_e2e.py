@@ -66,8 +66,8 @@ def _require_gate_binary() -> str:
         # the advertised schema can.
         approve_fields = set(session.tool_schema("malkuth_approve").get("properties") or {})
 
-        if not {"sig", "issued_at"} <= approve_fields:
-            pytest.skip(f"malkuth at {binary} predates the grant seam (malkuth_approve schema lacks sig/issued_at)")
+        if not {"sig", "issued_at", "budget_secs"} <= approve_fields:
+            pytest.skip(f"malkuth at {binary} predates the v2 grant seam (malkuth_approve schema lacks sig/issued_at/budget_secs)")
 
     return binary
 

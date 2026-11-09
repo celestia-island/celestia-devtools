@@ -454,12 +454,13 @@ def main(argv: list[str] | None = None) -> int:
             if missing:
                 return _fail(args, None, act_error("malkuth_unavailable", f"the MCP server does not advertise {missing}: it predates the action gate"))
 
-            # The P0b grant seam: tool NAMES cannot prove the build knows the grant
+            # The grant seam: tool NAMES cannot prove the build knows the grant
             # fields. A pre-grant build advertises the same four tools, its ApproveArgs
-            # has no sig/issued_at, and serde silently drops unknown fields — the
-            # approval would register unattested and the action would run, failing
-            # open on exactly the seam this executor exists to enforce. Probe the
-            # advertised schema: only a grant-aware build lists the two fields.
+            # has no sig/issued_at/budget_secs, and serde silently drops unknown
+            # fields — the approval would register unattested (and envelope-less)
+            # and the action would run, failing open on exactly the seam this
+            # executor exists to enforce. Probe the advertised schema: only a
+            # v2-aware build lists all three fields.
             approve_fields = set(session.tool_schema("malkuth_approve").get("properties") or {})
             absent = sorted({"sig", "issued_at", "budget_secs"} - approve_fields)
 
