@@ -222,17 +222,18 @@ def classify_npm(name: str, spec: str, dev_slot: bool) -> tuple[str | None, str]
     if not _NPM_VERSIONISH_RE.search(s):
         if _NPM_BARE_RE.match(s):
             return ("npm_bare_name", "bare name without a range; declare a real line")
-    # caret forms
-    m = re.match(r"^\^(\d+)\.(\d+)(?:\.(\d+))?", s)
+    # caret forms (third segment may be a wildcard tail: .* / .x)
+    m = re.match(r"^\^(\d+)\.(\d+)(?:\.([0-9*Xx]+))?", s)
     if m:
         major = int(m.group(1))
+        third = m.group(3)
         if major == 0:
-            if m.group(3) is not None and not _is_prerelease(s):
+            if third is not None and not _is_prerelease(s):
+                if third in ("*", "x", "X") and m.group(2) == "0":
+                    return ("npm_caret_star_zero", "^0.0.* is degenerate; declare '^0.<minor>'")
                 return ("npm_three_segment_zero", "^0.x.y is three-segment; declare '^0.<minor>'")
-            if m.group(2) == 0 and m.group(3) == 0:
-                return ("npm_caret_star_zero", "^0.0.x is degenerate; declare '^0.<minor>'")
             return None, ""
-        if m.group(3) is not None:
+        if third is not None:
             return ("npm_three_segment", "^<major>.<minor>.<patch> is three-segment; declare '^<major>'")
         return None, ""
     # single-segment major line, caret or bare: "^3" / "3"
@@ -247,10 +248,10 @@ def classify_npm(name: str, spec: str, dev_slot: bool) -> tuple[str | None, str]
         if _is_prerelease(s):
             return None, ""
         return ("npm_exact_pin", "non-prerelease exact pins are banned; declare a caret line")
-    # ranges like >=1.2.3: the ruling's ban list does not name them; note-only
-    # (the wave registered such floors as owner-class, e.g. CVE floors).
+    # ranges like >=1.2.3: the ruling's ban list does not name them; the
+    # owner-registered floor class (CVE floors, integration#107) is tolerated.
     if s.startswith((">=", ">", "<", "<=")):
-        return ("npm_range_form", "range form outside the two-form rule; confirm with the ruling owner")
+        return None, ""
     return ("npm_unrecognized", "specifier outside the two-form grammar")
 
 
@@ -266,6 +267,10 @@ def classify_cargo(name: str, spec: str, registered: bool) -> tuple[str | None, 
         return ("cargo_caret_star_zero", "^0.* is banned; declare '0.<minor>'")
     if s.startswith("~"):
         return ("cargo_tilde_range", "~ ranges are banned; declare a single-segment line")
+    # exact pins: "=X.Y[.Z]" freezes minor (and patch) axes; "=N" resolves to
+    # exactly N.0.0. All banned unless prerelease-tagged or registered.
+    if s.startswith("=") and not _is_prerelease(s):
+        return ("cargo_exact_pin", "non-prerelease exact pins are banned; declare a single-segment line")
     m = re.match(r"^=?(?:\^)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", s)
     if m:
         major = int(m.group(1))
@@ -288,7 +293,7 @@ def classify_cargo(name: str, spec: str, registered: bool) -> tuple[str | None, 
         return None, ""
     # reqs starting with >= / > etc: not named by the ban list
     if s.startswith((">=", ">", "<", "<=")):
-        return ("cargo_range_form", "range form outside the two-form rule; confirm with the ruling owner")
+        return None, ""  # owner-registered floor class (integration#107 precedent)
     return ("cargo_unrecognized", "specifier outside the two-form grammar")
 
 
@@ -319,7 +324,8 @@ def classify_python(name: str, spec: str) -> tuple[str | None, str]:
     if m:
         return ("py_exact_pin", "non-prerelease exact pins are banned; declare a padded '~=' line")
     if s in ("*", ""):
-        return ("py_bare_star", "bare '*' has no axis")
+        return ("py_bare_name" if s == "" else "py_bare_star",
+                "bare name without an operator" if s == "" else "bare '*' has no axis")
     if s.startswith((">=", ">", "<", "<=", "!=", "~=", "==")):
         # Covered by the branches above when in the ban list; any remaining
         # range operator (>= floors etc.) is the owner-registered class that

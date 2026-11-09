@@ -77,9 +77,9 @@ from this help)::
     family-versions    Check that the shared family layers are consumed as one identity
     package-rules      Check that publishable Cargo package names are kebab-case and
                        that a lockfile resolves each package name from one source
+                       (advisory by default; --strict exits 1)
     depspec-lint       Check dependency declarations against the 2026-11-09 two-form
                        ruling (npm ^major/^0.minor, Cargo single-segment, python ~= padded)
-                       (advisory by default; --strict exits 1)
     protocol-bundle    Vendor the five org protocol docs from docs.celestia.world
                        into packages/webui/.generated/protocols as lazy assets
     build-dispatch     Run pre/dev/release build commands for _build-style recipes

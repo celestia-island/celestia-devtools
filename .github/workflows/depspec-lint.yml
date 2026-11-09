@@ -116,9 +116,12 @@ jobs:
 
       - name: Depspec two-form gate
         env:
-          STRICT: ${{ inputs.strict || true }}
+          STRICT: ${{ inputs.strict }}
         run: |
           set -o pipefail
+          # inputs context is empty on push events: default the trunk lane to
+          # strict while honoring an explicit caller choice (including false).
+          : "${STRICT:=true}"
           if [ "$STRICT" = "true" ]; then
             $DT_CMD depspec-lint . --strict
           else

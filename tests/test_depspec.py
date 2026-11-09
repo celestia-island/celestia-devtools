@@ -95,12 +95,9 @@ def test_cargo_violations_red(tmp_path: Path) -> None:
     }))
     rep = depspec.scan(tmp_path)
     codes = _codes(rep)
-    assert codes
+    # exact two-segment equality: every banned form pinned by code
     assert codes == {"cargo_three_segment", "cargo_three_segment_zero", "cargo_tilde_range",
-                     "cargo_exact_pin" if hasattr(depspec, "_") else "cargo_unrecognized",
-                     "cargo_bare_star"} | ({"cargo_exact_pin"} if any(f.code == "cargo_exact_pin" for f in rep.findings) else set()) or True
-    # strict check: three-seg and tilde and star all present
-    assert "cargo_three_segment" in codes and "cargo_tilde_range" in codes and "cargo_bare_star" in codes
+                     "cargo_exact_pin", "cargo_bare_star"}, codes
     assert "0.8.9" in [f.spec for f in rep.findings]
 
 
@@ -203,3 +200,27 @@ def test_real_tree_scans_clean(tmp_path: Path) -> None:
     # inventory — tracked as follow-up until fixed.
     cargo_residuals = [f for f in rep.findings if not f.path.endswith("package.json")]
     assert all(f.code == "cargo_three_segment_zero" for f in cargo_residuals)
+
+
+def test_npm_zero_zero_wildcards_red(tmp_path: Path) -> None:
+    """S1-1 regression: ^0.0.* / ^0.0.x must not escape as legal."""
+    _write(tmp_path, "package.json", _npm({"a": "^0.0.*", "b": "^0.0.x"}))
+    rep = depspec.scan(tmp_path)
+    assert _codes(rep) == {"npm_caret_star_zero"}
+
+
+def test_cargo_exact_two_segment_red(tmp_path: Path) -> None:
+    """S1-2 regression: =X.Y exact pins freeze the minor axis — banned."""
+    _write(tmp_path, "Cargo.toml", _cargo({"pin1": "=1.0", "pin2": "=1.2", "pin3": "=0.8"}))
+    rep = depspec.scan(tmp_path)
+    codes = _codes(rep)
+    assert codes == {"cargo_exact_pin"}, codes
+    assert {f.spec for f in rep.findings} == {"=1.0", "=1.2", "=0.8"}
+
+
+def test_range_forms_tolerated(tmp_path: Path) -> None:
+    """S1-3 regression: >= floors are the owner-registered class — no finding."""
+    _write(tmp_path, "package.json", _npm({"x": ">=1.2.3"}))
+    _write(tmp_path, "Cargo.toml", _cargo({"y": ">=1.2, <2"}))
+    rep = depspec.scan(tmp_path)
+    assert _codes(rep) == set()
