@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from unittest import mock
 import pytest
 from celestia_devtools.deploy import bootstrap, ops, stages_more
 from celestia_devtools.deploy.artifact import build as artifact_build
@@ -39,6 +40,7 @@ class _fake_check:
         self.name = name
         self.ok = True
         self.detail = "fake ok"
+        self.overridden = False
 
 class _fake_pw:
     pw_uid = 1000
@@ -52,7 +54,7 @@ class test_full_machine:
         _seed_artifact(tmp_path, prof)
         monkeypatch.setenv("CHEST_DATABASE_URL", "postgresql://u:p@198.51.100.9:5432/db")
         monkeypatch.setattr(stages_more, "_http_post", _fake_http_ok)
-        monkeypatch.setattr("celestia_devtools.deploy.ops.verify", lambda p: [_fake_check("health"), _fake_check("epoch"), _fake_check("ledger"), _fake_check("backup-freshness")])
+        monkeypatch.setattr("celestia_devtools.deploy.ops.verify", lambda p, **kw: [_fake_check("health"), _fake_check("epoch"), _fake_check("ledger"), _fake_check("backup-freshness")])
         ctx = _ctx(prof, assume_root = True)
         ctx.state = {}
         code, results = bootstrap.run_stages(ctx)
@@ -167,6 +169,200 @@ class test_verify_and_uninstall:
         assert checks["health"].ok
         assert checks["epoch"].ok and (checks["epoch"].detail == "main-Ab12Cd34.js")
         assert not checks["backup-freshness"].ok  # no backups yet
+
+    def test_verify_rejects_a_lying_ok_above_a_red_census(self, tmp_path):
+        """The 2026-11-09 defect, at the gate: the face answered 200 with
+        `status:"ok"` while three channels were red, and `deploy verify`
+        called it healthy. The census is now part of the judgement."""
+        prof = _profile(tmp_path)
+        red = json.dumps({
+            "status": "degraded",
+            "channels": {
+                "census_ok": True,
+                "tracked": 6,
+                "healthy": 3,
+                "failing": 3,
+                "channels": [
+                    {"name": "scepter-live", "consecutive_failures": 12},
+                    {"name": "plugin-agent-sync", "consecutive_failures": 1},
+                    {"name": "world-sync", "consecutive_failures": 4},
+                ],
+            },
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, red
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get, pause = lambda _s: None)}
+        assert not checks["health"].ok, "a degraded face must fail the health check"
+        assert "scepter-live" in checks["health"].detail
+        assert "plugin-agent-sync" in checks["health"].detail
+        assert "world-sync" in checks["health"].detail
+
+    def test_verify_rejects_ok_beside_red_channels(self, tmp_path):
+        """Belt and braces for faces built before the fix: they still report
+        `status:"ok"` next to a red census, and the gate must not trust the
+        top-level field alone."""
+        prof = _profile(tmp_path)
+        body = json.dumps({
+            "status": "ok",
+            "channels": {"census_ok": True, "tracked": 5, "healthy": 4, "failing": 1, "channels": [{"name": "world-sync", "consecutive_failures": 3}]},
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, body
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get, pause = lambda _s: None)}
+        assert not checks["health"].ok
+        assert "world-sync" in checks["health"].detail
+
+    def test_verify_accepts_a_green_census(self, tmp_path):
+        prof = _profile(tmp_path)
+        body = json.dumps({
+            "status": "ok",
+            "channels": {"census_ok": True, "tracked": 6, "healthy": 6, "failing": 0, "channels": []},
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, body
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get)}
+        assert checks["health"].ok, checks["health"].detail
+        assert checks["health"].detail == "status=ok"
+
+    def test_verify_rejects_an_unparseable_health_body(self, tmp_path):
+        """200 plus a proxy's HTML error page is not health either."""
+        prof = _profile(tmp_path)
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, "<html>Malkuth — service restarting</html>"
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get, pause = lambda _s: None)}
+        assert not checks["health"].ok
+        assert "not JSON" in checks["health"].detail
+
+    def test_verify_resamples_a_blip_before_failing_the_deploy(self, tmp_path):
+        """The verdict reads each channel's LAST outcome, so a three-second
+        blip can fail a gate nobody retries. A red 200 is sampled again; a
+        dead face still fails on the first answer."""
+        prof = _profile(tmp_path)
+        red = json.dumps({
+            "status": "degraded",
+            "channels": {"census_ok": True, "tracked": 6, "healthy": 5, "failing": 1, "channels": [{"name": "scepter-live", "consecutive_failures": 1}]},
+        })
+        green = json.dumps({
+            "status": "ok",
+            "channels": {"census_ok": True, "tracked": 6, "healthy": 6, "failing": 0, "channels": []},
+        })
+        answers = [red, green]
+        seen = []
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                seen.append(url)
+                return 200, answers[min(len(seen), 2) - 1]
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        checks = {c.name: c for c in ops.verify(prof, http_get = fake_get, pause = lambda _s: None)}
+        assert checks["health"].ok, checks["health"].detail
+        assert len(seen) == 2, "the red sample must be re-read, not trusted once"
+
+        # A dead face is not a blip: one answer is enough.
+        dead_seen = []
+
+        def dead(url, timeout = 15):
+            if url.endswith("/api/health"):
+                dead_seen.append(url)
+            return 0, "connection refused"
+
+        dead_checks = {c.name: c for c in ops.verify(prof, http_get = dead, pause = lambda _s: None)}
+        assert not dead_checks["health"].ok
+        assert len(dead_seen) == 1, "a connection refusal must not be re-sampled"
+
+    def test_verify_allows_degraded_only_when_explicitly_asked(self, tmp_path):
+        """An operator must be able to ship the fix for the thing that is
+        degraded — but only by saying so, and only for `degraded`."""
+        prof = _profile(tmp_path)
+        degraded = json.dumps({
+            "status": "degraded",
+            "channels": {"census_ok": True, "tracked": 6, "healthy": 3, "failing": 3, "channels": [{"name": "world-sync", "consecutive_failures": 9}]},
+        })
+
+        def fake_get(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, degraded
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        strict = {c.name: c for c in ops.verify(prof, http_get = fake_get, pause = lambda _s: None)}
+        assert not strict["health"].ok
+
+        allowed = {c.name: c for c in ops.verify(prof, http_get = fake_get, allow_degraded = True, pause = lambda _s: None)}
+        assert allowed["health"].ok
+        assert "allowed by --allow-degraded" in allowed["health"].detail
+        assert "world-sync" in allowed["health"].detail, "the override must still record what it covered"
+
+        # `unhealthy` is not a state to ship over, override or not.
+        def unhealthy(url, timeout = 15):
+            if url.endswith("/api/health"):
+                return 200, json.dumps({"status": "unhealthy", "channels": {"census_ok": True, "tracked": 1, "healthy": 0, "failing": 1, "channels": [{"name": "db", "consecutive_failures": 1}]}})
+
+            return 200, '<html><script src="main-Ab12Cd34.js"></script>'
+
+        still_red = {c.name: c for c in ops.verify(prof, http_get = unhealthy, allow_degraded = True, pause = lambda _s: None)}
+        assert not still_red["health"].ok, "the override covers degradation, not a dying face"
+
+    def test_the_override_stays_on_the_record_after_a_successful_verify(self, tmp_path):
+        """The flag exists so a human's decision is auditable. The stage's OK
+        branch used to print only `"{name} ok"`, dropping the detail — so the
+        override was visible ONLY when the deployment had already failed."""
+        prof = _profile(tmp_path)
+        ctx = bootstrap.stage_context(profile = prof, allow_degraded = True)
+
+        def fake_verify(p, **kw):
+            assert kw.get("allow_degraded") is True, "the stage must pass the flag through"
+            return [
+                ops.check("health", True, 'status="degraded" (allowed by --allow-degraded)', overridden = True),
+                ops.check("epoch", True, "main-Ab12Cd34.js"),
+                ops.check("ledger", True, "3 entries"),
+            ]
+
+        with mock.patch.object(ops, "verify", fake_verify):
+            result = stages_more.stage_verify(ctx)
+
+        assert result.status == bootstrap.OK
+        assert "allowed by --allow-degraded" in result.detail
+        assert "world-sync" not in result.detail  # nothing invented
+        # A plain green verify must not sprout the override marker.
+        with mock.patch.object(ops, "verify", lambda p, **kw: [ops.check("health", True, "status=ok")]):
+            plain = stages_more.stage_verify(ctx)
+
+        assert plain.status == bootstrap.OK
+        assert "allowed" not in plain.detail
+        assert plain.detail == "health ok"
+
+    def test_a_positional_caller_cannot_smuggle_the_override(self, tmp_path):
+        """`allow_degraded` sits AFTER `actions` so the 5th positional argument
+        (a dry-run transcript list) can never bind to it — a non-empty list is
+        truthy and would silently open the override."""
+        prof = _profile(tmp_path)
+        transcript = ["would do things"]
+        ctx = bootstrap.stage_context(prof, subprocess.run, False, False, transcript)
+        assert ctx.actions == transcript
+        assert ctx.allow_degraded is False
 
     def test_verify_health_down_is_a_red_check(self, tmp_path):
         prof = _profile(tmp_path)
