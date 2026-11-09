@@ -238,6 +238,14 @@ class test_verify_and_uninstall:
         checks = {c.name: c for c in ops.verify(prof, http_get = fake_get)}
         assert checks["health"].ok, checks["health"].detail
         assert checks["health"].detail == "status=ok"
+        # Asking for the override must not invent a record on a body that
+        # never needed it: `overridden` is derived from the RESULT, not from
+        # the flag the operator passed (a mutation to `overridden =
+        # allow_degraded` would otherwise keep every other test green).
+        overridden = {c.name: c for c in ops.verify(prof, http_get = fake_get, allow_degraded = True)}
+        assert overridden["health"].ok
+        assert overridden["health"].overridden is False
+        assert "allowed by" not in overridden["health"].detail
 
     def test_verify_rejects_an_unparseable_health_body(self, tmp_path):
         """200 plus a proxy's HTML error page is not health either."""
@@ -314,6 +322,12 @@ class test_verify_and_uninstall:
         assert allowed["health"].ok
         assert "allowed by --allow-degraded" in allowed["health"].detail
         assert "world-sync" in allowed["health"].detail, "the override must still record what it covered"
+        # The flag is DERIVED from that marker text (`overridden = marker in
+        # detail`), and the stage layer reads only the flag — so a reworded
+        # marker would silently drop the audit line while this test stayed
+        # green. Both directions are asserted here.
+        assert allowed["health"].overridden is True
+        assert strict["health"].overridden is False
 
         # `unhealthy` is not a state to ship over, override or not.
         def unhealthy(url, timeout = 15):
