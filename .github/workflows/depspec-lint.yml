@@ -1,0 +1,126 @@
+name: Depspec Lint
+
+# Two-form declaration gate (2026-11-09 ruling). Runs `depspec-lint . --strict`
+# over the checked-out tree: npm ^major/^0.minor, Cargo single-segment,
+# python ~= padded — with the exempt classes baked into the gate (dev ^*,
+# prerelease lines, workspace/file/catalog protocols, cargo path deps,
+# [patch] snapshots, vendor/ and patches/ trees, registered exact pins).
+#
+# Trunk lane (push on this repository) and reusable lane (workflow_call) share
+# one job definition, mirroring commit-msg-lint.yml's lane inputs so callers
+# can pin a runner without editing this file.
+#
+# NOT a required PR check: per the 2026-11-06 CI trigger口径 the family runs
+# no PR gates — this joins the trunk 基本检查 (sub-minute, stdlib-only, no
+# network). Callers wire it into their push lane with:
+#
+#   depspec:
+#     uses: celestia-island/celestia-devtools/.github/workflows/depspec-lint.yml@master
+#     # optional: runner / lane / devtools-ref inputs, same meanings as
+#     # commit-msg-lint.yml.
+#
+# Repos whose tree is not yet clean pass `strict: false` until they land their
+# normalization PR (the advisory run still reports findings in the log).
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: 'JSON array of runner labels, e.g. ["ubuntu-latest"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      lane:
+        description: "Human label for logs (hosted / farm / cnb)"
+        required: false
+        type: string
+        default: "hosted"
+      strict:
+        description: "Exit 1 on findings (true) or advisory log-only (false)"
+        required: false
+        type: boolean
+        default: true
+      devtools-ref:
+        description: "celestia-devtools git ref the bootstrap installs"
+        required: false
+        type: string
+        default: "master"
+  push:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  depspec:
+    name: Depspec two-form gate
+    runs-on: ${{ fromJSON(inputs.runner || vars.LINT_RUNNER || '["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Lane
+        run: echo "depspec lint served by lane ${{ inputs.lane || 'hosted' }} (strict=${{ inputs.strict || true }})"
+
+      - uses: actions/checkout@v7
+        with:
+          # The gate reads the work tree only; history is not needed.
+          fetch-depth: 1
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      - name: Ensure celestia-devtools
+        # Same fallback chain as commit-msg-lint.yml (pip → pip flavor →
+        # stdlib-only PYTHONPATH clone), minus the PR-payload steps this
+        # workflow does not need: the gate is pure file parsing.
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+        run: |
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools"
+            echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          PIP_BIN=""
+          if command -v pip >/dev/null 2>&1; then
+            PIP_BIN=pip
+          elif command -v pip3 >/dev/null 2>&1; then
+            PIP_BIN=pip3
+          elif python3 -c "import pip" >/dev/null 2>&1; then
+            PIP_BIN="python3 -m pip"
+          fi
+          if [ -n "$PIP_BIN" ]; then
+            export PATH="$HOME/.local/bin:$PATH"
+            if GIT_CONFIG_COUNT=0 $PIP_BIN install --user --break-system-packages \
+                "git+https://github.com/celestia-island/celestia-devtools.git@${DEVTOOLS_REF:-master}" \
+              && command -v celestia-devtools >/dev/null 2>&1; then
+              echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+              echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "pip install unavailable or failed; falling back to the pip-less clone"
+          fi
+          DT_SRC="$RUNNER_TEMP/celestia-devtools"
+          rm -rf "$DT_SRC"
+          GIT_CONFIG_COUNT=0 git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" \
+            https://github.com/celestia-island/celestia-devtools.git "$DT_SRC"
+          if ! PYTHONPATH="$DT_SRC/src" python3 -m celestia_devtools --help >/dev/null 2>&1; then
+            echo "pip-less bootstrap failed (python3 missing or clone broken)" >&2
+            exit 1
+          fi
+          echo "PYTHONPATH=$DT_SRC/src" >> "$GITHUB_ENV"
+          echo "DT_CMD=python3 -m celestia_devtools" >> "$GITHUB_ENV"
+
+      - name: Depspec two-form gate
+        env:
+          STRICT: ${{ inputs.strict || true }}
+        run: |
+          set -o pipefail
+          if [ "$STRICT" = "true" ]; then
+            $DT_CMD depspec-lint . --strict
+          else
+            $DT_CMD depspec-lint .
+          fi
