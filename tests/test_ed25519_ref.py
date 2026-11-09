@@ -80,6 +80,12 @@ def test_malkuth_golden_grant_vector():
     assert ed.verify(bytes.fromhex(pub), message.encode(), bytes.fromhex(GOLDEN_SIG))
     # one byte off the canonical text must break the grant
     assert not ed.verify(bytes.fromhex(pub), message.encode().replace(b"restart", b"restarT"), bytes.fromhex(GOLDEN_SIG))
+    # The fixtures the whole suite signs/verifies with must build EXACTLY these
+    # bytes: a golden pin over literals alone cannot catch the helper drifting
+    # (the mutation round proved the gap — route the helper through the pin).
+    golden_args = ("0123456789abcdef0123456789abcdef", "w-alpha-1", "restart", 4242, 987654, 1762610000, 0)
+    assert gate_grant.grant_message(*golden_args) == GOLDEN_MESSAGE, "grant_message drifted from malkuth's canonical v2 bytes"
+    assert gate_grant.sign_grant(*golden_args[:-1]) == GOLDEN_SIG, "sign_grant drifted from the pinned key/message"
 
 def test_malkuth_production_verify_key_pin():
     key = gate_grant.MALKUTH_DEFAULT_GATE_VERIFY_KEY_HEX
