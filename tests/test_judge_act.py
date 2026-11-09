@@ -38,7 +38,9 @@ def _bundle(**overrides) -> dict:
     # the fake gate by default. Tests that want an unattested or stale grant pass
     # `gate_sig`/`gate_issued_at` explicitly and thereby opt out of this default.
     bundle.setdefault("gate_issued_at", int(time.time()))
-    bundle.setdefault("gate_sig", gate_grant.sign_grant(bundle["gate_proposal_id"], bundle["worker_id"], bundle["action"], bundle.get("pid") or 0, bundle.get("starttime") or 0, bundle["gate_issued_at"]))
+    budget = 30 if bundle["action"] == "drain" else 0  # scepter's v2 mint: the service default envelope, or the restart 0 shape
+    bundle.setdefault("gate_budget", budget)
+    bundle.setdefault("gate_sig", gate_grant.sign_grant(bundle["gate_proposal_id"], bundle["worker_id"], bundle["action"], bundle.get("pid") or 0, bundle.get("starttime") or 0, bundle["gate_issued_at"], budget))
     return bundle
 
 def _cmd(mode: str) -> str:
@@ -62,7 +64,7 @@ def test_a_complete_bundle_parses() -> None:
     assert bundle.codes == ("B1",)
     assert (bundle.pid, bundle.starttime) == (4242, 99)
 
-@pytest.mark.parametrize("missing", ["proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "gate_sig", "gate_issued_at"])
+@pytest.mark.parametrize("missing", ["proposal_id", "gate_proposal_id", "run_id", "worker_id", "action", "verdict_code", "codes", "gate_sig", "gate_issued_at", "gate_budget"])
 def test_a_missing_field_is_bundle_invalid(missing: str) -> None:
     payload = _bundle()
     payload.pop(missing)
@@ -118,6 +120,14 @@ def test_a_bad_gate_issued_at_is_refused(issued_at) -> None:
 
     assert caught.value.code == "bundle_invalid"
     assert "gate_issued_at" in caught.value.message
+
+@pytest.mark.parametrize("budget", [True, "30", 1.5, -1, 301, None])
+def test_a_bad_gate_budget_is_refused(budget) -> None:
+    with pytest.raises(act.act_error) as caught:
+        act.parse_handoff(_bundle(gate_budget = budget))
+
+    assert caught.value.code == "bundle_invalid"
+    assert "gate_budget" in caught.value.message
 
 def test_a_bundle_without_a_deadline_cannot_prove_its_approval_live() -> None:
     payload = _bundle()
@@ -463,10 +473,23 @@ def test_a_stale_approve_without_action_or_decision_is_refused(monkeypatch, caps
         issued_at = int(time.time())
         unsigned = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain"})
         assert unsigned["code"] == "approval_unattested"
-        unknown_worker = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "elsewhere", "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(grant_proposal, "elsewhere", "drain", 4242, 99, issued_at), "issued_at": issued_at})
+        unknown_worker = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "elsewhere", "decision": "allow", "action": "drain", "sig": gate_grant.sign_grant(grant_proposal, "elsewhere", "drain", 4242, 99, issued_at, 30), "issued_at": issued_at, "budget_secs": 30})
         assert unknown_worker["code"] == "approval_unattested", "a grant must name one live worker of this fleet"
-        sig = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at)
-        bound = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig, "issued_at": issued_at})
+        sig = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at, 30)
+        # The v2 budget shape fires BEFORE crypto, exactly as malkuth's boundary
+        # does: a drain grant without (or outside) `budget_secs`, or a restart
+        # grant with one, is a shape refusal — invalid_request, not unattested.
+        sig30 = gate_grant.sign_grant(grant_proposal, "app", "drain", 4242, 99, issued_at, 30)
+        missing_budget = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig30, "issued_at": issued_at})
+        assert missing_budget["code"] == "invalid_request", "a drain grant must name budget_secs"
+        assert "budget_secs" in missing_budget["message"]
+        oversized = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig30, "issued_at": issued_at, "budget_secs": 400})
+        assert oversized["code"] == "invalid_request"
+        sig_r = gate_grant.sign_grant(grant_proposal, "app", "restart", 4242, 99, issued_at)
+        restart_budget = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "restart", "sig": sig_r, "issued_at": issued_at, "budget_secs": 500})
+        assert restart_budget["code"] == "invalid_request"
+        assert "no per-spend budget" in restart_budget["message"]
+        bound = session.call_tool("malkuth_approve", {"proposal_id": grant_proposal, "worker_id": "app", "decision": "allow", "action": "drain", "sig": sig, "issued_at": issued_at, "budget_secs": 30})
         assert bound["ok"] is True
         mismatch = session.call_tool("malkuth_restart", {"run_id": "run-1", "worker_id": "app", "proposal_id": grant_proposal})
         assert mismatch["code"] == "approval_action_mismatch"
@@ -773,7 +796,7 @@ def test_a_real_malkuth_restart_executes_through_the_gate(monkeypatch) -> None:
         assert run_id, "the supervision never appeared in the registry"
         target = _running_target(session)
         issued_at = int(time.time())
-        bundle = act.parse_handoff({"proposal_id": "judge:real-1", "gate_proposal_id": "a" * 32, "run_id": run_id, "worker_id": "demo-0", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": target.pid, "starttime": target.starttime, "report_status": "failed", "expires_at": 2_000_000_000, "gate_issued_at": issued_at, "gate_sig": gate_grant.sign_grant("a" * 32, "demo-0", "restart", target.pid, target.starttime, issued_at)})
+        bundle = act.parse_handoff({"proposal_id": "judge:real-1", "gate_proposal_id": "a" * 32, "run_id": run_id, "worker_id": "demo-0", "action": "restart", "verdict_code": "B1", "codes": ["B1"], "severity": "critical", "pid": target.pid, "starttime": target.starttime, "report_status": "failed", "expires_at": 2_000_000_000, "gate_issued_at": issued_at, "gate_budget": 0, "gate_sig": gate_grant.sign_grant("a" * 32, "demo-0", "restart", target.pid, target.starttime, issued_at)})
         act.check_action_supported(bundle)
         act.check_justification(bundle)
         outcome = act.run_act(bundle, session)
