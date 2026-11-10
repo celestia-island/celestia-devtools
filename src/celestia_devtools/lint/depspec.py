@@ -183,12 +183,9 @@ def _is_prerelease(spec: str) -> bool:
     return bool(_PRERELEASE_RE.search(spec))
 
 
-def _is_exact_pin(spec: str, eco: str) -> bool:
-    """Exact-pin shape for the ecosystem (non-prerelease check is upstream)."""
-    s = spec.strip()
-    if eco == "npm":
-        return bool(re.match(r"^=?\d+(\.\d+)+$", s))
-    return bool(re.match(r"^=?\d+(\.\d+)+$", s))
+def _is_exact_pin(spec: str, eco: str = "cargo") -> bool:
+    """Exact-pin shape (non-prerelease check is upstream)."""
+    return bool(re.match(r"^=?\d+(\.\d+)+$", spec.strip()))
 
 
 def classify_npm(name: str, spec: str, dev_slot: bool) -> tuple[str | None, str]:
@@ -271,7 +268,7 @@ def classify_cargo(name: str, spec: str, registered: bool) -> tuple[str | None, 
     # exactly N.0.0. All banned unless prerelease-tagged or registered.
     if s.startswith("=") and not _is_prerelease(s):
         return ("cargo_exact_pin", "non-prerelease exact pins are banned; declare a single-segment line")
-    m = re.match(r"^=?(?:\^)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", s)
+    m = re.match(r"^(?:\^)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", s)
     if m:
         major = int(m.group(1))
         minor = m.group(2)
@@ -284,7 +281,7 @@ def classify_cargo(name: str, spec: str, registered: bool) -> tuple[str | None, 
                 return ("cargo_three_segment_zero", "0.x.y is three-segment; declare '0.<minor>'")
             return None, ""
         if minor is None:
-            return None, ""  # "N" / "=N" / "^N": the canonical form
+            return None, ""  # "N" / "^N": the canonical form ("=N" is an exact pin, banned above)
         # two-segment on a ≥1 line: legal-but-noncanonical was normalized in
         # the wave; the ruling's ban list does not name it. Tolerate (the
         # family ships plenty of these), per the wave's S3-cosmetic class.
@@ -371,6 +368,18 @@ def scan_cargo(root: Path, path: Path, rep: report, repo: str) -> None:
             sec = sec.get(part)
         if isinstance(sec, dict):
             sections.append((key, sec))
+    # [target.<triple>.dependencies] tables carry real declarations (kei's
+    # unwinding pins live there). The R3 round proved these escape a naive
+    # section walk — traverse them with the target qualifier in the label.
+    targets = data.get("target")
+    if isinstance(targets, dict):
+        for triple, tbl in targets.items():
+            if not isinstance(tbl, dict):
+                continue
+            for sec in ("dependencies", "dev-dependencies", "build-dependencies"):
+                deps = tbl.get(sec)
+                if isinstance(deps, dict):
+                    sections.append((f"target.{triple}.{sec}", deps))
     for section, deps in sections:
         for name, entry in deps.items():
             spec = None
@@ -379,8 +388,6 @@ def scan_cargo(root: Path, path: Path, rep: report, repo: str) -> None:
             elif isinstance(entry, dict):
                 if "path" in entry:
                     continue  # workspace-internal: registered exclusion class
-                if "patch" in entry and entry.get("patch") == "crates-io":
-                    continue
                 spec = entry.get("version")
             if not isinstance(spec, str) or not spec:
                 if isinstance(entry, dict) and ("git" in entry or "registry" in entry):

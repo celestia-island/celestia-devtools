@@ -224,3 +224,33 @@ def test_range_forms_tolerated(tmp_path: Path) -> None:
     _write(tmp_path, "Cargo.toml", _cargo({"y": ">=1.2, <2"}))
     rep = depspec.scan(tmp_path)
     assert _codes(rep) == set()
+
+
+def test_target_sections_scanned(tmp_path: Path) -> None:
+    """Fast-follow: [target.<triple>.dependencies] carry real declarations."""
+    _write(tmp_path, "packages/ostd/Cargo.toml", """[target.x86_64-unknown-none.dependencies]
+unwinding = "=0.2.8"
+""")
+    _write(tmp_path, "Cargo.toml", """[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+""")
+    # registered pin (kei unwinding) skipped; unregistered three-seg flagged
+    rep = depspec.scan(tmp_path, repo="kei")
+    assert [(f.name, f.code) for f in rep.findings] == [("windows-service", "cargo_three_segment_zero")]
+
+
+def test_caret_star_zero_branch_reachable(tmp_path: Path) -> None:
+    """^0.0.* (not exactly ^0.*) routes through the caret branch."""
+    _write(tmp_path, "package.json", _npm({"a": "^0.0.x"}))
+    rep = depspec.scan(tmp_path)
+    assert _codes(rep) == {"npm_caret_star_zero"}
+
+
+def test_npm_two_segment_caret_tolerated(tmp_path: Path) -> None:
+    _write(tmp_path, "package.json", _npm({"vue": "^3.2"}))
+    rep = depspec.scan(tmp_path)
+    assert _codes(rep) == set()
+
+
+def test_classify_python_empty_spec_defensive(tmp_path: Path) -> None:
+    assert depspec.classify_python("x", "")[0] == "py_bare_name"

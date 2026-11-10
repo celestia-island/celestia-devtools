@@ -63,7 +63,7 @@ jobs:
       contents: read
     steps:
       - name: Lane
-        run: echo "depspec lint served by lane ${{ inputs.lane || 'hosted' }} (strict=${{ inputs.strict || true }})"
+        run: echo "depspec lint served by lane ${{ inputs.lane || 'hosted' }} (strict=${{ inputs.strict }})"
 
       - uses: actions/checkout@v7
         with:
