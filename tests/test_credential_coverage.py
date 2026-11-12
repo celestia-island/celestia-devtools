@@ -26,6 +26,7 @@ exactly how a gate stops testing what it claims to test.
 """
 
 import pytest
+from celestia_devtools.build import gate_cred
 from celestia_devtools.build.gate_cred import classify_credential_line
 from celestia_devtools.build.gate_sweep import scan_file_credentials
 from celestia_devtools.lint.rules_lint import SECRET_PATTERNS, is_placeholder
@@ -131,6 +132,51 @@ def test_the_internal_address_clause_is_scoped_by_path(tmp_path) -> None:
     config.write_text("upstream = " + TEN + "\n", encoding = "utf-8")
     verdicts = [finding.verdict for finding in scan_file_credentials(config)]
     assert verdicts == ["violation"], verdicts
+
+#: Prose that merely contains a host-ish word must not be escalated. An earlier key
+#: pattern accepted any identifier *containing* one, so these three became fatal.
+PROSE = ("clip: " + TEN, "skip: " + TEN, "description: " + TEN, "the scan skips " + TEN)
+
+@pytest.mark.parametrize("sample", PROSE)
+def test_prose_that_merely_mentions_an_address_is_not_fatal(sample: str) -> None:
+    assert classify_credential_line(sample) != "violation", sample
+
+#: Space-separated directives (no `=`/`:`). The key table advertised `proxy_pass` and
+#: `bind`, but the pattern demanded a separator none of them have.
+DIRECTIVES = ("proxy_pass http://" + TEN + ":8080/;", "bind " + TEN, "server " + TEN + ";")
+
+@pytest.mark.parametrize("sample", DIRECTIVES)
+def test_directive_syntax_is_an_endpoint_too(sample: str) -> None:
+    assert classify_credential_line(sample) == "violation", sample
+
+@pytest.mark.parametrize("sample", ["MASK = \"10.0.0.0/8\"; SSH_PASS=\"s3cr3t-value-123\"", "x = \"10.0.0.0/8\"; token = \"" + PROVIDER_TOKEN + "\""])
+def test_a_bare_address_never_downgrades_a_real_secret(sample: str) -> None:
+    """Regression: returning the address verdict first demoted credentials to `report`.
+
+    Taking the stricter of the two is the whole point of the merge; this pins it.
+    """
+    assert classify_credential_line(sample) == "violation", sample
+
+def test_the_merge_takes_the_stricter_verdict(monkeypatch) -> None:
+    """Pin the merge itself, not a sample that happens to exercise it.
+
+    Sample-based regression tests were not enough here: a mutation that returned the
+    address verdict first still passed 39 cases. This asserts the contract directly.
+    """
+    monkeypatch.setattr(gate_cred, "_classify_private_ip", lambda line: "report")
+    monkeypatch.setattr(gate_cred, "_classify_credential_shapes", lambda line: "violation")
+    assert classify_credential_line("anything") == "violation"
+
+    monkeypatch.setattr(gate_cred, "_classify_private_ip", lambda line: "violation")
+    monkeypatch.setattr(gate_cred, "_classify_credential_shapes", lambda line: "clean")
+    assert classify_credential_line("anything") == "violation"
+
+    monkeypatch.setattr(gate_cred, "_classify_private_ip", lambda line: "report")
+    monkeypatch.setattr(gate_cred, "_classify_credential_shapes", lambda line: "clean")
+    assert classify_credential_line("anything") == "report"
+
+    monkeypatch.setattr(gate_cred, "_classify_private_ip", lambda line: "report")
+    assert classify_credential_line("anything", check_private_ip = False) == "clean"
 
 def test_the_union_covers_all_four_clauses() -> None:
     """Red line 1 is satisfied by the pair, not by either scanner alone.

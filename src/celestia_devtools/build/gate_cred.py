@@ -44,6 +44,10 @@ _PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|
 # 裸字面量多半是网络数学（`10.0.0.0/8`）、docker0（`172.17.0.1`）或 SSRF 拒绝向量。
 # `scheme://user@10.x` —— userinfo 里没口令也照样把内网主机写进了树里。
 _USERINFO_URL_PATTERN = re.compile(r"://[^/\s\"']*@")
+
+# 指令形（空格分隔、没有 `=`/`:`）：`proxy_pass http://10.x/;`、`bind 10.x`、`server 10.x;`。
+# 这些形态让「键表里有 proxy_pass / bind / server」在旧正则下根本不可达——复核抓到的漏判。
+_ENDPOINT_DIRECTIVE_PATTERN = re.compile(r"(?i)(?<![a-z0-9])(?:proxy_pass|bind|server_name|server)\s+")
 _ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])(?:(?:[a-z0-9]+_)*(?:host|url|addr|address|ip|server|endpoint|upstream|bind|proxy_pass)(?:_[a-z0-9]+)*|(?-i:[A-Z0-9]*(?:HOST|URL|ADDR|ADDRESS|IP)))[\"']?\s*[:=]\s*")
 
 # An assignment whose left-hand key contains a credential word, e.g.
@@ -256,7 +260,54 @@ def _value_is_excused(value: str) -> bool:
     """A value that is a placeholder or comes from the environment."""
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
 
+def _classify_private_ip(line: str) -> str | None:
+    """Severity of the red line 1 internal-address clause, or None when absent.
+
+    Endpoint context (URL userinfo, a `host = …` style key) is a real topology leak and
+    is fatal. A bare literal is usually network math (`10.0.0.0/8`), a container default
+    (`172.17.0.1`) or an SSRF deny vector, so it is only a report: a gate that fails on
+    those gets switched off, and then it guards nothing.
+    """
+
+    if _PRIVATE_IPV4_PATTERN.search(line) is None:
+        return None
+
+    if (_EMBEDDED_CREDENTIAL_URL_PATTERN.search(line) or _USERINFO_URL_PATTERN.search(line) or _ENDPOINT_KEY_PATTERN.search(line) or _ENDPOINT_DIRECTIVE_PATTERN.search(line)):
+        return "violation"
+
+    return "report"
+
 def classify_credential_line(line: str, *, check_private_ip: bool = True) -> str:
+    """Credential shapes plus the red-line-1 internal-address clause, merged strictly.
+
+    Returns ``"clean"`` (nothing), ``"report"`` (visible but not fatal) or
+    ``"violation"`` (fatal).
+
+    The merge takes the **stricter** verdict. An earlier version returned the address
+    verdict first, which silently downgraded a line carrying both a bare RFC 1918
+    constant and a real password from `violation` to `report` -- a security regression
+    an adversarial review caught, not a hypothetical.
+
+    ``check_private_ip=False`` is for callers walking test trees: fixtures are
+    conventionally fake, and flagging every one of them is how this rule gets disabled.
+    That switch is decided by the caller from the **path**, never from the line.
+    """
+    shapes = _classify_credential_shapes(line)
+
+    if not check_private_ip:
+        return shapes
+
+    ip_verdict = _classify_private_ip(line)
+
+    if ip_verdict == "violation":
+        return "violation"
+
+    if (ip_verdict == "report") and (shapes == "clean"):
+        return "report"
+
+    return shapes
+
+def _classify_credential_shapes(line: str) -> str:
     """Classify one source line for the credential scan.
 
     Returns ``"clean"`` (no credential token), ``"report"`` (a hit that is
@@ -281,24 +332,12 @@ def classify_credential_line(line: str, *, check_private_ip: bool = True) -> str
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
-    private_ip = _PRIVATE_IPV4_PATTERN.search(line) if check_private_ip else None
 
-    if not (_CRED_PATTERN.search(line) or embedded or provider or private_ip):
+    if not (_CRED_PATTERN.search(line) or embedded or provider):
         return "clean"
 
     if _PRIVATE_KEY_PATTERN.search(line):
         return "report" if _PLACEHOLDER_PATTERN.search(line) else "violation"
-
-    # 红线 1 的子句，独立于凭据形态。分级：
-    #  * 端点语境（URL userinfo / `host = …`）→ `violation`，那是真的把内网拓扑写进树里；
-    #  * 裸字面量 → `report`，因为扫描器也会走整棵源码树，而 `10.0.0.0/8`、`172.17.0.1`
-    #    这类网络数学/容器默认地址/SSRF 拒绝向量都是合法内容。判死它们等于让门常红，
-    #    而常红的门最后一定会被关掉。
-    if (private_ip is not None) and check_private_ip:
-        if (embedded is not None) or _USERINFO_URL_PATTERN.search(line) or _ENDPOINT_KEY_PATTERN.search(line):
-            return "violation"
-
-        return "report"
 
     # Provider tokens are literals by construction; placeholders and env refs
     # are judged on the token itself, so a doc IP elsewhere on the line cannot
