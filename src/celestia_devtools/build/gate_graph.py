@@ -89,7 +89,9 @@ def _credential_scan(root: Path) -> Callable[[], str]:
                 continue
 
             for lineno, line in enumerate(text.splitlines(), 1):
-                verdict = classify_credential_line(line)
+                # 与 `gate credential-scan` 同一口径：内网 IP 子句在 tests/ 树下不生效，
+                # 否则两条车道对同一行给出不同判决（2026-11-12 复核指出的接缝不一致）。
+                verdict = classify_credential_line(line, check_private_ip = "tests" not in path.parts)
 
                 if verdict == "clean":
                     continue
