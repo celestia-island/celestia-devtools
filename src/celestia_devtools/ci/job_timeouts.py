@@ -24,8 +24,9 @@ Subcommands
 ``PATH`` defaults to the current directory; each PATH is scanned for
 ``<PATH>/.github/workflows/{*.yml,*.yaml}`` and a missing directory is skipped silently.
 
-Exit codes: ``0`` success (including "nothing to change") | ``1`` jobs still missing a
-timeout (**audit only**) | ``2`` usage error or parse failure.
+Exit codes: ``0`` success (including "nothing to change") | ``1`` a job is still missing
+its timeout, **or** a caller job carries one it may not have (**audit only**) | ``2`` usage
+error or parse failure.
 
 Design constraints
 ==================
@@ -38,23 +39,24 @@ Design constraints
 * **Insertion point**: immediately after that job's ``runs-on:`` entry. For a multi-line
   value (continuation lines, flow collection or block scalar) it goes after the **last
   continuation line** — mechanically inserting directly below ``runs-on:`` would emit
-  invalid YAML. A caller job (``uses:`` only, no ``runs-on:``) gets the line after its
-  ``uses:`` entry. The inserted line's indentation matches the anchor line's leading
-  whitespace.
+  invalid YAML. A caller job (``uses:`` only, no ``runs-on:``) is **never** a target: it
+  may not carry ``timeout-minutes`` at all (see the caller bullet below). The inserted
+  line's indentation matches the anchor line's leading whitespace.
 * **Idempotent**: a job that already has ``timeout-minutes`` is never touched, so a
   second run changes nothing.
 * **Self-hosted by default**: only jobs whose ``runs-on`` contains ``self-hosted`` are
   protected (protecting the self-hosted farm is this tool's whole purpose). GitHub-hosted
   jobs need an explicit ``--include-hosted``: hosted macOS/Windows matrix jobs have
   legitimate 300+ minute samples, so applying one policy value to them would kill them.
-* **Caller jobs need an explicit ``--include-callers``**: a ``jobs.<id>.uses`` job has no
-  ``runs-on`` of its own; its runner is decided by the **called** workflow, which
-  normally lives in another repository, so it cannot be classified offline. This org
-  contains both kinds — ``celestia-devtools``' ``commit-msg-lint`` / ``pr-title-check``
-  run on ``ubuntu-latest`` (the org's hosted lint exceptions), while ``verify-versions``
-  / ``p0-gate`` run on ``[self-hosted, linux, x64, local]``. They are therefore neither
-  counted as self-hosted nor as hosted by default: they form a separate class and are
-  flagged with a ``note``.
+* **Caller jobs never carry a timeout of their own**: a ``jobs.<id>.uses`` job may only
+  carry the nine caller keys (``name`` / ``uses`` / ``with`` / ``secrets`` / ``strategy`` /
+  ``needs`` / ``if`` / ``concurrency`` / ``permissions``). GitHub rejects the **whole
+  file** over any other key, so a ``timeout-minutes`` there creates *zero* jobs instead
+  of a protected one. ``ci/workflow_audit.py`` enforces exactly that set
+  (``CALLER_LEGAL_KEYS``), and ``tests/test_callee_timeouts.py`` pins the other half of
+  the same contract: the timeout belongs to a job **inside the callee**. Caller jobs are
+  therefore always out of scope here, and ``--include-callers`` survives only as a
+  deprecated no-op (it used to insert exactly the key GitHub rejects).
 Boundaries worth knowing (both measured, 2026-09-15):
 
 * The symlink guard is anchored on each ``PATH`` argument, not on the git root: a workflow
@@ -709,6 +711,11 @@ def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block
         # caller job 没有 runs-on，自托管与否无法从本文件判定（被调 workflow 可能在
         # 别的仓）。既不默认算自托管、也不默认算 hosted，单列一类，见 _in_scope。
         job.self_hosted = False
+        # 不给 caller 算插入点：`timeout-minutes` 不是合法 caller 键，写进去整份文件会被
+        # GitHub 拒跑（模块 docstring 已述）。`insert_at = -1` 让 fix 循环直接跳过，
+        # 不留一条"能算但永远用不到"的死路径。
+        job.insert_at = -1
+        job.insert_indent = ""
 
     return job
 
@@ -862,12 +869,14 @@ def _in_scope(job: job_record, args: argparse.Namespace) -> bool:
 
     * ``runs-on`` contains ``self-hosted`` — in scope by default (this tool's purpose).
     * any other job with a ``runs-on`` (hosted) — needs ``--include-hosted``.
-    * a caller job (``uses:`` only, no ``runs-on``) — the called workflow may live in another
-      repo, so self-hosted-ness **cannot be decided offline**; needs ``--include-callers``.
+    * a caller job (``uses:`` only, no ``runs-on``) — **never** in scope: it may not carry
+      ``timeout-minutes`` at all (see the module docstring), so reporting it as "missing"
+      would demand a key GitHub rejects, and inserting one would zero the workflow. The
+      timeout belongs to a job inside the callee.
     """
 
     if job.is_caller:
-        return bool(args.include_callers)
+        return False
 
     if job.self_hosted:
         return True
@@ -886,7 +895,8 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
     in_scope_missing = in_scope_total = 0
     self_hosted_missing = self_hosted_total = 0
     hosted_missing = hosted_total = 0
-    caller_missing = caller_total = 0
+    caller_total = 0
+    caller_with_key = 0
     lines_out: List[str] = []
     current_root: Path | None = None
     current_rel: str | None = None
@@ -899,8 +909,8 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
             if job.is_caller:
                 caller_total += 1
 
-                if not job.has_timeout:
-                    caller_missing += 1
+                if job.has_timeout:
+                    caller_with_key += 1
             elif job.self_hosted:
                 self_hosted_total += 1
 
@@ -918,7 +928,10 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
                 if not job.has_timeout:
                     in_scope_missing += 1
 
-            records.append({"path": str(root), "workflow": scan.rel, "job": job.name, "runs_on": job.runs_on, "uses": job.uses, "timeout_minutes": job.timeout_minutes, "suggested": suggested, "self_hosted": job.self_hosted, "caller": job.is_caller})
+            # A caller job can never carry the key, so it has no suggestion: emitting one
+            # in the JSON would let a consumer do `timeout_minutes is None -> write
+            # suggested` and rebuild the zero-jobs accident.
+            records.append({"path": str(root), "workflow": scan.rel, "job": job.name, "runs_on": job.runs_on, "uses": job.uses, "timeout_minutes": job.timeout_minutes, "suggested": None if job.is_caller else suggested, "self_hosted": job.self_hosted, "caller": job.is_caller})
 
             if args.as_json:
                 continue
@@ -935,7 +948,11 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
 
             tag = "self-hosted" if job.self_hosted else ("caller" if job.is_caller else "hosted")
 
-            if job.has_timeout:
+            if job.is_caller:
+                # A caller job can never be given the key; printing "MISSING -> 60" would
+                # invite someone to write exactly what GitHub rejects.
+                state = "n/a (caller: cap lives in the callee)"
+            elif job.has_timeout:
                 state = f"ok (timeout-minutes: {job.timeout_minutes})"
             else:
                 state = f"MISSING -> {suggested}"
@@ -954,10 +971,16 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
     summary = _summary_line(in_scope_missing, in_scope_total, self_hosted_missing, self_hosted_total, hosted_missing, hosted_total)
     print(summary, file = sys.stderr if args.as_json else sys.stdout)
 
-    if caller_total and not args.include_callers:
-        print(f"note: {caller_missing}/{caller_total} caller job(s) (`uses:` without " "`runs-on`) are outside the default scope - their runner is decided by the " "called workflow, which may live in another repo; pass --include-callers to " "cover them.", file = sys.stderr if args.as_json else sys.stdout)
+    if caller_total:
+        if caller_with_key:
+            print(f"note: {caller_with_key}/{caller_total} caller job(s) already carry `timeout-minutes`, " "which GitHub rejects - remove it. The cap belongs to a job inside the callee.", file = sys.stderr if args.as_json else sys.stdout)
+        else:
+            print(f"note: {caller_total} caller job(s) (`uses:` without `runs-on`) carry no timeout " "of their own and never will - GitHub accepts only the nine caller keys, so a " "`timeout-minutes` there makes the whole workflow create zero jobs. The cap " "belongs to a job inside the callee.", file = sys.stderr if args.as_json else sys.stdout)
 
-    return 1 if in_scope_missing else 0
+    # A caller that already carries the key is a *defect* (GitHub will reject the whole
+    # file and create zero jobs), so it has to move the exit code too — a note alone
+    # would be a diagnostic nobody's script can act on.
+    return 1 if (in_scope_missing or caller_with_key) else 0
 
 def _run_fix(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, int]) -> int:
     """``fix`` implementation: only whole lines are added, everything else stays byte-identical."""
@@ -1036,14 +1059,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_audit.add_argument("paths", nargs = "*", help = "repository roots (default: cwd)")
     p_audit.add_argument("--json", action = "store_true", dest = "as_json", help = "emit machine-readable JSON on stdout")
     p_audit.add_argument("--include-hosted", action = "store_true", help = "also report/fix GitHub-hosted jobs")
-    p_audit.add_argument("--include-callers", action = "store_true", help = "also report/fix reusable-workflow caller jobs (jobs.<id>.uses)")
+    p_audit.add_argument("--include-callers", action = "store_true", help = "deprecated no-op: caller jobs cannot carry timeout-minutes (GitHub rejects the file); the callee carries it")
     p_audit.add_argument("--policy-override", action = "append", default = [], type = _parse_override, metavar = "JOB=MINUTES", help = "force the timeout for a job name (repeatable)")
 
     p_fix = sub.add_parser("fix", help = "insert timeout-minutes where missing")
     p_fix.add_argument("paths", nargs = "*", help = "repository roots (default: cwd)")
     p_fix.add_argument("--dry-run", action = "store_true", help = "print the insertions without writing any file")
     p_fix.add_argument("--include-hosted", action = "store_true", help = "also report/fix GitHub-hosted jobs")
-    p_fix.add_argument("--include-callers", action = "store_true", help = "also report/fix reusable-workflow caller jobs (jobs.<id>.uses)")
+    p_fix.add_argument("--include-callers", action = "store_true", help = "deprecated no-op: caller jobs cannot carry timeout-minutes (GitHub rejects the file); the callee carries it")
     p_fix.add_argument("--policy-override", action = "append", default = [], type = _parse_override, metavar = "JOB=MINUTES", help = "force the timeout for a job name (repeatable)")
 
     return parser
@@ -1063,6 +1086,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return failure
 
     overrides: Dict[str, int] = {name.lower(): minutes for name, minutes in args.policy_override}
+
+    if getattr(args, "include_callers", False):
+        print("note: --include-callers has no effect - a caller job (`uses:` only) cannot carry " "`timeout-minutes`; GitHub rejects the whole workflow over that key and the run turns " "into zero jobs. Put the cap on a job inside the callee instead.", file = sys.stderr)
 
     try:
         if args.subcmd == "audit":
