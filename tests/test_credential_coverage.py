@@ -27,6 +27,7 @@ exactly how a gate stops testing what it claims to test.
 
 import pytest
 from celestia_devtools.build.gate_cred import classify_credential_line
+from celestia_devtools.build.gate_sweep import scan_file_credentials
 from celestia_devtools.lint.rules_lint import SECRET_PATTERNS, is_placeholder
 
 #: Assembled, never written out: the scanner sweeps this very file.
@@ -111,6 +112,25 @@ def test_nothing_innocent_is_escalated(sample: str) -> None:
             assert is_placeholder(match.group(1)), f"{sample!r} tripped {label}"
         else:
             pytest.fail(f"{sample!r} tripped {label}, which has no placeholder channel")
+
+def test_the_internal_address_clause_is_scoped_by_path(tmp_path) -> None:
+    """The clause is switched off for `tests/` trees and on everywhere else.
+
+    This is the seam a mutation kept surviving: the classifier was tested directly, so
+    hard-coding `check_private_ip=True` (i.e. deleting the path scope) turned nothing
+    red. The scope must be exercised through `scan_file_credentials`, which is where the
+    path is known.
+    """
+    spec = tmp_path / "tests" / "fixture.py"
+    spec.parent.mkdir()
+    spec.write_text("upstream = " + TEN + "\n", encoding = "utf-8")
+    assert scan_file_credentials(spec) == [], "a test fixture must not be a topology leak"
+
+    config = tmp_path / "src" / "conf.py"
+    config.parent.mkdir()
+    config.write_text("upstream = " + TEN + "\n", encoding = "utf-8")
+    verdicts = [finding.verdict for finding in scan_file_credentials(config)]
+    assert verdicts == ["violation"], verdicts
 
 def test_the_union_covers_all_four_clauses() -> None:
     """Red line 1 is satisfied by the pair, not by either scanner alone.

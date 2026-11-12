@@ -44,7 +44,7 @@ _PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|
 # 裸字面量多半是网络数学（`10.0.0.0/8`）、docker0（`172.17.0.1`）或 SSRF 拒绝向量。
 # `scheme://user@10.x` —— userinfo 里没口令也照样把内网主机写进了树里。
 _USERINFO_URL_PATTERN = re.compile(r"://[^/\s\"']*@")
-_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])[a-z0-9_]*(?:host|url|addr|address|ip|server|endpoint|upstream|bind|proxy_pass)[a-z0-9_]*[\"']?\s*[:=]\s*")
+_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])(?:(?:[a-z0-9]+_)*(?:host|url|addr|address|ip|server|endpoint|upstream|bind|proxy_pass)(?:_[a-z0-9]+)*|(?-i:[A-Z0-9]*(?:HOST|URL|ADDR|ADDRESS|IP)))[\"']?\s*[:=]\s*")
 
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
