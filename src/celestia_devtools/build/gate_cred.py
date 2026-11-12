@@ -42,7 +42,7 @@ _PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|
 
 # 端点语境：键名本身就是"这里写的是主机/地址"。只有这种语境才把内网 IP 当**拓扑泄漏**判死；
 # 裸字面量多半是网络数学（`10.0.0.0/8`）、docker0（`172.17.0.1`）或 SSRF 拒绝向量。
-_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)\b(?:host|hostname|server|endpoint|upstream|base_?url|url|addr|address|bind)\b\s*[:=]\s*")
+_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9])(?:host|server|endpoint|upstream|url|addr|address|bind)[a-z0-9_]*[\"']?\s*[:=]\s*")
 
 # Explicit, greppable opt-out for **test vectors and network definitions**. Without one,
 # a scanner that walks whole source trees forces every SSRF/credential test to hide its
@@ -260,7 +260,7 @@ def _value_is_excused(value: str) -> bool:
     """A value that is a placeholder or comes from the environment."""
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
 
-def classify_credential_line(line: str) -> str:
+def classify_credential_line(line: str, *, allow_ignore: bool = False) -> str:
     """Classify one source line for the credential scan.
 
     Returns ``"clean"`` (no credential token), ``"report"`` (a hit that is
@@ -279,8 +279,10 @@ def classify_credential_line(line: str) -> str:
     credential-keyed assignment whose value is a literal.
     """
 
-    if _IGNORE_MARKER.search(line):
-        return "clean"
+    # 标记只在 `tests/` / `docs/` 路径生效（调用方决定），且**降为 `report` 而不是 clean**：
+    # 一个能被注释吞成"干净"的扫描器，等于给 `.git/config` 开了后门。
+    if allow_ignore and _IGNORE_MARKER.search(line):
+        return "report"
 
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)

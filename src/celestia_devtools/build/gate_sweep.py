@@ -312,8 +312,11 @@ def scan_file_credentials(path: Path, skipped: List[skipped_path] | None = None)
 
     findings: List[credential_finding] = []
 
+    # 行级豁免只在测试与文档里生效：`.git/config` 那种真泄漏面用 `#` 注释就能生效，等于后门。
+    allow_ignore = bool({"tests", "docs"} & set(path.parts))
+
     for lineno, line in enumerate(text.splitlines(), 1):
-        verdict = classify_credential_line(line)
+        verdict = classify_credential_line(line, allow_ignore = allow_ignore)
 
         if verdict != "clean":
             findings.append(credential_finding(path, lineno, verdict, line))

@@ -138,7 +138,7 @@ class test_injection:
 
     def test_caller_set_variables_win(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        child = self._child_env_dump(tmp_path, monkeypatch, extra_env = {"DEBUG_CHEST_URL": "http://10.9.8.7:1"})
+        child = self._child_env_dump(tmp_path, monkeypatch, extra_env = {"DEBUG_CHEST_URL": "http://10.9.8.7:1"})  # credential-scan: ignore
         assert child["DEBUG_CHEST_URL"] == "http://10.9.8.7:1"  # never clobbered
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

@@ -27,6 +27,7 @@ verdict stays graded rather than binary (see `test_a_bare_private_literal_is_rep
 
 import pytest
 from celestia_devtools.build.gate_cred import classify_credential_line
+from celestia_devtools.build.gate_sweep import scan_file_credentials
 from celestia_devtools.lint.rules_lint import SECRET_PATTERNS, is_placeholder
 
 #: A vector that must come out as a violation; the marker keeps this repo's own sweep
@@ -63,6 +64,15 @@ def test_gate_cred_flags_an_internal_address_used_as_an_endpoint(sample: str) ->
     """`gate credential-scan` guarded `.git/config` and sibling trees with no such rule."""
     assert classify_credential_line("upstream = " + sample) == "violation", sample
     assert classify_credential_line('url = "http://' + sample + ':8080/x"') == "violation", sample
+
+#: The config shapes an operator actually writes. `\b` does not survive `DB_HOST`
+#: (underscore is a word character) and JSON keys put a quote before the colon, so both
+#: were silently falling into the non-fatal bucket until an adversarial pass caught it.
+ENDPOINT_SHAPES = ('DB_HOST = "10.2.3.4"', '{"host": "10.2.3.4"}', 'DATABASE_URL = "postgresql://10.2.3.4:5432/x"', "ip_addr = 10.2.3.4")  # credential-scan: ignore
+
+@pytest.mark.parametrize("sample", ENDPOINT_SHAPES)
+def test_the_config_shapes_operators_actually_write_are_fatal(sample: str) -> None:
+    assert classify_credential_line(sample) == "violation", sample
 
 @pytest.mark.parametrize("sample", BARE_LITERALS)
 def test_a_bare_private_literal_is_reported_not_fatal(sample: str) -> None:
@@ -115,13 +125,28 @@ def test_the_union_covers_all_four_clauses() -> None:
 def test_the_inline_opt_out_is_explicit_and_narrow() -> None:
     """A test vector needs a stated exemption, not a magic context.
 
-    The scanner walks whole source trees, so without this every SSRF fixture would have
-    to hide — and a hidden fixture is exactly how a gate stops testing the thing it
-    claims to test.
+    Three properties, all pinned: it downgrades to **report** (never to `clean`), it only
+    applies when the caller allows it (tests/docs), and it is line-scoped.
     """
-    assert classify_credential_line("upstream = 10.2.3.4  # credential-scan: ignore") == "clean"
-    # It excuses only the line it is on.
+    marked = "upstream = 10.2.3.4  # credential-scan: ignore"
+
+    assert classify_credential_line(marked, allow_ignore = True) == "report"
+    # Without the caller's permission the marker is inert -- `.git/config` uses `#` too.
+    assert classify_credential_line(marked) == "violation"
+    # And it excuses only the line it sits on.
     assert classify_credential_line("upstream = 10.2.3.4") == "violation"  # credential-scan: ignore
+
+def test_a_marker_outside_tests_and_docs_does_not_excuse(tmp_path) -> None:
+    """The scan decides permission from the path, so `src/` cannot opt out of the gate."""
+    source = tmp_path / "src" / "config.py"
+    source.parent.mkdir()
+    source.write_text('upstream = "10.2.3.4"  # credential-scan: ignore\n', encoding = "utf-8")
+    assert scan_file_credentials(source), "a src/ line must stay a finding"
+
+    spec = tmp_path / "tests" / "test_x.py"
+    spec.parent.mkdir()
+    spec.write_text('upstream = "10.2.3.4"  # credential-scan: ignore\n', encoding = "utf-8")
+    assert [f.verdict for f in scan_file_credentials(spec)] == ["report"]
 
 def test_ipv6_link_local_and_ula_are_out_of_scope_on_purpose() -> None:
     """Both devtools scanners are IPv4-only. Pinning the gap beats pretending it is covered."""
