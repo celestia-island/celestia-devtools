@@ -895,6 +895,7 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
     self_hosted_missing = self_hosted_total = 0
     hosted_missing = hosted_total = 0
     caller_total = 0
+    caller_with_key = 0
     lines_out: List[str] = []
     current_root: Path | None = None
     current_rel: str | None = None
@@ -906,6 +907,9 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
 
             if job.is_caller:
                 caller_total += 1
+
+                if job.has_timeout:
+                    caller_with_key += 1
             elif job.self_hosted:
                 self_hosted_total += 1
 
@@ -923,7 +927,10 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
                 if not job.has_timeout:
                     in_scope_missing += 1
 
-            records.append({"path": str(root), "workflow": scan.rel, "job": job.name, "runs_on": job.runs_on, "uses": job.uses, "timeout_minutes": job.timeout_minutes, "suggested": suggested, "self_hosted": job.self_hosted, "caller": job.is_caller})
+            # A caller job can never carry the key, so it has no suggestion: emitting one
+            # in the JSON would let a consumer do `timeout_minutes is None -> write
+            # suggested` and rebuild the zero-jobs accident.
+            records.append({"path": str(root), "workflow": scan.rel, "job": job.name, "runs_on": job.runs_on, "uses": job.uses, "timeout_minutes": job.timeout_minutes, "suggested": None if job.is_caller else suggested, "self_hosted": job.self_hosted, "caller": job.is_caller})
 
             if args.as_json:
                 continue
@@ -964,7 +971,10 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
     print(summary, file = sys.stderr if args.as_json else sys.stdout)
 
     if caller_total:
-        print(f"note: {caller_total} caller job(s) (`uses:` without `runs-on`) carry no timeout " "of their own and never will - GitHub accepts only the nine caller keys, so a " "`timeout-minutes` there makes the whole workflow create zero jobs. The cap " "belongs to a job inside the callee.", file = sys.stderr if args.as_json else sys.stdout)
+        if caller_with_key:
+            print(f"note: {caller_with_key}/{caller_total} caller job(s) already carry `timeout-minutes`, " "which GitHub rejects - remove it. The cap belongs to a job inside the callee.", file = sys.stderr if args.as_json else sys.stdout)
+        else:
+            print(f"note: {caller_total} caller job(s) (`uses:` without `runs-on`) carry no timeout " "of their own and never will - GitHub accepts only the nine caller keys, so a " "`timeout-minutes` there makes the whole workflow create zero jobs. The cap " "belongs to a job inside the callee.", file = sys.stderr if args.as_json else sys.stdout)
 
     return 1 if in_scope_missing else 0
 

@@ -214,6 +214,11 @@ class test_fix_caller_job:
 
     CALLER = "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    secrets: inherit\n"
 
+    #: The nine keys GitHub accepts on a ``uses:`` job, frozen here on purpose: the
+    #: seam test below is only worth anything if the judge's constant is pinned against
+    #: a second, independent copy of the truth.
+    FROZEN_CALLER_KEYS = frozenset({"name", "uses", "with", "secrets", "strategy", "needs", "if", "concurrency", "permissions"})
+
     def test_caller_skipped_by_default(self, tmp_path):
         path = _workflow(tmp_path, self.CALLER)
         assert main(["fix", str(tmp_path)]) == 0
@@ -240,17 +245,59 @@ class test_fix_caller_job:
         assert "n/a (caller" in out.out
 
     def test_fix_output_never_trips_the_sibling_gate(self, tmp_path):
-        """Seam: ``fix`` and ``celestia-ci-audit`` must agree on the caller key set."""
-        mixed = "jobs:\n" "  caller:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n" "  test:\n" "    runs-on: [self-hosted, linux]\n"
+        """Seam: ``fix`` and ``celestia-ci-audit`` must agree on the caller key set.
+
+        Hardened after an adversarial pass found three ways this could go green while
+        both gates were broken: (1) nothing pinned the key set, so changing the shared
+        constant moved both sides at once; (2) filtering the findings by rule meant a
+        ``yaml-parse-error`` counted as "no invalid-caller-key"; (3) with no positive
+        control, a ``fix`` that did nothing at all also passed.
+        """
+        mixed = "jobs:\n" "  caller:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@bcf5ed8f3caebe8dbf0a528ab9deecb6d42cf211\n" "  test:\n" "    runs-on: [self-hosted, linux]\n"
         path = _workflow(tmp_path, mixed)
         assert main(["fix", str(tmp_path), "--include-callers"]) == 0
-        findings = workflow_audit.audit_text(_read(path), str(path))
-        offending = [f for f in findings if f.rule == workflow_audit.RULE_INVALID_CALLER_KEY]
-        assert not offending, f"fix emitted a key ci-audit rejects: {offending}"
-        # Negative control: the gate really does catch the hand-written form, so the
-        # assertion above is not vacuous.
-        bad = mixed.replace("    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n", "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n    timeout-minutes: 60\n")
-        assert [f for f in workflow_audit.audit_text(bad, str(path)) if f.rule == workflow_audit.RULE_INVALID_CALLER_KEY], "the negative control must trip ci-audit"
+        text = _read(path)
+        document = yaml.safe_load(text)
+
+        # (3) positive control: the self-hosted job really did get its cap.
+        assert document["jobs"]["test"]["timeout-minutes"] == 120, "fix did nothing at all"
+
+        # (2) every caller job stays inside the frozen nine-key set, judged from the
+        # parsed product rather than from the audit's rule names.
+        for name, job in document["jobs"].items():
+            if "uses" in job:
+                extra = set(job) - self.FROZEN_CALLER_KEYS
+                assert not extra, f"{name} carries keys GitHub rejects: {sorted(extra)}"
+
+        # (2b) exactly no findings - a parse error must not pass as "no bad key".
+        findings = workflow_audit.audit_text(text, str(path))
+        assert findings == [], f"fix produced a file ci-audit complains about: {findings}"
+
+        # Negative control: the hand-written illegal form is caught, exactly once.
+        bad = text.replace("    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@bcf5ed8f3caebe8dbf0a528ab9deecb6d42cf211\n", "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@bcf5ed8f3caebe8dbf0a528ab9deecb6d42cf211\n    timeout-minutes: 60\n")
+        rules = {f.rule for f in workflow_audit.audit_text(bad, str(path))}
+        assert rules == {workflow_audit.RULE_INVALID_CALLER_KEY}, f"negative control no longer bites: {rules}"
+
+    def test_the_caller_key_set_is_frozen_here(self):
+        """Pin the nine keys locally so redefining them elsewhere fails this test.
+
+        Without this, editing ``workflow_audit.CALLER_LEGAL_KEYS`` moves the judge and
+        the judged object together and the seam test would not notice.
+        """
+        assert set(workflow_audit.CALLER_LEGAL_KEYS) == set(self.FROZEN_CALLER_KEYS), "the caller key set changed; update FROZEN_CALLER_KEYS, the module docstring and _in_scope together"
+
+    def test_caller_has_no_suggestion_in_json(self, tmp_path, capsys):
+        """A machine consumer must not read "suggested" for a job that cannot take it.
+
+        ``timeout_minutes is None -> write suggested`` is the obvious consumer shape and
+        it would rebuild the zero-jobs accident from the JSON side.
+        """
+        _workflow(tmp_path, self.CALLER)
+        assert main(["audit", str(tmp_path), "--json"]) == 0
+        records = json.loads(capsys.readouterr().out)
+        record = next(item for item in records if item["job"] == "verify-versions")
+        assert record["caller"] is True
+        assert record["suggested"] is None, f"caller advertised a value it cannot take: {record}"
 
 class test_fix_quoted_job_name:
     """(5) Quoted job names."""
@@ -507,7 +554,7 @@ class test_exit_codes:
 class test_audit_listing:
     """``audit`` must list every job's ``runs-on`` and its timeout state."""
 
-    WORKFLOW = "jobs:\n" "  check:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - run: cargo test\n" "  e2e:\n" "    runs-on: [self-hosted, linux]\n" "    timeout-minutes: 60\n" "  windows:\n" "    runs-on: windows-latest\n" "  caller:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n"
+    WORKFLOW = "jobs:\n" "  check:\n" "    runs-on: [self-hosted, linux, x64, local]\n" "    steps:\n" "      - run: cargo test\n" "  e2e:\n" "    runs-on: [self-hosted, linux]\n" "    timeout-minutes: 60\n" "  windows:\n" "    runs-on: windows-latest\n" "  caller:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@bcf5ed8f3caebe8dbf0a528ab9deecb6d42cf211\n"
 
     def test_shows_runs_on_value(self, tmp_path, capsys):
         _workflow(tmp_path, self.WORKFLOW)
@@ -527,7 +574,7 @@ class test_audit_listing:
         _workflow(tmp_path, self.WORKFLOW)
         main(["audit", str(tmp_path)])
         out = capsys.readouterr().out
-        assert "uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master" in out
+        assert "uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@bcf5ed8f3caebe8dbf0a528ab9deecb6d42cf211" in out
 
     def test_marks_out_of_scope_jobs(self, tmp_path, capsys):
         _workflow(tmp_path, self.WORKFLOW)
