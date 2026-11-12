@@ -38,9 +38,9 @@ Design constraints
 * **Insertion point**: immediately after that job's ``runs-on:`` entry. For a multi-line
   value (continuation lines, flow collection or block scalar) it goes after the **last
   continuation line** — mechanically inserting directly below ``runs-on:`` would emit
-  invalid YAML. A caller job (``uses:`` only, no ``runs-on:``) gets the line after its
-  ``uses:`` entry. The inserted line's indentation matches the anchor line's leading
-  whitespace.
+  invalid YAML. A caller job (``uses:`` only, no ``runs-on:``) is **never** a target: it
+  may not carry ``timeout-minutes`` at all (see the caller bullet below). The inserted
+  line's indentation matches the anchor line's leading whitespace.
 * **Idempotent**: a job that already has ``timeout-minutes`` is never touched, so a
   second run changes nothing.
 * **Self-hosted by default**: only jobs whose ``runs-on`` contains ``self-hosted`` are
@@ -710,6 +710,11 @@ def _scan_job(lines: Sequence[str], name: str, key_line: int, indent: int, block
         # caller job 没有 runs-on，自托管与否无法从本文件判定（被调 workflow 可能在
         # 别的仓）。既不默认算自托管、也不默认算 hosted，单列一类，见 _in_scope。
         job.self_hosted = False
+        # 不给 caller 算插入点：`timeout-minutes` 不是合法 caller 键，写进去整份文件会被
+        # GitHub 拒跑（模块 docstring 已述）。`insert_at = -1` 让 fix 循环直接跳过，
+        # 不留一条"能算但永远用不到"的死路径。
+        job.insert_at = -1
+        job.insert_indent = ""
 
     return job
 
@@ -935,7 +940,11 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
 
             tag = "self-hosted" if job.self_hosted else ("caller" if job.is_caller else "hosted")
 
-            if job.has_timeout:
+            if job.is_caller:
+                # A caller job can never be given the key; printing "MISSING -> 60" would
+                # invite someone to write exactly what GitHub rejects.
+                state = "n/a (caller: cap lives in the callee)"
+            elif job.has_timeout:
                 state = f"ok (timeout-minutes: {job.timeout_minutes})"
             else:
                 state = f"MISSING -> {suggested}"

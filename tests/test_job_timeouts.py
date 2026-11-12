@@ -226,11 +226,18 @@ class test_fix_caller_job:
         assert "no effect" in capsys.readouterr().err
 
     def test_audit_never_demands_the_key_from_a_caller(self, tmp_path, capsys):
-        """``audit`` must not report a "missing" timeout it can never legally satisfy."""
+        """``audit`` must not report a "missing" timeout it can never legally satisfy.
+
+        The exit code is not enough: the human line used to read ``MISSING -> 60``, which
+        invites someone to hand-write exactly the key GitHub rejects.
+        """
         _workflow(tmp_path, self.CALLER)
         assert main(["audit", str(tmp_path), "--include-callers"]) == 0
         out = capsys.readouterr()
-        assert "never will" in (out.out + out.err), "the caller class must be explained, not counted"
+        combined = out.out + out.err
+        assert "never will" in combined, "the caller class must be explained, not counted"
+        assert "MISSING" not in out.out, f"a caller job must not be shown as MISSING:\n{out.out}"
+        assert "n/a (caller" in out.out
 
     def test_fix_output_never_trips_the_sibling_gate(self, tmp_path):
         """Seam: ``fix`` and ``celestia-ci-audit`` must agree on the caller key set."""
