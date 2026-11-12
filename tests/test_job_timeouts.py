@@ -11,6 +11,7 @@ self-hosted-only-by-default scope, ``--policy-override`` and the exit codes.
 import os
 import pytest
 from celestia_devtools.ci.job_timeouts import (workflow_parse_error, main, scan_workflow_text, suggest)
+from celestia_devtools.ci import workflow_audit
 import json
 from pathlib import Path as _Path
 from celestia_devtools.ci.job_timeouts import main as entry
@@ -201,7 +202,15 @@ class test_fix_multiline_runs_on:
         assert document["jobs"]["test"]["timeout-minutes"] == 120
 
 class test_fix_caller_job:
-    """(4) Caller job (``uses:`` only): inserted after ``uses:``; out of scope by default."""
+    """(4) Caller job (``uses:`` only): always out of scope - it may not carry the key.
+
+    History: ``fix`` used to insert ``timeout-minutes`` right after ``uses:`` when
+    ``--include-callers`` was passed. That produces exactly the shape
+    ``ci/workflow_audit.py`` calls ``invalid-caller-key`` - GitHub accepts only the nine
+    caller keys and rejects the **whole file** over any other one, so the workflow would
+    create zero jobs. Two gates in one package encoded opposite truths, each with its own
+    passing test; the seam test below is what stops that from happening again.
+    """
 
     CALLER = "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master\n" "    secrets: inherit\n"
 
@@ -210,12 +219,31 @@ class test_fix_caller_job:
         assert main(["fix", str(tmp_path)]) == 0
         assert _read(path) == self.CALLER
 
-    def test_caller_fixed_with_include_callers(self, tmp_path):
+    def test_the_deprecated_flag_never_writes_the_key(self, tmp_path, capsys):
         path = _workflow(tmp_path, self.CALLER)
         assert main(["fix", str(tmp_path), "--include-callers"]) == 0
-        lines = _read(path).split("\n")
-        index = lines.index("    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master")
-        assert lines[index + 1] == "    timeout-minutes: 60"
+        assert _read(path) == self.CALLER, "a caller job must stay byte-identical"
+        assert "no effect" in capsys.readouterr().err
+
+    def test_audit_never_demands_the_key_from_a_caller(self, tmp_path, capsys):
+        """``audit`` must not report a "missing" timeout it can never legally satisfy."""
+        _workflow(tmp_path, self.CALLER)
+        assert main(["audit", str(tmp_path), "--include-callers"]) == 0
+        out = capsys.readouterr()
+        assert "never will" in (out.out + out.err), "the caller class must be explained, not counted"
+
+    def test_fix_output_never_trips_the_sibling_gate(self, tmp_path):
+        """Seam: ``fix`` and ``celestia-ci-audit`` must agree on the caller key set."""
+        mixed = "jobs:\n" "  caller:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n" "  test:\n" "    runs-on: [self-hosted, linux]\n"
+        path = _workflow(tmp_path, mixed)
+        assert main(["fix", str(tmp_path), "--include-callers"]) == 0
+        findings = workflow_audit.audit_text(_read(path), str(path))
+        offending = [f for f in findings if f.rule == workflow_audit.RULE_INVALID_CALLER_KEY]
+        assert not offending, f"fix emitted a key ci-audit rejects: {offending}"
+        # Negative control: the gate really does catch the hand-written form, so the
+        # assertion above is not vacuous.
+        bad = mixed.replace("    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n", "    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@master\n    timeout-minutes: 60\n")
+        assert [f for f in workflow_audit.audit_text(bad, str(path)) if f.rule == workflow_audit.RULE_INVALID_CALLER_KEY], "the negative control must trip ci-audit"
 
 class test_fix_quoted_job_name:
     """(5) Quoted job names."""
@@ -652,10 +680,11 @@ class test_multiline_flow_collection:
         assert yaml.safe_load(_read(path))["jobs"]["test"]["runs-on"] == ["self-hosted", "linux"]
 
     def test_multiline_flow_uses_with_include_callers(self, tmp_path):
-        path = _workflow(tmp_path, "jobs:\n" "  verify:\n" "    uses: celestia-island/celestia-devtools/" ".github/workflows/verify-versions.yml@master\n" "    with: {a: 1}\n")
+        """A caller is never touched, even with the (now deprecated) flag."""
+        text = "jobs:\n" "  verify:\n" "    uses: celestia-island/celestia-devtools/" ".github/workflows/verify-versions.yml@master\n" "    with: {a: 1}\n"
+        path = _workflow(tmp_path, text)
         assert main(["fix", str(tmp_path), "--include-callers"]) == 0
-        lines = _read(path).split("\n")
-        assert lines.index("    timeout-minutes: 60") == (lines.index("    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@master") + 1)
+        assert _read(path) == text, "caller jobs stay byte-identical; the callee carries the timeout"
 
     def test_multiline_flow_hosted(self, tmp_path):
         path = _workflow(tmp_path, "jobs:\n" "  win:\n" "    runs-on: [windows-latest,\n" "              x64]\n")
