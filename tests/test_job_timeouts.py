@@ -286,6 +286,22 @@ class test_fix_caller_job:
         """
         assert set(workflow_audit.CALLER_LEGAL_KEYS) == set(self.FROZEN_CALLER_KEYS), "the caller key set changed; update FROZEN_CALLER_KEYS, the module docstring and _in_scope together"
 
+    CALLER_WITH_KEY = "jobs:\n" "  verify-versions:\n" "    uses: celestia-island/celestia-devtools/.github/workflows/verify-versions.yml@bcf5ed8f3caebe8dbf0a528ab9deecb6d42cf211\n" "    secrets: inherit\n" "    timeout-minutes: 60\n"
+
+    def test_caller_already_carrying_the_key_is_a_defect_not_a_pass(self, tmp_path, capsys):
+        """A caller with `timeout-minutes` must move the exit code, not just earn a note.
+
+        GitHub rejects the whole file over that key, so a note that leaves rc=0 is a
+        diagnostic no script can act on. Mutation of the ``caller_with_key`` counter has
+        to turn this red.
+        """
+        _workflow(tmp_path, self.CALLER_WITH_KEY)
+        assert main(["audit", str(tmp_path)]) == 1, "an illegal caller key must fail the audit"
+        out = capsys.readouterr()
+        combined = out.out + out.err
+        assert "already carry" in combined, f"the illegal key was not called out:\n{combined}"
+        assert "ok (timeout-minutes" not in out.out, "must not bless a key GitHub rejects"
+
     def test_caller_has_no_suggestion_in_json(self, tmp_path, capsys):
         """A machine consumer must not read "suggested" for a job that cannot take it.
 

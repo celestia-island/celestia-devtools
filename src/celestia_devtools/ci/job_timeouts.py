@@ -24,8 +24,9 @@ Subcommands
 ``PATH`` defaults to the current directory; each PATH is scanned for
 ``<PATH>/.github/workflows/{*.yml,*.yaml}`` and a missing directory is skipped silently.
 
-Exit codes: ``0`` success (including "nothing to change") | ``1`` jobs still missing a
-timeout (**audit only**) | ``2`` usage error or parse failure.
+Exit codes: ``0`` success (including "nothing to change") | ``1`` a job is still missing
+its timeout, **or** a caller job carries one it may not have (**audit only**) | ``2`` usage
+error or parse failure.
 
 Design constraints
 ==================
@@ -976,7 +977,10 @@ def _run_audit(args: argparse.Namespace, roots: List[Path], overrides: Dict[str,
         else:
             print(f"note: {caller_total} caller job(s) (`uses:` without `runs-on`) carry no timeout " "of their own and never will - GitHub accepts only the nine caller keys, so a " "`timeout-minutes` there makes the whole workflow create zero jobs. The cap " "belongs to a job inside the callee.", file = sys.stderr if args.as_json else sys.stdout)
 
-    return 1 if in_scope_missing else 0
+    # A caller that already carries the key is a *defect* (GitHub will reject the whole
+    # file and create zero jobs), so it has to move the exit code too — a note alone
+    # would be a diagnostic nobody's script can act on.
+    return 1 if (in_scope_missing or caller_with_key) else 0
 
 def _run_fix(args: argparse.Namespace, roots: List[Path], overrides: Dict[str, int]) -> int:
     """``fix`` implementation: only whole lines are added, everything else stays byte-identical."""
