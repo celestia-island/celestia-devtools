@@ -42,13 +42,9 @@ _PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|
 
 # 端点语境：键名本身就是"这里写的是主机/地址"。只有这种语境才把内网 IP 当**拓扑泄漏**判死；
 # 裸字面量多半是网络数学（`10.0.0.0/8`）、docker0（`172.17.0.1`）或 SSRF 拒绝向量。
-_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9])(?:host|server|endpoint|upstream|url|addr|address|bind)[a-z0-9_]*[\"']?\s*[:=]\s*")
-
-# Explicit, greppable opt-out for **test vectors and network definitions**. Without one,
-# a scanner that walks whole source trees forces every SSRF/credential test to hide its
-# fixture, which is worse than the leak it is trying to prevent. Same idea as the
-# workspace's `_ledger/tool-exemptions.md`, but per line.
-_IGNORE_MARKER = re.compile(r"credential-scan:\s*ignore", re.IGNORECASE)
+# `scheme://user@10.x` —— userinfo 里没口令也照样把内网主机写进了树里。
+_USERINFO_URL_PATTERN = re.compile(r"://[^/\s\"']*@")
+_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])[a-z0-9_]*(?:host|url|addr|address|ip|server|endpoint|upstream|bind|proxy_pass)[a-z0-9_]*[\"']?\s*[:=]\s*")
 
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
@@ -260,7 +256,7 @@ def _value_is_excused(value: str) -> bool:
     """A value that is a placeholder or comes from the environment."""
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
 
-def classify_credential_line(line: str, *, allow_ignore: bool = False) -> str:
+def classify_credential_line(line: str, *, check_private_ip: bool = True) -> str:
     """Classify one source line for the credential scan.
 
     Returns ``"clean"`` (no credential token), ``"report"`` (a hit that is
@@ -270,7 +266,10 @@ def classify_credential_line(line: str, *, allow_ignore: bool = False) -> str:
     A fourth shape carries no secret at all but breaks the same red line: a
     literal RFC 1918 address (AGENTS red line 1 forbids **internal IPs** in a
     git tree, not just credentials). It is classified here as well so that the
-    ``gate credential-scan`` lane is not blind to half of that clause.
+    ``gate credential-scan`` lane is not blind to half of that clause. Callers
+    that walk test trees pass ``check_private_ip=False``: a fixture is
+    conventionally fake, and flagging every one of them is how this rule would
+    get switched off.
 
     Three shapes carry a secret without ever naming one, and all three are
     matched here: a provider token (``gho_…`` / ``github_pat_…`` / ``sk-…`` /
@@ -279,15 +278,10 @@ def classify_credential_line(line: str, *, allow_ignore: bool = False) -> str:
     credential-keyed assignment whose value is a literal.
     """
 
-    # 标记只在 `tests/` / `docs/` 路径生效（调用方决定），且**降为 `report` 而不是 clean**：
-    # 一个能被注释吞成"干净"的扫描器，等于给 `.git/config` 开了后门。
-    if allow_ignore and _IGNORE_MARKER.search(line):
-        return "report"
-
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
-    private_ip = _PRIVATE_IPV4_PATTERN.search(line)
+    private_ip = _PRIVATE_IPV4_PATTERN.search(line) if check_private_ip else None
 
     if not (_CRED_PATTERN.search(line) or embedded or provider or private_ip):
         return "clean"
@@ -300,8 +294,8 @@ def classify_credential_line(line: str, *, allow_ignore: bool = False) -> str:
     #  * 裸字面量 → `report`，因为扫描器也会走整棵源码树，而 `10.0.0.0/8`、`172.17.0.1`
     #    这类网络数学/容器默认地址/SSRF 拒绝向量都是合法内容。判死它们等于让门常红，
     #    而常红的门最后一定会被关掉。
-    if private_ip is not None:
-        if (embedded is not None) or _ENDPOINT_KEY_PATTERN.search(line):
+    if (private_ip is not None) and check_private_ip:
+        if (embedded is not None) or _USERINFO_URL_PATTERN.search(line) or _ENDPOINT_KEY_PATTERN.search(line):
             return "violation"
 
         return "report"
