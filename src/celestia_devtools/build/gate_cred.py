@@ -34,6 +34,12 @@ _ENV_REF_PATTERN = re.compile(r"os\.environ|getenv\s*\(|environ\s*\[|\$\{|proces
 # A PEM private-key header (always suspicious; never a placeholder by default).
 _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 
+# AGENTS 红线 1 的另一半：**内网 IP 也不许进 git 树**。它不是"凭据形态"，但它是同一条
+# 红线的子句，`lint/rules_lint.py` 与 `_tools/cred_scan.py` 都判它 —— 本分类器此前不判，
+# 于是 `gate credential-scan` 扫过的路径（`.git/config` 远程 URL、兄弟仓源码树）对这条子句
+# 完全没有判据。
+_PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])")
+
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(r"(?:^|[\s(\"'])" r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)" r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*", re.IGNORECASE)
@@ -251,6 +257,11 @@ def classify_credential_line(line: str) -> str:
     whitelisted, env-sourced, or merely a code reference — reported but not
     fatal), or ``"violation"`` (a literal non-placeholder secret — fatal).
 
+    A fourth shape carries no secret at all but breaks the same red line: a
+    literal RFC 1918 address (AGENTS red line 1 forbids **internal IPs** in a
+    git tree, not just credentials). It is classified here as well so that the
+    ``gate credential-scan`` lane is not blind to half of that clause.
+
     Three shapes carry a secret without ever naming one, and all three are
     matched here: a provider token (``gho_…`` / ``github_pat_…`` / ``sk-…`` /
     ``AKIA…``), a URL with credentials in its userinfo (the ``.git/config``
@@ -260,12 +271,17 @@ def classify_credential_line(line: str) -> str:
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
+    private_ip = _PRIVATE_IPV4_PATTERN.search(line)
 
-    if not (_CRED_PATTERN.search(line) or embedded or provider):
+    if not (_CRED_PATTERN.search(line) or embedded or provider or private_ip):
         return "clean"
 
     if _PRIVATE_KEY_PATTERN.search(line):
         return "report" if _PLACEHOLDER_PATTERN.search(line) else "violation"
+
+    # 红线 1 的子句，独立于凭据形态：占位符 / RFC 5737 文档地址 / env 引用照旧豁免。
+    if (private_ip is not None) and not _value_is_excused(private_ip.group(0)):
+        return "violation"
 
     # Provider tokens are literals by construction; placeholders and env refs
     # are judged on the token itself, so a doc IP elsewhere on the line cannot
