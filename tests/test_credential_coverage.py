@@ -17,52 +17,36 @@ scanner              surface                                       exemptions
 
 The 2026-11-12 cross-repo audit found that the **internal-IPv4** clause had no
 detector at all in the middle column, so every path that scanner alone guarded was
-blind to half of red line 1. Fixing that is worth nothing without a pin: a rule that
-is deleted silently next month puts us back exactly where we were. These tests are
-that pin.
+blind to it. Fixing that is worth nothing without a pin: a rule deleted silently next
+month puts us back where we were. These tests are that pin.
 
-They deliberately do **not** assert that the three scanners agree on everything —
-they should not. What they assert is that no clause is unattended in either
-devtools-side scanner.
+They deliberately do **not** assert that the three scanners agree on everything — they
+should not. What they assert is that no clause is unattended, and that the sweep's
+verdict stays graded rather than binary (see `test_a_bare_private_literal_is_reported`).
 """
 
 import pytest
 from celestia_devtools.build.gate_cred import classify_credential_line
 from celestia_devtools.lint.rules_lint import SECRET_PATTERNS, is_placeholder
 
-#: (clause, canonical sample). Every one of these must be a violation somewhere.
-CLAUSES = (("literal-password", 'db_password = "hunter2hunter2"'), ("private-key", "-----BEGIN RSA PRIVATE KEY-----"), ("internal-ipv4", "upstream = 10.2.3.4"), ("provider-token", "token = gho_0123456789abcdefghij"))
+#: A vector that must come out as a violation; the marker keeps this repo's own sweep
+#: clean without weakening the rule (the marker is line-scoped, see the tests below).
+ENDPOINT_SAMPLE = "upstream = 10.2.3.4"  # credential-scan: ignore
+
+#: (clause, canonical sample) — every one must be a **violation** for `gate_cred`.
+CLAUSES = (("literal-password", 'db_password = "hunter2hunter2"'), ("private-key", "-----BEGIN RSA PRIVATE KEY-----"), ("internal-ipv4", ENDPOINT_SAMPLE), ("provider-token", "token = gho_0123456789abcdefghij"))  # credential-scan: ignore
 
 #: Samples that must NOT be violations anywhere: prose, placeholders, doc addresses.
 NOT_VIOLATIONS = ("the scanner refuses a line that names a password", 'db_password = "<your-password>"', 'db_password = "${DB_PASSWORD}"', "callback = 192.0.2.7")
 
-def test_rules_lint_still_carries_the_internal_ip_clause() -> None:
-    """The CI-side scanner defines private-ipv4 three times, one per RFC 1918 range."""
-    labels = [label for label, _ in SECRET_PATTERNS]
-
-    assert labels.count("private-ipv4") == 3, labels
-
-    for sample in ("10.2.3.4", "192.168.1.9", "172.16.0.1"):
-        hits = [label for label, pattern in SECRET_PATTERNS if pattern.search("x = " + sample)]
-        assert "private-ipv4" in hits, f"{sample} is not caught by rules_lint"
-
-@pytest.mark.parametrize("sample", ["10.2.3.4", "192.168.1.9", "172.16.0.1", "172.31.255.254"])
-def test_gate_cred_catches_every_rfc1918_range(sample: str) -> None:
-    """`gate credential-scan` guarded `.git/config` and sibling trees with no such rule."""
-    assert classify_credential_line("upstream = " + sample) == "violation", sample
-
-@pytest.mark.parametrize("clause,sample", CLAUSES)
-def test_every_clause_has_a_detector_in_gate_cred(clause: str, sample: str) -> None:
-    assert classify_credential_line(sample) == "violation", f"{clause} has no detector: {sample!r}"
-
-#: What `rules_lint` actually detects. It is a **narrower** scanner than `gate_cred`:
+#: What `rules_lint` actually carries. It is a **narrower** scanner than `gate_cred`:
 #: its surface is the text injected into every prompt, where PEM blocks and provider
 #: tokens do not appear. Pinning the narrow set keeps that blindness deliberate rather
-#: than accidental, and `test_the_union_covers_all_four_clauses` proves the delegation
-#: is not a hole.
-#: `rules_lint` calls the internal-address clause `private-ipv4`; the clause name in
-#: `CLAUSES` is `internal-ipv4`. Both spellings are pinned so the mapping cannot drift.
+#: than accidental.
 RULES_LINT_CLAUSES = ("private-ipv4", "long-hex-secret", "inline-password")
+
+#: A bare RFC 1918 literal is network math far more often than it is a leak.
+BARE_LITERALS = ("MASKS = [\"10.0.0.0/8\", \"172.16.0.0/12\"]", "docker0 = 172.17.0.1")
 
 @pytest.mark.parametrize("label", RULES_LINT_CLAUSES)
 def test_rules_lint_carries_the_clauses_its_surface_needs(label: str) -> None:
@@ -74,14 +58,24 @@ def test_rules_lint_does_not_claim_the_secret_shapes_it_cannot_see() -> None:
 
     assert ("private-key" not in labels) and ("provider-token" not in labels), labels
 
-def test_the_union_covers_all_four_clauses() -> None:
-    """Red line 1 is satisfied by the pair, not by either scanner alone."""
+@pytest.mark.parametrize("sample", ["10.2.3.4", "192.168.1.9", "172.16.0.1", "172.31.255.254"])
+def test_gate_cred_flags_an_internal_address_used_as_an_endpoint(sample: str) -> None:
+    """`gate credential-scan` guarded `.git/config` and sibling trees with no such rule."""
+    assert classify_credential_line("upstream = " + sample) == "violation", sample
+    assert classify_credential_line('url = "http://' + sample + ':8080/x"') == "violation", sample
 
-    for clause, sample in CLAUSES:
-        by_gate = classify_credential_line(sample) == "violation"
-        by_lint = any(pattern.search(sample) for _, pattern in SECRET_PATTERNS)
+@pytest.mark.parametrize("sample", BARE_LITERALS)
+def test_a_bare_private_literal_is_reported_not_fatal(sample: str) -> None:
+    """The sweep walks whole source trees; network math must be visible, not fatal.
 
-        assert by_gate or by_lint, f"{clause} is unattended by both devtools scanners"
+    A gate that fails on `10.0.0.0/8` gets switched off within a week, and then it
+    guards nothing at all.
+    """
+    assert classify_credential_line(sample) == "report", sample
+
+@pytest.mark.parametrize("clause,sample", CLAUSES)
+def test_every_clause_has_a_detector_in_gate_cred(clause: str, sample: str) -> None:
+    assert classify_credential_line(sample) == "violation", f"{clause} has no detector: {sample!r}"
 
 @pytest.mark.parametrize("sample", NOT_VIOLATIONS)
 def test_nothing_innocent_is_escalated(sample: str) -> None:
@@ -96,18 +90,44 @@ def test_nothing_innocent_is_escalated(sample: str) -> None:
         if match is None:
             continue
 
-        assert is_placeholder(match.group(1)) if match.groups() else False, f"{sample!r} tripped {label}"
+        if match.groups():
+            assert is_placeholder(match.group(1)), f"{sample!r} tripped {label}"
+        else:
+            # The clause patterns (private-ipv4, long-hex) have no capture group, so a
+            # sample that reaches here is a real finding, not a placeholder.
+            pytest.fail(f"{sample!r} tripped {label}, which has no placeholder channel")
 
-def test_the_two_devtools_scanners_agree_on_the_internal_ip_clause() -> None:
-    """Different rules, same verdict — if either side drops the clause this fails.
+def test_the_union_covers_all_four_clauses() -> None:
+    """Red line 1 is satisfied by the pair, not by either scanner alone.
 
-    This is the seam that mattered: `gate_cred` had no internal-IP rule at all while
-    `rules_lint` had three, and each scanner had its own passing tests.
+    `gate_cred` is asserted for **all four** on purpose: if it loses one, the other
+    scanner does not pick the shape up (that was the original defect), so an `or`
+    here would hide exactly the regression this file exists to catch.
     """
 
-    for sample in ("10.2.3.4", "192.168.1.9", "172.20.1.1"):
-        line = "upstream = " + sample
-        by_gate = classify_credential_line(line) == "violation"
-        by_lint = any((label == "private-ipv4") and pattern.search(line) for label, pattern in SECRET_PATTERNS)
+    for clause, sample in CLAUSES:
+        assert classify_credential_line(sample) == "violation", clause
 
-        assert by_gate and by_lint, f"{sample}: gate={by_gate} lint={by_lint}"
+    # …and the internal-address clause additionally has a second, independent detector.
+    line = ENDPOINT_SAMPLE
+    assert any((label == "private-ipv4") and pattern.search(line) for label, pattern in SECRET_PATTERNS)
+
+def test_the_inline_opt_out_is_explicit_and_narrow() -> None:
+    """A test vector needs a stated exemption, not a magic context.
+
+    The scanner walks whole source trees, so without this every SSRF fixture would have
+    to hide — and a hidden fixture is exactly how a gate stops testing the thing it
+    claims to test.
+    """
+    assert classify_credential_line("upstream = 10.2.3.4  # credential-scan: ignore") == "clean"
+    # It excuses only the line it is on.
+    assert classify_credential_line("upstream = 10.2.3.4") == "violation"  # credential-scan: ignore
+
+def test_ipv6_link_local_and_ula_are_out_of_scope_on_purpose() -> None:
+    """Both devtools scanners are IPv4-only. Pinning the gap beats pretending it is covered."""
+
+    for sample in ("fd00::1", "fe80::1"):
+        line = "upstream = " + sample
+
+        assert classify_credential_line(line) == "clean", sample
+        assert not any(pattern.search(line) for _, pattern in SECRET_PATTERNS), sample

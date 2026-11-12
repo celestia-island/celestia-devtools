@@ -40,6 +40,16 @@ _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 # 完全没有判据。
 _PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])")
 
+# 端点语境：键名本身就是"这里写的是主机/地址"。只有这种语境才把内网 IP 当**拓扑泄漏**判死；
+# 裸字面量多半是网络数学（`10.0.0.0/8`）、docker0（`172.17.0.1`）或 SSRF 拒绝向量。
+_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)\b(?:host|hostname|server|endpoint|upstream|base_?url|url|addr|address|bind)\b\s*[:=]\s*")
+
+# Explicit, greppable opt-out for **test vectors and network definitions**. Without one,
+# a scanner that walks whole source trees forces every SSRF/credential test to hide its
+# fixture, which is worse than the leak it is trying to prevent. Same idea as the
+# workspace's `_ledger/tool-exemptions.md`, but per line.
+_IGNORE_MARKER = re.compile(r"credential-scan:\s*ignore", re.IGNORECASE)
+
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(r"(?:^|[\s(\"'])" r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)" r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*", re.IGNORECASE)
@@ -268,6 +278,10 @@ def classify_credential_line(line: str) -> str:
     remote form ``https://oauth2:gho_…@github.com/org/repo.git``), and a
     credential-keyed assignment whose value is a literal.
     """
+
+    if _IGNORE_MARKER.search(line):
+        return "clean"
+
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
@@ -279,9 +293,16 @@ def classify_credential_line(line: str) -> str:
     if _PRIVATE_KEY_PATTERN.search(line):
         return "report" if _PLACEHOLDER_PATTERN.search(line) else "violation"
 
-    # 红线 1 的子句，独立于凭据形态：占位符 / RFC 5737 文档地址 / env 引用照旧豁免。
-    if (private_ip is not None) and not _value_is_excused(private_ip.group(0)):
-        return "violation"
+    # 红线 1 的子句，独立于凭据形态。分级：
+    #  * 端点语境（URL userinfo / `host = …`）→ `violation`，那是真的把内网拓扑写进树里；
+    #  * 裸字面量 → `report`，因为扫描器也会走整棵源码树，而 `10.0.0.0/8`、`172.17.0.1`
+    #    这类网络数学/容器默认地址/SSRF 拒绝向量都是合法内容。判死它们等于让门常红，
+    #    而常红的门最后一定会被关掉。
+    if private_ip is not None:
+        if (embedded is not None) or _ENDPOINT_KEY_PATTERN.search(line):
+            return "violation"
+
+        return "report"
 
     # Provider tokens are literals by construction; placeholders and env refs
     # are judged on the token itself, so a doc IP elsewhere on the line cannot
