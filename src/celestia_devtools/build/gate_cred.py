@@ -34,6 +34,22 @@ _ENV_REF_PATTERN = re.compile(r"os\.environ|getenv\s*\(|environ\s*\[|\$\{|proces
 # A PEM private-key header (always suspicious; never a placeholder by default).
 _PRIVATE_KEY_PATTERN = re.compile(r"BEGIN\s+[A-Z0-9 ]*PRIVATE\s+KEY")
 
+# AGENTS 红线 1 的另一半：**内网 IP 也不许进 git 树**。它不是"凭据形态"，但它是同一条
+# 红线的子句，`lint/rules_lint.py` 与 `_tools/cred_scan.py` 都判它 —— 本分类器此前不判，
+# 于是 `gate credential-scan` 扫过的路径（`.git/config` 远程 URL、兄弟仓源码树）对这条子句
+# 完全没有判据。
+_PRIVATE_IPV4_PATTERN = re.compile(r"(?<![\d.])(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(?![\d.])")
+
+# 端点语境：键名本身就是"这里写的是主机/地址"。只有这种语境才把内网 IP 当**拓扑泄漏**判死；
+# 裸字面量多半是网络数学（`10.0.0.0/8`）、docker0（`172.17.0.1`）或 SSRF 拒绝向量。
+# `scheme://user@10.x` —— userinfo 里没口令也照样把内网主机写进了树里。
+_USERINFO_URL_PATTERN = re.compile(r"://[^/\s\"']*@")
+
+# 指令形（空格分隔、没有 `=`/`:`）：`proxy_pass http://10.x/;`、`bind 10.x`、`server 10.x;`。
+# 这些形态让「键表里有 proxy_pass / bind / server」在旧正则下根本不可达——复核抓到的漏判。
+_ENDPOINT_DIRECTIVE_PATTERN = re.compile(r"(?i)(?<![a-z0-9])(?:proxy_pass|bind|server_name|server)\s+")
+_ENDPOINT_KEY_PATTERN = re.compile(r"(?i)(?<![a-z0-9_])(?:(?:[a-z0-9]+_)*(?:host|url|addr|address|ip|server|endpoint|upstream|bind|proxy_pass)(?:_[a-z0-9]+)*|(?-i:[A-Z0-9]*(?:HOST|URL|ADDR|ADDRESS|IP)))[\"']?\s*[:=]\s*")
+
 # An assignment whose left-hand key contains a credential word, e.g.
 # ``SSH_PASS="..."`` / ``password = value`` / ``api_key: value``.
 _ASSIGN_KEY_PATTERN = re.compile(r"(?:^|[\s(\"'])" r"[A-Za-z0-9_.-]{0,256}(?:password|passwd|passphrase|secret|token|credential|api[_-]?key|pass|pwd)" r"[A-Za-z0-9_.-]{0,256}[\"']?\s*[=:]\s*", re.IGNORECASE)
@@ -244,12 +260,67 @@ def _value_is_excused(value: str) -> bool:
     """A value that is a placeholder or comes from the environment."""
     return bool(_PLACEHOLDER_PATTERN.search(value) or _ENV_REF_PATTERN.search(value))
 
-def classify_credential_line(line: str) -> str:
+def _classify_private_ip(line: str) -> str | None:
+    """Severity of the red line 1 internal-address clause, or None when absent.
+
+    Endpoint context (URL userinfo, a `host = …` style key) is a real topology leak and
+    is fatal. A bare literal is usually network math (`10.0.0.0/8`), a container default
+    (`172.17.0.1`) or an SSRF deny vector, so it is only a report: a gate that fails on
+    those gets switched off, and then it guards nothing.
+    """
+
+    if _PRIVATE_IPV4_PATTERN.search(line) is None:
+        return None
+
+    if (_EMBEDDED_CREDENTIAL_URL_PATTERN.search(line) or _USERINFO_URL_PATTERN.search(line) or _ENDPOINT_KEY_PATTERN.search(line) or _ENDPOINT_DIRECTIVE_PATTERN.search(line)):
+        return "violation"
+
+    return "report"
+
+def classify_credential_line(line: str, *, check_private_ip: bool = True) -> str:
+    """Credential shapes plus the red-line-1 internal-address clause, merged strictly.
+
+    Returns ``"clean"`` (nothing), ``"report"`` (visible but not fatal) or
+    ``"violation"`` (fatal).
+
+    The merge takes the **stricter** verdict. An earlier version returned the address
+    verdict first, which silently downgraded a line carrying both a bare RFC 1918
+    constant and a real password from `violation` to `report` -- a security regression
+    an adversarial review caught, not a hypothetical.
+
+    ``check_private_ip=False`` is for callers walking test trees: fixtures are
+    conventionally fake, and flagging every one of them is how this rule gets disabled.
+    That switch is decided by the caller from the **path**, never from the line.
+    """
+    shapes = _classify_credential_shapes(line)
+
+    if not check_private_ip:
+        return shapes
+
+    ip_verdict = _classify_private_ip(line)
+
+    if ip_verdict == "violation":
+        return "violation"
+
+    if (ip_verdict == "report") and (shapes == "clean"):
+        return "report"
+
+    return shapes
+
+def _classify_credential_shapes(line: str) -> str:
     """Classify one source line for the credential scan.
 
     Returns ``"clean"`` (no credential token), ``"report"`` (a hit that is
     whitelisted, env-sourced, or merely a code reference — reported but not
     fatal), or ``"violation"`` (a literal non-placeholder secret — fatal).
+
+    A fourth shape carries no secret at all but breaks the same red line: a
+    literal RFC 1918 address (AGENTS red line 1 forbids **internal IPs** in a
+    git tree, not just credentials). It is classified here as well so that the
+    ``gate credential-scan`` lane is not blind to half of that clause. Callers
+    that walk test trees pass ``check_private_ip=False``: a fixture is
+    conventionally fake, and flagging every one of them is how this rule would
+    get switched off.
 
     Three shapes carry a secret without ever naming one, and all three are
     matched here: a provider token (``gho_…`` / ``github_pat_…`` / ``sk-…`` /
@@ -257,6 +328,7 @@ def classify_credential_line(line: str) -> str:
     remote form ``https://oauth2:gho_…@github.com/org/repo.git``), and a
     credential-keyed assignment whose value is a literal.
     """
+
     key, value, quoted_key = _extract_assignment(line)
     embedded = _EMBEDDED_CREDENTIAL_URL_PATTERN.search(line)
     provider = _PROVIDER_TOKEN_PATTERN.search(line)
