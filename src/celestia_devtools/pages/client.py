@@ -35,16 +35,35 @@ from . import contract
 #: Where the access token is read from when not passed explicitly.
 TOKEN_ENV = "CELESTIA_PAGES_TOKEN"
 
-#: How much of an artifact one upload call can carry — the smaller of two limits:
+#: The artifact size a caller is allowed to attempt, measured rather than derived.
 #:
-#: * chest's page budget ([`contract.MAX_UPLOAD_BYTES`], 32 MiB). P1-a has no
-#:   chunking, so one upload is one complete version.
-#: * the front's request-body limit, base64-inflated by 4/3. Measured on the demo
-#:   face 2026-11-16: a 700 KB artifact published, 900 KB was cut as a TLS EOF by
-#:   the edge nginx's default `client_max_body_size 1m` (raised to 64 MiB the same
-#:   day). Kept configurable rather than guessed: set `$CELESTIA_PAGES_BODY_CAP`.
-HTTP_BODY_CAP = int(os.environ.get("CELESTIA_PAGES_BODY_CAP", str(64 * 1024 * 1024)))
+#: chest's own budget is 32 MiB ([`contract.MAX_UPLOAD_BYTES`]) and the proxy front
+#: caps request bodies at 16 MiB on the demo face, but the *public* faces refuse
+#: far earlier: measured 2026-11-16 through `demo.dev.celestia.world`, a 1.2 MB
+#: artifact (1.6 MB base64 body) publishes, while 2 MB (2.7 MB body) is answered
+#: with nginx's `413 Failed to buffer the request body: length limit exceeded`.
+#: The hop that decides this has not been identified (plausibly the FRP edge), and
+#: the ruling is to document the measurement instead of chasing it.
+#:
+#: So the default refuses locally at the measured ceiling — a clear error before
+#: streaming megabytes that die at the front door — and `$CELESTIA_PAGES_BODY_CAP`
+#: (bytes, request body) lifts it for a deployment whose faces are known to admit
+#: more. 32 MiB is what chest would accept, not what a submitter can reach.
+MEASURED_REQUEST_BODY_CAP = 1600 * 1024
+HTTP_BODY_CAP = int(os.environ.get("CELESTIA_PAGES_BODY_CAP", str(MEASURED_REQUEST_BODY_CAP)))
 PRACTICAL_ARTIFACT_CAP = min(contract.MAX_UPLOAD_BYTES, (HTTP_BODY_CAP * 3 // 4) - (64 * 1024))
+
+def artifact_cap_label() -> str:
+    """One phrase for the refusal message: what the number is and where it binds.
+
+    Deliberately says *largest measured pass*, not "ceiling": the artifact boundary
+    sits between the 1.2 MB that publishes and the 2 MB that returns a 413, and the
+    binding hop is the public front door (see ``pages/README.md``'s three-layer
+    note), not chest's internal budget.
+    """
+    budget = "the 32 MiB chest budget" if PRACTICAL_ARTIFACT_CAP >= contract.MAX_UPLOAD_BYTES else "the public front door"
+    override = "default" if HTTP_BODY_CAP == MEASURED_REQUEST_BODY_CAP else f"$CELESTIA_PAGES_BODY_CAP={HTTP_BODY_CAP}"
+    return f"{override}; binds at {budget}"
 
 class pages_error(Exception):
     """A refused RPC: the server's JSON-RPC error, kept intact.

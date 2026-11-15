@@ -14,7 +14,9 @@ Three things are worth defending here, and each has burned a submitter before:
 from __future__ import annotations
 import base64
 import hashlib
+import importlib
 import json
+import os
 import pathlib
 import pytest
 from celestia_devtools.pages import builder, cli, client, contract
@@ -357,6 +359,41 @@ class test_login:
         with pytest.raises(client.pages_error, match = "DEMO_PASSWORD"):
             client.credentials_from_file(path)
 
+class test_publish_guard:
+    """The refusal must use the measured cap, not chest's budget."""
+
+    def _published_dir(self, tmp_path):
+        builder.build_raw(tmp_path, "guard")
+        artifact = contract.validate_files(contract.collect(tmp_path), entry = "index.html")
+        builder._write_manifest(tmp_path, artifact, "raw-html", "guard", "test", [], None)
+        return tmp_path
+
+    def test_the_guard_uses_practical_artifact_cap(self, tmp_path, monkeypatch):
+        directory = self._published_dir(tmp_path)
+        # Shrink the cap below the artifact: if the guard compared against
+        # MAX_UPLOAD_BYTES instead, publish would sail past and fail on the network.
+        monkeypatch.setattr(client, "PRACTICAL_ARTIFACT_CAP", 10)
+        code = cli.main(["publish", "--artifact", str(directory), "--base", "https://example.invalid", "--dry-run"])
+        assert code == 2
+
+    def test_the_guard_allows_what_fits(self, tmp_path):
+        directory = self._published_dir(tmp_path)
+        code = cli.main(["publish", "--artifact", str(directory), "--base", "https://example.invalid", "--dry-run"])
+        assert code == 0
+
+    def test_the_refusal_names_the_measured_value_and_the_override(self, tmp_path, monkeypatch, capsys):
+        directory = self._published_dir(tmp_path)
+        monkeypatch.setattr(client, "PRACTICAL_ARTIFACT_CAP", 10)
+        cli.main(["publish", "--artifact", str(directory), "--base", "https://example.invalid", "--dry-run"])
+        message = capsys.readouterr().err
+        # The retired derivation must not come back: 32 MiB / 10 MiB described the
+        # budgets, not what the public faces accept.
+        assert "32 MiB page budget" not in message
+        assert "10 MiB request body" not in message
+        assert "largest measured pass" in message
+        assert "CELESTIA_PAGES_BODY_CAP" in message
+        assert "front door" in message
+
 class test_cli:
     """The arguments a bearer must never travel on."""
 
@@ -421,11 +458,28 @@ class test_builder:
         with pytest.raises(RuntimeError, match = "tairitsu checkout"):
             builder.build_tairitsu(tmp_path, "t", tmp_path / "no-tairitsu", tmp_path / "no-node-modules")
 
-    def test_practical_cap_matches_the_documented_transport_limits(self):
-        # 10 MiB body, base64's 4/3 inflation, a little headroom for the envelope.
-        # Whichever binds first: the page budget or the front's body limit after
-        # base64 inflation. The face is configured at 64 MiB, which clears what a
-        # 32 MiB artifact needs, so the page budget is the binding limit here.
-        assert client.HTTP_BODY_CAP >= (contract.MAX_UPLOAD_BYTES * 4 // 3)
-        assert client.PRACTICAL_ARTIFACT_CAP <= contract.MAX_UPLOAD_BYTES
-        assert client.PRACTICAL_ARTIFACT_CAP < client.HTTP_BODY_CAP
+    @pytest.mark.skipif(os.environ.get("CELESTIA_PAGES_BODY_CAP") is not None, reason = "an ambient $CELESTIA_PAGES_BODY_CAP overrides the default by design; the override path has its own test")
+    def test_practical_cap_is_the_largest_measured_pass_not_chests_budget(self):
+        # The largest measured pass on the public faces (1.2 MB works, 2 MB is a 413)
+        # is what a submitter can reach; chest's 32 MiB is internal budget only.
+        assert client.HTTP_BODY_CAP == client.MEASURED_REQUEST_BODY_CAP
+        assert 1_150_000 < client.PRACTICAL_ARTIFACT_CAP < 1_250_000
+        assert client.PRACTICAL_ARTIFACT_CAP < contract.MAX_UPLOAD_BYTES
+
+    def test_the_measured_ceiling_can_be_lifted_for_a_generous_deployment(self, monkeypatch):
+        # Save/restore rather than blanket-delete: an ambient override in the
+        # environment must survive this test, or a later assertion that the default
+        # is the measured value fails for an unrelated reason.
+        ambient = os.environ.get("CELESTIA_PAGES_BODY_CAP")
+        monkeypatch.setenv("CELESTIA_PAGES_BODY_CAP", str(64 * 1024 * 1024))
+        reloaded = importlib.reload(client)
+
+        try:
+            assert reloaded.PRACTICAL_ARTIFACT_CAP == contract.MAX_UPLOAD_BYTES
+        finally:
+            if ambient is None:
+                monkeypatch.delenv("CELESTIA_PAGES_BODY_CAP")
+            else:
+                monkeypatch.setenv("CELESTIA_PAGES_BODY_CAP", ambient)
+
+            importlib.reload(client)
