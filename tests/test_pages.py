@@ -458,6 +458,7 @@ class test_builder:
         with pytest.raises(RuntimeError, match = "tairitsu checkout"):
             builder.build_tairitsu(tmp_path, "t", tmp_path / "no-tairitsu", tmp_path / "no-node-modules")
 
+    @pytest.mark.skipif(os.environ.get("CELESTIA_PAGES_BODY_CAP") is not None, reason = "an ambient $CELESTIA_PAGES_BODY_CAP overrides the default by design; the override path has its own test")
     def test_practical_cap_is_the_largest_measured_pass_not_chests_budget(self):
         # The largest measured pass on the public faces (1.2 MB works, 2 MB is a 413)
         # is what a submitter can reach; chest's 32 MiB is internal budget only.
