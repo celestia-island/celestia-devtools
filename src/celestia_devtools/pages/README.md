@@ -29,12 +29,16 @@ written without a lockfile, so `cargo build` resolves afresh and the `--locked` 
 build produced so two runs can be compared; it does **not** guarantee identical dependency
 resolution. Treat the lane as reproducible-by-input, not lock-pinned.
 
-**The upload ceiling is the smaller of two limits.** chest's own page budget is 32 MiB and
-P1 has no chunking, but the deployment's front has a body limit too (base64 inflates by
-4/3). Measured on the demo face 2026-11-16: a 700 KB artifact published, 900 KB was cut by
-the edge (first as a TLS EOF from nginx's default 1m, then — after that was raised — as a
-200 carrying the front's own HTML and a truncated stream). Override the assumption with
-`$CELESTIA_PAGES_BODY_CAP` when a deployment differs, and check the *body*, not the status.
+**The upload ceiling is a measurement, not a derivation.** chest would accept 32 MiB (its
+internal page budget, no chunking in P1), and the proxy front caps bodies at 16 MiB — but the
+*public* faces refuse earlier: measured 2026-11-16, a **1.2 MB artifact publishes and a 2 MB one
+is answered with nginx's `413 Failed to buffer the request body`**. The hop that decides it is
+unidentified (the ruling was to document the measurement, not chase it), so `pages publish`
+refuses locally at the measured ceiling — `MEASURED_REQUEST_BODY_CAP` — instead of streaming
+bytes that die at the front door. `$CELESTIA_PAGES_BODY_CAP` (request-body bytes) lifts it for a
+deployment known to admit more; the artifact cap is that body limit × 3/4, base64 inflation,
+bounded by chest's 32 MiB. Always judge success on the parsed body, never the status: a 200 was
+observed carrying a front's own HTML.
 
 **`check_contract_drift` pins shapes, not behaviour.** It re-reads chest's
 `custom_pages.rs` for the constants and the hash layout; it cannot prove the algorithms agree.

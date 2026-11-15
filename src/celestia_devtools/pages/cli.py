@@ -142,7 +142,7 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     artifact = _load_artifact(directory, entry)
 
     if artifact.size_bytes > client.PRACTICAL_ARTIFACT_CAP:
-        print(f"publish: artifact is {artifact.size_bytes} bytes; one upload call carries at most ~{client.PRACTICAL_ARTIFACT_CAP} (32 MiB page budget, 10 MiB request body, base64 inflation) and P1 has no chunking", file = sys.stderr)
+        print(f"publish: artifact is {artifact.size_bytes} bytes; the largest measured pass on the public faces is {client.PRACTICAL_ARTIFACT_CAP} bytes ({client.artifact_cap_label()}). P1 has no chunking, so this refuses locally instead of streaming bytes the front door will cut. Raise it with $CELESTIA_PAGES_BODY_CAP only if you have measured a larger body passing.", file = sys.stderr)
         return 2
 
     token, token_error = _resolve_token(args.token_file)
