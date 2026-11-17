@@ -160,15 +160,21 @@ def test_an_unrelated_info_line_is_not_counted_as_welded(tmp_path, monkeypatch, 
 
 # ── the shipped table ───────────────────────────────────────────────────────
 
-def test_the_shipped_table_welds_the_three_ruling_repos():
+def test_the_shipped_table_welds_the_ruling_and_laggard_repos():
+    # Three repos carry the 2026-11-07 ruling; evernight and fuuka were added by
+    # the 2026-11-17 0.7-wave sweep as whole-generation laggards.
     assert set(fv.WELD_WINDOW) == {
         "celestia-island/arona",
         "celestia-island/shittim-chest",
         "celestia-island/celestia-erp",
+        "celestia-island/evernight",
+        "celestia-island/fuuka",
     }
 
     for repo, entry in fv.WELD_WINDOW.items():
-        assert entry["until"] == "external-beta", repo
+        # fuuka is frozen, so its row is DATED (it must be removed by the
+        # migration PR before the date, not at an unreachable milestone).
+        assert entry["until"] in ("external-beta", "2026-12-31"), repo
         assert "plana" in entry["lines"], repo
 
     assert "kirino_session" not in fv.WELD_WINDOW["celestia-island/shittim-chest"]["lines"], (
