@@ -27,9 +27,10 @@ source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.cr
 #
 # 2026-11-17 full re-sweep (the 0.7 wave): plana 0.7.0 and the whole platform
 # line shipped together (plana #592–#595, tag `cargo-v0.7.0`), plana-billing
-# was published for the first time (it had no row at all, which made every
-# consumer of it look like it was pulling an unpublished member from
-# crates.io), plana-celestia-types moved to its independent 0.5 line, and
+# gained its FIRST ROW here — the crate has shipped since 0.2.1 (2026-11-07,
+# 12 non-yanked versions by 0.7.0), but the table never carried it, so every
+# crates.io consumer looked like it was pulling an unpublished member;
+# plana-celestia-types moved to its independent 0.5 line, and
 # plana-dispatch-client to 0.3. Rows that did not move are re-verified, not
 # assumed: rpc-client/rpc-server stay 0.2 and plana-tauri 0.1.
 plana = "0.7"
@@ -82,11 +83,11 @@ why = "UI components, Rust track (Layer 2); cargo-v0.5.1 is the published line"
 
 [npm_layers."@celestia-island/hikari"]
 line = "0.55"
-why = "UI component library (Layer 2); npm dist-tag 0.55.305"
+why = "UI component library (Layer 2); npm dist-tag 0.55.415 (re-read 2026-11-17)"
 
 [npm_layers."@celestia-island/kirino"]
 line = "0.9"
-why = "auth bindings (Layer 0, npm track); npm dist-tag 0.9.2"
+why = "auth bindings (Layer 0, npm track); npm dist-tag 0.9.3 (re-read 2026-11-17)"
 
 [npm_layers."@celestia-island/plana-types"]
 line = "0.1"
@@ -127,4 +128,5 @@ why = "RPC client (Layer 1, npm track)"
 "celestia-island/evernight" = { until = "external-beta", reason = "plana 0.7 wave: evernight still on the 0.4/0.3 generation", lines = ["plana"] }
 # fuuka pins plana-infra-services ^0.2 only (a two-file service); migrated in its
 # own wave.
-"celestia-island/fuuka" = { until = "external-beta", reason = "plana 0.7 wave: fuuka still on plana-infra-services 0.2", lines = ["plana"] }
+# fuuka is frozen (`repos-and-versions`), so an external-beta milestone can never fire: this row is DATED instead and must be removed by fuuka's migration PR (one line: `plana-infra-services ^0.2 → ^0.7`).
+"celestia-island/fuuka" = { until = "2026-12-31", reason = "plana 0.7 wave: fuuka still on plana-infra-services 0.2 (frozen repo; dated row, not milestone)", lines = ["plana"] }

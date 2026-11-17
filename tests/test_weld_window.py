@@ -172,7 +172,9 @@ def test_the_shipped_table_welds_the_ruling_and_laggard_repos():
     }
 
     for repo, entry in fv.WELD_WINDOW.items():
-        assert entry["until"] == "external-beta", repo
+        # fuuka is frozen, so its row is DATED (it must be removed by the
+        # migration PR before the date, not at an unreachable milestone).
+        assert entry["until"] in ("external-beta", "2026-12-31"), repo
         assert "plana" in entry["lines"], repo
 
     assert "kirino_session" not in fv.WELD_WINDOW["celestia-island/shittim-chest"]["lines"], (
