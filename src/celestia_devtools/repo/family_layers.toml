@@ -126,7 +126,11 @@ why = "RPC client (Layer 1, npm track)"
 # the gate pointed at the repos that can move now; evernight's migration is
 # tracked as the W4 consumer-baseline item.
 "celestia-island/evernight" = { until = "external-beta", reason = "plana 0.7 wave: evernight still on the 0.4/0.3 generation", lines = ["plana"] }
-# fuuka pins plana-infra-services ^0.2 only (a two-file service); migrated in its
-# own wave.
-# fuuka is frozen (`repos-and-versions`), so an external-beta milestone can never fire: this row is DATED instead and must be removed by fuuka's migration PR (one line: `plana-infra-services ^0.2 → ^0.7`).
-"celestia-island/fuuka" = { until = "2026-12-31", reason = "plana 0.7 wave: fuuka still on plana-infra-services 0.2 (frozen repo; dated row, not milestone)", lines = ["plana"] }
+# fuuka (frozen, private — `repos-and-versions` / `tool-exemptions`) still pins
+# plana-infra-services ^0.2. A frozen repo can never reach an external-beta
+# milestone, so this row is DATED and must be removed by fuuka's migration PR.
+# Do not underestimate that migration: published plana-infra-services 0.7.0
+# itself requires cherino ^0.2, and fuuka pins cherino ^0.1 and threads cherino
+# 0.1 types through its own pool — the bump moves BOTH manifest lines plus the
+# cherino API surface, not just one declaration.
+"celestia-island/fuuka" = { until = "2026-12-31", reason = "plana 0.7 wave: fuuka still on plana-infra-services 0.2 (bump also drags its cherino ^0.1 → ^0.2; dated row, not milestone)", lines = ["plana"] }

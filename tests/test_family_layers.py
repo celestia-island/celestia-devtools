@@ -24,7 +24,7 @@ def test_bundled_table_is_pinned():
         "celestia-island/celestia-erp": weld,
         "celestia-island/evernight": {**weld, "reason": "plana 0.7 wave: evernight still on the 0.4/0.3 generation", "lines": ("plana",)},
         # fuuka is frozen: its row is DATED, not milestone-keyed.
-        "celestia-island/fuuka": {"until": "2026-12-31", "reason": "plana 0.7 wave: fuuka still on plana-infra-services 0.2 (frozen repo; dated row, not milestone)", "lines": ("plana",)},
+        "celestia-island/fuuka": {"until": "2026-12-31", "reason": "plana 0.7 wave: fuuka still on plana-infra-services 0.2 (bump also drags its cherino ^0.1 → ^0.2; dated row, not milestone)", "lines": ("plana",)},
     }
 
 def test_module_constants_come_from_the_data_file():
