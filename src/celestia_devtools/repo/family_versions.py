@@ -74,11 +74,12 @@ REV_PIN_ALLOWED = frozenset({"scriptum", "aris"})
 #: Names are compared with `-` for `_` because Cargo lets a manifest alias the
 #: crate (`plana_celestia_types = { package = "plana-celestia-types", … }`).
 #: `member → canonical version of ITS OWN published line`.  The members do not
-#: share one line: `plana` / `plana-rpc-client` / `plana-celestia-types` ride 0.2
-#: while `plana-rpc-server` / `plana-tauri` are still on 0.1, so a single 0.2
-#: comparison would fail a correct `plana-rpc-server = "^0.1"`.  The comparison
-#: is per member: declaring below a member's recorded line is as much a
-#: violation as declaring above it.
+#: share ONE line: at the 2026-11-17 sweep the platform line is 0.7, but
+#: `plana-celestia-types` ships its independent 0.5 line, `plana-dispatch-client`
+#: 0.3, `plana-rpc-client` / `plana-rpc-server` 0.2 and `plana-tauri` 0.1 — so a
+#: single comparison would fail a correct `plana-rpc-server = "^0.2"`.  The
+#: comparison is per member: declaring below a member's recorded line is as much
+#: a violation as declaring above it.
 #: The published/consumed family lines live in ``family_layers.toml`` (next to
 #: this module) so a release wave updates data, not code — see that file's
 #: header for the update rule and the authority of each table.

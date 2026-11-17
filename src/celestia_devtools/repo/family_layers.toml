@@ -15,43 +15,53 @@
 # `[rust_layers.<family>]` table): a member deliberately parked on the previous
 # line must be listed there, otherwise the family's `line` is applied to it and
 # the gate reports a "different primitive" that does not exist.
-updated_at = "2026-11-06"
-source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.crates.io); npm dist-tags from registry.npmjs.org (all rows re-read 2026-11-06)"
+updated_at = "2026-11-17"
+source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.crates.io); npm dist-tags from registry.npmjs.org (all rows re-read 2026-11-17)"
 
 [plana_published]
 # member = published minor line (crates.io). A member that is not listed here
-# has not been published and must stay a git reference on master. `plana-sync`
-# (packages/sync) is the remaining such member: its manifest still carries
-# `publish = false` and crates.io has no coordinate for it.
-plana = "0.3"
+# has not been published and must stay a git reference on master. Two members
+# carry `publish = false` and are therefore absent by design: `plana-sync`
+# (packages/sync) and `plana-assets` (packages/assets) — crates.io has no
+# coordinate for either.
+#
+# 2026-11-17 full re-sweep (the 0.7 wave): plana 0.7.0 and the whole platform
+# line shipped together (plana #592–#595, tag `cargo-v0.7.0`), plana-billing
+# was published for the first time (it had no row at all, which made every
+# consumer of it look like it was pulling an unpublished member from
+# crates.io), plana-celestia-types moved to its independent 0.5 line, and
+# plana-dispatch-client to 0.3. Rows that did not move are re-verified, not
+# assumed: rpc-client/rpc-server stay 0.2 and plana-tauri 0.1.
+plana = "0.7"
 plana-rpc-client = "0.2"
 plana-rpc-server = "0.2"
-plana-celestia-types = "0.2"
+plana-celestia-types = "0.5"
 plana-tauri = "0.1"
-plana-config = "0.2"
-plana-build-info = "0.2"
-plana-infra-utils = "0.2"
-plana-llm-provider = "0.2"
-plana-dispatch-client = "0.1"
-plana-core = "0.2"
-plana-text = "0.2"
-plana-macros = "0.2"
-plana-domain-agent = "0.2"
-plana-state-sync = "0.3"
-plana-domain-skills-permissions = "0.2"
-plana-prompt = "0.2"
-plana-domain-skills = "0.2"
+plana-config = "0.7"
+plana-build-info = "0.7"
+plana-infra-utils = "0.7"
+plana-llm-provider = "0.7"
+plana-billing = "0.7"
+plana-dispatch-client = "0.3"
+plana-core = "0.7"
+plana-text = "0.7"
+plana-macros = "0.7"
+plana-domain-agent = "0.7"
+plana-state-sync = "0.7"
+plana-domain-skills-permissions = "0.7"
+plana-prompt = "0.7"
+plana-domain-skills = "0.7"
 # 2026-11 rename waves: the absorbed members and the res split ship kebab
-# crates at 0.2 (see the `publish_crate` list in plana's publish.yml).
-plana-bootloader = "0.2"
-plana-infra-services = "0.2"
-plana-custom-agent = "0.2"
-plana-timeline = "0.2"
-plana-dev-server = "0.2"
-plana-sibling = "0.2"
-plana-i18n = "0.2"
-plana-content-loader = "0.2"
-plana-provider-catalog = "0.2"
+# crates on the platform line (see the `publish_crate` list in plana's publish.yml).
+plana-bootloader = "0.7"
+plana-infra-services = "0.7"
+plana-custom-agent = "0.7"
+plana-timeline = "0.7"
+plana-dev-server = "0.7"
+plana-sibling = "0.7"
+plana-i18n = "0.7"
+plana-content-loader = "0.7"
+plana-provider-catalog = "0.7"
 # Dead coordinates are not rows: plana_res / plana-jsonrpc / plana-protocol-core
 # / plana-archive no longer exist as packages.
 
@@ -63,7 +73,7 @@ why = "auth primitives: JWT/RBAC/sessions (Layer 0)"
 crates = { kirino-session = "0.8" }
 
 [rust_layers.plana]
-line = "0.3"
+line = "0.7"
 why = "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"
 
 [rust_layers.hikari]
@@ -110,3 +120,11 @@ why = "RPC client (Layer 1, npm track)"
 # the Track B issuer flip), so its weld covers plana only now.
 "celestia-island/shittim-chest" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana"] }
 "celestia-island/celestia-erp" = { until = "external-beta", reason = "plana 0.1 weld ruling 2026-11-07", lines = ["plana", "kirino-session"] }
+# 2026-11-17 (0.7 wave): evernight still declares the 0.4/0.3 generation
+# (plana ^0.4 / ^0.3, plana-bootloader ^0.6, plana-build-info ^0.4). Welding keeps
+# the gate pointed at the repos that can move now; evernight's migration is
+# tracked as the W4 consumer-baseline item.
+"celestia-island/evernight" = { until = "external-beta", reason = "plana 0.7 wave: evernight still on the 0.4/0.3 generation", lines = ["plana"] }
+# fuuka pins plana-infra-services ^0.2 only (a two-file service); migrated in its
+# own wave.
+"celestia-island/fuuka" = { until = "external-beta", reason = "plana 0.7 wave: fuuka still on plana-infra-services 0.2", lines = ["plana"] }

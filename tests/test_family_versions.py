@@ -129,14 +129,14 @@ def test_plana_rev_pin_is_allowed_only_for_frozen_repositories(tmp_path):
     assert check(frozen) == []
 
 def test_plana_published_member_from_the_registry_passes(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "^0.3"\n')
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.7"\n')
     assert check(tmp_path) == []
 
 def test_plana_published_member_must_still_admit_the_family_line(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "^0.2"\n')
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.6"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
-    assert "published 0.3 line" in findings[0].message
+    assert "published 0.7 line" in findings[0].message
 
 def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_path):
     # `plana-celestia-config` has no crates.io release, so declaring it with a
@@ -151,7 +151,7 @@ def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_pat
 def test_plana_alias_of_a_published_member_is_recognised(tmp_path):
     # Manifests alias with underscores (`plana_celestia_types = { package = ... }`);
     # the publication check must normalise before comparing.
-    _cargo(tmp_path, '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",' ' version = "^0.2" }\n')
+    _cargo(tmp_path, '[dependencies]\nplana_celestia_types = { package = "plana-celestia-types",' ' version = "^0.5" }\n')
     assert check(tmp_path) == []
 
 def test_plana_tauri_counts_as_published(tmp_path):
