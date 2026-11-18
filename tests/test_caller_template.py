@@ -32,7 +32,7 @@ from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMP
 #: check never reports, and a protected repository cannot be merged. Thirty
 #: repositories were missed when the org default token permissions were
 #: tightened on 2026-10-02.
-CANONICAL_SHA256 = "c785302d139109b8abc3225fd7a567116bf9ec2aa2b984763499f640b8cc7b94"
+CANONICAL_SHA256 = "f4c5a990f98763fee658695ab079b57262e919fcb79bc8d5289c1b7f5dae87f0"
 CANONICAL_BYTES = 1865
 
 #: sha256 of the **master render** — the floating form the entire fleet carries
