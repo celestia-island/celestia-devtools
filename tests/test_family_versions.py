@@ -129,14 +129,14 @@ def test_plana_rev_pin_is_allowed_only_for_frozen_repositories(tmp_path):
     assert check(frozen) == []
 
 def test_plana_published_member_from_the_registry_passes(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "^0.7"\n')
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.8"\n')
     assert check(tmp_path) == []
 
 def test_plana_published_member_must_still_admit_the_family_line(tmp_path):
-    _cargo(tmp_path, '[dependencies]\nplana = "^0.6"\n')
+    _cargo(tmp_path, '[dependencies]\nplana = "^0.7"\n')
     findings = check(tmp_path)
     assert _levels(findings) == ["violation"], findings
-    assert "published 0.7 line" in findings[0].message
+    assert "published 0.8 line" in findings[0].message
 
 def test_plana_unpublished_member_from_the_registry_is_still_a_violation(tmp_path):
     # `plana-celestia-config` has no crates.io release, so declaring it with a
