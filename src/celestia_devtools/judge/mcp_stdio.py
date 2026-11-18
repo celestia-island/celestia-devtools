@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
@@ -265,10 +264,6 @@ class mcp_session:
 def open_session(command: Iterable[str], *, timeout: float = 10.0) -> mcp_session:
     """Convenience wrapper: build the session and let the caller open/close it."""
     return mcp_session(list(command), timeout = timeout)
-
-def utc_now() -> float:
-    """Wall clock helper kept here so tests can patch one symbol."""
-    return time.time()
 
 class action_session(mcp_session):
     """A session that may call :data:`ACTION_TOOLS` — and nothing else.
