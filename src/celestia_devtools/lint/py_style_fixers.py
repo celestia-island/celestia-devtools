@@ -15,7 +15,7 @@ import re
 import tokenize
 from typing import TYPE_CHECKING, Callable, Sequence
 from celestia_devtools.lint.py_style_checks import (_BINARY_KEYWORDS, _BINARY_OPERATOR_STRINGS, _BRANCH_KEYWORDS, _UNARY_CAPABLE_OPERATORS, _UNARY_PREVIOUS_KEYWORDS, _UNARY_PREVIOUS_OPERATORS, _blank_runs, _body_entries, _colon_indices, _default_equals_indices, _explicit_precedence_children, _is_section_comment, _is_unary_operator, _keyword_operator_is_binary, _redundant_paren_issues)
-from celestia_devtools.lint.py_style_model import (_CLOSE_BRACKETS, _FSTRING_TYPES, _LITERAL_TYPES, _SKIP_TOKEN_TYPES, _apply_line_edits, _comma_token_positions_of_single_element_tuples, _delete_rows, file_context, is_compound_statement, line_edit)
+from celestia_devtools.lint.py_style_model import (_CLOSE_BRACKETS, _FSTRING_TYPES, _SKIP_TOKEN_TYPES, _apply_line_edits, _comma_token_positions_of_single_element_tuples, _delete_rows, file_context, is_compound_statement, line_edit)
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, runtime import is unused
     from celestia_devtools.lint.py_style_config import style_config
@@ -402,9 +402,6 @@ _SPACE_AROUND_OPERATORS = frozenset({"+", "-", "*", "/", "//", "%", "@", "**", "
 _SPACE_AROUND_KEYWORDS = frozenset({"and", "or", "in", "is", "not"})
 _UNARY_ONLY_OPERATORS = frozenset({"~"})
 _ATTACHING_PREVIOUS_KEYWORDS = frozenset({"def", "class", "C", "return", "yield", "assert", "if", "elif", "while", "lambda"})
-
-def _is_literal_token(tok: tokenize.TokenInfo) -> bool:
-    return tok.type in _LITERAL_TYPES
 
 def _wordish(tok: tokenize.TokenInfo) -> bool:
     return tok.type in {tokenize.NAME, tokenize.NUMBER, tokenize.STRING}
