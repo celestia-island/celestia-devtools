@@ -228,23 +228,6 @@ def summarise_tools(tools: dict) -> str:
 
     return ", ".join(bits) if bits else "无"
 
-def summarise_container(tools: dict) -> str:
-    """One-line description of which container backend will be used."""
-
-    if tools.get("__docker_alive__"):
-        return f"docker (server {tools['__docker_alive__']})"
-
-    if tools.get("podman"):
-        if tools.get("__podman_alive__"):
-            return "podman (已就绪)"
-
-        return "podman (socket 待启，将自动拉起)"
-
-    if tools.get("docker"):
-        return "docker (守护进程未启动 — 需 sudo systemctl start docker)"
-
-    return "无容器后端（docker/podman 均未安装）"
-
 def _log_distro_choice(name: str, tools: dict) -> None:
     logger.ok(f"使用 WSL2 发行版：{name}")
     logger.info(f"  工具：{summarise_tools(tools)}")

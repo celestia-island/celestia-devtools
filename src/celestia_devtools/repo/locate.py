@@ -130,11 +130,6 @@ def find_patched_crate(crate: str, env_var: str, git_url: str, marker: Path, *, 
 
     return None
 
-def find_crate(crate: str, *, repo_root: Path | None = None, env_var: str | None = None, git_url: str | None = None) -> Path | None:
-    """Locate a celestia-island crate checkout by name."""
-    ev, gu, marker = _crate_info(crate, env_var, git_url)
-    return find_patched_crate(crate, ev, gu, marker, repo_root = repo_root)
-
 def main() -> int:
     parser = argparse.ArgumentParser(description = "Locate a celestia-island crate checkout")
     parser.add_argument("--crate", required = True, help = "crate name to locate")

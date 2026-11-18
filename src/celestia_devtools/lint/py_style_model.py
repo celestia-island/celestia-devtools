@@ -572,19 +572,8 @@ def source_line_prefix_is_blank(context: file_context, row: int, column: int) ->
 def _issue(rule_id: str, row: int, column: int, message: str) -> issue_record:
     return issue_record(rule_id, max(1, row), max(1, column), message)
 
-def _is_string_token(tok: tokenize.TokenInfo) -> bool:
-    return tok.type in _LITERAL_TYPES
-
 def _is_op(tok: tokenize.TokenInfo | None, value: str) -> bool:
     return (tok is not None) and (tok.type == tokenize.OP) and (tok.string == value)
-
-def _is_name(tok: tokenize.TokenInfo | None, value: str) -> bool:
-    return (tok is not None) and (tok.type == tokenize.NAME) and (tok.string == value)
-
-def _string_token_texts(context: file_context) -> list[str]:
-    """Return the text of every string/f-string literal token, in source order."""
-
-    return [tok.string for tok in context.tokens if tok.type in _LITERAL_TYPES]
 
 def _comma_token_positions_of_single_element_tuples(context: file_context) -> set[tuple[int, int]]:
     """Return the comma positions that are grammar-required by one-element tuples."""
