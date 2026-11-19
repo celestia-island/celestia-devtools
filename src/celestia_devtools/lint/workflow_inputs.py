@@ -552,6 +552,28 @@ jobs:
       ghost-key: 1
 """
 
+SELFTEST_CALLER_LOCAL_GHOST = """\
+name: Local
+on:
+  push:
+jobs:
+  call:
+    uses: ./.github/workflows/ghost-callee.yml
+    with:
+      payload: hi
+"""
+
+SELFTEST_CALLER_WITH_LIST = """\
+name: Lane
+on:
+  push:
+jobs:
+  lane:
+    uses: celestia-island/celestia-devtools/.github/workflows/callee.yml@%s
+    with:
+      - caller-repo
+"""
+
 def _selftest_git_repo(callee_text: str) -> tuple[Path, str]:
     """A throwaway git repo whose HEAD tree carries the callee; (path, sha)."""
 
@@ -602,6 +624,8 @@ def selftest() -> int:
         (workflows / "local-bad.yml").write_text(SELFTEST_CALLER_LOCAL_BAD, encoding = "utf-8")
         (workflows / "local-good.yml").write_text(SELFTEST_CALLER_LOCAL_GOOD, encoding = "utf-8")
         (workflows / "local-missing.yml").write_text(SELFTEST_CALLER_LOCAL_MISSING, encoding = "utf-8")
+        (workflows / "local-ghost.yml").write_text(SELFTEST_CALLER_LOCAL_GHOST, encoding = "utf-8")
+        (workflows / "with-not-mapping.yml").write_text(SELFTEST_CALLER_WITH_LIST % sha, encoding = "utf-8")
         (workflows / "local-callee.yml").write_text(SELFTEST_CALLEE_LOCAL, encoding = "utf-8")
         findings, skips, workflows_read, call_sites = scan_root(caller, caller, repo, _failing_runner)
 
@@ -620,6 +644,12 @@ def selftest() -> int:
 
         if len(by_rule.get("callee-not-reusable", [])) != 0:
             failures.append("callee-not-reusable fired on controls that all resolve")
+
+        if [hit["file"] for hit in by_rule.get("with-not-mapping", [])] != [".github/workflows/with-not-mapping.yml"]:
+            failures.append(f"with-not-mapping control wrong: {by_rule.get('with-not-mapping', [])}")
+
+        if [hit["file"] for hit in by_rule.get("local-callee-missing", [])] != [".github/workflows/local-ghost.yml"]:
+            failures.append(f"local-callee-missing control wrong: {by_rule.get('local-callee-missing', [])}")
 
         l157 = [hit for hit in by_rule.get("undeclared-input", []) if hit["key"] == "devtools-ref"]
 
@@ -643,8 +673,8 @@ def selftest() -> int:
         if skips and (skips[0]["file"] != ".github/workflows/external.yml"):
             failures.append(f"skip landed on the wrong file: {skips}")
 
-        if (workflows_read != 9) or (call_sites != 8):
-            failures.append(f"enumeration read {workflows_read} workflows / {call_sites} call sites, want 9/8")
+        if (workflows_read != 11) or (call_sites != 10):
+            failures.append(f"enumeration read {workflows_read} workflows / {call_sites} call sites, want 11/10")
 
         probe = callee_inputs(SELFTEST_CALLEE_ON_STRING)
 
