@@ -15,8 +15,8 @@
 # `[rust_layers.<family>]` table): a member deliberately parked on the previous
 # line must be listed there, otherwise the family's `line` is applied to it and
 # the gate reports a "different primitive" that does not exist.
-updated_at = "2026-11-17"
-source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.crates.io); npm dist-tags from registry.npmjs.org (all rows re-read 2026-11-17)"
+updated_at = "2026-11-19"
+source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.crates.io); npm dist-tags from registry.npmjs.org (all rows re-read 2026-11-19)"
 
 [plana_published]
 # member = published minor line (crates.io). A member that is not listed here
@@ -25,44 +25,47 @@ source = "plana/.github/workflows/publish.yml + crates.io sparse index (index.cr
 # (packages/sync) and `plana-assets` (packages/assets) — crates.io has no
 # coordinate for either.
 #
-# 2026-11-17 full re-sweep (the 0.7 wave): plana 0.7.0 and the whole platform
-# line shipped together (plana #592–#595, tag `cargo-v0.7.0`), plana-billing
-# gained its FIRST ROW here — the crate has shipped since 0.2.1 (2026-11-07,
-# 12 non-yanked versions by 0.7.0), but the table never carried it, so every
-# crates.io consumer looked like it was pulling an unpublished member;
-# plana-celestia-types moved to its independent 0.5 line, and
-# plana-dispatch-client to 0.3. Rows that did not move are re-verified, not
-# assumed: rpc-client/rpc-server stay 0.2 and plana-tauri 0.1.
-plana = "0.7"
+# 2026-11-19 full re-sweep (the 0.8 wave): plana#599 released the umbrella at
+# 0.8.0 with the workspace requirements on the 0.8 wave; the three explicitly
+# versioned members (bootloader / infra-services / state-sync) rode to 0.8.0,
+# and the platform line (config / core / text / macros / domain-agent /
+# domain-skills / prompt / billing / infra-utils / llm-provider / timeline /
+# dev-server / sibling / i18n / content-loader / provider-catalog /
+# custom-agent / domain-skills-permissions) moved 0.7 → 0.8 with it.
+# plana-celestia-types published 0.5.3 (deps plana ^0.8) and
+# plana-dispatch-client 0.3.3 (plana ^0.8) in the same window.
+# The independent lines were NOT re-released: rpc-client / rpc-server stay 0.2
+# and tauri 0.1 — re-verified against the crates.io sparse index.
+# plana-billing keeps its first row (published since 0.2.1, 2026-11-07; 13
+# non-yanked versions by 0.8.0).
+plana = "0.8"
 plana-rpc-client = "0.2"
 plana-rpc-server = "0.2"
 plana-celestia-types = "0.5"
 plana-tauri = "0.1"
-plana-config = "0.7"
-plana-build-info = "0.7"
-plana-infra-utils = "0.7"
-plana-llm-provider = "0.7"
-plana-billing = "0.7"
+plana-config = "0.8"
+plana-build-info = "0.8"
+plana-infra-utils = "0.8"
+plana-llm-provider = "0.8"
+plana-billing = "0.8"
 plana-dispatch-client = "0.3"
-plana-core = "0.7"
-plana-text = "0.7"
-plana-macros = "0.7"
-plana-domain-agent = "0.7"
-plana-state-sync = "0.7"
-plana-domain-skills-permissions = "0.7"
-plana-prompt = "0.7"
-plana-domain-skills = "0.7"
-# 2026-11 rename waves: the absorbed members and the res split ship kebab
-# crates on the platform line (see the `publish_crate` list in plana's publish.yml).
-plana-bootloader = "0.7"
-plana-infra-services = "0.7"
-plana-custom-agent = "0.7"
-plana-timeline = "0.7"
-plana-dev-server = "0.7"
-plana-sibling = "0.7"
-plana-i18n = "0.7"
-plana-content-loader = "0.7"
-plana-provider-catalog = "0.7"
+plana-core = "0.8"
+plana-text = "0.8"
+plana-macros = "0.8"
+plana-domain-agent = "0.8"
+plana-state-sync = "0.8"
+plana-domain-skills-permissions = "0.8"
+plana-prompt = "0.8"
+plana-domain-skills = "0.8"
+plana-bootloader = "0.8"
+plana-infra-services = "0.8"
+plana-custom-agent = "0.8"
+plana-timeline = "0.8"
+plana-dev-server = "0.8"
+plana-sibling = "0.8"
+plana-i18n = "0.8"
+plana-content-loader = "0.8"
+plana-provider-catalog = "0.8"
 # Dead coordinates are not rows: plana_res / plana-jsonrpc / plana-protocol-core
 # / plana-archive no longer exist as packages.
 
@@ -74,7 +77,7 @@ why = "auth primitives: JWT/RBAC/sessions (Layer 0)"
 crates = { kirino-session = "0.8" }
 
 [rust_layers.plana]
-line = "0.7"
+line = "0.8"
 why = "platform: JSON-RPC, RPC server/client, shared types (Layer 1)"
 
 [rust_layers.hikari]
@@ -125,4 +128,4 @@ why = "RPC client (Layer 1, npm track)"
 # (plana ^0.4 / ^0.3, plana-bootloader ^0.6, plana-build-info ^0.4). Welding keeps
 # the gate pointed at the repos that can move now; evernight's migration is
 # tracked as the W4 consumer-baseline item.
-"celestia-island/evernight" = { until = "external-beta", reason = "plana 0.7 wave: evernight still on the 0.4/0.3 generation", lines = ["plana"] }
+"celestia-island/evernight" = { until = "external-beta", reason = "evernight#513 moved root/celestia-types/build_info to 0.7; gateway plana03 ^0.3 remains until plana-rpc-server publishes on that line", lines = ["plana"] }

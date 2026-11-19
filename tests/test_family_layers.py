@@ -9,11 +9,11 @@ from celestia_devtools.repo.family_versions import _FAMILY_LAYERS_PATH
 
 def test_bundled_table_is_pinned():
     layers = load_family_layers()
-    assert layers["updated_at"] == "2026-11-17"
+    assert layers["updated_at"] == "2026-11-19"
     assert layers["source"].startswith("plana/.github/workflows/publish.yml")
-    assert layers["plana_published"] == {"plana": (0, 7, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 2, 0), "plana-celestia-types": (0, 5, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 7, 0), "plana-build-info": (0, 7, 0), "plana-infra-utils": (0, 7, 0), "plana-llm-provider": (0, 7, 0), "plana-billing": (0, 7, 0), "plana-dispatch-client": (0, 3, 0), "plana-core": (0, 7, 0), "plana-text": (0, 7, 0), "plana-macros": (0, 7, 0), "plana-domain-agent": (0, 7, 0), "plana-state-sync": (0, 7, 0), "plana-domain-skills-permissions": (0, 7, 0), "plana-prompt": (0, 7, 0), "plana-domain-skills": (0, 7, 0), "plana-bootloader": (0, 7, 0), "plana-infra-services": (0, 7, 0), "plana-custom-agent": (0, 7, 0), "plana-timeline": (0, 7, 0), "plana-dev-server": (0, 7, 0), "plana-sibling": (0, 7, 0), "plana-i18n": (0, 7, 0), "plana-content-loader": (0, 7, 0), "plana-provider-catalog": (0, 7, 0)}
+    assert layers["plana_published"] == {"plana": (0, 8, 0), "plana-rpc-client": (0, 2, 0), "plana-rpc-server": (0, 2, 0), "plana-celestia-types": (0, 5, 0), "plana-tauri": (0, 1, 0), "plana-config": (0, 8, 0), "plana-build-info": (0, 8, 0), "plana-infra-utils": (0, 8, 0), "plana-llm-provider": (0, 8, 0), "plana-billing": (0, 8, 0), "plana-dispatch-client": (0, 3, 0), "plana-core": (0, 8, 0), "plana-text": (0, 8, 0), "plana-macros": (0, 8, 0), "plana-domain-agent": (0, 8, 0), "plana-state-sync": (0, 8, 0), "plana-domain-skills-permissions": (0, 8, 0), "plana-prompt": (0, 8, 0), "plana-domain-skills": (0, 8, 0), "plana-bootloader": (0, 8, 0), "plana-infra-services": (0, 8, 0), "plana-custom-agent": (0, 8, 0), "plana-timeline": (0, 8, 0), "plana-dev-server": (0, 8, 0), "plana-sibling": (0, 8, 0), "plana-i18n": (0, 8, 0), "plana-content-loader": (0, 8, 0), "plana-provider-catalog": (0, 8, 0)}
     assert [entry[0] for entry in layers["rust_layers"]] == ["kirino", "plana", "hikari"]
-    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 7, 0), "hikari": (0, 5, 0)}
+    assert dict((name, line) for name, line, _why in layers["rust_layers"]) == {"kirino": (0, 9, 0), "plana": (0, 8, 0), "hikari": (0, 5, 0)}
     assert layers["rust_overrides"] == {"kirino_session": ("kirino", (0, 8, 0), layers["rust_overrides"]["kirino_session"][2])}
     assert load_family_layers()["rust_overrides"]["kirino_session"][:2] == ("kirino", (0, 8, 0))
     assert dict((name, line) for name, line, _why in layers["npm_layers"]) == {"@celestia-island/hikari": (0, 55, 0), "@celestia-island/kirino": (0, 9, 0), "@celestia-island/plana-types": (0, 1, 0), "@celestia-island/plana-rpc-client": (0, 1, 0)}
@@ -22,11 +22,11 @@ def test_bundled_table_is_pinned():
         "celestia-island/arona": weld,
         "celestia-island/shittim-chest": {**weld, "lines": ("plana",)},
         "celestia-island/celestia-erp": weld,
-        "celestia-island/evernight": {**weld, "reason": "plana 0.7 wave: evernight still on the 0.4/0.3 generation", "lines": ("plana",)},
+        "celestia-island/evernight": {**weld, "reason": "evernight#513 moved root/celestia-types/build_info to 0.7; gateway plana03 ^0.3 remains until plana-rpc-server publishes on that line", "lines": ("plana",)},
     }
 
 def test_module_constants_come_from_the_data_file():
-    assert PLANA_PUBLISHED["plana"] == (0, 7, 0)
+    assert PLANA_PUBLISHED["plana"] == (0, 8, 0)
 
 def test_data_file_sits_next_to_the_module():
     assert _FAMILY_LAYERS_PATH.is_file()
