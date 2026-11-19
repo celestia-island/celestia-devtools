@@ -35,7 +35,7 @@
 # `force_cnb: false`.
 #
 # Caller contract:
-#   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@2e76d373762dc6b36c1ab7625c1c34842c28ad4a
+#   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@c45f1881e00cb55d0a2a1fcf57b28734ece119bb
 #   with: {target_repo: <repo-name>, target_sha: ${{ github.event.pull_request.head.sha }},
 #          lane: pr-${{ github.event.pull_request.number }}}
 #   secrets: inherit
