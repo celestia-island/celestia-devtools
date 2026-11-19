@@ -25,7 +25,12 @@ recomputable):
     satisfiable without the caller, so it is never reported.
 ``callee-not-reusable``
     the callee file was resolved and parses, but declares no ``workflow_call``
-    trigger — calling it cannot work at all.
+    trigger (mapping or list form) — calling it cannot work at all.
+``callee-parse-error``
+    the callee file was resolved but is not YAML at all. Content that is in
+    hand (local ``./`` callee, git lane, or a successful fetch) is a hard
+    error, not a skip: the skip contract covers only content that could not
+    be OBTAINED.
 ``with-not-mapping``
     the caller's ``with:`` is not a mapping, so no contract can be checked.
 ``local-callee-missing``
@@ -197,9 +202,11 @@ def callee_inputs(text: str) -> tuple[str, dict[str, Any]]:
     """Extract ``workflow_call.inputs`` from a callee file's text.
 
     Returns ``(status, inputs)`` where status is ``ok`` (inputs mapping, empty
-    when the callee declares none), ``not-reusable`` (parses, no
-    ``workflow_call``), ``parse-error`` (not YAML) or ``not-mapping`` (parsed
-    into something that is not a workflow document).
+    when the callee declares none — including the list-form trigger
+    ``on: [push, workflow_call]``, which is a reusable callee with zero
+    inputs), ``not-reusable`` (parses, but the ``on`` node is neither a
+    mapping with ``workflow_call`` nor a list carrying it) or ``parse-error``
+    (not YAML).
     """
 
     try:
@@ -208,6 +215,9 @@ def callee_inputs(text: str) -> tuple[str, dict[str, Any]]:
         return "parse-error", {}
 
     on = _on_node(document)
+
+    if isinstance(on, list):
+        return ("ok", {}) if "workflow_call" in on else ("not-reusable", {})
 
     if not isinstance(on, dict) or ("workflow_call" not in on):
         return "not-reusable", {}
@@ -340,7 +350,12 @@ def _check_call_site(relpath: str, lines: Sequence[str], job_id: str, job: Any, 
         status, inputs = callee_inputs(text)
 
     if status == "parse-error":
-        return findings, {"file": relpath, "job": job_id, "callee": uses, "reason": "callee content fetched but is not YAML"}
+        # Content is in hand (local file, git lane or a successful fetch): a
+        # callee GitHub cannot parse startup-kills the caller just as surely
+        # as an undeclared key, and the skip contract covers only content we
+        # could NOT obtain. R2 control: local-broken-caller.yml.
+        findings.append(_finding(relpath, _line_of_key(lines, job_id, None), job_id, "callee-parse-error", "", uses, "callee content resolved but is not YAML"))
+        return findings, None
 
     if status == "not-reusable":
         findings.append(_finding(relpath, _line_of_key(lines, job_id, None), job_id, "callee-not-reusable", "", uses, "the callee declares no workflow_call trigger"))
@@ -574,6 +589,40 @@ jobs:
       - caller-repo
 """
 
+SELFTEST_CALLEE_LIST_ON = """\
+name: List-form callee
+on: [push, workflow_call]
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+"""
+
+SELFTEST_CALLER_LIST_ON = """\
+name: Local
+on:
+  push:
+jobs:
+  call:
+    uses: ./.github/workflows/list-callee.yml
+    with:
+      payload: hi
+"""
+
+SELFTEST_CALLEE_BROKEN = "on: [push\njobs: {"
+
+SELFTEST_CALLER_BROKEN = """\
+name: Local
+on:
+  push:
+jobs:
+  call:
+    uses: ./.github/workflows/broken-callee.yml
+    with:
+      payload: hi
+"""
+
 def _selftest_git_repo(callee_text: str) -> tuple[Path, str]:
     """A throwaway git repo whose HEAD tree carries the callee; (path, sha)."""
 
@@ -626,6 +675,10 @@ def selftest() -> int:
         (workflows / "local-missing.yml").write_text(SELFTEST_CALLER_LOCAL_MISSING, encoding = "utf-8")
         (workflows / "local-ghost.yml").write_text(SELFTEST_CALLER_LOCAL_GHOST, encoding = "utf-8")
         (workflows / "with-not-mapping.yml").write_text(SELFTEST_CALLER_WITH_LIST % sha, encoding = "utf-8")
+        (workflows / "list-callee.yml").write_text(SELFTEST_CALLEE_LIST_ON, encoding = "utf-8")
+        (workflows / "list-on-caller.yml").write_text(SELFTEST_CALLER_LIST_ON, encoding = "utf-8")
+        (workflows / "broken-callee.yml").write_text(SELFTEST_CALLEE_BROKEN, encoding = "utf-8")
+        (workflows / "broken-caller.yml").write_text(SELFTEST_CALLER_BROKEN, encoding = "utf-8")
         (workflows / "local-callee.yml").write_text(SELFTEST_CALLEE_LOCAL, encoding = "utf-8")
         findings, skips, workflows_read, call_sites = scan_root(caller, caller, repo, _failing_runner)
 
@@ -636,20 +689,28 @@ def selftest() -> int:
 
         failures: list[str] = []
 
-        if [hit["key"] for hit in by_rule.get("undeclared-input", [])] != ["Caller-Repo", "devtools-ref", "ghost-key", "ghost-key"]:
+        if [hit["key"] for hit in by_rule.get("undeclared-input", [])] != ["Caller-Repo", "devtools-ref", "payload", "ghost-key", "ghost-key"]:
             failures.append(f"undeclared-input controls wrong: {[ (h['file'], h['key']) for h in by_rule.get('undeclared-input', [])] }")
 
         if [hit["key"] for hit in by_rule.get("missing-required-input", [])] != ["lane-threshold", "payload", "payload", "lane-threshold"]:
             failures.append(f"missing-required-input controls wrong: {[ (h['file'], h['key']) for h in by_rule.get('missing-required-input', [])] }")
-
-        if len(by_rule.get("callee-not-reusable", [])) != 0:
-            failures.append("callee-not-reusable fired on controls that all resolve")
 
         if [hit["file"] for hit in by_rule.get("with-not-mapping", [])] != [".github/workflows/with-not-mapping.yml"]:
             failures.append(f"with-not-mapping control wrong: {by_rule.get('with-not-mapping', [])}")
 
         if [hit["file"] for hit in by_rule.get("local-callee-missing", [])] != [".github/workflows/local-ghost.yml"]:
             failures.append(f"local-callee-missing control wrong: {by_rule.get('local-callee-missing', [])}")
+
+        if [hit["file"] for hit in by_rule.get("callee-parse-error", [])] != [".github/workflows/broken-caller.yml"]:
+            failures.append(f"callee-parse-error control wrong: {by_rule.get('callee-parse-error', [])}")
+
+        list_on_hit = [hit for hit in by_rule.get("undeclared-input", []) if hit["file"] == ".github/workflows/list-on-caller.yml"]
+
+        if [hit["key"] for hit in list_on_hit] != ["payload"]:
+            failures.append(f"list-form on: callee must parse as reusable-with-zero-inputs (undeclared payload), got: {list_on_hit}")
+
+        if [hit["file"] for hit in by_rule.get("callee-not-reusable", [])] != []:
+            failures.append(f"callee-not-reusable fired on controls that all resolve: {by_rule.get('callee-not-reusable', [])}")
 
         l157 = [hit for hit in by_rule.get("undeclared-input", []) if hit["key"] == "devtools-ref"]
 
@@ -673,8 +734,8 @@ def selftest() -> int:
         if skips and (skips[0]["file"] != ".github/workflows/external.yml"):
             failures.append(f"skip landed on the wrong file: {skips}")
 
-        if (workflows_read != 11) or (call_sites != 10):
-            failures.append(f"enumeration read {workflows_read} workflows / {call_sites} call sites, want 11/10")
+        if (workflows_read != 15) or (call_sites != 12):
+            failures.append(f"enumeration read {workflows_read} workflows / {call_sites} call sites, want 15/12")
 
         probe = callee_inputs(SELFTEST_CALLEE_ON_STRING)
 
