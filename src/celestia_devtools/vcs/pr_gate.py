@@ -182,20 +182,16 @@ def body_problems(body: str) -> list[str]:
     problems: list[str] = []
     fenced, prose, unclosed = _split_fences(body)
 
-    # A fence that never closes reds only when it actually swallows a record —
-    # the authority's rule; an unfinished code sample elsewhere is harmless.
-    if unclosed and any(_RECORD_RE.search(line) for line in fenced):
-        problems.append("code fence never closes — an unfinished template must not become a record")
-
     record_lines: list[tuple[str, str]] = []
     for raw_line in prose:
         m = _RECORD_RE.search(raw_line)
         if not m:
             continue
-        raw = m.group(1)
-        stripped = raw_line.strip()
-        if stripped.startswith("`verify: ") and stripped.endswith("`"):
-            raw = _strip_decoration(raw)
+        # The authority strips emphasis / inline-code markers from EVERY
+        # record (verify_account.parse_text), not just the whole-line-backtick
+        # form — applying it conditionally made the mirror diverge both ways
+        # (`c3=3*4` accepted here, `h*ardcap=no` refused here).
+        raw = _strip_decoration(m.group(1))
         lead = raw_line[: len(raw_line) - len(raw_line.lstrip())]
         shape = ""
         if "\t" in lead or len(lead) >= 4:
@@ -204,11 +200,20 @@ def body_problems(body: str) -> list[str]:
             shape = "block quote"
         record_lines.append((raw, shape))
 
-    # A record hidden in a fence alongside a prose record is an ambiguous record
-    # set — scan with the SAME matcher the authority uses (a prefix test misses
-    # `verify:rounds=…`, `**verify:** …` and numbered forms).
+    # A record inside a fence is never a record: with prose alongside it the set
+    # is ambiguous, and an unclosed fence that swallowed one is an unfinished
+    # template.  Scan with the SAME matcher the authority uses (a prefix test
+    # misses `verify:rounds=…`, `**verify:** …` and numbered forms); an
+    # unclosed fence that swallows nothing is harmless and stays accepted.
     if any(_RECORD_RE.search(line) for line in fenced):
-        problems.append("a verify record hides inside a fenced block — keep exactly the prose record")
+        if unclosed:
+            problems.append(
+                "code fence never closes — an unfinished template must not become a record"
+            )
+        else:
+            problems.append(
+                "a verify record hides inside a fenced block — keep exactly the prose record"
+            )
 
     if len(record_lines) == 0:
         if not problems:
@@ -322,7 +327,9 @@ def check_pr(
         problems.append("mergeable is unknown (GitHub still computing) — retry in a few seconds")
     elif mergeable is not True:
         problems.append(f"mergeable={mergeable} — conflicts or branch protection refuse the merge")
-    if base_ref and base_ref != base:
+    if not base_ref:
+        problems.append("PR payload carries no base branch — refusing to merge blind")
+    elif base_ref != base:
         problems.append(f"PR targets {base_ref!r}, the gate only merges into {base!r}")
 
     if expect_head and not (head == expect_head or head.startswith(expect_head)):
@@ -398,6 +405,13 @@ def gh_api(
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
+def _failure_detail(status: int, body: dict, stderr: str) -> str:
+    """Human detail for a failed call; never dresses an exit code as HTTP."""
+    if status >= 100:
+        return f"http={status} {json.dumps(body)[:200] if body else ''}".rstrip()
+    return f"transport failure (gh exit {status}) {stderr or 'no stderr'}"
+
+
 def _gate(
     repo: str,
     pr: int,
@@ -410,8 +424,7 @@ def _gate(
 ) -> int:
     status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner=runner)
     if status != 200:
-        detail = json.dumps(data)[:200] if data else (stderr or "no response body")
-        print(f"❌ GET pull request failed (http={status}): {detail}", file=sys.stderr)
+        print(f"❌ GET pull request failed: {_failure_detail(status, data, stderr)}", file=sys.stderr)
         return 1
     problems = check_pr(data, expect_head, allow_cjk=allow_cjk, base=base)
     if problems:
@@ -434,10 +447,19 @@ def _gate(
         runner=runner,
     )
     if status not in (200, 201):
-        detail = json.dumps(merged)[:200] if merged else (stderr or "no response body")
-        print(f"❌ merge request failed (http={status}): {detail}", file=sys.stderr)
+        print(f"❌ merge request failed: {_failure_detail(status, merged, stderr)}", file=sys.stderr)
         return 1
-    merged_sha = merged.get("sha", "")
+    merged_sha = str(merged.get("sha") or "")
+    if merged.get("merged") is not True or not merged_sha:
+        # The merge may or may not have landed; do not claim either way, and do
+        # not build a readback endpoint out of an empty SHA (it would hit the
+        # list/latest-commit endpoint instead of the squash commit).
+        print(
+            "🚨 MERGE-RESPONSE-ANOMALY: the API answered without a merged=true + sha "
+            f"pair ({json.dumps(merged)[:160]}) — check the PR state by hand before retrying "
+            "(a retry of an already-merged PR is harmless, but do not assume success here)"
+        )
+        return 2
     print(f"✅ squash merged → {merged_sha[:12]}")
 
     expected_subject = f"{title} (#{pr})"
@@ -445,7 +467,13 @@ def _gate(
     for attempt in (1, 2):  # cannot read ≠ polluted — one transport retry
         status, commit, _stderr = gh_api(f"repos/{repo}/commits/{merged_sha}", runner=runner)
         if status == 200:
-            subject = (commit.get("commit", {}).get("message") or "").splitlines()[0]
+            # An empty/absent message is "cannot read", not "polluted" — and an
+            # unguarded splitlines()[0] would raise IndexError AFTER the merge
+            # already landed, exiting rc 1 ("nothing merged") and inviting a
+            # retry of an irreversible action.
+            message = ((commit.get("commit") or {}).get("message") or "").strip()
+            if message:
+                subject = message.splitlines()[0]
             break
         if attempt == 1:
             time.sleep(3)

@@ -212,6 +212,7 @@ class test_check_pr:
             "title": GOOD_TITLE,
             "body": GOOD_BODY,
             "head": {"sha": "a" * 40},
+            "base": {"ref": "master"},
         }
         payload.update(overrides)
         return payload
@@ -349,3 +350,106 @@ class test_merge_path:
         ])
         assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 1
         assert "merge request failed" in capsys.readouterr().err
+
+
+class test_round2_regressions:
+    def test_missing_base_is_refused(self):
+        problems = check_pr(
+            {"state": "open", "mergeable": True, "title": GOOD_TITLE,
+             "body": GOOD_RECORD, "head": {"sha": "a" * 40}},
+            expect_head="a" * 40,
+        )
+        assert any("no base branch" in p for p in problems)
+
+    def test_decorated_record_matches_the_authority(self):
+        # The authority strips emphasis/inline-code from EVERY record; a
+        # conditional strip made the mirror diverge both ways.  Both directions:
+        # a backticked VALUE must still parse (`rounds=`4`` → 4), and a
+        # decorated value that parses differently must land on the same verdict
+        # as the detector (`c3=3*4` → 34, i.e. rounds 4 < c3+1).
+        ok = (
+            "verify: rounds=`4` clean=3 S0=0 S1=0 S2=0 S3=6 gates=5 hardcap=no "
+            "budget=ok post-cap=0 **c3=3**"
+        )
+        assert body_problems(ok) == []
+        looser = (
+            "verify: rounds=4 clean=3 S0=0 S1=0 S2=0 S3=6 gates=5 hardcap=no "
+            "budget=ok post-cap=0 c3=3*4"
+        )
+        assert any("max(4, c3+1)" in p for p in body_problems(looser))
+
+    def _pr(self):
+        return {
+            "state": "open", "mergeable": True, "title": GOOD_TITLE,
+            "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"},
+        }
+
+    def test_empty_commit_message_is_unreadable_not_a_crash(self, capsys):
+        runner = _FakeRunner([
+            (200, self._pr()),
+            (200, {"merged": True, "sha": "c" * 40}),
+            (200, {"sha": "c" * 40, "commit": {}}),
+        ])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 2
+        out = capsys.readouterr().out
+        assert "COMMIT-GET-FAILED" in out
+
+    def test_merge_without_sha_is_an_anomaly_not_success(self, capsys):
+        runner = _FakeRunner([
+            (200, self._pr()),
+            (200, {"merged": True}),
+        ])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 2
+        out = capsys.readouterr().out
+        assert "MERGE-RESPONSE-ANOMALY" in out
+        # And the bogus readback endpoint must never be called.
+        assert not any(c[-1].endswith("/commits/") for c in runner.calls)
+
+    def test_transport_failure_is_not_dressed_as_an_http_code(self, capsys):
+        class _Boom:
+            def __call__(self, cmd, **kwargs):
+                class _P:
+                    returncode = 1
+                    stdout = ""
+                    stderr = 'Get "https://api.github.com/": TLS handshake timeout'
+                return _P()
+
+        assert _gate("o/r", 1, None, allow_cjk=False, do_merge=False, runner=_Boom()) == 1
+        err = capsys.readouterr().err
+        assert "transport failure" in err
+        assert "http=" not in err
+
+
+class _RecordingRunner(_FakeRunner):
+    """FakeRunner that also records the stdin payload of each call."""
+
+    def __init__(self, responses):
+        super().__init__(responses)
+        self.inputs: list[str | None] = []
+
+    def __call__(self, cmd, **kwargs):
+        self.inputs.append(kwargs.get("input"))
+        return super().__call__(cmd, **kwargs)
+
+
+class test_merge_write_shape:
+    """The gate's ONLY write action must be pinned (round-2 S2)."""
+
+    def _pr(self):
+        return {
+            "state": "open", "mergeable": True, "title": GOOD_TITLE,
+            "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"},
+        }
+
+    def test_squash_request_shape(self):
+        runner = _RecordingRunner([
+            (200, self._pr()),
+            (200, {"merged": True, "sha": "c" * 40}),
+            (200, {"commit": {"message": f"{GOOD_TITLE} (#7)"}}),
+        ])
+        assert _gate("o/r", 7, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 0
+        merge_argv = list(runner.calls[1])
+        assert merge_argv == [
+            "gh", "api", "-i", "repos/o/r/pulls/7/merge", "-X", "PUT", "--input", "-",
+        ], merge_argv
+        assert json.loads(runner.inputs[1] or "{}") == {"merge_method": "squash"}
