@@ -254,3 +254,38 @@ def test_npm_two_segment_caret_tolerated(tmp_path: Path) -> None:
 
 def test_classify_python_empty_spec_defensive(tmp_path: Path) -> None:
     assert depspec.classify_python("x", "")[0] == "py_bare_name"
+
+
+def test_chrono_advisory_rides_along(tmp_path: Path, capsys) -> None:
+    """RUSTSEC-2026-0543: the declaration gate is where future agents see chrono.
+
+    The advisory must NOT become a finding: `--strict` keeps keying on the
+    two-form findings only, so a tree with legal declarations still exits 0 —
+    while the warning text lands on stderr and, under ``--json``, inside the
+    report so a machine consumer can surface it too.
+    """
+    _write(tmp_path, "Cargo.toml", _cargo({"chrono": "^0.4", "serde": "1"}))
+    _write(tmp_path, "src/lib.rs", "use chrono::Utc;\n")
+    rep = depspec.scan(tmp_path)
+    assert _codes(rep) == set()
+    assert [h.advisory.id for h in rep.advisories] == ["RUSTSEC-2026-0543"]
+    assert rep.advisories[0].declarations == ["Cargo.toml:2"]
+
+    assert depspec.main([str(tmp_path), "--strict"]) == 0
+    captured = capsys.readouterr()
+    assert "warning: chrono is unmaintained" in captured.err
+    assert "migrate to jiff as soon as possible" in captured.err
+    assert "all declarations two-form" in captured.out
+
+    assert depspec.main([str(tmp_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["advisories"][0]["crate"] == "chrono"
+    assert payload["findings"] == []
+
+
+def test_chrono_tz_is_not_the_advisory_crate(tmp_path: Path) -> None:
+    """chrono-tz is a different crate; the warning must not fire on it alone."""
+    _write(tmp_path, "Cargo.toml", _cargo({"chrono-tz": "^0.10"}))
+    rep = depspec.scan(tmp_path)
+    assert rep.advisories == []
