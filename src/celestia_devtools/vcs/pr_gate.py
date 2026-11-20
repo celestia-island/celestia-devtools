@@ -132,8 +132,10 @@ DEFAULT_BASE = "master"
 # title.  The sequences are protected by SPLITTING on them and stripping only
 # the surrounding pieces, so no placeholder character is ever written into the
 # title: nothing can collide with a real input, nothing 1:1 with an emoji can
-# be forged, and every OTHER zero-width character (including a ZWJ outside a
-# whitelist sequence: "v‍2", "Pr‍obe", "feat‍:") is still normalised away.
+# be forged, and every character IN the strip set (U+200B/200C/200D/FEFF) is
+# still normalised away — including a ZWJ outside a whitelist sequence ("v‍2",
+# "Pr‍obe", "feat‍:").  Zero-width characters outside the set (U+2060, U+00AD,
+# variation selectors) are deliberately untouched; see the module docstring.
 _ZWJ_EMOJIS: tuple[str, ...] = ()  # filled lazily (needs commit_msg's whitelist)
 _ZWJ_SPLIT_RE: "re.Pattern[str] | None" = None
 
