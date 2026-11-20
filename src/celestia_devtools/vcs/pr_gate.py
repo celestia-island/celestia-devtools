@@ -100,8 +100,10 @@ BANNED_TITLE_WORDS = {
 _ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff"), None)
 _ARABIC_INDIC = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
-# Any spelling of an in-title pull-request reference: the squash appends its
-# own " (#N)", so a title that already carries one would end up duplicated.
+# An in-title pull-request reference: the squash appends its own " (#N)", so a
+# title that already carries one would end up duplicated.  A parenthesised form
+# counts at any width; a bare form only at 2+ digits (bare "#1" reads as an
+# ordinary cross-reference, see the module docstring).
 _PR_REF_IN_TITLE = re.compile(r"(?:\(\s*#\s*\d+\s*\)|（\s*#\s*\d+\s*）)|#\s*\d{2,}")
 
 # Mid-title version word: "Add v2 support." — lint's rule 4 only covers a

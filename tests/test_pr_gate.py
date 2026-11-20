@@ -521,3 +521,45 @@ class test_round4_regressions:
         ])
         assert _gate("o/r", 1, "b" * 40, allow_cjk=False, do_merge=True, runner=runner) == 2
         assert "(1 attempt(s))" in capsys.readouterr().out
+
+
+class test_round6_regressions:
+    """Closure-round-C findings: CLI contract and status-path pins."""
+
+    def test_check_without_expect_head_is_an_argparse_error(self):
+        # The documented-but-impossible head-less form must fail at the CLI
+        # boundary (rc 2), not silently reach the gate and fail there.
+        from celestia_devtools.vcs.pr_gate import main
+
+        try:
+            main(["check", "--repo", "o/r", "--pr", "1"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:  # pragma: no cover - the assertion is the point
+            raise AssertionError("check without --expect-head must exit 2")
+
+    def test_merge_lane_also_requires_the_pin(self):
+        from celestia_devtools.vcs.pr_gate import main
+
+        try:
+            main(["merge", "--repo", "o/r", "--pr", "1"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:  # pragma: no cover
+            raise AssertionError("merge without --expect-head must exit 2")
+
+    def test_non_2xx_status_surfaces_as_http(self, capsys):
+        # The non-2xx half of the header parsing was unpinned: neutralising the
+        # regex fell back to gh's exit code and reported a 404 as a transport
+        # failure.
+        runner = _FakeRunner([(404, {"message": "Not Found"})])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=False, runner=runner) == 1
+        err = capsys.readouterr().err
+        assert "http=404" in err, err
+        assert "transport failure" not in err, err
+
+    def test_bare_one_digit_reference_is_accepted(self):
+        # Documented carve-out: a bare "#1" reads as an ordinary reference,
+        # while a bare two-digit reference is still refused.
+        assert title_problems("✨ Fix the #1 crash in the parser.") == []
+        assert title_problems("✨ Fix the #12 crash in the parser.")
