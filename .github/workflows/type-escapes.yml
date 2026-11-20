@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      baseline:
+        description: "Repository-relative path to a baseline JSON (the ratchet). Non-empty turns the run monotone: existing debt may not grow and new files may not introduce any. Empty (the default) keeps the plain count-and-report mode."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   type-escapes:
@@ -54,6 +59,7 @@ jobs:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
           SCAN_PATHS: ${{ inputs.paths }}
           FAIL_ON_DTS: ${{ inputs.fail-on-dts }}
+          BASELINE: ${{ inputs.baseline }}
         run: |
           set -- ${SCAN_PATHS:-.}
           # Value-gated, not set-gated: `${FAIL_ON_DTS:+--fail-on-dts}`
@@ -64,6 +70,16 @@ jobs:
           dts_flag=()
           if [ "${FAIL_ON_DTS:-false}" = "true" ]; then
             dts_flag+=(--fail-on-dts)
+          fi
+          # Ratchet input (2026-11): value-gated like fail-on-dts — an empty
+          # default must NOT turn every caller into ratchet mode (a missing
+          # baseline file would then red every repo that does not have one).
+          if [ -n "${BASELINE:-}" ]; then
+            if [ ! -f "${BASELINE}" ]; then
+              echo "::error::baseline '${BASELINE}' was requested but does not exist in this checkout"
+              exit 2
+            fi
+            dts_flag+=(--baseline "${BASELINE}")
           fi
           if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools type-escapes --help >/dev/null 2>&1; then
             echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
