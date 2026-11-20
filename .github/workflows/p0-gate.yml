@@ -34,11 +34,6 @@ concurrency:
 jobs:
   gate:
     name: P0 Ledger Gate
-    # Fork PRs must not spend shared org runner time on untrusted content; they
-    # need maintainer approval anyway. The guard covers both the direct
-    # pull_request trigger and workflow_call callers (github.event then carries
-    # the caller's PR payload).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Python-stdlib-only and sub-second: it belongs with the other org checks on
     # the self-hosted fleet. No GitHub-hosted job here — private repos must not
     # add billed ubuntu-latest runs (AGENTS §8.2).

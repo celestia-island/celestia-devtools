@@ -64,7 +64,6 @@ jobs:
     name: Lint style (${{ inputs.tool }})
     # Fork PRs need maintainer approval anyway, and an untrusted tree must not
     # consume shared runner time or execute inside the org's network.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 30
     permissions:

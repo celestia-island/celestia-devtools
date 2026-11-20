@@ -17,7 +17,6 @@ jobs:
     # untrusted content. The required commit-lint and PR-title checks are the
     # deliberate exception: they are sub-minute, execute no pull request code, and
     # hold no secrets.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Lint (ruff)
     runs-on: [self-hosted, linux, x64, local]
     timeout-minutes: 60
@@ -48,7 +47,6 @@ jobs:
     # untrusted content. The required commit-lint and PR-title checks are the
     # deliberate exception: they are sub-minute, execute no pull request code, and
     # hold no secrets.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test (pytest)
     runs-on: [self-hosted, linux, x64, local]
     timeout-minutes: 120
@@ -76,7 +74,6 @@ jobs:
     # untrusted content. The required commit-lint and PR-title checks are the
     # deliberate exception: they are sub-minute, execute no pull request code, and
     # hold no secrets.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Markdown self-check
     runs-on: [self-hosted, linux, x64, local]
     timeout-minutes: 60
