@@ -629,3 +629,60 @@ class test_zwj_gitmoji:
         ):
             problems = title_problems(fixture)
             assert any("private-use" in p for p in problems), (fixture, problems)
+
+class test_l910_residue:
+    """The three latent items recorded as L910 — closed."""
+
+    def test_two_zwj_emojis_stay_distinct(self, monkeypatch):
+        # L910①: the sentinel scheme mapped every parked sequence back onto the
+        # LONGEST one, so a second whitelist entry would have collapsed them.
+        # Splitting needs no placeholder, so distinctness is structural — this
+        # pins it with a synthetic two-sequence whitelist.
+        from celestia_devtools.vcs import pr_gate
+
+        first = "\U0001f9d1\u200d\U0001f4bb"   # 🧑‍💻
+        second = "\U0001f468\u200d\U0001f4bb"  # 👨‍💻 (not in the real whitelist)
+        monkeypatch.setattr(pr_gate, "_ZWJ_EMOJIS", ())
+        monkeypatch.setattr(pr_gate, "_ZWJ_SPLIT_RE", None)
+        monkeypatch.setattr(
+            "celestia_devtools.vcs.commit_msg.GITMOJI_WHITELIST",
+            frozenset({first, second}),
+            raising=True,
+        )
+        normalised = pr_gate._normalise_title(f"{first} and {second} both work.")
+        assert first in normalised and second in normalised, normalised
+        assert normalised.count("\u200d") == 2, normalised
+
+    def test_no_placeholder_character_is_ever_written(self):
+        # L910②: the old design rewrote a pre-existing U+E000 into a gitmoji,
+        # so the guard lived only in the caller.  There is no placeholder any
+        # more; assert a U+E000 survives normalisation untouched (the refusal
+        # happens in title_problems, on the raw title).
+        from celestia_devtools.vcs.pr_gate import _normalise_title
+
+        assert "\ue000" in _normalise_title("\ue000Add the banner for the console users now.")
+
+    def test_private_use_refused_at_any_position(self):
+        # L910②(behaviour): the refusal is what protects the subject line.
+        for fixture in (
+            "\ue000\u2728 Add the pair-programming banner to the console.",
+            "\ue000Add the pair-programming banner to the console.",
+            "\u2728 Add the \ue000 banner for the console users now.",
+            "\u2728\ue000 Add the pair-programming banner to the console.",
+        ):
+            problems = title_problems(fixture)
+            assert any("private-use" in p for p in problems), (fixture, problems)
+
+    def test_supplementary_private_use_planes_refused(self):
+        # U+F0000 (supplementary PUA-A) is invisible too.
+        problems = title_problems("\U000f0000\u2728 Add the banner for the console users now.")
+        assert any("private-use" in p for p in problems), problems
+
+    def test_docstring_documents_the_strip(self):
+        # L910③: the module docstring must name the private-use refusal and the
+        # ZWJ survival, i.e. the two behaviours a reader of check 3 needs.
+        from celestia_devtools.vcs import pr_gate
+
+        doc = pr_gate.__doc__ or ""
+        assert "private-use" in doc, doc[:200]
+        assert "ZWJ" in doc
