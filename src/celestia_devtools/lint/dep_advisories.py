@@ -12,13 +12,16 @@ This module is deliberately a **warning channel, not a ban**:
 
 * it scans ``Cargo.toml`` declarations (every dependency table, including
   ``[workspace.dependencies]``, ``[target.<triple>.dependencies]``, renamed
-  ``package = "chrono"`` aliases and ``[patch]`` / ``[replace]`` snapshots) and
-  Rust sources for the crate name;
+  ``package = "chrono"`` aliases, ``[replace]`` ``"name:version"`` keys and
+  ``[patch.*]`` snapshots) and Rust sources for the crate name;
 * a full-tree hit needs a **declaration**: a comment that merely mentions the
   crate ("migrated off chrono in 2026-11") must not nag forever, and it must not
   keep ``--strict`` red after the migration — source mentions only become
   evidence under a declaration, or a hit of their own in the ``--staged`` view
-  (where the mention *is* the change under review);
+  (where the mention *is* the change under review). Trade-off, accepted: a
+  repository that consumes chrono only through another crate's re-export (no
+  local declaration) gets no full-tree hit; the staged view still catches it
+  while the diff is authored;
 * the default run prints one warning block per affected crate and **exits 0**
   (advisory form, safe to wire into a trunk basic check before the tree is
   clean), exactly like ``depspec-lint``'s advisory mode;
@@ -137,33 +140,68 @@ def _dependency_tables(data: dict) -> list[dict]:
                 if isinstance(deps, dict):
                     tables.append(deps)
 
-    for key in ("patch", "replace"):
-        sec = data.get(key)
+    patch = data.get("patch")
 
-        if isinstance(sec, dict):
-            for registry in sec.values():
-                if isinstance(registry, dict):
-                    tables.append(registry)
+    if isinstance(patch, dict):
+        for registry in patch.values():
+            if isinstance(registry, dict):
+                tables.append(registry)
+
+    replace = data.get("replace")
+
+    if isinstance(replace, dict):
+        # [replace] keys are "name:version", with no registry level in between.
+        tables.append(replace)
 
     return tables
 
 def _table_declares(table: dict, crate: str) -> bool:
-    """True when the table depends on ``crate``, by key or by renamed alias."""
+    """True when the table depends on ``crate``: plain key, ``name:version``, or alias."""
 
     if crate in table:
         return True
 
-    for entry in table.values():
+    for key, entry in table.items():
+        if isinstance(key, str) and (key.split(":")[0] == crate):
+            return True
+
         if isinstance(entry, dict) and (entry.get("package") == crate):
             return True
 
     return False
 
-def _lines_of(text: str, crate: str) -> list[int]:
-    """1-based evidence lines for a declaration (key, inline table, dotted table)."""
+def _is_dependency_section(section: str) -> bool:
+    return (section.rsplit(".", 1)[-1] in ("dependencies", "dev-dependencies", "build-dependencies")) or section.startswith("patch.") or (section == "replace")
 
-    patterns = (re.compile(r'^\s*["\']?' + re.escape(crate) + r'["\']?\s*='), re.compile(r'^\s*["\']?' + re.escape(crate) + r'["\']?\s*\.'), re.compile(r"^\s*\[[^\]]*[.\"']" + re.escape(crate) + r"[\"']?\]"))
-    numbers = [number for number, line in enumerate(text.splitlines(), 1) if any(p.match(line) for p in patterns)]
+def _lines_of(text: str, crate: str) -> list[int]:
+    """1-based evidence lines, section-aware (a feature table is not a dependency)."""
+
+    numbers: list[int] = []
+    section = ""
+    key_re = re.compile(r'^["\']?([A-Za-z0-9_.:-]+)["\']?\s*[=.]')
+    alias_re = re.compile(r'package\s*=\s*["\']' + re.escape(crate) + r'["\']')
+
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped.strip("[]")
+            parts = section.split(".")
+
+            if (len(parts) >= 2) and (parts[-2] in ("dependencies", "dev-dependencies", "build-dependencies")) and (parts[-1].strip("\"'") == crate):
+                numbers.append(number)
+
+            continue
+
+        if not _is_dependency_section(section):
+            continue
+
+        match = key_re.match(stripped)
+
+        if match and (match.group(1).split(":")[0] == crate):
+            numbers.append(number)
+        elif alias_re.search(stripped):
+            numbers.append(number)
 
     return numbers
 
@@ -342,14 +380,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         rep = scan_staged(root) if args.staged else scan(root)
-    except (OSError, UnicodeDecodeError, subprocess.SubprocessError) as exc:
+    except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
         print(f"dep-advisories: {exc}", file = sys.stderr)
         return 2
 
     # A full scan that found nothing at all is a broken invocation; an empty
     # staged set is a normal commit, so only the full-tree form errors out.
-    if (not args.staged) and (rep.manifests == 0) and (rep.sources == 0):
-        print(f"dep-advisories: {root}: no Cargo.toml or .rs file found", file = sys.stderr)
+    # A full scan that read no manifest is a broken invocation, not a clean
+    # tree: "nothing scanned" must never read as green (an empty staged set is
+    # a normal commit, so only the full-tree form errors out).
+    if (not args.staged) and (rep.manifests == 0):
+        if rep.unparsed:
+            print(f"dep-advisories: {root}: no manifest could be parsed ({rep.unparsed} unparseable)", file = sys.stderr)
+        else:
+            print(f"dep-advisories: {root}: no Cargo.toml or .rs file found", file = sys.stderr)
+
+        if args.json:
+            print(json.dumps(rep.to_dict(), ensure_ascii = False))
+
         return 2
 
     if args.json:

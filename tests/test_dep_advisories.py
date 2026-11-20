@@ -125,6 +125,36 @@ def test_all_manifests_unparseable_is_not_green(tmp_path: Path) -> None:
     assert (rep.manifests == 0) and (rep.unparsed == 1)
     assert dep_advisories.main([str(tmp_path)]) == 2
 
+def test_unparseable_manifest_with_sources_is_still_not_green(tmp_path: Path) -> None:
+    """A .rs file must not turn "declarations never read" into "clean"."""
+    _write(tmp_path, "Cargo.toml", '[dependencies\nchrono = "0.4"\n')
+    _write(tmp_path, "src/lib.rs", "use chrono::Utc;\n")
+    rep = dep_advisories.scan(tmp_path)
+    assert (rep.manifests == 0) and (rep.unparsed == 1) and (rep.sources == 1)
+    assert dep_advisories.main([str(tmp_path)]) == 2
+    assert dep_advisories.main([str(tmp_path), "--strict"]) == 2
+
+def test_replace_table_name_version_key_is_a_declaration(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[replace]\n"chrono:0.4.31" = { path = "../chrono" }\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert [h.advisory.crate for h in rep.hits] == ["chrono"]
+    assert rep.hits[0].declarations == ["Cargo.toml:2"]
+
+def test_feature_table_does_not_steal_the_evidence_line(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[features]\nchrono = ["dep:chrono"]\n\n[dependencies]\nchrono = "0.4"\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert rep.hits[0].declarations == ["Cargo.toml:5"], rep.hits[0].declarations
+
+def test_metadata_table_header_does_not_steal_the_evidence_line(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[package.metadata.chrono]\nx = 1\n\n[dependencies]\nchrono = "0.4"\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert rep.hits[0].declarations == ["Cargo.toml:5"], rep.hits[0].declarations
+
+def test_alias_declaration_line_is_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[dependencies]\nmy-dt = { package = "chrono", version = "0.4" }\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert rep.hits[0].declarations == ["Cargo.toml:2"], rep.hits[0].declarations
+
 def test_missing_path_is_exit_two(tmp_path: Path) -> None:
     assert dep_advisories.main([str(tmp_path / "nope")]) == 2
 
