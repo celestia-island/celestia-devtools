@@ -25,11 +25,15 @@ Checks (any failure → rc 1, merge refused):
 3.  Title passes :func:`celestia_devtools.vcs.commit_msg.lint` — the single
     source for the org gitmoji rules (emoji, uppercase, period, English-only,
     no colon prefix, no version/filler start) — plus PR-specific extras:
-    minimum length, bare probe/placeholder words, any spelling of an in-title
-    pull-request reference (squash appends its own `` (#N)``), and a mid-title
-    version word (zero-width characters and Eastern-Arabic digits are
-    normalised first).  Two lint exemptions come along by design: ``Revert …``
-    (git revert) and the ``🔄`` period relaxation.
+    minimum length, bare probe/placeholder words, an in-title pull-request
+    reference — a parenthesised ``(#N)`` in either width, or a bare ``#N`` of
+    two or more digits (a bare ``#1`` is left alone: it reads as an ordinary
+    cross-reference) — and a mid-title version word (zero-width characters and
+    Eastern-Arabic digits are normalised first).  Two lint exemptions come
+    along by design: ``Revert …`` (git revert) and the ``🔄`` period
+    relaxation.  Note the emoji set is lint's full gitmoji whitelist rather
+    than the narrower set the workspace predecessor hard-coded, so a title
+    using a rarer canonical gitmoji passes here.
 4.  Body carries exactly one ``verify:`` record, parsed by a faithful mirror of
     the workspace scanner (``_tools/verify_account.py``): fenced blocks are not
     records, an unclosed fence reds only when it *contains* a record, indented
@@ -55,13 +59,19 @@ from the validated title.  The merge commit's subject is then read back:
 *  commit unreadable (transport, after one retry) → rc 2 as
    ``COMMIT-GET-FAILED`` *without* claiming pollution (cannot read ≠ polluted).
 
-The workspace wrapper turns rc 2 into a sticky ``_alerts`` marker; this module
-stays repo-agnostic and only prints.
+This module stays repo-agnostic and only prints; turning rc 2 into a sticky
+``_alerts`` marker is the caller's job.  (No wrapper delegates here yet — the
+workspace-side ``_tools/pr_merge_gate.py`` is still its own implementation and
+writes the marker in-process; folding it into a shim over this command is a
+follow-up.)
 
 CLI::
 
-    pr-merge-gate check --repo OWNER/NAME --pr 123 [--expect-head SHA]
+    pr-merge-gate check --repo OWNER/NAME --pr 123 --expect-head SHA
     pr-merge-gate merge --repo OWNER/NAME --pr 123 --expect-head SHA
+
+``--expect-head`` is required by BOTH lanes: a check that does not say which
+commit was reviewed is not evidence, so there is no "head-less check" mode.
 """
 
 from __future__ import annotations
@@ -533,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--pr", required=True, type=int)
         sp.add_argument(
             "--expect-head",
-            required=(name == "merge"),
+            required=True,
             default=None,
             help="head SHA verified by the review rounds (prefix ok)",
         )

@@ -493,9 +493,12 @@ class test_round4_regressions:
     def test_launcher_codes_are_not_http(self):
         from celestia_devtools.vcs.pr_gate import _failure_detail
 
-        assert "http=" not in _failure_detail(127, {}, "gh: No such file")
-        assert "exit 127" in _failure_detail(127, {}, "gh: No such file")
+        for code in (126, 127):  # both shell launcher codes sit inside the HTTP range
+            detail = _failure_detail(code, {}, "gh: launcher failure")
+            assert "http=" not in detail, detail
+            assert f"exit {code}" in detail, detail
         assert "http=404" in _failure_detail(404, {"message": "Not Found"}, "")
+        assert "http=500" in _failure_detail(500, {}, "")
 
     def test_transport_retry_is_pinned(self, capsys):
         # Two failed reads must actually issue two GETs and say so.
