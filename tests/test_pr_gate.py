@@ -604,7 +604,7 @@ class test_zwj_gitmoji:
         assert title_problems(fixture), fixture
 
     def test_protection_is_scoped_to_the_sequence(self):
-        # The sentinel parks the whitelist sequence only: the SAME title with a
+        # Protection covers the whitelist sequence only: the SAME title with a
         # lone ZWJ inside a version word must still be stripped and caught.
         fixture = (
             "\U0001f9d1\u200d\U0001f4bb Extend the support matrix for v\u200d2 "
@@ -617,10 +617,40 @@ class test_zwj_gitmoji:
         fixture = "\u200b\U0001f9d1\u200d\U0001f4bb Add the pair-programming banner."
         assert title_problems(fixture) == []
 
-    def test_sentinel_character_refused_on_sight(self):
-        # U+E000 rewrites 1:1 into a whitelisted gitmoji during normalisation,
-        # so a title carrying it would grow an invisible leading emoji and slip
-        # every later rule. Refused before the strip, at any position.
+class test_l910_residue:
+    """The three latent items recorded as L910 — closed."""
+
+    def test_two_zwj_emojis_stay_distinct(self, monkeypatch):
+        # L910①: the sentinel scheme mapped every parked sequence back onto the
+        # LONGEST one, so a second whitelist entry would have collapsed them.
+        # Splitting needs no placeholder, so distinctness is structural — this
+        # pins it with a synthetic two-sequence whitelist.
+        from celestia_devtools.vcs import pr_gate
+
+        first = "\U0001f9d1\u200d\U0001f4bb"   # 🧑‍💻
+        second = "\U0001f468\u200d\U0001f4bb"  # 👨‍💻 (not in the real whitelist)
+        monkeypatch.setattr(pr_gate, "_ZWJ_EMOJIS", ())
+        monkeypatch.setattr(pr_gate, "_ZWJ_SPLIT_RE", None)
+        monkeypatch.setattr(
+            "celestia_devtools.vcs.commit_msg.GITMOJI_WHITELIST",
+            frozenset({first, second}),
+            raising=True,
+        )
+        normalised = pr_gate._normalise_title(f"{first} and {second} both work.")
+        assert first in normalised and second in normalised, normalised
+        assert normalised.count("\u200d") == 2, normalised
+
+    def test_no_placeholder_character_is_ever_written(self):
+        # L910②: the old design rewrote a pre-existing U+E000 into a gitmoji,
+        # so the guard lived only in the caller.  There is no placeholder any
+        # more; assert a U+E000 survives normalisation untouched (the refusal
+        # happens in title_problems, on the raw title).
+        from celestia_devtools.vcs.pr_gate import _normalise_title
+
+        assert "\ue000" in _normalise_title("\ue000Add the banner for the console users now.")
+
+    def test_private_use_refused_at_any_position(self):
+        # L910②(behaviour): the refusal is what protects the subject line.
         for fixture in (
             "\ue000\u2728 Add the pair-programming banner to the console.",
             "\ue000Add the pair-programming banner to the console.",
@@ -629,3 +659,40 @@ class test_zwj_gitmoji:
         ):
             problems = title_problems(fixture)
             assert any("private-use" in p for p in problems), (fixture, problems)
+
+    def test_supplementary_private_use_planes_refused(self):
+        # U+F0000 (supplementary PUA-A) is invisible too.
+        problems = title_problems("\U000f0000\u2728 Add the banner for the console users now.")
+        assert any("private-use" in p for p in problems), problems
+
+    def test_docstring_documents_the_strip(self):
+        # L910③: the module docstring must name the private-use refusal and the
+        # ZWJ survival, i.e. the two behaviours a reader of check 3 needs.
+        from celestia_devtools.vcs import pr_gate
+
+        doc = pr_gate.__doc__ or ""
+        assert "private-use" in doc, doc[:200]
+        assert "ZWJ" in doc
+
+    def test_clearing_the_emoji_cache_forces_a_rebuild(self, monkeypatch):
+        # L910④: the two globals are the cache, so clearing one alone must not
+        # leave a stale regex in place (the sentinel-era trap).
+        from celestia_devtools.vcs import pr_gate
+
+        monkeypatch.setattr(pr_gate, "_ZWJ_EMOJIS", ())
+        monkeypatch.setattr(pr_gate, "_ZWJ_SPLIT_RE", None)
+        assert pr_gate._zwj_splitter() is not None
+        assert pr_gate._ZWJ_EMOJIS, "first call must fill the cache"
+        # Clear ONLY the tuple (the regex stays warm): the old guard keyed on
+        # the regex alone and would have kept serving the stale pair.
+        monkeypatch.setattr(pr_gate, "_ZWJ_EMOJIS", ())
+        pr_gate._zwj_splitter()
+        assert pr_gate._ZWJ_EMOJIS, "clearing the tuple must force a rebuild"
+
+    def test_strip_set_is_documented_precisely(self):
+        # L910③: the docstring must not claim every zero-width character is
+        # stripped — only the four in the strip set.
+        from celestia_devtools.vcs import pr_gate
+
+        doc = pr_gate.__doc__ or ""
+        assert "U+200B/200C/200D/FEFF" in doc, doc[:300]

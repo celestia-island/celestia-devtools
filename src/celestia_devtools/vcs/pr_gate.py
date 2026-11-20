@@ -31,9 +31,17 @@ Checks (any failure → rc 1, merge refused):
     cross-reference) — and a mid-title version word (zero-width characters and
     Eastern-Arabic digits are normalised first).  Two lint exemptions come
     along by design: ``Revert …`` (git revert) and the ``🔄`` period
-    relaxation.  Note the emoji set is lint's full gitmoji whitelist rather
-    than the narrower set the workspace predecessor hard-coded, so a title
-    using a rarer canonical gitmoji passes here.
+    relaxation.  A title carrying an invisible private-use character is
+    refused outright (it would land verbatim in the squash subject and has no
+    legitimate place there).  Note two things about the emoji set and the
+    zero-width strip: the set is lint's full gitmoji whitelist rather than the
+    narrower one the workspace predecessor hard-coded (so a rarer canonical
+    gitmoji passes here), and whitelist ZWJ sequences survive the zero-width
+    strip while every other character **in the strip set**
+    (U+200B/200C/200D/FEFF) is normalised away — including a ZWJ used to split
+    a version word, a banned word or a colon prefix.  Characters outside that
+    set (U+2060 word-joiner, U+00AD soft hyphen, variation selectors, …) are
+    not touched: widening the set is a separate decision, not a side effect.
 4.  Body carries exactly one ``verify:`` record, parsed by a faithful mirror of
     the workspace scanner (``_tools/verify_account.py``): fenced blocks are not
     records, an unclosed fence reds only when it *contains* a record, indented
@@ -119,30 +127,67 @@ MIN_HEAD_PREFIX = 7
 DEFAULT_BASE = "master"
 
 # ZWJ-sequence gitmojis from the lint whitelist (e.g. 🧑‍💻): the joiner is
-# load-bearing inside them, so the zero-width strip below must NOT eat it —
-# stripping made lint report "must start with a gitmoji" for a fully
-# compliant title.  They are parked on a private-use sentinel across the
-# strip, so every OTHER zero-width character (including a ZWJ outside a
-# whitelist sequence: "v‍2", "Pr‍obe", "feat‍:") is still normalised away.
-_ZWJ_EMOJIS = ()  # filled lazily (needs commit_msg's whitelist)
-_ZWJ_SENTINEL = "\ue000"
+# load-bearing inside them, so the zero-width strip must NOT eat it —
+# stripping made lint report "must start with a gitmoji" for a fully compliant
+# title.  The sequences are protected by SPLITTING on them and stripping only
+# the surrounding pieces, so no placeholder character is ever written into the
+# title: nothing can collide with a real input, nothing 1:1 with an emoji can
+# be forged, and every character IN the strip set (U+200B/200C/200D/FEFF) is
+# still normalised away — including a ZWJ outside a whitelist sequence ("v‍2",
+# "Pr‍obe", "feat‍:").  Zero-width characters outside the set (U+2060, U+00AD,
+# variation selectors) are deliberately untouched; see the module docstring.
+_ZWJ_EMOJIS: tuple[str, ...] = ()  # filled lazily (needs commit_msg's whitelist)
+_ZWJ_SPLIT_RE: "re.Pattern[str] | None" = None
+
+# Distinctness is structural for whitelist entries that neither equal nor
+# contain one another; an entry that *overlaps* another without being a prefix
+# of it (e.g. 🧑‍💻 plus 💻‍🧑) could lose protection for the overlapped
+# occurrence.  The real whitelist has exactly one ZWJ sequence, so this is a
+# documented bound on the claim, not a live gap — a future entry needs the
+# matcher revisited, not just the list extended.
+
+# Private-use characters are invisible in every UI but land verbatim in the
+# squash subject, and a title has no legitimate reason to carry one.
+_PRIVATE_USE_RE = re.compile(
+    "[\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]"
+)
 
 
-def _normalise_title(title: str) -> str:
-    """Strip zero-width noise without breaking ZWJ-sequence gitmojis."""
-    global _ZWJ_EMOJIS
-    if not _ZWJ_EMOJIS:
+def _zwj_splitter() -> "re.Pattern[str] | None":
+    """Regex that splits a title on whitelist ZWJ sequences (odd parts kept)."""
+    global _ZWJ_EMOJIS, _ZWJ_SPLIT_RE
+    # Both globals are the cache; checking one alone lets a caller clear the
+    # other and keep using a stale regex (the trap the sentinel-era code left
+    # behind).  Clearing `_ZWJ_EMOJIS` therefore really forces a rebuild —
+    # which is what a test monkeypatching the whitelist expects.
+    if _ZWJ_SPLIT_RE is None or not _ZWJ_EMOJIS:
         from celestia_devtools.vcs.commit_msg import GITMOJI_WHITELIST
 
         _ZWJ_EMOJIS = tuple(
             sorted((e for e in GITMOJI_WHITELIST if "\u200d" in e), key=len, reverse=True)
         )
-    for emoji in _ZWJ_EMOJIS:
-        title = title.replace(emoji, _ZWJ_SENTINEL)
-    title = title.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC)
-    for emoji in _ZWJ_EMOJIS:
-        title = title.replace(_ZWJ_SENTINEL, emoji)
-    return title.strip()
+        if _ZWJ_EMOJIS:
+            alternation = "|".join(re.escape(e) for e in _ZWJ_EMOJIS)
+            _ZWJ_SPLIT_RE = re.compile(f"({alternation})")
+    return _ZWJ_SPLIT_RE
+
+
+def _normalise_title(title: str) -> str:
+    """Strip zero-width noise, keeping whitelist ZWJ sequences intact.
+
+    Splitting on the whitelist sequences means the function needs no
+    placeholder character, so it cannot be talked into fabricating an emoji
+    from something already in the title — the preconditions that bit the
+    earlier sentinel design are gone rather than merely documented.
+    """
+    splitter = _zwj_splitter()
+    if splitter is None:
+        return title.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC).strip()
+    pieces = splitter.split(title)
+    return "".join(
+        piece if index % 2 else piece.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC)
+        for index, piece in enumerate(pieces)
+    ).strip()
 
 
 def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
@@ -150,12 +195,12 @@ def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
     from celestia_devtools.vcs.commit_msg import lint
 
     problems: list[str] = []
-    # The sentinel below rewrites 1:1 into a whitelisted gitmoji during
-    # normalisation, so a title that already carries it would silently grow an
-    # invisible leading emoji and slip every later rule. No legitimate title
-    # contains a private-use character — refuse it on sight.
-    if _ZWJ_SENTINEL in title:
-        problems.append("title contains a private-use character (U+E000) — refused on sight")
+    # Invisible private-use characters land verbatim in the squash subject and
+    # have no legitimate place in a title — refused on sight, at any position.
+    if _PRIVATE_USE_RE.search(title):
+        problems.append(
+            "title contains an invisible private-use character — refused on sight"
+        )
     title = _normalise_title(title)
 
     if len(title) < MIN_TITLE_LEN:
