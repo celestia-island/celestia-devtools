@@ -10,10 +10,10 @@ without a force push, which the org forbids.  Two existing nets missed it:
 validate the subject the CALLER passes to ``gh pr merge`` — a bare REST merge
 bypasses both.  This gate validates the PR's OWN title, refuses a head that
 moved after review, and issues the merge itself from the same process, so no
-human step sits between "checked" and "merged".  (The GET→PUT round trip still
-exists — a push landing inside those milliseconds would be merged unvalidated;
-that residual window is inherent to the REST API and is reported here rather
-than claimed shut.)
+human step sits between "checked" and "merged".  The GET→PUT race is closed
+SERVER-SIDE as well: the merge request carries the validated head as its
+``sha``, so a push landing inside those milliseconds makes the merge answer 409
+instead of merging an unreviewed commit.
 
 Checks (any failure → rc 1, merge refused):
 
@@ -480,7 +480,11 @@ def _gate(
     status, merged, stderr = gh_api(
         f"repos/{repo}/pulls/{pr}/merge",
         method="PUT",
-        payload={"merge_method": "squash"},
+        # `sha` pins the head the gate just validated: GitHub answers 409 when
+        # the head has moved, so a push landing between the GET above and this
+        # PUT can no longer be merged unvalidated.  (Without it the same-process
+        # design merely removes the human step, not the race.)
+        payload={"merge_method": "squash", "sha": head},
         runner=runner,
     )
     if status not in (200, 201):

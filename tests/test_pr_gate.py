@@ -303,7 +303,6 @@ class test_merge_path:
         # gate).  The merge call is the second one; assert its argv is subject-free.
         merge_call = runner.calls[1]
         assert "--subject" not in " ".join(merge_call)
-        assert "squash" in json.dumps({"merge_method": "squash"})
 
     def test_merge_subject_mismatch_is_rc2(self, capsys):
         runner = _FakeRunner([
@@ -456,7 +455,10 @@ class test_merge_write_shape:
         assert merge_argv == [
             "gh", "api", "-i", "repos/o/r/pulls/7/merge", "-X", "PUT", "--input", "-",
         ], merge_argv
-        assert json.loads(runner.inputs[1] or "{}") == {"merge_method": "squash"}
+        payload = json.loads(runner.inputs[1] or "{}")
+        # `sha` pins the validated head server-side: a push between the GET and
+        # the PUT must answer 409 instead of merging an unreviewed commit.
+        assert payload == {"merge_method": "squash", "sha": "a" * 40}, payload
 
     def test_draft_pr_refused(self):
         problems = check_pr(
@@ -563,3 +565,20 @@ class test_round6_regressions:
         # while a bare two-digit reference is still refused.
         assert title_problems("✨ Fix the #1 crash in the parser.") == []
         assert title_problems("✨ Fix the #12 crash in the parser.")
+
+class test_post_check_push:
+    """A push landing between the GET and the PUT must not merge."""
+
+    def _pr(self):
+        return {
+            "state": "open", "mergeable": True, "title": GOOD_TITLE,
+            "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"},
+        }
+
+    def test_moved_head_is_a_409_not_a_silent_merge(self, capsys):
+        runner = _RecordingRunner([
+            (200, self._pr()),
+            (409, {"message": "Head branch was modified. Review and try the merge again."}),
+        ])
+        assert _gate("o/r", 7, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 1
+        assert "http=409" in capsys.readouterr().err
