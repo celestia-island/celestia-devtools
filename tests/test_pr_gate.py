@@ -465,3 +465,56 @@ class test_merge_write_shape:
             expect_head="a" * 40,
         )
         assert any("draft" in p for p in problems)
+
+class test_round4_regressions:
+    """Closure-round-A findings."""
+
+    def _pr(self):
+        return {
+            "state": "open", "mergeable": True, "title": GOOD_TITLE,
+            "body": GOOD_RECORD, "head": {"sha": "b" * 40}, "base": {"ref": "master"},
+        }
+
+    def test_empty_expect_head_is_refused_not_ignored(self):
+        # The exact failure the gate exists to prevent: an empty pin must not
+        # silently switch the reviewed-head check off.
+        problems = check_pr(self._pr(), "")
+        assert any("no reviewed head" in p for p in problems), problems
+
+    def test_too_short_expect_head_is_refused(self):
+        problems = check_pr(self._pr(), "bb")
+        assert any("shorter than" in p for p in problems), problems
+
+    def test_merge_lane_never_puts_with_an_empty_pin(self):
+        runner = _FakeRunner([(200, self._pr())])
+        assert _gate("o/r", 1, "", allow_cjk=False, do_merge=True, runner=runner) == 1
+        assert len(runner.calls) == 1, "an unverified head must never reach the merge PUT"
+
+    def test_launcher_codes_are_not_http(self):
+        from celestia_devtools.vcs.pr_gate import _failure_detail
+
+        assert "http=" not in _failure_detail(127, {}, "gh: No such file")
+        assert "exit 127" in _failure_detail(127, {}, "gh: No such file")
+        assert "http=404" in _failure_detail(404, {"message": "Not Found"}, "")
+
+    def test_transport_retry_is_pinned(self, capsys):
+        # Two failed reads must actually issue two GETs and say so.
+        runner = _FakeRunner([
+            (200, self._pr()),
+            (200, {"merged": True, "sha": "c" * 40}),
+            (500, {}),
+            (500, {}),
+        ])
+        assert _gate("o/r", 1, "b" * 40, allow_cjk=False, do_merge=True, runner=runner) == 2
+        commit_calls = [c for c in runner.calls if "commits" in " ".join(c)]
+        assert len(commit_calls) == 2, commit_calls
+        assert "(2 attempt(s))" in capsys.readouterr().out
+
+    def test_one_attempt_is_reported_truthfully(self, capsys):
+        runner = _FakeRunner([
+            (200, self._pr()),
+            (200, {"merged": True, "sha": "c" * 40}),
+            (200, {"commit": {}}),
+        ])
+        assert _gate("o/r", 1, "b" * 40, allow_cjk=False, do_merge=True, runner=runner) == 2
+        assert "(1 attempt(s))" in capsys.readouterr().out

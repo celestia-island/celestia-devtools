@@ -98,6 +98,12 @@ _PR_REF_IN_TITLE = re.compile(r"(?:\(\s*#\s*\d+\s*\)|（\s*#\s*\d+\s*）)|#\s*\d
 # version-number START, this catches the smuggled mid-sentence form.
 _VERSION_MID_RE = re.compile(r"\bv\s?\d+\b", re.IGNORECASE)
 
+# A reviewed head must be pinned to a real SHA: an empty value would silently
+# switch the check off (the exact failure mode this gate exists to prevent),
+# and a one-or-two character prefix matches thousands of commits, so it is not
+# evidence.  Git's own abbreviation floor is 7.
+MIN_HEAD_PREFIX = 7
+
 DEFAULT_BASE = "master"
 
 
@@ -337,7 +343,18 @@ def check_pr(
     elif base_ref != base:
         problems.append(f"PR targets {base_ref!r}, the gate only merges into {base!r}")
 
-    if expect_head and not (head == expect_head or head.startswith(expect_head)):
+    if not expect_head:
+        # Fail closed: an empty pin means "no evidence supplied", never "no
+        # check needed" — every other empty input here is refused for the same
+        # reason, and treating "" as "not supplied" is precisely how the
+        # reviewed-head check would switch itself off.
+        problems.append("no reviewed head SHA supplied — the closing verification is unverified")
+    elif len(expect_head) < MIN_HEAD_PREFIX:
+        problems.append(
+            f"reviewed head {expect_head!r} is shorter than {MIN_HEAD_PREFIX} characters — "
+            "too little evidence to pin a commit"
+        )
+    elif not (head == expect_head or head.startswith(expect_head)):
         problems.append(
             f"head SHA {head[:12]} does not match the reviewed {expect_head[:12]} — "
             "pushed after the last review, closing verification void"
@@ -412,7 +429,10 @@ def gh_api(
 
 def _failure_detail(status: int, body: dict, stderr: str) -> str:
     """Human detail for a failed call; never dresses an exit code as HTTP."""
-    if status >= 100:
+    # 126/127 are the shell's "not executable" / "not found" codes and collide
+    # with the HTTP range, so the launcher codes are excluded explicitly.
+    looks_http = 100 <= status <= 599 and status not in (126, 127)
+    if looks_http:
         return f"http={status} {json.dumps(body)[:200] if body else ''}".rstrip()
     return f"transport failure (gh exit {status}) {stderr or 'no stderr'}"
 
