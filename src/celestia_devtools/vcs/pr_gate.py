@@ -1,49 +1,59 @@
 #!/usr/bin/env python3
 """Pre-squash-merge gate — mechanical title / head / verify-record checks that
-must pass before a pull request may be squash-merged into ``master``.
+must pass before a pull request may be squash-merged.
 
 Background (2026-11-20 ``probe-x`` incident): a debugging probe renamed a PR
 ("probe-x") and the rename was never reverted.  The squash merge carried the
-polluted title straight into ``master`` as the commit subject — unfixable
-without a force push, which the org forbids.  The pre-existing ``git log -1``
-self-check is *after the fact*; this gate moves the check *before* the merge,
-and issues the merge itself so checks and merge share one process (no TOCTOU
-gap).
+polluted title straight into the trunk as the commit subject — unfixable
+without a force push, which the org forbids.  Two existing nets missed it:
+``git log -1`` self-checks happen *after* the fact, and ``pr-merge`` / ``gh``
+validate the subject the CALLER passes to ``gh pr merge`` — a bare REST merge
+bypasses both.  This gate validates the PR's OWN title, refuses a head that
+moved after review, and issues the merge itself so the check and the merge
+share one process (no TOCTOU gap).
 
 Checks (any failure → rc 1, merge refused):
 
-1.  PR state == ``open`` and ``mergeable`` is true.
+1.  PR state == ``open``, ``mergeable`` is true, and the base branch is the
+    expected one (``--base``, default ``master``).
 2.  Head SHA matches ``--expect-head`` (the SHA the review rounds verified;
-    a short prefix is accepted).  A push after the last review invalidates
-    the closing verification.
-3.  Title passes :func:`celestia_devtools.vcs.commit_msg.lint` (single source
-    for the gitmoji / uppercase / period / CJK / colon rules) plus PR-specific
-    extras: minimum length, bare probe/placeholder words, any spelling of an
-    in-title pull-request reference (squash appends its own `` (#N)``), and a
-    mid-title version word (zero-width characters and Eastern-Arabic digits
-    are normalised first).
-4.  Body carries exactly one ``verify:`` record, parsed by the
-    verify-account semantics delegated here from the workspace scanner:
-    fenced blocks (both markers, unclosed), indented / quoted template
-    shapes, the full required field set, and — on the ``c3`` lane —
-    ``c3 >= 3`` with ``rounds >= max(4, c3 + 1)``.  Without ``c3`` the
-    structural-exemption lane applies (``clean >= 1``, ``gates >= 1``,
-    ``S0 == S1 == 0``; no rounds floor).  Records hidden in a fenced block
-    are rejected too: a prose record plus a fenced record is an ambiguous
-    record set.
+    a short prefix is accepted).  A push after the last review voids the
+    closing verification.
+3.  Title passes :func:`celestia_devtools.vcs.commit_msg.lint` — the single
+    source for the org gitmoji rules (emoji, uppercase, period, English-only,
+    no colon prefix, no version/filler start) — plus PR-specific extras:
+    minimum length, bare probe/placeholder words, any spelling of an in-title
+    pull-request reference (squash appends its own `` (#N)``), and a mid-title
+    version word (zero-width characters and Eastern-Arabic digits are
+    normalised first).  Two lint exemptions come along by design: ``Revert …``
+    (git revert) and the ``🔄`` period relaxation.
+4.  Body carries exactly one ``verify:`` record, parsed by a faithful mirror of
+    the workspace scanner (``_tools/verify_account.py``): fenced blocks are not
+    records, an unclosed fence reds only when it *contains* a record, indented
+    and quoted shapes are templates, the field set must be complete, duplicate
+    and unknown keys are refused, counters must be integers, ``clean <=
+    rounds``, hardcap/budget enums, ``post-cap`` requires ``hardcap=yes``, and
+    a record hidden in a fence while another sits in prose is an ambiguous set.
+    The mirror is a LOOSER-NEVER-FAIL rule: it may not accept a body the
+    scanner reds (the scanner runs next, pre-merge and every 6 hours).
+    On the ``c3`` lane: ``c3 >= 3`` is a floor (``c3=4`` is stronger) with
+    ``rounds >= max(4, c3+1)``, and the S0–S3 counters are totals across all
+    rounds (already-fixed findings included), so the clean streak — not a zero
+    counter — is what proves closure.  Without ``c3`` the structural-exemption
+    lane applies (``clean >= 1``, ``gates >= 1``, ``S0 == S1 == 0``; no rounds
+    floor).
 
-Merge (``merge`` subcommand): the checks run and, only if they pass, the
-squash merge is issued **without an explicit subject** so GitHub generates
-``<title> (#N)`` from the validated title.  Immediately afterwards the merge
-commit's subject is fetched and compared; three outcomes:
+Merge (``merge`` subcommand): checks run and, only if they pass, the squash is
+issued **without an explicit subject** so the server derives ``<title> (#N)``
+from the validated title.  The merge commit's subject is then read back:
 
 *  subject matches → rc 0;
-*  mismatch → the sticky pollution alert is expected from the caller, rc 2;
-*  commit unreadable (transport) → rc 2 as ``COMMIT-GET-FAILED`` *without*
-   writing a pollution marker (cannot read ≠ polluted).
+*  mismatch → rc 2 (the caller owns the sticky pollution alert);
+*  commit unreadable (transport, after one retry) → rc 2 as
+   ``COMMIT-GET-FAILED`` *without* claiming pollution (cannot read ≠ polluted).
 
-The workspace wrapper turns rc 2 into the sticky ``_alerts`` marker; this
-module stays repo-agnostic and only prints.
+The workspace wrapper turns rc 2 into a sticky ``_alerts`` marker; this module
+stays repo-agnostic and only prints.
 
 CLI::
 
@@ -58,13 +68,15 @@ import json
 import re
 import subprocess
 import sys
+import time
 
 # ── PR-specific title extensions (on top of commit_msg.lint) ────────────────
 
 MIN_TITLE_LEN = 20
 
 # Bare probe / placeholder words — any standalone occurrence rejects the
-# title.  Tokenised with [A-Za-z]+ so "testing"/"prober" never false-positive.
+# title.  Tokenised with [A-Za-z]+ so "testing" / "prober" / "testability"
+# never false-positive.
 BANNED_TITLE_WORDS = {
     "wip", "draft", "probe", "test", "tmp", "todo", "fixme",
     "t", "xxx", "placeholder",
@@ -75,15 +87,15 @@ BANNED_TITLE_WORDS = {
 _ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff"), None)
 _ARABIC_INDIC = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
-# Any spelling of an in-title pull-request reference: squash appends its own
-# " (#N)", so a title that already carries one would end up duplicated.
-_PR_REF_IN_TITLE = re.compile(
-    r"(?:\(\s*#\s*\d+\s*\)|（\s*#\s*\d+\s*）)|#\s*\d{2,}"
-)
+# Any spelling of an in-title pull-request reference: the squash appends its
+# own " (#N)", so a title that already carries one would end up duplicated.
+_PR_REF_IN_TITLE = re.compile(r"(?:\(\s*#\s*\d+\s*\)|（\s*#\s*\d+\s*）)|#\s*\d{2,}")
 
-# Mid-title version word: "Add v2 support." — Rule 4 only covers version
-# *starts*, this catches the smuggled mid-sentence form.
+# Mid-title version word: "Add v2 support." — lint's rule 4 only covers a
+# version-number START, this catches the smuggled mid-sentence form.
 _VERSION_MID_RE = re.compile(r"\bv\s?\d+\b", re.IGNORECASE)
+
+DEFAULT_BASE = "master"
 
 
 def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
@@ -105,22 +117,20 @@ def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
             problems.append(f"title contains bare probe/placeholder word {word!r}")
 
     if _PR_REF_IN_TITLE.search(title):
-        problems.append(
-            "title carries its own PR reference — squash appends ' (#N)' itself"
-        )
+        problems.append("title carries its own PR reference — the squash appends ' (#N)' itself")
     if _VERSION_MID_RE.search(title):
         problems.append("title contains a version word (v2-style); describe the change instead")
     return problems
 
 
-# ── verify-record body check (verify-account semantics) ──────────────────────
+# ── verify-record body check (workspace-scanner mirror) ─────────────────────
+#
+# Authoritative origin: the workspace scanner (`_tools/verify_account.py`),
+# which runs pre-merge (skill step 6) and post-merge every 6 hours.  Keep the
+# two in step when the record format evolves; this mirror must never be
+# LOOSER than that detector.
 
 _REQUIRED_FIELDS = ("rounds", "clean", "s0", "s1", "s2", "s3", "hardcap")
-# ── verify-account mirror constants ──
-# Authoritative origin: the workspace scanner (`_tools/verify_account.py`),
-# which runs pre-merge (skill step 6) and post-merge (6h watch).  Keep both
-# in the same change when the record format evolves; the gate must never be
-# looser than that scanner.
 _RECORD_RE = re.compile(
     r"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*(?:verify|合计)[ \t*_`]*\**[ \t]*[:：][ \t\u3000]*"
     r"(?=\W*[A-Za-z][\w-]*\s*=)(\S.*?)[ \t]*$",
@@ -134,28 +144,17 @@ _KNOWN_FIELDS = {
 }
 _COUNTER_FIELDS = ("rounds", "clean", "s0", "s1", "s2", "s3", "gates", "post-cap", "c3", "doc-lint")
 _HARD_ROUND_CAP = 6
+_HARDCAP_VALUES = {"yes", "no"}
+_BUDGET_VALUES = {"ok", "exhausted@3"}
 
 
-def body_problems(body: str) -> list[str]:
-    """Verify-record problems in a PR body (empty = exactly one clean record).
-
-    This is a faithful mirror of the workspace scanner's parser
-    (``_tools/verify_account.py`` — ``RECORD_RE`` / ``TOKEN_RE`` /
-    ``split_fences`` / ``strip_decoration`` / ``validate`` / template shapes).
-    That scanner is the authoritative origin (it runs pre-merge as the skill's
-    step 6 and post-merge every 6 hours); this mirror exists so the merge
-    gate refuses exactly the bodies the scanner would red — the gate must
-    never be looser than its detector.  When the workspace format evolves,
-    update both in the same change (the format has been policy-stable since
-    2026-11-09).
-    """
-    problems: list[str] = []
+def _split_fences(text: str) -> tuple[list[str], list[str], bool]:
+    """Split fenced lines from prose; ``(fenced, prose, unclosed)``."""
     fenced: list[str] = []
     prose: list[str] = []
     fence_char: str | None = None
     fence_len = 0
-
-    for line in body.splitlines():
+    for line in text.splitlines():
         stripped = line.strip()
         core = re.sub(r"^(?:>\s*)+|^[-*+]\s+", "", stripped)
         if fence_char is None:
@@ -170,19 +169,24 @@ def body_problems(body: str) -> list[str]:
             fenced.append(line)
             if core and set(core) == {fence_char} and len(core) >= fence_len:
                 fence_char = None
-    if fence_char is not None:
-        problems.append("code fence never closes — an unfinished template must not silently become a record")
+    return fenced, prose, fence_char is not None
 
-    for ln in fenced:
-        stripped = ln.strip()
-        if stripped.startswith("verify: ") or (
-            stripped.startswith("`verify: ") and stripped.endswith("`")
-        ):
-            problems.append(
-                "a verify record hides inside a fenced block — keep exactly the prose record"
-            )
 
-    records: list[dict[str, str]] = []
+def _strip_decoration(text: str) -> str:
+    """Drop markdown emphasis / inline-code markers before tokenising."""
+    return text.replace("*", "").replace("`", "").strip()
+
+
+def body_problems(body: str) -> list[str]:
+    """Verify-record problems in a PR body (empty = exactly one clean record)."""
+    problems: list[str] = []
+    fenced, prose, unclosed = _split_fences(body)
+
+    # A fence that never closes reds only when it actually swallows a record —
+    # the authority's rule; an unfinished code sample elsewhere is harmless.
+    if unclosed and any(_RECORD_RE.search(line) for line in fenced):
+        problems.append("code fence never closes — an unfinished template must not become a record")
+
     record_lines: list[tuple[str, str]] = []
     for raw_line in prose:
         m = _RECORD_RE.search(raw_line)
@@ -200,109 +204,116 @@ def body_problems(body: str) -> list[str]:
             shape = "block quote"
         record_lines.append((raw, shape))
 
-    if len(record_lines) == 0 and not problems:
-        problems.append("body carries no `verify:` record (the clean-streak merge record)")
+    # A record hidden in a fence alongside a prose record is an ambiguous record
+    # set — scan with the SAME matcher the authority uses (a prefix test misses
+    # `verify:rounds=…`, `**verify:** …` and numbered forms).
+    if any(_RECORD_RE.search(line) for line in fenced):
+        problems.append("a verify record hides inside a fenced block — keep exactly the prose record")
+
+    if len(record_lines) == 0:
+        if not problems:
+            problems.append("body carries no `verify:` record (the clean-streak merge record)")
         return problems
     if len(record_lines) > 1:
         problems.append(f"body carries {len(record_lines)} verify records (exactly one required)")
         return problems
 
-    for raw, shape in record_lines:
-        if shape:
-            problems.append(
-                f"verify record sits in a {shape} — it reads as a format template, not a record; move it into the prose"
-            )
-            continue
-        fields: dict[str, str] = {}
-        dup = False
-        for tok in _TOKEN_RE.finditer(raw):
-            k = tok.group(1).lower().replace("_", "-")
-            k = "post-cap" if k in {"postcap", "post-cap"} else k
-            if k in fields:
-                problems.append(f"verify record has a duplicate field {k!r}")
-                dup = True
-                continue
-            fields[k] = tok.group(2).rstrip(".,;)").lower() if k in {"hardcap", "budget"} else tok.group(2).rstrip(".,;)")
-        if dup:
-            continue
-        missing = [k for k in _REQUIRED_FIELDS if k not in fields]
-        if missing:
-            problems.append(f"verify record is missing fields {missing} (placeholder template?)")
-            continue
-        unknown = [k for k in fields if k not in _KNOWN_FIELDS]
-        if unknown:
-            problems.append(f"verify record has unknown fields {unknown} (typo or policy change?)")
-            continue
-        for k in _COUNTER_FIELDS:
-            if k in fields and not re.fullmatch(r"\d+", fields[k]):
-                problems.append(f"verify record field {k}={fields[k]!r} is not a non-negative integer")
-        rounds = int(fields["rounds"])
-        clean = int(fields["clean"])
-        if rounds < 1:
-            problems.append("verify record rounds must be >= 1")
-        if rounds > _HARD_ROUND_CAP:
-            problems.append(
-                f"verify record rounds={rounds} exceeds the hard cap {_HARD_ROUND_CAP} "
-                "(post-cap rounds are listed separately, not folded in)"
-            )
-        if clean > rounds:
-            problems.append(f"verify record clean={clean} > rounds={rounds}")
-        if fields["hardcap"] not in {"yes", "no"}:
-            problems.append(f"verify record hardcap={fields['hardcap']!r} must be yes or no")
-        if "budget" in fields and fields["budget"] not in {"ok", "exhausted@3"}:
-            problems.append(f"verify record budget={fields['budget']!r} must be ok or exhausted@3")
-        if fields["hardcap"] == "yes" and rounds != _HARD_ROUND_CAP:
-            problems.append(f"verify record hardcap=yes requires rounds={_HARD_ROUND_CAP}, got {rounds}")
-        if int(fields.get("post-cap", "0")) > 0 and fields["hardcap"] != "yes":
-            problems.append("verify record post-cap>0 requires hardcap=yes (post-cap only follows the cap)")
-        if "hardware" in fields and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", fields["hardware"]):
-            problems.append(f"verify record hardware={fields['hardware']!r} is not a registry hw-id")
+    raw, shape = record_lines[0]
+    if shape:
+        problems.append(
+            f"verify record sits in a {shape} — it reads as a format template, "
+            "not a record; move it into the prose"
+        )
+        return problems
 
-        if "c3" not in fields:
-            # Structural-exemption lane (doc tooling): no streak to prove
-            # closure, so the record itself must be clean and show the gates
-            # really ran.
-            if clean < 1 or int(fields.get("gates", "0")) < 1:
-                problems.append("structural exemption needs clean>=1 and gates>=1")
-            if int(fields.get("s0", "1")) != 0 or int(fields.get("s1", "1")) != 0:
-                problems.append("structural exemption needs S0=S1=0 (unfixed reds never exempt)")
+    fields: dict[str, str] = {}
+    for tok in _TOKEN_RE.finditer(raw):
+        key = tok.group(1).lower().replace("_", "-")
+        key = "post-cap" if key in {"postcap", "post-cap"} else key
+        if key in fields:
+            problems.append(f"verify record has a duplicate field {key!r}")
+            return problems
+        value = tok.group(2).rstrip(".,;)")
+        fields[key] = value.lower() if key in {"hardcap", "budget"} else value
+
+    missing = [k for k in _REQUIRED_FIELDS if k not in fields]
+    if missing:
+        return problems + [f"verify record is missing fields {missing} (placeholder template?)"]
+    unknown = [k for k in fields if k not in _KNOWN_FIELDS]
+    if unknown:
+        return problems + [f"verify record has unknown fields {unknown} (typo or policy change?)"]
+
+    # Counters must be integers BEFORE anything converts them — the authority
+    # returns on the first non-integer, so a body like `c3=3）` is a clean
+    # malformed_record there and must never raise here.
+    numbers: dict[str, int] = {}
+    for key in _COUNTER_FIELDS:
+        if key not in fields:
             continue
-        # c3 lane: c3 >= 3 is a floor (c3=4 is a stronger result) and the
-        # S0/S1/S2/S3 counters are *totals across all rounds* including
-        # already-fixed findings — the closing clean streak is what proves
-        # everything landed, so no zero-counter gate on this lane.
-        c3 = int(fields["c3"])
-        if c3 < 3:
-            problems.append(f"verify record c3={c3} < 3")
-        if rounds < max(4, c3 + 1):
-            problems.append(f"verify record rounds={rounds} < max(4, c3+1)")
+        if not re.fullmatch(r"\d+", fields[key]):
+            return problems + [
+                f"verify record field {key}={fields[key]!r} is not a non-negative integer"
+            ]
+        numbers[key] = int(fields[key])
+
+    rounds = numbers["rounds"]
+    clean = numbers["clean"]
+    if rounds < 1:
+        problems.append("verify record rounds must be >= 1")
+    if rounds > _HARD_ROUND_CAP:
+        problems.append(
+            f"verify record rounds={rounds} exceeds the hard cap {_HARD_ROUND_CAP} "
+            "(post-cap rounds are listed separately, not folded in)"
+        )
+    if clean > rounds:
+        problems.append(f"verify record clean={clean} > rounds={rounds}")
+    if fields["hardcap"] not in _HARDCAP_VALUES:
+        problems.append(f"verify record hardcap={fields['hardcap']!r} must be yes or no")
+    if "budget" in fields and fields["budget"] not in _BUDGET_VALUES:
+        problems.append(f"verify record budget={fields['budget']!r} must be ok or exhausted@3")
+    if fields["hardcap"] == "yes" and rounds != _HARD_ROUND_CAP:
+        problems.append(
+            f"verify record hardcap=yes requires rounds={_HARD_ROUND_CAP}, got {rounds}"
+        )
+    if numbers.get("post-cap", 0) > 0 and fields["hardcap"] != "yes":
+        problems.append("verify record post-cap>0 requires hardcap=yes (post-cap only follows the cap)")
+    if "hardware" in fields and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", fields["hardware"]):
+        problems.append(f"verify record hardware={fields['hardware']!r} is not a registry hw-id")
+    if problems:
+        return problems
+
+    if "c3" not in fields:
+        # Structural-exemption lane (doc tooling): no streak proves closure, so
+        # the record itself must be clean and show the gates really ran.
+        if clean < 1 or numbers.get("gates", 0) < 1:
+            problems.append("structural exemption needs clean>=1 and gates>=1")
+        if numbers.get("s0", 1) != 0 or numbers.get("s1", 1) != 0:
+            problems.append("structural exemption needs S0=S1=0 (unfixed reds never exempt)")
+        return problems
+
+    c3 = numbers["c3"]
+    if c3 < 3:
+        problems.append(f"verify record c3={c3} < 3")
+    if rounds < max(4, c3 + 1):
+        problems.append(f"verify record rounds={rounds} < max(4, c3+1)")
     return problems
-
-
-def _strip_decoration(text: str) -> str:
-    """Drop markdown emphasis / inline-code markers before tokenising."""
-    return text.replace("*", "").replace("`", "").strip()
-
-
-def _strip_decoration(text: str) -> str:
-    """Drop markdown emphasis / inline-code markers before tokenising."""
-    return text.replace("*", "").replace("`", "").strip()
-
-
-def _parse_fields(line: str) -> dict[str, str]:
-    """Lower-cased k=v fields of one verify record (S0=0 parses as s0=0)."""
-    pairs = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)", line)
-    return {k.lower(): v for k, v in pairs}
 
 
 # ── PR-level checks ──────────────────────────────────────────────────────────
 
 
-def check_pr(pr: dict, expect_head: str | None = None, *, allow_cjk: bool = False) -> list[str]:
+def check_pr(
+    pr: dict,
+    expect_head: str | None = None,
+    *,
+    allow_cjk: bool = False,
+    base: str = DEFAULT_BASE,
+) -> list[str]:
     """All merge-blocking problems of one PR payload (empty = merge allowed)."""
     problems: list[str] = []
     title = pr.get("title") or ""
     head = (pr.get("head") or {}).get("sha") or ""
+    base_ref = (pr.get("base") or {}).get("ref") or ""
 
     if pr.get("state") != "open":
         problems.append(f"PR state={pr.get('state')!r}, not open")
@@ -311,13 +322,14 @@ def check_pr(pr: dict, expect_head: str | None = None, *, allow_cjk: bool = Fals
         problems.append("mergeable is unknown (GitHub still computing) — retry in a few seconds")
     elif mergeable is not True:
         problems.append(f"mergeable={mergeable} — conflicts or branch protection refuse the merge")
+    if base_ref and base_ref != base:
+        problems.append(f"PR targets {base_ref!r}, the gate only merges into {base!r}")
 
-    if expect_head:
-        if not (head == expect_head or head.startswith(expect_head)):
-            problems.append(
-                f"head SHA {head[:12]} does not match the reviewed "
-                f"{expect_head[:12]} — pushed after the last review, closing verification void"
-            )
+    if expect_head and not (head == expect_head or head.startswith(expect_head)):
+        problems.append(
+            f"head SHA {head[:12]} does not match the reviewed {expect_head[:12]} — "
+            "pushed after the last review, closing verification void"
+        )
 
     problems.extend(title_problems(title, allow_cjk=allow_cjk))
     problems.extend(body_problems(pr.get("body") or ""))
@@ -326,16 +338,31 @@ def check_pr(pr: dict, expect_head: str | None = None, *, allow_cjk: bool = Fals
 
 # ── gh plumbing (subprocess — gh carries its own auth) ───────────────────────
 
+_STATUS_LINE = re.compile(r"^HTTP/\S+\s+(\d{3})\b")
 
-def gh_api(endpoint: str, *, method: str = "GET", payload: dict | None = None) -> tuple[int, dict]:
-    """``gh api`` call; never raises (rc 127 = gh unusable)."""
-    cmd = ["gh", "api", endpoint]
+
+def gh_api(
+    endpoint: str,
+    *,
+    method: str = "GET",
+    payload: dict | None = None,
+    runner=None,
+) -> tuple[int, dict, str]:
+    """``gh api`` call returning ``(http_status, parsed_body, stderr)``.
+
+    ``gh api`` exits 0 for every 2xx and does NOT print the numeric status, so
+    the status is read from the ``-i`` header block (``HTTP/2.0 200 OK``).
+    A non-zero exit means the request failed and the exit code is reported
+    when no status line exists.  Never raises (rc 127 = gh unusable).
+    """
+    cmd = ["gh", "api", "-i", endpoint]
     if payload is not None or method != "GET":
         cmd.extend(["-X", method])
     if payload is not None:
         cmd.extend(["--input", "-"])
+    call = runner or subprocess.run
     try:
-        probe = subprocess.run(
+        probe = call(
             cmd,
             input=json.dumps(payload) if payload is not None else None,
             capture_output=True,
@@ -345,25 +372,48 @@ def gh_api(endpoint: str, *, method: str = "GET", payload: dict | None = None) -
             check=False,
         )
     except OSError as exc:
-        return 127, {}
+        return 127, {}, str(exc)
+
+    stdout = probe.stdout or ""
+    status = 0
+    body_text = stdout
+    if stdout.startswith("HTTP/"):
+        head, _, rest = stdout.partition("\n\n")
+        m = _STATUS_LINE.match(head)
+        if m:
+            status = int(m.group(1))
+        body_text = rest
+    if not status:
+        # No header block (old gh / a stub): a clean exit means "it worked".
+        status = 200 if probe.returncode == 0 else probe.returncode
     try:
-        parsed = json.loads(probe.stdout) if probe.stdout.strip() else {}
+        parsed = json.loads(body_text) if body_text.strip() else {}
     except json.JSONDecodeError:
         parsed = {}
     if not isinstance(parsed, dict):
         parsed = {"_raw": parsed}
-    return probe.returncode, parsed
+    return status, parsed, (probe.stderr or "").strip()
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_merge: bool) -> int:
-    code, data = gh_api(f"repos/{repo}/pulls/{pr}")
-    if code != 200:
-        print(f"❌ GET pull request failed http={code}: {json.dumps(data)[:200]}", file=sys.stderr)
+def _gate(
+    repo: str,
+    pr: int,
+    expect_head: str | None,
+    *,
+    allow_cjk: bool,
+    do_merge: bool,
+    base: str = DEFAULT_BASE,
+    runner=None,
+) -> int:
+    status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner=runner)
+    if status != 200:
+        detail = json.dumps(data)[:200] if data else (stderr or "no response body")
+        print(f"❌ GET pull request failed (http={status}): {detail}", file=sys.stderr)
         return 1
-    problems = check_pr(data, expect_head, allow_cjk=allow_cjk)
+    problems = check_pr(data, expect_head, allow_cjk=allow_cjk, base=base)
     if problems:
         for p in problems:
             print(f"❌ {p}", file=sys.stderr)
@@ -377,30 +427,33 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
         print("(check mode only; re-run with `merge` to squash from this state)")
         return 0
 
-    code, m = gh_api(f"repos/{repo}/pulls/{pr}/merge", method="PUT", payload={"merge_method": "squash"})
-    if code not in (200, 201):
-        # Fail closed: anything that is not an explicit success is treated as
-        # "not merged" and printed verbatim.
-        print(f"❌ merge request failed http={code}: {json.dumps(m)[:200]}", file=sys.stderr)
+    status, merged, stderr = gh_api(
+        f"repos/{repo}/pulls/{pr}/merge",
+        method="PUT",
+        payload={"merge_method": "squash"},
+        runner=runner,
+    )
+    if status not in (200, 201):
+        detail = json.dumps(merged)[:200] if merged else (stderr or "no response body")
+        print(f"❌ merge request failed (http={status}): {detail}", file=sys.stderr)
         return 1
-    merged_sha = m.get("sha", "")
+    merged_sha = merged.get("sha", "")
     print(f"✅ squash merged → {merged_sha[:12]}")
 
     expected_subject = f"{title} (#{pr})"
     subject: str | None = None
     for attempt in (1, 2):  # cannot read ≠ polluted — one transport retry
-        code, c = gh_api(f"repos/{repo}/commits/{merged_sha}")
-        if code == 200:
-            subject = (c.get("commit", {}).get("message") or "").splitlines()[0]
+        status, commit, _stderr = gh_api(f"repos/{repo}/commits/{merged_sha}", runner=runner)
+        if status == 200:
+            subject = (commit.get("commit", {}).get("message") or "").splitlines()[0]
             break
         if attempt == 1:
-            import time
-
             time.sleep(3)
     if subject is None:
         print(
             "🚨 COMMIT-GET-FAILED: the merge happened but the commit subject is unreadable "
-            "(two attempts) — verify `git log` by hand; no pollution marker written (cannot read ≠ polluted)"
+            "(two attempts) — verify the log by hand; no pollution marker written "
+            "(cannot read ≠ polluted)"
         )
         return 2
     if subject != expected_subject:
@@ -413,7 +466,7 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="celestia-devtools pr-merge-gate",
         description="Pre-squash-merge gate: title / head / verify-record checks + guarded squash.",
@@ -423,13 +476,27 @@ def main() -> int:
         sp = sub.add_parser(name)
         sp.add_argument("--repo", required=True, help="OWNER/NAME")
         sp.add_argument("--pr", required=True, type=int)
-        sp.add_argument("--expect-head", required=(name == "merge"), default=None,
-                        help="head SHA verified by the review rounds (prefix ok)")
-        sp.add_argument("--allow-cjk", action="store_true",
-                        help="repo allows CJK summaries (easy-hydro family)")
-    args = parser.parse_args()
-    return _gate(args.repo, args.pr, args.expect_head, allow_cjk=args.allow_cjk,
-                 do_merge=(args.cmd == "merge"))
+        sp.add_argument(
+            "--expect-head",
+            required=(name == "merge"),
+            default=None,
+            help="head SHA verified by the review rounds (prefix ok)",
+        )
+        sp.add_argument(
+            "--allow-cjk",
+            action="store_true",
+            help="repo allows CJK summaries (easy-hydro family)",
+        )
+        sp.add_argument("--base", default=DEFAULT_BASE, help="branch the gate may merge into")
+    args = parser.parse_args(argv)
+    return _gate(
+        args.repo,
+        args.pr,
+        args.expect_head,
+        allow_cjk=args.allow_cjk,
+        do_merge=(args.cmd == "merge"),
+        base=args.base,
+    )
 
 
 if __name__ == "__main__":
