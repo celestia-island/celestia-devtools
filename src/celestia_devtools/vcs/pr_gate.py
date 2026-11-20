@@ -150,6 +150,12 @@ def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
     from celestia_devtools.vcs.commit_msg import lint
 
     problems: list[str] = []
+    # The sentinel below rewrites 1:1 into a whitelisted gitmoji during
+    # normalisation, so a title that already carries it would silently grow an
+    # invisible leading emoji and slip every later rule. No legitimate title
+    # contains a private-use character — refuse it on sight.
+    if _ZWJ_SENTINEL in title:
+        problems.append("title contains a private-use character (U+E000) — refused on sight")
     title = _normalise_title(title)
 
     if len(title) < MIN_TITLE_LEN:

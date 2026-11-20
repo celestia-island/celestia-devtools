@@ -616,3 +616,16 @@ class test_zwj_gitmoji:
         # A stray leading ZWSP is noise; after the strip the title is compliant.
         fixture = "\u200b\U0001f9d1\u200d\U0001f4bb Add the pair-programming banner."
         assert title_problems(fixture) == []
+
+    def test_sentinel_character_refused_on_sight(self):
+        # U+E000 rewrites 1:1 into a whitelisted gitmoji during normalisation,
+        # so a title carrying it would grow an invisible leading emoji and slip
+        # every later rule. Refused before the strip, at any position.
+        for fixture in (
+            "\ue000\u2728 Add the pair-programming banner to the console.",
+            "\ue000Add the pair-programming banner to the console.",
+            "\u2728 Add the \ue000 banner for the console users now.",
+            "\u2728\ue000 Add the pair-programming banner to the console.",
+        ):
+            problems = title_problems(fixture)
+            assert any("private-use" in p for p in problems), (fixture, problems)
