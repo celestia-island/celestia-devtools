@@ -582,3 +582,37 @@ class test_post_check_push:
         ])
         assert _gate("o/r", 7, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 1
         assert "http=409" in capsys.readouterr().err
+
+class test_zwj_gitmoji:
+    """The zero-width strip must not break ZWJ-sequence gitmojis — but a ZWJ
+    outside a whitelist sequence is still stripped (no smuggling)."""
+
+    def test_zwj_sequence_gitmoji_accepted(self):
+        fixture = "\U0001f9d1\u200d\U0001f4bb Add the pair-programming banner to the console."
+        assert title_problems(fixture) == []
+
+    def test_zwj_inside_version_word_still_caught(self):
+        fixture = "✨ Extend the support matrix for v\u200d2 clients before the cut."
+        assert title_problems(fixture), fixture
+
+    def test_zwj_inside_banned_word_still_caught(self):
+        fixture = "✨ Pr\u200dobe the parser crash handling before the cut."
+        assert any("probe/placeholder" in p for p in title_problems(fixture)), fixture
+
+    def test_zwj_inside_colon_prefix_still_caught(self):
+        fixture = "✨ Fix\u200d: the parser crash handling before the cut."
+        assert title_problems(fixture), fixture
+
+    def test_protection_is_scoped_to_the_sequence(self):
+        # The sentinel parks the whitelist sequence only: the SAME title with a
+        # lone ZWJ inside a version word must still be stripped and caught.
+        fixture = (
+            "\U0001f9d1\u200d\U0001f4bb Extend the support matrix for v\u200d2 "
+            "clients before the cut."
+        )
+        assert any("version word" in p for p in title_problems(fixture)), fixture
+
+    def test_leading_zwsp_is_stripped_not_fatal(self):
+        # A stray leading ZWSP is noise; after the strip the title is compliant.
+        fixture = "\u200b\U0001f9d1\u200d\U0001f4bb Add the pair-programming banner."
+        assert title_problems(fixture) == []

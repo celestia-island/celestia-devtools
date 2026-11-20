@@ -118,13 +118,39 @@ MIN_HEAD_PREFIX = 7
 
 DEFAULT_BASE = "master"
 
+# ZWJ-sequence gitmojis from the lint whitelist (e.g. 🧑‍💻): the joiner is
+# load-bearing inside them, so the zero-width strip below must NOT eat it —
+# stripping made lint report "must start with a gitmoji" for a fully
+# compliant title.  They are parked on a private-use sentinel across the
+# strip, so every OTHER zero-width character (including a ZWJ outside a
+# whitelist sequence: "v‍2", "Pr‍obe", "feat‍:") is still normalised away.
+_ZWJ_EMOJIS = ()  # filled lazily (needs commit_msg's whitelist)
+_ZWJ_SENTINEL = "\ue000"
+
+
+def _normalise_title(title: str) -> str:
+    """Strip zero-width noise without breaking ZWJ-sequence gitmojis."""
+    global _ZWJ_EMOJIS
+    if not _ZWJ_EMOJIS:
+        from celestia_devtools.vcs.commit_msg import GITMOJI_WHITELIST
+
+        _ZWJ_EMOJIS = tuple(
+            sorted((e for e in GITMOJI_WHITELIST if "\u200d" in e), key=len, reverse=True)
+        )
+    for emoji in _ZWJ_EMOJIS:
+        title = title.replace(emoji, _ZWJ_SENTINEL)
+    title = title.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC)
+    for emoji in _ZWJ_EMOJIS:
+        title = title.replace(_ZWJ_SENTINEL, emoji)
+    return title.strip()
+
 
 def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
     """PR-title problems beyond :func:`commit_msg.lint` (empty = compliant)."""
     from celestia_devtools.vcs.commit_msg import lint
 
     problems: list[str] = []
-    title = title.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC).strip()
+    title = _normalise_title(title)
 
     if len(title) < MIN_TITLE_LEN:
         problems.append(
