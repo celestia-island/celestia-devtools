@@ -48,16 +48,8 @@ jobs:
     # stays BLOCKED forever and nobody can merge it without --admin. Found
     # 2026-10-06: a public repo's seven outside patches had sat unmergeable for
     # a month, i.e. it read as "we take no outside patches", which nobody had
-    # actually decided. Same guard exists in commit-msg-lint.yml.
-    # The farm still stays off-limits: forks are forced onto GitHub-hosted
-    # runners below, which are free and unlimited for public repos. This job
-    # never checks out the PR and only reads the title from the event payload.
-    # Guard applies both to direct pull_request triggers and to workflow_call
-    # callers (github.event then carries the caller's PR payload).
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository ||
-      github.event.pull_request.head.repo.fork == true
+    # actually decided.
+    # This job never checks out a PR and only reads the title from the event payload.
     # A title check is a seconds-long, stdlib-only job: GitHub-hosted runners
     # provision instantly and in parallel, so it never queues behind real builds
     # on the org self-hosted fleet. Public repos are free and unlimited;

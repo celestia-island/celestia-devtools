@@ -7,7 +7,9 @@
 #     existing farm CI. When the caller repo has jobs queued for the self-hosted farm, new work
 #     is dispatched to the CNB ci-farm pipeline via OpenAPI (build/start with sha + env).
 #   - Cancellation for PR churn: JOB-level concurrency on the cnb job keyed by (target_repo,
-#     lane). Callers pass lane=pr-<number> (or 'push'); a newer commit in the same lane cancels
+#     lane). The canonical caller passes the constant lane=pr-manual (the old
+#     pr-<number> form died with the 2026-11-06 dispatch-only policy); a newer
+#     commit in the same lane cancels
 #     the previous poller. CNB builds orphaned by that cancel are bounded by their own stage
 #     timeouts; a stop/{sn} reaper is a follow-up.
 #   - The dispatch passes GH_READ_PAT transiently so the CNB pipeline can fetch PR-head SHAs
@@ -37,7 +39,7 @@
 # Caller contract:
 #   uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@c45f1881e00cb55d0a2a1fcf57b28734ece119bb
 #   with: {target_repo: <repo-name>, target_sha: ${{ github.event.pull_request.head.sha }},
-#          lane: pr-${{ github.event.pull_request.number }}}
+#          lane: pr-manual
 #   secrets: inherit
 #   Caller MUST define its own CNB_TOKEN (required) and GH_READ_PAT (optional) repo secrets —
 #   inherited secrets come from the caller, not from this repo — and grant
