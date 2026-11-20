@@ -23,7 +23,7 @@ import hashlib
 from pathlib import Path
 import yaml
 from celestia_devtools.repo import init
-from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, workflow_drift_problems, WORKFLOW_CI_CACHE, WORKFLOW_CNB_OVERFLOW, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, WORKFLOW_FAMILY_VERSIONS, WORKFLOW_P0_GATE, WORKFLOW_PR_TITLE_CHECK, WORKFLOW_RELEASE_NOTES, WORKFLOW_RULES_LINT, WORKFLOW_VERIFY_VERSIONS, _T_COMMIT_LINT, _ensure_workflows, caller_render_state, render_caller, unpinned_caller_warnings)
+from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMPLATE_SOURCES, workflow_drift_problems, WORKFLOW_CI_CACHE, WORKFLOW_CNB_OVERFLOW, WORKFLOW_COMMIT_LINT, WORKFLOW_COMMIT_LINT_LEGACY, WORKFLOW_COMMIT_LINT_NO_PERMS, WORKFLOW_FAMILY_VERSIONS, WORKFLOW_P0_GATE, WORKFLOW_PR_TITLE_CHECK, WORKFLOW_RELEASE_NOTES, WORKFLOW_RULES_LINT, WORKFLOW_VERIFY_VERSIONS, _T_COMMIT_LINT, _T_COMMIT_LINT_PRE_L183, _ensure_workflows, caller_render_state, render_caller, unpinned_caller_warnings)
 
 #: sha256 of the canonical caller shipped in celestia-island repositories: the
 #: lane-carrying form **plus** the explicit `permissions` grant, rendered at the
@@ -32,16 +32,25 @@ from celestia_devtools.repo.init import (OPT_IN_GATES, PINNED_DEVTOOLS_REF, TEMP
 #: check never reports, and a protected repository cannot be merged. Thirty
 #: repositories were missed when the org default token permissions were
 #: tightened on 2026-10-02.
-CANONICAL_SHA256 = "45199f88332f4ddcf382293e981760585cdc881f4b3dd6211cf2ca3b6e5ced29"
-CANONICAL_BYTES = 1865
+CANONICAL_SHA256 = "c96101ee99ed43e0c60a3c5b241d2c63bd72586eb491f30c18e498b006fe0d6d"
+CANONICAL_BYTES = 1830
 
-#: sha256 of the **master render** — the floating form the entire fleet carries
-#: today. This is the comparator that classifies un-migrated repositories as
-#: "unpinned" (warning) instead of "drifted" (error): if a template edit ever
-#: moves these bytes, the fleet turns red in one wave, which is exactly the
-#: outcome the pin migration must avoid. Frozen from the 2026-10-06 canonical.
-MASTER_SHA256 = "727a3e9c17f29c436bdc1dc11653dd0b50f8dc3c12646f98fb7bc1e3e2de442e"
-MASTER_BYTES = 1770
+#: sha256 of the **master render** — the floating escape-hatch form. Since the
+#: L183 dead-condition sweep (2026-11-19) pruned the dead ``pull_request``
+#: halves, this is NO LONGER the fleet comparator: repositories that have not
+#: regenerated carry the pre-sweep bytes, and that comparison moved to
+#: :data:`LEGACY_TEMPLATE_VARIANTS` (pinned as FLEET_PRE_L183_* below), which
+#: keeps them classified as ``stale`` (warning) instead of ``drifted`` (error).
+MASTER_SHA256 = "1c657e6aa0e3476d842d3af15dba7f385c562e661df219732982f56704dac18e"
+MASTER_BYTES = 1735
+
+#: The bytes the un-regenerated fleet carries today: the PRE-L183 template
+#: (dead PR halves intact), whether rendered at the pin or at ``master``.
+#: While any repository still shows these hashes, the legacy variant table is
+#: load-bearing — removing it would flip the whole fleet to "drifted" errors.
+FLEET_PRE_L183_SHA256 = "45199f88332f4ddcf382293e981760585cdc881f4b3dd6211cf2ca3b6e5ced29"
+FLEET_PRE_L183_BYTES = 1865
+FLEET_PRE_L183_MASTER_SHA256 = "727a3e9c17f29c436bdc1dc11653dd0b50f8dc3c12646f98fb7bc1e3e2de442e"
 
 #: The lane-carrying template without the grant (2026-09-26 → 2026-10-06): audit
 #: reports it as a warning, because the check still cannot start.
@@ -67,23 +76,47 @@ class test_canonical_bytes:
         assert WORKFLOW_COMMIT_LINT.endswith("pr: ${{ inputs.pr }}\n")
         assert not WORKFLOW_COMMIT_LINT.endswith("\n\n")
 
-class test_master_render_is_the_fleet_comparator:
-    """P2-3: rendering at ``master`` must reproduce today's fleet bytes exactly.
+class test_master_render_is_pinned:
+    """The master render is hash-pinned (P2-3 discipline).
 
-    ``caller_render_state`` classifies the un-migrated fleet through this
-    render: if it drifts, every repository still on ``@master`` flips from the
-    "unpinned" warning to the "drifted" error and the migration goes red in one
-    wave — the failure mode this pin project exists to prevent.
+    Since the L183 sweep the fleet comparator lives in
+    :data:`LEGACY_TEMPLATE_VARIANTS` (see ``test_pre_l183_render_matches_the_fleet``);
+    this pin only guards the escape-hatch form against accidental template
+    edits outside a deliberate regeneration wave.
     """
 
-    def test_master_render_hashes_to_the_2026_10_06_canonical(self):
+    def test_master_render_hash_is_pinned(self):
         assert hashlib.sha256(render_caller(_T_COMMIT_LINT, "master").encode()).hexdigest() == MASTER_SHA256
 
-    def test_master_render_keeps_the_fleet_length(self):
+    def test_master_render_length_is_pinned(self):
         assert len(render_caller(_T_COMMIT_LINT, "master").encode()) == MASTER_BYTES
 
     def test_master_render_is_distinct_from_canonical(self):
         assert render_caller(_T_COMMIT_LINT, "master") != WORKFLOW_COMMIT_LINT
+
+class test_pre_l183_render_matches_the_fleet:
+    """The pre-L183 template rendered at the fleet's refs IS today's fleet bytes.
+
+    Until every repository regenerates, the fleet carries these bytes and
+    :func:`caller_render_state` must classify them as generator-owned ``stale``
+    — this is the comparator that keeps the migration warning-only.
+    """
+
+    def test_pre_l183_at_pin_hashes_to_the_fleet_canonical(self):
+        assert hashlib.sha256(render_caller(_T_COMMIT_LINT_PRE_L183, PINNED_DEVTOOLS_REF).encode()).hexdigest() == FLEET_PRE_L183_SHA256
+
+    def test_pre_l183_at_pin_keeps_the_fleet_length(self):
+        assert len(render_caller(_T_COMMIT_LINT_PRE_L183, PINNED_DEVTOOLS_REF).encode()) == FLEET_PRE_L183_BYTES
+
+    def test_pre_l183_master_render_hashes_to_the_fleet_master(self):
+        assert hashlib.sha256(render_caller(_T_COMMIT_LINT_PRE_L183, "master").encode()).hexdigest() == FLEET_PRE_L183_MASTER_SHA256
+
+    def test_pre_l183_bytes_classify_as_stale_not_drifted(self):
+        """The load-bearing property: fleet bytes ⇒ 'stale' (warn), never 'drifted' (error)."""
+        for ref in (PINNED_DEVTOOLS_REF, "master"):
+            fleet_text = render_caller(_T_COMMIT_LINT_PRE_L183, ref)
+            state, found = caller_render_state(fleet_text, _T_COMMIT_LINT)
+            assert (state, found) == ("stale", ref)
 
 class test_ref_rendering:
     """The render mechanism behind both the generator and the classifiers."""
@@ -176,7 +209,7 @@ class test_unpinned_warnings:
 class test_ref_escape_hatch:
     """``--ref master`` regenerates the floating form for break-glass use."""
 
-    def test_ref_master_writes_fleet_bytes(self, tmp_path):
+    def test_ref_master_writes_the_master_render(self, tmp_path):
         _ensure_workflows(tmp_path, force = True, ref = "master")
         written = (tmp_path / ".github" / "workflows" / "commit-msg-lint.yml").read_bytes()
         assert hashlib.sha256(written).hexdigest() == MASTER_SHA256
@@ -296,14 +329,16 @@ class test_trigger_shape:
         inputs = _on(yaml.safe_load(WORKFLOW_COMMIT_LINT))["workflow_dispatch"]["inputs"]
         assert inputs["pr"]["required"] is True
 
-    def test_per_pull_request_concurrency(self):
-        """One in-flight lint per pull request (ci-ops 8.3.3).
+    def test_per_ref_concurrency(self):
+        """One in-flight lint per ref (ci-ops 8.3.3, reworded for L183).
 
-        Dispatch runs fall back to the run ref, so a manual re-lint still cancels
-        only its own predecessors.
+        The pre-L183 group's ``pull_request.number`` half was dead from the
+        2026-11-06 dispatch-only policy on; the group now says plainly what
+        always evaluated: one lane per ref, dispatch re-runs cancel their own
+        predecessors.
         """
         doc = yaml.safe_load(WORKFLOW_COMMIT_LINT)
-        assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "cancel-in-progress": True}
+        assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.ref }}", "cancel-in-progress": True}
 
 class test_caller_job_shape:
     def test_job_carries_only_uses_and_with(self):
@@ -486,15 +521,17 @@ class test_pr_title_caller_template:
         assert set(job) == {"uses", "with"}
         assert set(job["with"]) == {"devtools-ref"}
 
-    def test_per_pull_request_concurrency(self):
-        """Mirror of the commit-msg caller: one in-flight title check per PR.
+    def test_per_ref_concurrency(self):
+        """Mirror of the commit-msg caller: one in-flight title check per ref.
 
-        The hikari line ran this exact block in production for two months
+        The hikari line ran the PR-keyed block in production for two months
         (2026-08-31 #333 onward) before it was absorbed here — including 16
-        cancelled runs in October with zero merge-blocked cases.
+        cancelled runs in October with zero merge-blocked cases. Under the
+        2026-11-06 dispatch-only policy the PR half never evaluated (L183);
+        the group now names the ref it always fell back to.
         """
         doc = yaml.safe_load(WORKFLOW_PR_TITLE_CHECK)
-        assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}", "cancel-in-progress": True}
+        assert doc["concurrency"] == {"group": "${{ github.workflow }}-${{ github.ref }}", "cancel-in-progress": True}
 
     def test_callee_and_caller_agree_on_the_policy(self):
         """Neither side may re-introduce a pull-request trigger."""

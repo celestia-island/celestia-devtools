@@ -275,6 +275,59 @@ def render_caller(template: str, ref: str) -> str:
 _T_COMMIT_LINT = """\
 name: Commit Message Lint
 
+# One in-flight run per ref (ci-ops 8.3.3): a superseded dispatch on the same
+# ref cancels its predecessor instead of queueing behind it. The old group's
+# pull_request half was dead from the 2026-11-06 dispatch-only policy on (L183).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  # Dispatch-only per the 2026-11-06 trigger policy: CI no longer runs on pull
+  # requests. Commit-message format is held by review plus the squash subject;
+  # this lane stays dispatchable so a PR's commits can still be checked on
+  # demand, by number, from any runner.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to lint"
+        required: true
+        type: string
+permissions:
+  # A called workflow cannot grant itself a permission the caller withholds —
+  # the mismatch reads as startup_failure. The org default token permissions
+  # were tightened on 2026-10-02 and this caller was missed, so the single
+  # required check stopped reporting entirely. Grant exactly what the reusable
+  # lint declares and nothing more.
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint-commits:
+    uses: celestia-island/celestia-devtools/.github/workflows/commit-msg-lint.yml@__DEVTOOLS_REF__
+    with:
+__DEVTOOLS_REF_INPUT__
+      # Lane switch without touching this tree: the org variables resolve to the
+      # self-hosted fleet while the hosted lane is down (2026-09-24 account
+      # payments: a job sent there sits fifteen minutes with no runner before
+      # being cancelled, indistinguishable from "the check never reports").
+      runner: ${{ vars.LINT_RUNNER || '["ubuntu-latest"]' }}
+      lane: ${{ vars.LINT_LANE || 'hosted' }}
+      pr: ${{ inputs.pr }}
+"""
+
+#: The canonical caller: the template rendered at the pinned ref. This is what
+#: ``init --with-workflows`` writes and what the audits compare against.
+WORKFLOW_COMMIT_LINT = render_caller(_T_COMMIT_LINT, PINNED_DEVTOOLS_REF)
+
+#: Pre-L183 form of :data:`_T_COMMIT_LINT` (dead PR halves still in the concurrency
+#: and lane expressions). Kept verbatim so callers the fleet has not
+#: regenerated yet still classify as generator-owned ``stale`` ("advance by
+#: regeneration" warning) instead of ``drifted`` (hand-edit error) — see
+#: :data:`LEGACY_TEMPLATE_VARIANTS`.
+_T_COMMIT_LINT_PRE_L183 = """\
+name: Commit Message Lint
+
 # One in-flight run per pull request (ci-ops 8.3.3): a superseded push cancels
 # its predecessor instead of queueing a second lint behind it on the lane the
 # repository resolves — which, on the farm, means one slot instead of many.
@@ -315,10 +368,6 @@ __DEVTOOLS_REF_INPUT__
       lane: ${{ vars.LINT_LANE || 'hosted' }}
       pr: ${{ inputs.pr }}
 """
-
-#: The canonical caller: the template rendered at the pinned ref. This is what
-#: ``init --with-workflows`` writes and what the audits compare against.
-WORKFLOW_COMMIT_LINT = render_caller(_T_COMMIT_LINT, PINNED_DEVTOOLS_REF)
 
 WORKFLOW_COMMIT_LINT_NO_PERMS = """\
 name: Commit Message Lint
@@ -396,6 +445,34 @@ WORKFLOW_CI_CACHE = render_caller(_T_CI_CACHE, PINNED_DEVTOOLS_REF)
 _T_PR_TITLE_CHECK = """\
 name: PR Title Check
 
+# One in-flight run per ref (ci-ops 8.3.3): a superseded dispatch on the same
+# ref cancels its predecessor instead of queueing behind it. The old group's
+# pull_request half was dead from the 2026-11-06 dispatch-only policy on (L183).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  # Dispatch-only per the 2026-11-06 trigger policy: CI no longer runs on pull
+  # requests. Format is held by review plus the squash subject; the lane stays
+  # dispatchable so a patch can still be checked on demand.
+  workflow_dispatch:
+jobs:
+  pr-title-check:
+    uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@__DEVTOOLS_REF__
+__DEVTOOLS_REF_WITH__
+"""
+
+WORKFLOW_PR_TITLE_CHECK = render_caller(_T_PR_TITLE_CHECK, PINNED_DEVTOOLS_REF)
+
+#: Pre-L183 form of :data:`_T_PR_TITLE_CHECK` (dead PR halves still in the concurrency
+#: and lane expressions). Kept verbatim so callers the fleet has not
+#: regenerated yet still classify as generator-owned ``stale`` ("advance by
+#: regeneration" warning) instead of ``drifted`` (hand-edit error) — see
+#: :data:`LEGACY_TEMPLATE_VARIANTS`.
+_T_PR_TITLE_CHECK_PRE_L183 = """\
+name: PR Title Check
+
 # One in-flight run per pull request (ci-ops 8.3.3): a superseded push cancels
 # its predecessor instead of queueing a second title check behind it on the
 # lane the repository resolves.
@@ -413,8 +490,6 @@ jobs:
     uses: celestia-island/celestia-devtools/.github/workflows/pr-title-check.yml@__DEVTOOLS_REF__
 __DEVTOOLS_REF_WITH__
 """
-
-WORKFLOW_PR_TITLE_CHECK = render_caller(_T_PR_TITLE_CHECK, PINNED_DEVTOOLS_REF)
 
 # Canonical callers for the six gates that had none until 2026-10-24. Until then the
 # fleet's other gates existed only as hand-written copies in each repository, which is why
@@ -458,7 +533,7 @@ on:
   # dispatchable so a patch can still be checked on demand.
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -467,6 +542,46 @@ jobs:
 """
 
 WORKFLOW_P0_GATE = render_caller(_T_P0_GATE, PINNED_DEVTOOLS_REF)
+
+#: Pre-L183 form of :data:`_T_P0_GATE` (dead PR halves still in the concurrency
+#: and lane expressions). Kept verbatim so callers the fleet has not
+#: regenerated yet still classify as generator-owned ``stale`` ("advance by
+#: regeneration" warning) instead of ``drifted`` (hand-edit error) — see
+#: :data:`LEGACY_TEMPLATE_VARIANTS`.
+_T_P0_GATE_PRE_L183 = """\
+name: P0 Gate
+
+# An unresolved P0 finding must cost something. This job fails while any P0 whose
+# scope covers this repository is still open, unless the pull request explicitly
+# acknowledges it with a `P0-ACK: <id>` line in its description.
+#
+# The ledger lives in celestia-devtools so one place, not seven, decides what is
+# still outstanding; the reusable workflow checks out master for exactly that
+# reason — a runner-preinstalled copy could read a stale ledger.
+#
+# `edited` is deliberate: the acknowledgment is written in the PR body, so editing
+# the body has to re-run the gate.
+#
+# The concurrency group MUST differ from the callee's (`p0-gate-${{ github.ref }}`).
+# A called workflow's `concurrency` is evaluated in the CALLER's context, so an
+# identical group makes the callee cancel the run that invoked it: the caller then
+# completes as a failure with zero jobs, which GitHub reports as "workflow file
+# issue" — indistinguishable from a broken YAML file. The generated template had
+# exactly that collision until 2026-10-24.
+
+on:
+  # Dispatch-only per the 2026-11-06 trigger policy: CI no longer runs on pull
+  # requests. Format is held by review plus the squash subject; the lane stays
+  # dispatchable so a patch can still be checked on demand.
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  p0-gate:
+    uses: celestia-island/celestia-devtools/.github/workflows/p0-gate.yml@__DEVTOOLS_REF__
+"""
 
 _T_FAMILY_VERSIONS = """\
 name: Family dependency identity
@@ -560,6 +675,48 @@ permissions:
   actions: read
 
 concurrency:
+  group: cnb-overflow-lane-pr-manual
+  cancel-in-progress: true
+
+jobs:
+  lane:
+    uses: celestia-island/celestia-devtools/.github/workflows/cnb-overflow.yml@__DEVTOOLS_REF__
+    with:
+      target_repo: ${{ github.event.repository.name }}
+      target_sha: ${{ inputs.target_sha || github.sha }}
+      task: cargo-check
+      lane: pr-manual
+      queue_threshold: 3
+      poll_minutes: 10
+    secrets: inherit
+"""
+
+WORKFLOW_CNB_OVERFLOW = render_caller(_T_CNB_OVERFLOW, PINNED_DEVTOOLS_REF)
+
+#: Pre-L183 form of :data:`_T_CNB_OVERFLOW` (dead PR halves still in the concurrency
+#: and lane expressions). Kept verbatim so callers the fleet has not
+#: regenerated yet still classify as generator-owned ``stale`` ("advance by
+#: regeneration" warning) instead of ``drifted`` (hand-edit error) — see
+#: :data:`LEGACY_TEMPLATE_VARIANTS`.
+_T_CNB_OVERFLOW_PRE_L183 = """\
+name: CNB Overflow Lane
+
+on:
+  # Overflow/mirror sync: runs after a squash merge and on demand, never on the
+  # pull request (2026-11-06 trigger policy).
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Commit SHA (empty = branch head)"
+        type: string
+        default: ""
+permissions:
+  statuses: write
+  actions: read
+
+concurrency:
   group: cnb-overflow-lane-pr-${{ github.event.pull_request.number || 'manual' }}
   cancel-in-progress: true
 
@@ -576,8 +733,6 @@ jobs:
     secrets: inherit
 """
 
-WORKFLOW_CNB_OVERFLOW = render_caller(_T_CNB_OVERFLOW, PINNED_DEVTOOLS_REF)
-
 #: Opt-in gate callers: a repository needs only the ones whose scope covers it
 #: (P0 ledger scope, a cross-repository family edge, a version line, a repository
 #: AGENTS.md, a release tag, or the CNB spill lane), so they are generated only
@@ -591,6 +746,21 @@ OPT_IN_GATES: dict[str, tuple[str, str, str]] = {"p0": ("p0-gate.yml", WORKFLOW_
 #: at generation time and a ref compared at audit time can never come from two
 #: different texts.
 TEMPLATE_SOURCES: dict[str, str] = {"commit-msg-lint.yml": _T_COMMIT_LINT, "ci-cache.yml": _T_CI_CACHE, "pr-title-check.yml": _T_PR_TITLE_CHECK, "p0-gate.yml": _T_P0_GATE, "family-versions.yml": _T_FAMILY_VERSIONS, "verify-versions.yml": _T_VERIFY_VERSIONS, "rules-lint.yml": _T_RULES_LINT, "release-notes.yml": _T_RELEASE_NOTES, "cnb-overflow-lane.yml": _T_CNB_OVERFLOW}
+
+#: Superseded renderings of :data:`TEMPLATE_SOURCES` entries, keyed by the
+#: CURRENT template string. A fleet file byte-equal to a variant rendered at
+#: its own ref classifies as generator-owned ``stale`` ("advance by
+#: regeneration" warning), never ``drifted`` (hand-edit error) — the same
+#: one-wave-at-a-time migration posture :func:`caller_render_state` already
+#: gives ``@master`` callers. First entry: the L183 dead-condition sweep
+#: (2026-11-19) pruned dead ``pull_request`` halves from the concurrency and
+#: lane expressions; un-regenerated callers carry the pre-sweep bytes.
+LEGACY_TEMPLATE_VARIANTS: dict[str, tuple[str, ...]] = {
+    _T_COMMIT_LINT: (_T_COMMIT_LINT_PRE_L183,),
+    _T_PR_TITLE_CHECK: (_T_PR_TITLE_CHECK_PRE_L183,),
+    _T_P0_GATE: (_T_P0_GATE_PRE_L183,),
+    _T_CNB_OVERFLOW: (_T_CNB_OVERFLOW_PRE_L183,),
+}
 
 #: The three callers every repository needs, in generation order. Both the
 #: generator and ``--check`` read this table, so a new required caller cannot be
@@ -689,6 +859,12 @@ def caller_render_state(text: str, template: str) -> tuple[str, str]:
 
         if text == render_caller(template, candidate):
             return ("master" if candidate == "master" else "stale"), candidate
+
+        # Superseded generator bytes (e.g. pre-L183 dead PR halves): still
+        # generator-owned, just one regeneration behind — warn, don't error.
+        for legacy in LEGACY_TEMPLATE_VARIANTS.get(template, ()):
+            if text == render_caller(legacy, candidate):
+                return "stale", candidate
 
     return "drifted", (refs[0] if refs else "?")
 

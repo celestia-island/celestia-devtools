@@ -69,17 +69,9 @@ jobs:
     # stays BLOCKED forever and nobody can merge it without --admin. Found
     # 2026-10-06: a public repo's seven outside patches had sat unmergeable for
     # a month, i.e. it read as "we take no outside patches", which nobody had
-    # actually decided. Same guard exists in pr-title-check.yml.
-    # The farm still stays off-limits: forks are forced onto GitHub-hosted
-    # runners below, which are free and unlimited for public repos. This job
-    # only reads commit messages, holds `contents: read` + `pull-requests: read`,
+    # actually decided.
+    # This job only reads commit messages, holds `contents: read` + `pull-requests: read`,
     # and a fork run gets no secrets.
-    # Guard applies both to direct pull_request triggers and to workflow_call
-    # callers (github.event then carries the caller's PR payload).
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository ||
-      github.event.pull_request.head.repo.fork == true
     # Message lint is a sub-minute, stdlib-only job. Hosted stays the default:
     # provisioning is instant and parallel, and a queued lint check must never
     # hold a PR behind real builds (the 4-VM node-ci pool produced ~1h queues for

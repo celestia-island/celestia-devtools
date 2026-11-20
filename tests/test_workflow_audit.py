@@ -1120,10 +1120,11 @@ class test_canonical_caller:
         assert report["summary"]["rules"][RULE_CALLER_NOT_CANONICAL] == 1
 
     def test_drifted_concurrency_group_is_reported(self, tmp_path, monkeypatch, capsys):
-        # The canonical caller HAS a per-PR concurrency block since 2026-10-25;
-        # drift now looks like a hand-tuned group string instead of an extra block.
-        canonical_group = "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
-        drifted = WORKFLOW_COMMIT_LINT.replace(canonical_group, "group: lint-${{ github.ref }}")
+        # The canonical caller has keyed its concurrency on the ref since the
+        # L183 sweep (2026-11-19) pruned the dead PR half; drift still looks
+        # like a hand-tuned group string.
+        canonical_group = "group: ${{ github.workflow }}-${{ github.ref }}"
+        drifted = WORKFLOW_COMMIT_LINT.replace(canonical_group, "group: lint-lane-${{ github.run_id }}")
         assert drifted != WORKFLOW_COMMIT_LINT
         _workflow(tmp_path, drifted, filename = self.NAME)
         monkeypatch.chdir(tmp_path)
