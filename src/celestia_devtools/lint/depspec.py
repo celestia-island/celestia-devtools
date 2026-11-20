@@ -70,6 +70,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
+from celestia_devtools.lint import dep_advisories
 
 #: Directories never descended into: VCS metadata, build output, JS dependency
 #: trees, vendored upstream snapshots (their manifests are upstream's, held
@@ -157,6 +158,9 @@ class report:
     notes: list[str] = field(default_factory=list)
     files_scanned: int = 0
     manifests: dict[str, int] = field(default_factory=dict)
+    #: Unmaintained-dependency warnings (RUSTSEC-2026-0543: chrono → jiff).
+    #: Advisory only: they never change the exit code (see dep_advisories).
+    advisories: list[dep_advisories.hit] = field(default_factory=list)
 
 
 def _display(root: Path, path: Path) -> str:
@@ -468,6 +472,11 @@ def scan(root: Path | str, repo: str | None = None) -> report:
     rep.files_scanned = sum(rep.manifests.values())
     if not found_any:
         raise depspec_error(f"{root}: no package.json / Cargo.toml / pyproject.toml found")
+    # Unmaintained-dependency warnings ride along on the same walk (one extra
+    # stdlib pass): depspec-lint is the one gate every repository already runs
+    # on trunk push, so this is where a future agent actually sees chrono's
+    # advisory without wiring another workflow.
+    rep.advisories = dep_advisories.scan(root).hits
     return rep
 
 
@@ -499,6 +508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "files_scanned": rep.files_scanned,
             "manifests": rep.manifests,
             "findings": [f.__dict__ for f in rep.findings],
+            "advisories": [h.to_dict() for h in rep.advisories],
         }, ensure_ascii=False))
     else:
         print(f"depspec-lint: scanned {rep.files_scanned} manifests {rep.manifests}")
@@ -508,6 +518,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("  all declarations two-form")
         else:
             print(f"  {len(rep.findings)} finding(s)")
+        warning = dep_advisories.render(rep.advisories)
+        if warning:
+            print(warning, file=sys.stderr)
 
     if args.strict and rep.findings:
         return 1
