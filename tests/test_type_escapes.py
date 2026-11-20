@@ -291,3 +291,22 @@ def test_baseline_keys_are_relative_and_stable_across_cwd(tmp_path, monkeypatch,
     assert list(recorded["files"]) == ["a.ts"]
     monkeypatch.chdir(tmp_path)
     assert type_escapes.main([target, "--baseline", str(baseline)]) == 0
+
+def test_type_escapes_workflow_exposes_a_value_gated_baseline_input():
+    """The ratchet needs a reusable-workflow door (2026-11 wiring).
+
+    Two properties matter and both have bitten sibling lanes before:
+    the input EXISTS, and it is VALUE-gated — an empty default must not
+    turn every caller into ratchet mode (a repo without a baseline file
+    would then red for a missing file it never asked for).
+    """
+    from pathlib import Path as _Path
+
+    wf = (_Path(__file__).resolve().parents[1]
+          / ".github/workflows/type-escapes.yml").read_text()
+    assert "baseline:" in wf, "the reusable workflow must declare a baseline input"
+    assert "BASELINE: ${{ inputs.baseline }}" in wf, "the input must reach the run step"
+    assert 'if [ -n "${BASELINE:-}" ]' in wf, "the gate must be non-empty, not set"
+    assert '--baseline "${BASELINE}"' in wf, "the flag must be passed when set"
+    # A requested-but-missing file is a loud usage error, never a silent pass.
+    assert "was requested but does not exist" in wf
