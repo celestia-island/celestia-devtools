@@ -11,27 +11,36 @@ warning *at the moment it decides*, not months later in a weekly security run.
 This module is deliberately a **warning channel, not a ban**:
 
 * it scans ``Cargo.toml`` declarations (every dependency table, including
-  ``[workspace.dependencies]`` and ``[target.<triple>.dependencies]``) and Rust
-  sources for the crate name;
+  ``[workspace.dependencies]``, ``[target.<triple>.dependencies]``, renamed
+  ``package = "chrono"`` aliases and ``[patch]`` / ``[replace]`` snapshots) and
+  Rust sources for the crate name;
+* a full-tree hit needs a **declaration**: a comment that merely mentions the
+  crate ("migrated off chrono in 2026-11") must not nag forever, and it must not
+  keep ``--strict`` red after the migration — source mentions only become
+  evidence under a declaration, or a hit of their own in the ``--staged`` view
+  (where the mention *is* the change under review);
 * the default run prints one warning block per affected crate and **exits 0**
   (advisory form, safe to wire into a trunk basic check before the tree is
   clean), exactly like ``depspec-lint``'s advisory mode;
-* ``--strict`` turns findings into exit 1, for when the migration is done and
-  the gate should keep chrono from creeping back in;
+* ``--strict`` turns declaration findings into exit 1, for when the migration is
+  done and the gate should keep chrono from creeping back in;
 * ``--json`` prints one machine-readable report on stdout (the text form goes
   to stderr, so machine consumers never parse warnings).
 
 *Word boundary:* the pattern is ``(?<![\\w-])crate(?![\\w-])``. Matching plain
 ``crate`` as a substring would flag two real shapes that are *not* the crate:
 ``chrono-tz`` (a different crate) and ``chrono_no_dep_timestamp`` (wishwell's
-function that exists precisely to avoid chrono). Both are pinned by tests.
+function that exists to avoid chrono). Both are pinned by tests.
 
 *Scope:* the tree is walked recursively; VCS, build output, JS dependency
 trees, vendored snapshots and python envs are skipped. A tree that yields no
-manifest is an error (exit 2) — "nothing scanned" must never read as green.
+manifest and no source file is an error (exit 2) — "nothing scanned" must never
+read as green. A manifest that does not parse is counted separately and never
+counts as "checked"; if every manifest is unparseable the run reports that
+instead of claiming the tree is clean.
 
-*Exit codes:* 0 clean or advisory findings, 1 findings under ``--strict``,
-2 usage / scan errors.
+*Exit codes:* 0 clean or advisory findings, 1 declaration findings under
+``--strict``, 2 usage / scan errors.
 """
 
 from __future__ import annotations
@@ -46,13 +55,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-#: Directories never descended into: same class as depspec's skip list.
 SKIP_DIRS = {".git", "node_modules", "target", "vendor", "patches", "dist", ".venv", "venv", "__pycache__", ".pnpm-store", "_worktree"}
-
 MANIFEST = "Cargo.toml"
 SOURCE_SUFFIX = ".rs"
-
-#: Evidence is capped so a large tree prints a warning, not a directory dump.
 MAX_EVIDENCE = 4
 
 @dataclass(frozen = True)
@@ -75,8 +80,6 @@ class advisory:
         options = " / ".join(self.replacement)
         return f"warning: {self.crate} is unmaintained ({self.id}, issued {self.issued}; no patched release) — migrate to {options} as soon as possible, and do not add new {self.crate} usage."
 
-#: The policy table. chrono is the first entry (2026-11-20 ruling); future
-#: unmaintained crates join here with their advisory id and replacement.
 ADVISORIES: tuple[advisory, ...] = (advisory(crate = "chrono", id = "RUSTSEC-2026-0543", issued = "2026-11-17", replacement = ("jiff",), why = "all versions are affected; there is no patched release", next = 'jiff 1.x (`jiff = "1"`); if it must stay for now, record why in deny.toml with an expiry date'),)
 
 @dataclass
@@ -94,10 +97,11 @@ class hit:
 class report:
     hits: list[hit] = field(default_factory = list)
     manifests: int = 0
+    unparsed: int = 0
     sources: int = 0
 
     def to_dict(self) -> dict[str, object]:
-        return {"manifests_scanned": self.manifests, "sources_scanned": self.sources, "advisories": [h.to_dict()for h in self.hits]}
+        return {"manifests_scanned": self.manifests, "manifests_unparsed": self.unparsed, "sources_scanned": self.sources, "advisories": [h.to_dict() for h in self.hits]}
 
 def _display(root: Path, path: Path) -> str:
     """Path relative to the scan root, forward slashes, stable for --json."""
@@ -133,39 +137,61 @@ def _dependency_tables(data: dict) -> list[dict]:
                 if isinstance(deps, dict):
                     tables.append(deps)
 
+    for key in ("patch", "replace"):
+        sec = data.get(key)
+
+        if isinstance(sec, dict):
+            for registry in sec.values():
+                if isinstance(registry, dict):
+                    tables.append(registry)
+
     return tables
 
-def _line_of(text: str, crate: str) -> int | None:
-    """1-based line of the ``crate = …`` declaration, for the evidence string."""
+def _table_declares(table: dict, crate: str) -> bool:
+    """True when the table depends on ``crate``, by key or by renamed alias."""
 
-    line_re = re.compile(r'^\s*["\']?' + re.escape(crate) + r'["\']?\s*=')
+    if crate in table:
+        return True
 
-    for number, line in enumerate(text.splitlines(), 1):
-        if line_re.match(line):
-            return number
+    for entry in table.values():
+        if isinstance(entry, dict) and (entry.get("package") == crate):
+            return True
 
-    return None
+    return False
 
-def _scan_manifest(root: Path, path: Path, text: str, hits: dict[str, hit]) -> None:
+def _lines_of(text: str, crate: str) -> list[int]:
+    """1-based evidence lines for a declaration (key, inline table, dotted table)."""
+
+    patterns = (re.compile(r'^\s*["\']?' + re.escape(crate) + r'["\']?\s*='), re.compile(r'^\s*["\']?' + re.escape(crate) + r'["\']?\s*\.'), re.compile(r"^\s*\[[^\]]*[.\"']" + re.escape(crate) + r"[\"']?\]"))
+    numbers = [number for number, line in enumerate(text.splitlines(), 1) if any(p.match(line) for p in patterns)]
+
+    return numbers
+
+def _scan_manifest(root: Path, path: Path, text: str, hits: dict[str, hit]) -> bool:
+    """Record declarations; returns True when the manifest parsed."""
+
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        return  # malformed manifests are depspec-lint's problem, not ours
+        return False
 
     if not isinstance(data, dict):
-        return
+        return True
 
     tables = _dependency_tables(data)
 
     for adv in ADVISORIES:
-        declared = any(adv.crate in table for table in tables)
+        declared = sum(1 for table in tables if _table_declares(table, adv.crate))
 
         if not declared:
             continue
 
-        line = _line_of(text, adv.crate)
-        where = f"{_display(root, path)}:{line}" if line else _display(root, path)
-        hits.setdefault(adv.crate, hit(advisory = adv)).declarations.append(where)
+        lines = _lines_of(text, adv.crate)
+        where = [f"{_display(root, path)}:{number}" for number in lines[:declared]] or [_display(root, path) for _ in range(declared)]
+        bucket = hits.setdefault(adv.crate, hit(advisory = adv))
+        bucket.declarations.extend(where)
+
+    return True
 
 def _scan_source(root: Path, path: Path, text: str, hits: dict[str, hit]) -> None:
     for adv in ADVISORIES:
@@ -175,8 +201,16 @@ def _scan_source(root: Path, path: Path, text: str, hits: dict[str, hit]) -> Non
         bucket = hits.setdefault(adv.crate, hit(advisory = adv))
         bucket.sources.append(_display(root, path))
 
+def _finish(hits: dict[str, hit], *, declarations_only: bool) -> list[hit]:
+    ordered = [hits[key] for key in sorted(hits)]
+
+    if declarations_only:
+        return [bucket for bucket in ordered if bucket.declarations]
+
+    return ordered
+
 def scan(root: Path | str) -> report:
-    """Collect every advisory hit under ``root`` (manifests + Rust sources)."""
+    """Collect declaration-backed hits under ``root`` (manifests + Rust sources)."""
 
     root = Path(root)
     rep = report()
@@ -192,10 +226,13 @@ def scan(root: Path | str) -> report:
                 try:
                     text = path.read_text(encoding = "utf-8")
                 except (UnicodeDecodeError, OSError):
+                    rep.unparsed += 1
                     continue
 
-                rep.manifests += 1
-                _scan_manifest(root, path, text, hits)
+                if _scan_manifest(root, path, text, hits):
+                    rep.manifests += 1
+                else:
+                    rep.unparsed += 1
             elif fn.endswith(SOURCE_SUFFIX):
                 try:
                     text = path.read_text(encoding = "utf-8", errors = "replace")
@@ -205,31 +242,42 @@ def scan(root: Path | str) -> report:
                 rep.sources += 1
                 _scan_source(root, path, text, hits)
 
-    rep.hits = [hits[key] for key in sorted(hits)]
+    # A comment that mentions the crate is not a dependency: full-tree mode only
+    # reports declaration-backed hits, so a migrated tree goes quiet (and
+    # --strict can actually go green).
+    rep.hits = _finish(hits, declarations_only = True)
+
     return rep
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(root), *args], capture_output = True, text = True)
+    # errors="replace": a staged non-UTF-8 blob must warn or stay silent, never
+    # raise UnicodeDecodeError inside a pre-commit hook.
+    return subprocess.run(["git", "-C", str(root), *args], capture_output = True, text = True, errors = "replace")
 
 def scan_staged(root: Path | str) -> report:
     """Scan only the staged content (``--staged``: the pre-commit view).
 
-    A commit that touches no manifest and no Rust source is a normal event, so
-    an empty staged set is not an error here (unlike the full-tree scan).
+    ``-z`` disables git's C-quoting, so a non-ASCII path is not silently dropped;
+    both declarations and source mentions count here, because the mention *is*
+    the change under review. A commit that touches no manifest and no Rust
+    source is a normal event, so an empty staged set is not an error.
     """
 
     root = Path(root)
     rep = report()
     hits: dict[str, hit] = {}
-    proc = _git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR")
+    proc = _git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
 
     if proc.returncode != 0:
         return rep
 
-    for line in proc.stdout.splitlines():
-        rel = line.strip()
+    for rel in proc.stdout.split("\0"):
+        if not rel:
+            continue
 
-        if not rel or not (rel.endswith(SOURCE_SUFFIX) or (rel.rsplit("/", 1)[-1] == MANIFEST)):
+        name = rel.rsplit("/", 1)[-1]
+
+        if not (rel.endswith(SOURCE_SUFFIX) or (name == MANIFEST)):
             continue
 
         blob = _git(root, "show", f":{rel}")
@@ -239,14 +287,17 @@ def scan_staged(root: Path | str) -> report:
 
         path = root / rel
 
-        if rel.rsplit("/", 1)[-1] == MANIFEST:
-            rep.manifests += 1
-            _scan_manifest(root, path, blob.stdout, hits)
+        if name == MANIFEST:
+            if _scan_manifest(root, path, blob.stdout, hits):
+                rep.manifests += 1
+            else:
+                rep.unparsed += 1
         else:
             rep.sources += 1
             _scan_source(root, path, blob.stdout, hits)
 
-    rep.hits = [hits[key] for key in sorted(hits)]
+    rep.hits = _finish(hits, declarations_only = False)
+
     return rep
 
 def render(hits: Sequence[hit]) -> str:
@@ -279,7 +330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("path", nargs = "?", default = ".", help = "repository tree to scan (default: .)")
     parser.add_argument("--staged", action = "store_true", help = "scan only the staged diff (pre-commit view)")
     parser.add_argument("--quiet", action = "store_true", help = "print warnings only; suppress the scan summary")
-    parser.add_argument("--strict", action = "store_true", help = "exit 1 when an advisory is found (post-migration form)")
+    parser.add_argument("--strict", action = "store_true", help = "exit 1 on a declaration finding (post-migration form)")
     parser.add_argument("--json", action = "store_true", help = "print one machine-readable report on stdout")
     args = parser.parse_args(argv)
 
@@ -291,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         rep = scan_staged(root) if args.staged else scan(root)
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError, subprocess.SubprocessError) as exc:
         print(f"dep-advisories: {exc}", file = sys.stderr)
         return 2
 
@@ -305,7 +356,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(rep.to_dict(), ensure_ascii = False))
     else:
         if not args.quiet:
-            print(f"dep-advisories: scanned {rep.manifests} manifest(s), {rep.sources} source file(s)", file = sys.stderr)
+            parsed = f"{rep.manifests} manifest(s)"
+
+            if rep.unparsed:
+                parsed += f" (+{rep.unparsed} unparseable)"
+
+            print(f"dep-advisories: scanned {parsed}, {rep.sources} source file(s)", file = sys.stderr)
 
         text = render(rep.hits)
 
@@ -314,7 +370,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif not args.quiet:
             print("  no unmaintained dependency in use", file = sys.stderr)
 
-    if args.strict and rep.hits:
+    # --strict is the post-migration gate: only a real declaration fails it, so
+    # a comment that says "we removed chrono" can never keep the gate red.
+    if args.strict and any(bucket.declarations for bucket in rep.hits):
         return 1
 
     return 0

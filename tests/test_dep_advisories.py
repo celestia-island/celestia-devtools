@@ -53,13 +53,23 @@ def test_hyphenated_and_underscored_shapes_are_not_chrono(tmp_path: Path) -> Non
     assert rep.manifests == 1
     assert rep.sources == 1
 
-def test_source_mentions_reported(tmp_path: Path) -> None:
+def test_source_mentions_are_evidence_under_a_declaration(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[dependencies]\nchrono = "0.4"\n')
     _write(tmp_path, "src/lib.rs", "use chrono::{DateTime, Utc};\npub fn now() -> DateTime<Utc> { Utc::now() }\n")
     _write(tmp_path, "src/clean.rs", "pub fn answer() -> u8 { 42 }\n")
     rep = dep_advisories.scan(tmp_path)
     assert len(rep.hits) == 1
     assert rep.hits[0].sources == ["src/lib.rs"]
     assert rep.sources == 2
+
+def test_comment_only_mention_is_silent_in_full_scan(tmp_path: Path) -> None:
+    """A migrated tree keeps comments that say "removed chrono"; no nagging."""
+    _write(tmp_path, "Cargo.toml", '[dependencies]\njiff = "1"\n')
+    _write(tmp_path, "src/lib.rs", "// migrated off chrono in 2026-11; see RUSTSEC-2026-0543\npub fn f() {}\n")
+    rep = dep_advisories.scan(tmp_path)
+    assert rep.hits == []
+    assert rep.sources == 1
+    assert dep_advisories.main([str(tmp_path), "--strict"]) == 0
 
 def test_clean_tree_has_no_hits(tmp_path: Path) -> None:
     _write(tmp_path, "Cargo.toml", '[package]\nname = "x"\n\n[dependencies]\nserde = "1"\n')
@@ -98,6 +108,23 @@ def test_json_payload_shape(tmp_path: Path, capsys) -> None:
     assert entry["sources"] == ["src/lib.rs"]
     assert captured.err == ""
 
+def test_renamed_package_alias_is_a_declaration(tmp_path: Path) -> None:
+    """`my-dt = { package = "chrono" }` is still chrono; the key alone misses it."""
+    _write(tmp_path, "Cargo.toml", '[dependencies]\nmy-dt = { package = "chrono", version = "0.4" }\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert [h.advisory.crate for h in rep.hits] == ["chrono"]
+
+def test_dotted_table_declaration_reported(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[dependencies.chrono]\nversion = "0.4"\nfeatures = ["serde"]\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert rep.hits[0].declarations == ["Cargo.toml:1"], rep.hits[0].declarations
+
+def test_all_manifests_unparseable_is_not_green(tmp_path: Path) -> None:
+    _write(tmp_path, "Cargo.toml", '[dependencies\nchrono = "0.4"\n')
+    rep = dep_advisories.scan(tmp_path)
+    assert (rep.manifests == 0) and (rep.unparsed == 1)
+    assert dep_advisories.main([str(tmp_path)]) == 2
+
 def test_missing_path_is_exit_two(tmp_path: Path) -> None:
     assert dep_advisories.main([str(tmp_path / "nope")]) == 2
 
@@ -114,18 +141,17 @@ def test_render_caps_evidence(tmp_path: Path) -> None:
     rep = dep_advisories.scan(tmp_path)
     text = dep_advisories.render(rep.hits)
     assert "+3 more" in text
-    assert "src/m0.rs" in text
-    assert "src/m7.rs" not in text
-
+    assert text.count("src/m") == dep_advisories.MAX_EVIDENCE, text
 
 def _stage(tmp_path: Path, files: dict[str, str]) -> None:
     subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check = True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "t@example.invalid"], check = True)
     subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "t"], check = True)
+
     for rel, content in files.items():
         _write(tmp_path, rel, content)
-    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check = True)
 
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check = True)
 
 def test_staged_view_sees_only_the_commit(tmp_path: Path) -> None:
     """The pre-commit channel: warn on what this commit touches, not the whole tree."""
@@ -136,14 +162,12 @@ def test_staged_view_sees_only_the_commit(tmp_path: Path) -> None:
     _write(tmp_path, "src/late.rs", "use chrono::Utc;\n")
     assert dep_advisories.scan_staged(tmp_path).sources == 0
 
-
 def test_staged_view_quiet_and_advisory_exit(tmp_path: Path, capsys) -> None:
     _stage(tmp_path, {"src/lib.rs": "use chrono::Utc;\n"})
     assert dep_advisories.main([str(tmp_path), "--staged", "--quiet"]) == 0
     captured = capsys.readouterr()
     assert "warning: chrono is unmaintained" in captured.err
     assert "scanned" not in captured.err
-
 
 def test_staged_clean_commit_is_silent(tmp_path: Path, capsys) -> None:
     _stage(tmp_path, {"Cargo.toml": '[dependencies]\nserde = "1"\n'})
@@ -152,9 +176,22 @@ def test_staged_clean_commit_is_silent(tmp_path: Path, capsys) -> None:
     assert captured.out == ""
     assert captured.err == ""
 
-
 def test_staged_mode_outside_git_is_not_an_error(tmp_path: Path, capsys) -> None:
     _write(tmp_path, "Cargo.toml", '[dependencies]\nchrono = "0.4"\n')
     assert dep_advisories.main([str(tmp_path), "--staged"]) == 0
     captured = capsys.readouterr()
     assert "warning: chrono" not in captured.err
+
+def test_non_utf8_staged_blob_does_not_crash_or_block(tmp_path: Path) -> None:
+    """The hook must never raise UnicodeDecodeError on a staged binary-ish file."""
+    _stage(tmp_path, {"Cargo.toml": '[dependencies]\nchrono = "0.4"\n'})
+    (tmp_path / "src").mkdir(exist_ok = True)
+    (tmp_path / "src" / "latin.rs").write_bytes(b"\xff\xfeuse chrono::Utc;\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "src/latin.rs"], check = True)
+    assert dep_advisories.main([str(tmp_path), "--staged", "--quiet"]) == 0
+
+def test_non_ascii_staged_path_is_not_dropped(tmp_path: Path) -> None:
+    """git C-quotes non-ASCII paths unless -z is used; the mention must still be seen."""
+    _stage(tmp_path, {"src/日本語.rs": "use chrono::Utc;\n"})
+    rep = dep_advisories.scan_staged(tmp_path)
+    assert rep.hits and (rep.hits[0].sources == ["src/日本語.rs"]), [h.to_dict() for h in rep.hits]
