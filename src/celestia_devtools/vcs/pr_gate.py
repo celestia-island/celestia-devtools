@@ -37,9 +37,11 @@ Checks (any failure → rc 1, merge refused):
     zero-width strip: the set is lint's full gitmoji whitelist rather than the
     narrower one the workspace predecessor hard-coded (so a rarer canonical
     gitmoji passes here), and whitelist ZWJ sequences survive the zero-width
-    strip while every other zero-width character — including a ZWJ used to
-    split a version word, a banned word or a colon prefix — is normalised
-    away.
+    strip while every other character **in the strip set**
+    (U+200B/200C/200D/FEFF) is normalised away — including a ZWJ used to split
+    a version word, a banned word or a colon prefix.  Characters outside that
+    set (U+2060 word-joiner, U+00AD soft hyphen, variation selectors, …) are
+    not touched: widening the set is a separate decision, not a side effect.
 4.  Body carries exactly one ``verify:`` record, parsed by a faithful mirror of
     the workspace scanner (``_tools/verify_account.py``): fenced blocks are not
     records, an unclosed fence reds only when it *contains* a record, indented
@@ -135,6 +137,13 @@ DEFAULT_BASE = "master"
 _ZWJ_EMOJIS: tuple[str, ...] = ()  # filled lazily (needs commit_msg's whitelist)
 _ZWJ_SPLIT_RE: "re.Pattern[str] | None" = None
 
+# Distinctness is structural for whitelist entries that neither equal nor
+# contain one another; an entry that *overlaps* another without being a prefix
+# of it (e.g. 🧑‍💻 plus 💻‍🧑) could lose protection for the overlapped
+# occurrence.  The real whitelist has exactly one ZWJ sequence, so this is a
+# documented bound on the claim, not a live gap — a future entry needs the
+# matcher revisited, not just the list extended.
+
 # Private-use characters are invisible in every UI but land verbatim in the
 # squash subject, and a title has no legitimate reason to carry one.
 _PRIVATE_USE_RE = re.compile(
@@ -145,7 +154,11 @@ _PRIVATE_USE_RE = re.compile(
 def _zwj_splitter() -> "re.Pattern[str] | None":
     """Regex that splits a title on whitelist ZWJ sequences (odd parts kept)."""
     global _ZWJ_EMOJIS, _ZWJ_SPLIT_RE
-    if _ZWJ_SPLIT_RE is None:
+    # Both globals are the cache; checking one alone lets a caller clear the
+    # other and keep using a stale regex (the trap the sentinel-era code left
+    # behind).  Clearing `_ZWJ_EMOJIS` therefore really forces a rebuild —
+    # which is what a test monkeypatching the whitelist expects.
+    if _ZWJ_SPLIT_RE is None or not _ZWJ_EMOJIS:
         from celestia_devtools.vcs.commit_msg import GITMOJI_WHITELIST
 
         _ZWJ_EMOJIS = tuple(
