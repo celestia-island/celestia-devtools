@@ -28,7 +28,6 @@ class test_title:
 
     def test_too_short_rejected(self):
         # A perfect sentence cut down to 19 chars — ONLY the length rule can red it.
-        assert title_problems("✨ Add the tiles.") == [] or True  # sanity: short but legal otherwise
         assert any("too short" in p for p in title_problems("✨ Add the tiles."))
 
     def test_incident_title_rejected(self):
@@ -152,7 +151,12 @@ class test_body:
         assert body_problems(f"```\n{GOOD_RECORD}\n```")
 
     def test_unclosed_fence_rejected(self):
-        assert body_problems(f"```\n{GOOD_RECORD}")
+        # Pin the DIAGNOSTIC, not just truthiness: the unclosed branch and the
+        # hidden-record branch are one decision with two messages, and only the
+        # text distinguishes them.
+        problems = body_problems(f"```\n{GOOD_RECORD}")
+        assert any("never closes" in p for p in problems), problems
+        assert not any("hides inside" in p for p in problems), problems
 
     def test_fenced_hidden_second_record_rejected(self):
         # Prose record + a fenced "kept for provenance" record = ambiguous set.
@@ -453,3 +457,11 @@ class test_merge_write_shape:
             "gh", "api", "-i", "repos/o/r/pulls/7/merge", "-X", "PUT", "--input", "-",
         ], merge_argv
         assert json.loads(runner.inputs[1] or "{}") == {"merge_method": "squash"}
+
+    def test_draft_pr_refused(self):
+        problems = check_pr(
+            {"state": "open", "mergeable": True, "draft": True, "title": GOOD_TITLE,
+             "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}},
+            expect_head="a" * 40,
+        )
+        assert any("draft" in p for p in problems)

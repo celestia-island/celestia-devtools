@@ -9,8 +9,11 @@ without a force push, which the org forbids.  Two existing nets missed it:
 ``git log -1`` self-checks happen *after* the fact, and ``pr-merge`` / ``gh``
 validate the subject the CALLER passes to ``gh pr merge`` — a bare REST merge
 bypasses both.  This gate validates the PR's OWN title, refuses a head that
-moved after review, and issues the merge itself so the check and the merge
-share one process (no TOCTOU gap).
+moved after review, and issues the merge itself from the same process, so no
+human step sits between "checked" and "merged".  (The GET→PUT round trip still
+exists — a push landing inside those milliseconds would be merged unvalidated;
+that residual window is inherent to the REST API and is reported here rather
+than claimed shut.)
 
 Checks (any failure → rc 1, merge refused):
 
@@ -322,6 +325,8 @@ def check_pr(
 
     if pr.get("state") != "open":
         problems.append(f"PR state={pr.get('state')!r}, not open")
+    if pr.get("draft") is True:
+        problems.append("PR is a draft — publish it before merging")
     mergeable = pr.get("mergeable")
     if mergeable is None:
         problems.append("mergeable is unknown (GitHub still computing) — retry in a few seconds")
@@ -464,7 +469,9 @@ def _gate(
 
     expected_subject = f"{title} (#{pr})"
     subject: str | None = None
+    attempts = 0
     for attempt in (1, 2):  # cannot read ≠ polluted — one transport retry
+        attempts = attempt
         status, commit, _stderr = gh_api(f"repos/{repo}/commits/{merged_sha}", runner=runner)
         if status == 200:
             # An empty/absent message is "cannot read", not "polluted" — and an
@@ -479,8 +486,8 @@ def _gate(
             time.sleep(3)
     if subject is None:
         print(
-            "🚨 COMMIT-GET-FAILED: the merge happened but the commit subject is unreadable "
-            "(two attempts) — verify the log by hand; no pollution marker written "
+            f"🚨 COMMIT-GET-FAILED: the merge happened but the commit subject is unreadable "
+            f"({attempts} attempt(s)) — verify the log by hand; no pollution marker written "
             "(cannot read ≠ polluted)"
         )
         return 2
