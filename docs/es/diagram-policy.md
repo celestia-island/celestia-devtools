@@ -33,6 +33,7 @@ El texto plano sigue siendo legal para:
 - representaciones de salida de terminal/consola (vallados etiquetados
   `console`, `terminal`, `ansi`, `output` o `text`);
 - salidas de ejecución en texto plano.
+- una valla `text` es solo para salida de terminal — no es una escapatoria para diagramas de marcos;
 
 ## Aplicación
 

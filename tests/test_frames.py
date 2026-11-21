@@ -91,12 +91,62 @@ class test_cli_gate_wiring:
         assert str(f) in capsys.readouterr().err
 
     def test_violation_fails_format_mode_too(self, tmp_path, monkeypatch, capsys):
-        """A policy breach is not auto-fixable, so formatting still fails the run."""
+        """A policy breach is not auto-fixable, so formatting still fails the run.
+
+        Regression pin (R2 round 1): the fixture uses a BARE fence. In format
+        mode the write loop re-tags bare fences via infer_fence_language
+        (glyph content gets tagged ``text``, an exempt tag), so a gate that
+        scans files from disk AFTER the write loop would see an exempt fence
+        and silently pass — this test must assert the warning is actually
+        printed, not just an exit code.
+        """
         f = tmp_path / "doc.md"
-        f.write_text("# Pipeline\n\n" + "\n".join(FRAME_ART) + "\n", encoding = "utf-8")
+        f.write_text("# Pipeline\n\n```\n" + "\n".join(FRAME_ART) + "\n```\n", encoding = "utf-8")
         monkeypatch.setattr(sys, "argv", ["format-markdown", str(tmp_path)])
         assert markdown_main() == 1
-        assert "Box-frame glyphs" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Box-frame glyphs" in err
+        assert str(f) in err
+
+    def test_format_mode_text_tagged_frame_is_exempt(self, tmp_path, monkeypatch):
+        """Steady state: a ``text``-tagged fence is a legal terminal depiction.
+
+        The formatter itself tags glyph-bearing bare fences as ``text``; once
+        tagged they are exempt in every mode. This pins the exemption so the
+        format-mode failure above cannot be 'fixed' by simply never tagging.
+        """
+        f = tmp_path / "doc.md"
+        f.write_text("```text\n" + "\n".join(FRAME_ART) + "\n```\n", encoding = "utf-8")
+        monkeypatch.setattr(sys, "argv", ["format-markdown", str(tmp_path)])
+        assert markdown_main() == 0
+
+    def test_tilde_mermaid_fence_passes(self, tmp_path):
+        """``~~~mermaid`` fences are CommonMark fences too."""
+        f = tmp_path / "doc.md"
+        f.write_text("~~~mermaid\nflowchart LR\n    A[\"┌──┐\"] --> B\n~~~\n", encoding = "utf-8")
+        assert check_box_frames([f]) == []
+
+    def test_crlf_line_endings_still_flagged(self, tmp_path):
+        f = tmp_path / "doc.md"
+        f.write_text("intro\r\n\r\n┌──┐\r\n└──┘\r\n", encoding = "utf-8")
+        warnings = check_box_frames([f])
+        assert len(warnings) == 2
+
+    def test_inline_code_span_glyph_is_not_exempt(self, tmp_path):
+        """Inline spans are not fences; a glyph there is still flagged."""
+        f = tmp_path / "doc.md"
+        f.write_text("use `┌──┐` sparingly\n", encoding = "utf-8")
+        assert len(check_box_frames([f])) == 1
+
+    def test_unclosed_fence_runs_to_eof_commonmark(self, tmp_path):
+        """CommonMark: an unclosed fence extends to end-of-file, so its content
+        is fence content under the tag's exemption rules (pinned behavior)."""
+        f = tmp_path / "doc.md"
+        f.write_text("```text\n" + "\n".join(FRAME_ART) + "\n", encoding = "utf-8")
+        assert check_box_frames([f]) == []
+        g = tmp_path / "doc2.md"
+        g.write_text("```python\n" + "\n".join(FRAME_ART) + "\n", encoding = "utf-8")
+        assert len(check_box_frames([g])) == 3
 
     def test_clean_file_passes(self, tmp_path, monkeypatch):
         f = tmp_path / "doc.md"

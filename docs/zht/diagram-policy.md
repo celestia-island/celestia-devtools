@@ -28,6 +28,7 @@ flowchart LR
 - 終端/主控台輸出示範（`console`、`terminal`、`ansi`、`output`、`text`
   標籤的圍欄）；
 - 程式執行時的純文字輸出。
+- `text` 圍欄只用於終端輸出——它不是框線圖的逃生口；
 
 ## 強制執行
 

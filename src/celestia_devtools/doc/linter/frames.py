@@ -36,12 +36,22 @@ def fence_tag(info_string: str) -> str:
     tag = parts[0].strip("{}").lower()
     return tag[1:] if tag.startswith(".") else tag
 
-def check_box_frames(paths: list[Path]) -> list[str]:
-    """Warn about box-frame glyphs outside Mermaid and terminal-output fences."""
+def check_box_frames(paths, contents: dict | None = None) -> list[str]:
+    """Warn about box-frame glyphs outside Mermaid and terminal-output fences.
+
+    ``contents`` maps paths to their PRE-format text. The markdown pipeline
+    must pass it: in format mode the write loop re-tags bare fences via
+    ``infer_fence_language`` (glyph-bearing fences get tagged ``text``, an
+    exempt tag), so re-reading files after the write would make this check
+    vacuous exactly when a violation exists.
+    """
     warnings: list[str] = []
+    overrides = contents or {}
 
     for path in paths:
-        text = safe_read(path)
+        text = overrides.get(path)
+        if text is None:
+            text = safe_read(path)
 
         if text is None:
             continue

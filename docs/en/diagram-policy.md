@@ -32,6 +32,7 @@ Plain text stays legal for:
 - terminal/console output depictions (fences tagged `console`, `terminal`,
   `ansi`, `output`, or `text`);
 - plain-text runtime output.
+- a `text` fence is for terminal output only — it is not a loophole for frame diagrams;
 
 ## Enforcement
 

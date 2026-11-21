@@ -34,6 +34,7 @@ Le texte brut reste légal pour :
 - les reconstitutions de sortie de terminal/console (blocs étiquetés
   `console`, `terminal`, `ansi`, `output` ou `text`) ;
 - les sorties d'exécution en texte brut.
+- une clôture `text` ne sert qu'à la sortie de terminal — ce n'est pas une échappatoire pour les diagrammes en cadre ;
 
 ## Application
 

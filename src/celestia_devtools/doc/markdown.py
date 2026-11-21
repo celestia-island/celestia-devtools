@@ -488,6 +488,17 @@ def main() -> int:
     changed: list[Path] = []
     unreadable: list[Path] = []
 
+    # The frame-gate scan must see PRE-format text: in format mode the write
+    # loop below re-tags bare fences via infer_fence_language (glyph-bearing
+    # fences get tagged `text`, an exempt tag), so a post-write disk scan is
+    # vacuous exactly when a violation exists. Snapshot before any write.
+    pre_texts: dict[Path, str] = {}
+    for path in paths:
+        try:
+            pre_texts[path] = path.read_text(encoding = "utf-8")
+        except (OSError, UnicodeDecodeError):
+            pass  # already reported by the format loop; nothing to scan
+
     for path in paths:
         try:
             if process_file(path, args.check):
@@ -535,7 +546,7 @@ def main() -> int:
             print(w, file = sys.stderr)
 
     # ── Lint: box-frame glyphs outside Mermaid fences ──
-    frame_warnings = check_box_frames(paths)
+    frame_warnings = check_box_frames(paths, contents = pre_texts)
 
     if frame_warnings:
         print(f"\n⚠  Box-frame glyphs found in {len(frame_warnings)} location(s) " "(ASCII frame diagrams are forbidden — use fenced Mermaid blocks):", file = sys.stderr)

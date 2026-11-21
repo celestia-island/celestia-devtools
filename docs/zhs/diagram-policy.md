@@ -28,6 +28,7 @@ flowchart LR
 - 终端/控制台输出演示（`console`、`terminal`、`ansi`、`output`、`text`
   标签的围栏）；
 - 程序运行时的纯文本输出。
+- `text` 围栏只用于终端输出——它不是框线图的逃生口；
 
 ## 强制执行
 
