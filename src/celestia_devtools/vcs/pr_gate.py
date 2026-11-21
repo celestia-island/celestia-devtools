@@ -68,15 +68,29 @@ from the validated title.  The merge commit's subject is then read back:
    ``COMMIT-GET-FAILED`` *without* claiming pollution (cannot read ≠ polluted).
 
 This module stays repo-agnostic and only prints; turning rc 2 into a sticky
-``_alerts`` marker is the caller's job.  (No wrapper delegates here yet — the
-workspace-side ``_tools/pr_merge_gate.py`` is still its own implementation and
-writes the marker in-process; folding it into a shim over this command is a
-follow-up.)
+``_alerts`` marker is the caller's job.  The workspace-side
+``_tools/pr_merge_gate.py`` is a shim that forwards its argv here (see
+:func:`celestia_devtools.vcs.pr_gate.main`) and owns the
+``pr-title-pollution.failed`` marker; ``--waiver`` passes through it unchanged.
+
+Recorded-exception waivers (2026-11-21 user ruling): ``--waiver PATH`` accepts a
+signed file that suppresses **exactly one** refusal — ``verify record c3=<n> <
+3`` — for the deadlock where every review finding is fixed and the gates are
+green, but the record's history carries an S1 (so the structural-exemption
+lane's ``S0 == S1 == 0`` fails) and a fresh c3 streak cannot be bought without
+re-running rounds the budget already rejected.  The file is
+``_alerts/pr-merge-waiver-<repo-name>-<pr>.md`` and must carry ``pr:``,
+``head:`` (the covered commit), ``basis:`` (≥40 characters of rationale),
+``c3-not-fabricated: yes`` and ``signed: lead <YYYY-MM-DD>``; see
+:func:`read_waiver`.  Everything else — title, head pin, base, state, and the
+record's own well-formedness — is checked exactly as without a waiver, so a
+waiver can neither excuse a polluted title nor a head that moved after review.
 
 CLI::
 
     pr-merge-gate check --repo OWNER/NAME --pr 123 --expect-head SHA
     pr-merge-gate merge --repo OWNER/NAME --pr 123 --expect-head SHA
+    pr-merge-gate merge … --waiver _alerts/pr-merge-waiver-<repo>-<pr>.md
 
 ``--expect-head`` is required by BOTH lanes: a check that does not say which
 commit was reviewed is not evidence, so there is no "head-less check" mode.
@@ -90,6 +104,8 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 # ── PR-specific title extensions (on top of commit_msg.lint) ────────────────
 
@@ -244,6 +260,190 @@ _COUNTER_FIELDS = ("rounds", "clean", "s0", "s1", "s2", "s3", "gates", "post-cap
 _HARD_ROUND_CAP = 6
 _HARDCAP_VALUES = {"yes", "no"}
 _BUDGET_VALUES = {"ok", "exhausted@3"}
+
+# ── recorded-exception waivers (2026-11-21 user ruling) ─────────────────────
+#
+# The hard ``c3 >= 3`` floor can deadlock a PR whose code and gates are green
+# and whose every review finding is fixed, when its HISTORY contains an S1 (so
+# the structural-exemption lane's ``S0 == S1 == 0`` requirement fails) while a
+# fresh streak cannot be bought without re-running rounds the budget already
+# rejected.  The waiver is the auditable escape hatch: a signed file under
+# ``_alerts/`` that names the PR and the head it covers, states the basis, and
+# declares that the ``verify:`` line still carries the honest ``c3`` (no
+# back-filled ``c3=3``).
+#
+# It suppresses EXACTLY ONE refusal — ``verify record c3=<n> < 3`` — and
+# nothing else: the title, the head pin, the base branch, the state and the
+# record's own well-formedness are checked exactly as before, so a waiver
+# cannot smuggle in a polluted title or an unreviewed head.
+
+WAIVER_FILENAME_TEMPLATE = "pr-merge-waiver-{repo}-{pr}.md"
+# ``owner/name`` → the file is keyed by the REPOSITORY NAME, not the owner: one
+# directory (``_alerts/``) holds every repo's waivers, and the owner is always
+# ``celestia-island``.
+_WAIVER_FILENAME_RE = re.compile(
+    r"^pr-merge-waiver-(?P<repo>[A-Za-z0-9._-]+)-(?P<pr>\d+)\.md$"
+)
+_WAIVER_SIGNED_RE = re.compile(
+    r"^signed:[ \t]*lead[ \t]+(?P<date>\d{4}-\d{2}-\d{2})[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_WAIVER_C3_DECL_RE = re.compile(
+    r"^c3-not-fabricated:[ \t]*(?P<value>yes|no)[ \t]*$", re.IGNORECASE | re.MULTILINE
+)
+_WAIVER_BASIS_MIN = 40
+# The single refusal a waiver may suppress.
+_WAIVABLE_C3_RE = re.compile(r"^verify record c3=(?P<c3>\d+) < 3$")
+
+
+@dataclass(frozen=True)
+class Waiver:
+    """A validated recorded-exception grant (one PR, one head SHA)."""
+
+    path: Path
+    repo: str
+    pr: int
+    head: str
+    signed: str
+
+
+def _waiver_field(text: str, key: str) -> str | None:
+    """The value of a ``key: value`` line, or ``None`` when the line is absent."""
+    match = re.search(
+        rf"^{re.escape(key)}:[ \t]*(?P<value>.*)$", text, re.IGNORECASE | re.MULTILINE
+    )
+    return match.group("value").strip() if match else None
+
+
+def read_waiver(
+    path: str | Path, *, repo: str, pr: int, head: str
+) -> tuple[Waiver | None, list[str]]:
+    """Validate a recorded-exception file; return ``(grant, problems)``.
+
+    The file must be ``_alerts/pr-merge-waiver-<repo-name>-<pr>.md`` and carry:
+
+    * ``pr: <N>``                 — matching ``--pr``;
+    * ``head: <sha>``             — the head this waiver covers (a prefix of the
+      payload head is accepted, the same rule ``--expect-head`` uses);
+    * ``basis: <text>``           — at least :data:`_WAIVER_BASIS_MIN` characters
+      of rationale (which rounds ran, whether findings were cleared, that the
+      gates are green on that SHA);
+    * ``c3-not-fabricated: yes``  — the declaration that the ``verify:`` line
+      still records the real ``c3``;
+    * ``signed: lead <YYYY-MM-DD>`` — the sign-off.
+
+    Anything missing or mismatched is a refusal; a waiver that does not apply is
+    never treated as "no waiver needed".
+    """
+    waiver_path = Path(path)
+    problems: list[str] = []
+    repo_name = repo.rsplit("/", 1)[-1]
+
+    if not waiver_path.is_file():
+        return None, [f"waiver {waiver_path}: not a readable file"]
+
+    name_match = _WAIVER_FILENAME_RE.match(waiver_path.name)
+    if not name_match:
+        return None, [
+            f"waiver {waiver_path.name}: name must be "
+            f"{WAIVER_FILENAME_TEMPLATE.format(repo='<repo>', pr='<pr>')}"
+        ]
+    if name_match.group("repo").lower() != repo_name.lower():
+        problems.append(
+            f"waiver {waiver_path.name}: names repo {name_match.group('repo')!r}, "
+            f"this merge is {repo_name!r}"
+        )
+    if int(name_match.group("pr")) != pr:
+        problems.append(
+            f"waiver {waiver_path.name}: names PR {name_match.group('pr')}, this merge is #{pr}"
+        )
+    if problems:
+        return None, problems
+
+    try:
+        text = waiver_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, [f"waiver {waiver_path}: unreadable ({exc})"]
+
+    field_pr = _waiver_field(text, "pr")
+    if field_pr is None:
+        problems.append(f"waiver {waiver_path.name}: missing a `pr:` line")
+    elif field_pr.strip("# ") != str(pr):
+        problems.append(
+            f"waiver {waiver_path.name}: `pr: {field_pr}` does not match #{pr}"
+        )
+
+    field_head = _waiver_field(text, "head")
+    wanted_head = (head or "").strip()
+    if field_head is None:
+        problems.append(f"waiver {waiver_path.name}: missing a `head:` line")
+    elif not wanted_head:
+        problems.append(
+            f"waiver {waiver_path.name}: the PR payload carries no head SHA to match"
+        )
+    elif not re.fullmatch(r"[0-9a-f]{7,40}", field_head.lower()):
+        problems.append(
+            f"waiver {waiver_path.name}: `head: {field_head}` is not a commit SHA"
+        )
+    elif not (
+        wanted_head == field_head or wanted_head.startswith(field_head.lower())
+    ):
+        problems.append(
+            f"waiver {waiver_path.name}: `head: {field_head[:12]}` does not match the "
+            f"PR head {wanted_head[:12]}"
+        )
+
+    basis = _waiver_field(text, "basis") or ""
+    if len(basis) < _WAIVER_BASIS_MIN:
+        problems.append(
+            f"waiver {waiver_path.name}: `basis:` needs at least "
+            f"{_WAIVER_BASIS_MIN} characters of rationale, got {len(basis)}"
+        )
+
+    decl = _WAIVER_C3_DECL_RE.search(text)
+    if decl is None:
+        problems.append(
+            f"waiver {waiver_path.name}: missing `c3-not-fabricated: yes` "
+            "(the verify line must keep the recorded c3, never a back-filled 3)"
+        )
+    elif decl.group("value").lower() != "yes":
+        problems.append(
+            f"waiver {waiver_path.name}: `c3-not-fabricated: {decl.group('value')}` — "
+            "a waiver may not bless a fabricated c3"
+        )
+
+    signed = _WAIVER_SIGNED_RE.search(text)
+    if signed is None:
+        problems.append(
+            f"waiver {waiver_path.name}: missing the sign-off line "
+            "`signed: lead <YYYY-MM-DD>`"
+        )
+
+    if problems:
+        return None, problems
+    assert signed is not None  # narrowing for type checkers; problems handles None
+    return (
+        Waiver(
+            path=waiver_path,
+            repo=repo,
+            pr=pr,
+            head=field_head.lower(),
+            signed=signed.group("date"),
+        ),
+        [],
+    )
+
+
+def split_waivable(problems: list[str]) -> tuple[list[str], list[str]]:
+    """Split ``(blocking, waivable)``; the only waivable refusal is ``c3<3``."""
+    blocking: list[str] = []
+    waivable: list[str] = []
+    for problem in problems:
+        if _WAIVABLE_C3_RE.match(problem):
+            waivable.append(problem)
+        else:
+            blocking.append(problem)
+    return blocking, waivable
 
 
 def _split_fences(text: str) -> tuple[list[str], list[str], bool]:
@@ -535,12 +735,34 @@ def _gate(
     do_merge: bool,
     base: str = DEFAULT_BASE,
     runner=None,
+    waiver: str | Path | None = None,
 ) -> int:
     status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner=runner)
     if status != 200:
         print(f"❌ GET pull request failed: {_failure_detail(status, data, stderr)}", file=sys.stderr)
         return 1
+
+    # The waiver is validated against the head the payload actually carries —
+    # not against ``--expect-head``, which is the caller's claim.  A waiver for
+    # a different commit must never authorise this one.
+    grant: Waiver | None = None
+    if waiver is not None:
+        payload_head = (data.get("head") or {}).get("sha") or ""
+        grant, waiver_problems = read_waiver(waiver, repo=repo, pr=pr, head=payload_head)
+        if waiver_problems:
+            for problem in waiver_problems:
+                print(f"❌ {problem}", file=sys.stderr)
+            print(
+                "MERGE REFUSED — the waiver does not cover this merge",
+                file=sys.stderr,
+            )
+            return 1
+
     problems = check_pr(data, expect_head, allow_cjk=allow_cjk, base=base)
+    if grant is not None:
+        problems, suppressed = split_waivable(problems)
+        detail = "; ".join(suppressed) if suppressed else "nothing (waiver unused)"
+        print(f"🔓 waiver: {grant.path} (signed {grant.signed}) — suppressed: {detail}")
     if problems:
         for p in problems:
             print(f"❌ {p}", file=sys.stderr)
@@ -636,6 +858,16 @@ def main(argv: list[str] | None = None) -> int:
             help="repo allows CJK summaries (easy-hydro family)",
         )
         sp.add_argument("--base", default=DEFAULT_BASE, help="branch the gate may merge into")
+        sp.add_argument(
+            "--waiver",
+            default=None,
+            metavar="PATH",
+            help=(
+                "signed recorded-exception file "
+                "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the "
+                "`verify record c3=<n> < 3` refusal, every other check still runs"
+            ),
+        )
     args = parser.parse_args(argv)
     return _gate(
         args.repo,
@@ -644,6 +876,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_cjk=args.allow_cjk,
         do_merge=(args.cmd == "merge"),
         base=args.base,
+        waiver=args.waiver,
     )
 
 

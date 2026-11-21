@@ -696,3 +696,308 @@ class test_l910_residue:
 
         doc = pr_gate.__doc__ or ""
         assert "U+200B/200C/200D/FEFF" in doc, doc[:300]
+
+
+# ── recorded-exception waivers (2026-11-21 user ruling) ────────────────────
+#
+# The waiver exists for one deadlock: code and gates green, every review finding
+# fixed, but the record's HISTORY carries an S1 (so the structural lane's
+# S0=S1=0 fails) and the c3 streak cannot be rebuilt without re-running rounds
+# the budget already rejected.  Its whole value is that it is AUDITABLE and
+# NARROW: a signed, PR-and-head-scoped file that suppresses exactly one refusal.
+# These tests are therefore mostly negatives — a waiver that does not match must
+# never authorise a merge.
+
+C3_ZERO_RECORD = (
+    "verify: rounds=6 clean=0 S0=0 S1=1 S2=6 S3=26 gates=6 hardcap=yes "
+    "budget=exhausted@3 c3=0"
+)
+
+
+def _waiver_text(head="a" * 40, pr=1, repo="r", *, basis=None, signed="signed: lead 2026-11-21",
+                 decl="c3-not-fabricated: yes"):
+    return (
+        f"# pr-merge waiver — celestia-island/{repo} #{pr}\n"
+        f"pr: {pr}\n"
+        f"head: {head}\n"
+        f"basis: {basis if basis is not None else 'eleven review rounds, every finding cleared, gates green on this SHA'}\n"
+        f"{decl}\n"
+        f"{signed}\n"
+    )
+
+
+class test_waiver_validation:
+    def _write(self, tmp_path, name, text):
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_matching_waiver_is_accepted(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text())
+        grant, problems = read_waiver(path, repo="celestia-island/r", pr=1, head="a" * 40)
+        assert problems == []
+        assert grant is not None
+        assert grant.signed == "2026-11-21"
+        assert grant.pr == 1
+
+    def test_head_prefix_is_accepted(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(head="a" * 12))
+        grant, problems = read_waiver(path, repo="celestia-island/r", pr=1, head="a" * 40)
+        assert problems == [] and grant is not None
+
+    def test_missing_file_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        grant, problems = read_waiver(tmp_path / "pr-merge-waiver-r-1.md", repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("not a readable file" in p for p in problems)
+
+    def test_wrong_filename_shape_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "waiver.md", _waiver_text())
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("name must be" in p for p in problems)
+
+    def test_wrong_repo_in_filename_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-other-1.md", _waiver_text())
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("names repo" in p for p in problems)
+
+    def test_wrong_pr_in_filename_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-2.md", _waiver_text(pr=2))
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("names PR 2" in p for p in problems)
+
+    def test_pr_field_mismatch_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        text = _waiver_text().replace("pr: 1", "pr: 7")
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", text)
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("does not match #1" in p for p in problems)
+
+    def test_missing_pr_line_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        text = _waiver_text().replace("pr: 1\n", "")
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", text)
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("missing a `pr:`" in p for p in problems)
+
+    def test_head_mismatch_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(head="b" * 40))
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("does not match the PR head" in p for p in problems)
+
+    def test_head_that_is_not_a_sha_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(head="HEAD"))
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("is not a commit SHA" in p for p in problems)
+
+    def test_payload_without_head_cannot_be_covered(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text())
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="")
+        assert grant is None and any("no head SHA to match" in p for p in problems)
+
+    def test_thin_basis_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(basis="trust me"))
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("at least" in p and "characters" in p for p in problems)
+
+    def test_missing_c3_declaration_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        text = _waiver_text().replace("c3-not-fabricated: yes\n", "")
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", text)
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("c3-not-fabricated" in p for p in problems)
+
+    def test_declaring_a_fabricated_c3_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(
+            tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(decl="c3-not-fabricated: no")
+        )
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("may not bless a fabricated c3" in p for p in problems)
+
+    def test_missing_signoff_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        text = _waiver_text(signed="")
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", text)
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("sign-off line" in p for p in problems)
+
+    def test_signoff_by_someone_else_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(
+            tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(signed="signed: alice 2026-11-21")
+        )
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("sign-off line" in p for p in problems)
+
+    def test_signoff_needs_a_date(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(
+            tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(signed="signed: lead")
+        )
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("sign-off line" in p for p in problems)
+
+
+class test_waivable_split:
+    def test_only_the_c3_floor_is_waivable(self):
+        from celestia_devtools.vcs.pr_gate import split_waivable
+
+        blocking, waivable = split_waivable(
+            [
+                "verify record c3=0 < 3",
+                "no reviewed head SHA supplied — the closing verification is unverified",
+                "verify record rounds=6 < max(4, c3+1)",
+                "PR title reads as a probe/placeholder",
+            ]
+        )
+        assert waivable == ["verify record c3=0 < 3"]
+        assert len(blocking) == 3
+
+    def test_other_verify_refusals_are_not_waivable(self):
+        from celestia_devtools.vcs.pr_gate import split_waivable
+
+        blocking, waivable = split_waivable(
+            ["structural exemption needs S0=S1=0 (unfixed reds never exempt)"]
+        )
+        assert waivable == [] and len(blocking) == 1
+
+
+class test_waiver_merge_path:
+    def _pr(self, *, title=GOOD_TITLE, head="a" * 40, body=C3_ZERO_RECORD):
+        return {
+            "state": "open",
+            "mergeable": True,
+            "title": title,
+            "body": body,
+            "head": {"sha": head},
+            "base": {"ref": "master"},
+        }
+
+    def _waiver(self, tmp_path, *, head=None, name="pr-merge-waiver-r-1.md", **kwargs):
+        path = tmp_path / name
+        path.write_text(_waiver_text(head=head or "a" * 40, **kwargs), encoding="utf-8")
+        return path
+
+    def test_c3_zero_is_refused_without_a_waiver(self, capsys):
+        runner = _FakeRunner([(200, self._pr())])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=True, runner=runner) == 1
+        assert "c3=0 < 3" in capsys.readouterr().err
+        assert len(runner.calls) == 1, "a refused gate must not reach the merge PUT"
+
+    def test_matching_waiver_unblocks_check_mode(self, tmp_path, capsys):
+        runner = _FakeRunner([(200, self._pr())])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=False,
+            runner=runner, waiver=self._waiver(tmp_path),
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "🔓 waiver" in out and "c3=0 < 3" in out
+
+    def test_matching_waiver_unblocks_the_merge(self, tmp_path, capsys):
+        runner = _FakeRunner([
+            (200, self._pr()),
+            (200, {"merged": True, "sha": "c" * 40}),
+            (200, {"commit": {"message": f"{GOOD_TITLE} (#1)\n\nbody"}}),
+        ])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=True,
+            runner=runner, waiver=self._waiver(tmp_path),
+        )
+        assert rc == 0
+        assert "merged subject verified" in capsys.readouterr().out
+        assert len(runner.calls) == 3
+
+    def test_waiver_does_not_excuse_a_bad_title(self, tmp_path, capsys):
+        runner = _FakeRunner([(200, self._pr(title="probe-x (#2758)"))])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=True,
+            runner=runner, waiver=self._waiver(tmp_path),
+        )
+        assert rc == 1
+        assert len(runner.calls) == 1
+        assert "probe" in capsys.readouterr().err
+
+    def test_waiver_does_not_excuse_a_moved_head(self, tmp_path):
+        runner = _FakeRunner([(200, self._pr(head="b" * 40))])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=True,
+            runner=runner, waiver=self._waiver(tmp_path),
+        )
+        assert rc == 1
+        assert len(runner.calls) == 1
+
+    def test_waiver_for_another_commit_is_refused(self, tmp_path, capsys):
+        runner = _FakeRunner([(200, self._pr())])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=True,
+            runner=runner, waiver=self._waiver(tmp_path, head="b" * 40),
+        )
+        assert rc == 1
+        assert "does not cover this merge" in capsys.readouterr().err
+        assert len(runner.calls) == 1
+
+    def test_unsigned_waiver_is_refused(self, tmp_path):
+        runner = _FakeRunner([(200, self._pr())])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=True,
+            runner=runner, waiver=self._waiver(tmp_path, signed=""),
+        )
+        assert rc == 1 and len(runner.calls) == 1
+
+    def test_waiver_for_another_pr_is_refused(self, tmp_path):
+        runner = _FakeRunner([(200, self._pr())])
+        rc = _gate(
+            "o/r", 1, "a" * 40, allow_cjk=False, do_merge=True,
+            runner=runner, waiver=self._waiver(tmp_path, name="pr-merge-waiver-r-2.md", pr=2),
+        )
+        assert rc == 1 and len(runner.calls) == 1
+
+    def test_a_clean_record_still_passes_without_a_waiver(self):
+        runner = _FakeRunner([(200, self._pr(body=GOOD_RECORD))])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=False, runner=runner) == 0
+
+    def test_cli_accepts_the_waiver_flag(self, tmp_path, monkeypatch, capsys):
+        from celestia_devtools.vcs import pr_gate
+
+        seen: dict = {}
+
+        def fake_gate(repo, pr, expect_head, **kwargs):
+            seen.update(kwargs)
+            return 0
+
+        monkeypatch.setattr(pr_gate, "_gate", fake_gate)
+        waiver = self._waiver(tmp_path)
+        rc = pr_gate.main([
+            "merge", "--repo", "o/r", "--pr", "1", "--expect-head", "a" * 40,
+            "--waiver", str(waiver),
+        ])
+        assert rc == 0
+        assert seen["waiver"] == str(waiver)
+        assert seen["do_merge"] is True
