@@ -386,6 +386,12 @@ jobs:
       devtools-ref: v2026.10  # pin the runtime fetch with the workflow file
 ```
 
+The Markdown tooling carries a style gate too: `format-markdown --check` fails
+on box-drawing frame glyphs outside Mermaid and terminal-output fences, so an
+ASCII frame diagram cannot enter the tree — structural diagrams are fenced
+Mermaid blocks (see `docs/en/diagram-policy.md`). Directory trees and
+console/terminal/text output depictions stay legal.
+
 ## Local Gate
 
 `celestia-devtools gate` reproduces the CI checklist in one local command, so

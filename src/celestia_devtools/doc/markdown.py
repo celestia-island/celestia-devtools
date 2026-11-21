@@ -15,7 +15,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
-from celestia_devtools.doc.linter import (check_duplicate_paragraphs, check_tabs, infer_fence_language, maybe_run_markdownlint)
+from celestia_devtools.doc.linter import (check_box_frames, check_duplicate_paragraphs, check_tabs, infer_fence_language, maybe_run_markdownlint)
 
 EXCLUDED_DIRS = {".git", ".hg", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__", "fixtures", "node_modules", "target"}
 
@@ -534,7 +534,18 @@ def main() -> int:
         for w in dup_warnings:
             print(w, file = sys.stderr)
 
-    if args.check and (changed or unreadable):
+    # ── Lint: box-frame glyphs outside Mermaid fences ──
+    frame_warnings = check_box_frames(paths)
+
+    if frame_warnings:
+        print(f"\n⚠  Box-frame glyphs found in {len(frame_warnings)} location(s) " "(ASCII frame diagrams are forbidden — use fenced Mermaid blocks):", file = sys.stderr)
+
+        for w in frame_warnings:
+            print(w, file = sys.stderr)
+
+    # A frame violation is a policy breach, not an auto-fixable formatting
+    # drift: it fails in both modes, not just the `--check` gate.
+    if frame_warnings or (args.check and (changed or unreadable)):
         return 1
 
     return 0
