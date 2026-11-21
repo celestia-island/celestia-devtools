@@ -728,8 +728,10 @@ def _waiver_text(head="a" * 40, pr=1, repo="r", *, basis=None, signed="signed: l
 
 class test_waiver_validation:
     def _write(self, tmp_path, name, text):
-        path = tmp_path / name
-        path.write_text(text, encoding="utf-8")
+        alerts = tmp_path / "_alerts"
+        alerts.mkdir(exist_ok=True)
+        path = alerts / name
+        path.write_bytes(text.encode("utf-8") if isinstance(text, str) else text)
         return path
 
     def test_matching_waiver_is_accepted(self, tmp_path):
@@ -748,6 +750,48 @@ class test_waiver_validation:
         path = self._write(tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(head="a" * 12))
         grant, problems = read_waiver(path, repo="celestia-island/r", pr=1, head="a" * 40)
         assert problems == [] and grant is not None
+
+    def test_waiver_outside_the_alerts_directory_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = tmp_path / "pr-merge-waiver-r-1.md"
+        path.write_text(_waiver_text(), encoding="utf-8")
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("'_alerts' directory" in p for p in problems)
+
+    def test_non_utf8_waiver_is_refused_not_crashed(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(tmp_path, "pr-merge-waiver-r-1.md", b"\xff\xfe\x80 not utf-8")
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("unreadable" in p for p in problems)
+
+    def test_zero_width_basis_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(
+            tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(basis="\u200b" * 60)
+        )
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("at least" in p for p in problems)
+
+    def test_impossible_signoff_date_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(
+            tmp_path, "pr-merge-waiver-r-1.md", _waiver_text(signed="signed: lead 2026-02-30")
+        )
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("not a real date" in p for p in problems)
+
+    def test_decorated_pr_number_is_refused(self, tmp_path):
+        from celestia_devtools.vcs.pr_gate import read_waiver
+
+        path = self._write(
+            tmp_path, "pr-merge-waiver-r-1.md", _waiver_text().replace("pr: 1", "pr: #1")
+        )
+        grant, problems = read_waiver(path, repo="o/r", pr=1, head="a" * 40)
+        assert grant is None and any("does not match #1" in p for p in problems)
 
     def test_missing_file_is_refused(self, tmp_path):
         from celestia_devtools.vcs.pr_gate import read_waiver
@@ -900,7 +944,9 @@ class test_waiver_merge_path:
         }
 
     def _waiver(self, tmp_path, *, head=None, name="pr-merge-waiver-r-1.md", **kwargs):
-        path = tmp_path / name
+        alerts = tmp_path / "_alerts"
+        alerts.mkdir(exist_ok=True)
+        path = alerts / name
         path.write_text(_waiver_text(head=head or "a" * 40, **kwargs), encoding="utf-8")
         return path
 

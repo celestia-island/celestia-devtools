@@ -292,6 +292,12 @@ _WAIVER_C3_DECL_RE = re.compile(
     r"^c3-not-fabricated:[ \t]*(?P<value>yes|no)[ \t]*$", re.IGNORECASE | re.MULTILINE
 )
 _WAIVER_BASIS_MIN = 40
+# The audit home is enforced rather than assumed: a waiver consumed from /tmp
+# leaves no sticky artefact, and a channel whose whole justification is
+# auditability cannot rely on the operator remembering to copy the file.  The
+# check is on the directory NAME (not an absolute path) so it holds from any
+# workspace root — and tests create one.
+WAIVER_DIR_NAME = "_alerts"
 # The single refusal a waiver may suppress.
 _WAIVABLE_C3_RE = re.compile(r"^verify record c3=(?P<c3>\d+) < 3$")
 
@@ -305,6 +311,27 @@ class Waiver:
     pr: int
     head: str
     signed: str
+
+
+# Zero-width characters a rationale could hide behind.  ``str.strip()`` only
+# removes whitespace, so 40 U+200B characters would otherwise pass the floor.
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff\u2060"), None)
+
+
+def _visible_len(text: str) -> int:
+    """Characters that are neither whitespace nor zero-width."""
+    return sum(1 for char in text.translate(_INVISIBLE) if not char.isspace())
+
+
+def _is_iso_date(value: str) -> bool:
+    """A real calendar date (``datetime.date.fromisoformat`` rejects 2026-02-30)."""
+    import datetime
+
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _waiver_field(text: str, key: str) -> str | None:
@@ -342,6 +369,12 @@ def read_waiver(
     if not waiver_path.is_file():
         return None, [f"waiver {waiver_path}: not a readable file"]
 
+    if waiver_path.parent.name != WAIVER_DIR_NAME:
+        return None, [
+            f"waiver {waiver_path}: must live in a {WAIVER_DIR_NAME!r} directory — "
+            "a waiver consumed from elsewhere leaves no sticky audit artefact"
+        ]
+
     name_match = _WAIVER_FILENAME_RE.match(waiver_path.name)
     if not name_match:
         return None, [
@@ -362,13 +395,16 @@ def read_waiver(
 
     try:
         text = waiver_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # UnicodeDecodeError is a ValueError, not an OSError: catching only
+        # OSError let a non-UTF-8 waiver crash the gate with a traceback (still
+        # fail-closed, but the operator gets no "this file is unusable" line).
         return None, [f"waiver {waiver_path}: unreadable ({exc})"]
 
     field_pr = _waiver_field(text, "pr")
     if field_pr is None:
         problems.append(f"waiver {waiver_path.name}: missing a `pr:` line")
-    elif field_pr.strip("# ") != str(pr):
+    elif field_pr != str(pr):
         problems.append(
             f"waiver {waiver_path.name}: `pr: {field_pr}` does not match #{pr}"
         )
@@ -394,7 +430,7 @@ def read_waiver(
         )
 
     basis = _waiver_field(text, "basis") or ""
-    if len(basis) < _WAIVER_BASIS_MIN:
+    if len(basis) < _WAIVER_BASIS_MIN or not _visible_len(basis) >= _WAIVER_BASIS_MIN:
         problems.append(
             f"waiver {waiver_path.name}: `basis:` needs at least "
             f"{_WAIVER_BASIS_MIN} characters of rationale, got {len(basis)}"
@@ -417,6 +453,10 @@ def read_waiver(
         problems.append(
             f"waiver {waiver_path.name}: missing the sign-off line "
             "`signed: lead <YYYY-MM-DD>`"
+        )
+    elif not _is_iso_date(signed.group("date")):
+        problems.append(
+            f"waiver {waiver_path.name}: `signed: … {signed.group('date')}` is not a real date"
         )
 
     if problems:
