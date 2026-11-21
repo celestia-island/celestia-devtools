@@ -2,6 +2,7 @@
 
 Modules:
   fence     — programming-language inference for code fences
+  frames    — box-frame (ASCII diagram) glyph gate outside Mermaid fences
   i18n      — cross-language duplicate-paragraph (translation) detection
   tabs      — tab-character warnings
   external  — markdownlint-cli2 bridge
@@ -9,7 +10,8 @@ Modules:
 
 from celestia_devtools.doc.linter.external import maybe_run_markdownlint
 from celestia_devtools.doc.linter.fence import infer_fence_language
+from celestia_devtools.doc.linter.frames import check_box_frames
 from celestia_devtools.doc.linter.i18n import check_duplicate_paragraphs
 from celestia_devtools.doc.linter.tabs import check_tabs
 
-__all__ = ["infer_fence_language", "check_tabs", "check_duplicate_paragraphs", "maybe_run_markdownlint"]
+__all__ = ["infer_fence_language", "check_box_frames", "check_tabs", "check_duplicate_paragraphs", "maybe_run_markdownlint"]
