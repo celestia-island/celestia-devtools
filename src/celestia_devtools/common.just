@@ -6,7 +6,7 @@
 # parse the justfile before fetch, so your own recipes always work.
 #
 # Stage or refresh it with:  just fetch
-# Version: 0.7.0
+# Version: 0.7.1
 #
 # All recipes and variables are overridable — redefine anything after the
 # `import?` line in your justfile to customize it.
@@ -30,6 +30,8 @@
 # and keep its own linewise recipes inside the same two-shell intersection:
 # one command per line, no `&&`/`||`/`$()`/line-continuations. Bash-syntax
 # logic belongs in the CLI, or in a `[script('python')]` body at most.
+
+set allow-duplicate-variables := true
 
 # ── Tool resolution ───────────────────────────────────────────────────────────
 
