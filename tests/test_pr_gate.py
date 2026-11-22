@@ -11,6 +11,7 @@ branch must turn them red.
 
 import inspect
 import json
+import re
 from celestia_devtools.vcs.pr_gate import _gate, body_problems, check_pr, title_problems
 from celestia_devtools.vcs import pr_gate as pr_gate_module
 from celestia_devtools.vcs.pr_gate import comment_waiver as pr_gate_comment_waiver
@@ -1063,9 +1064,9 @@ class test_comment_gate_plumbing:
         diff while the gate printed "gate passed". This is that case at the
         gate's own level.
         """
-        pr, diff = _comment_pr("@@ -1,0 +1,1 @@\n+// a neutral comment\n", filename="packages/vue/src/neutral.test.ts")
+        pr, diff = _comment_pr("@@ -1,0 +1,1 @@\n+// a neutral comment\n", filename = "packages/vue/src/neutral.test.ts")
         runner = diff_runner(pr, diff)
-        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=False, runner=runner) == 1
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner) == 1
         err = capsys.readouterr().err
         assert "zero behaviour-claim hits" in err
         assert "MERGE REFUSED" in err
@@ -1087,18 +1088,50 @@ class test_comment_gate_waiver:
         return path
 
     def test_signed_waiver_does_not_excuse_a_comment_claim(self, tmp_path, capsys):
-        # Mutation control for this assertion: route the comment-gate refusal
-        # through `split_waivable` (i.e. let `--waiver` reach it) and this run
-        # turns green while the claim is still unanchored.
-        body = "verify: rounds=2 clean=1 S0=0 S1=0 S2=0 S3=0 gates=1 hardcap=no c3=1"
-        pr, diff = _comment_pr(COMMENT_CLAIM_PATCH, body = body)
+        """A CLEAN ``c3=3`` body, so the unanchored claim is the ONLY refusal.
+
+        Round 3 wrote this test with a ``c3=1`` fixture, which fails the record's
+        own ``rounds >= max(4, c3+1)`` rule — an independent refusal — so
+        ``assert rc == 1`` passed for the wrong reason and both review rounds
+        found the "mutation control" it advertised to be a no-op. ``GOOD_RECORD``
+        is clean: if this run ever goes green, the signed waiver reached the
+        comment gate.
+        """
+        pr, diff = _comment_pr(COMMENT_CLAIM_PATCH)
         runner = diff_runner(pr, diff)
         rc = _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner, waiver = self._waiver(tmp_path))
-        # The waiver suppresses the c3 refusal and NOTHING else.
         assert rc == 1
         out, err = capsys.readouterr()
-        assert "suppressed" in out
-        assert "comment-gate" in err
+        # The signed channel still runs, and suppresses nothing here.
+        assert "nothing (waiver unused)" in out
+        assert "comment-gate: packages/vue/src/useHighlight.test.ts:1" in err
+
+    def test_split_waivable_never_waives_a_comment_gate_refusal(self, monkeypatch):
+        """The exclusion lives in the CALLEE, so a caller refactor cannot open it.
+
+        Rounds 3 and 4 each broke the single-layer version by editing the CALL
+        SITE: widen `_WAIVABLE_C3_RE`, move the merge above the split, and the
+        signed waiver suppressed an unanchored claim — with a green suite both
+        times. This reproduces that attack and asserts the classifier refuses.
+        """
+        from celestia_devtools.vcs import pr_gate as module
+
+        monkeypatch.setattr(module, "_WAIVABLE_C3_RE", re.compile(r"^(?:verify record c3=(?P<c3>\d+) < 3|comment-gate: )"))
+        blocking, waivable = module.split_waivable(["comment-gate: a.test.ts:1: // claim", "verify record c3=0 < 3"])
+        assert blocking == ["comment-gate: a.test.ts:1: // claim"]
+        assert waivable == ["verify record c3=0 < 3"]
+
+    def test_the_comment_gate_category_is_never_waivable(self):
+        from celestia_devtools.vcs import pr_gate as module
+
+        assert module.split_waivable([f"{module.COMMENT_GATE_CATEGORY}: x"])[1] == []
+
+    def test_gate_keeps_the_comment_gate_list_out_of_the_split(self):
+        from celestia_devtools.vcs import pr_gate as module
+
+        payload = inspect.getsource(module._gate)
+        assert "split_waivable(problems)" in payload
+        assert "split_waivable(gated)" not in payload
 
     def test_body_entry_excuses_and_is_announced(self, capsys):
         body = GOOD_RECORD + "\ncomment-gate-waiver: the probe ids live in the linked issue, not the file\n"

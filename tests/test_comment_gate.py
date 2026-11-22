@@ -125,6 +125,41 @@ class test_anchor_shapes:
     def test_non_anchors(self, line):
         assert not comment_gate.is_anchor(line), line
 
+    def test_only_comment_text_can_anchor(self):
+        """A code line carrying `MUT:` inside a string is not a mutation record.
+
+        Review round 4 found the escape: `_anchor_text` fell back to the RAW
+        line when the line was not a comment, so a content line `+// MUT: x`
+        (a code line, in a test file) anchored a neighbouring claim.
+        """
+
+        for probe in ("+// MUT: planted", '  const note = "MUT: in a string";', "  setup({ MUT: true });"):
+            assert not comment_gate.is_anchor(probe), probe
+
+    def test_genuine_double_plus_content_is_not_rewritten(self):
+        """Content `++counter;` arrives as `+++counter;` and must stay `++counter;`.
+
+        Round 4 caught an earlier `_content` stripping a leading `+` from every
+        `++…` body "to undo quoting", which mangled exactly this shape. Real
+        `git diff -U0` confirms the rule: the hunk line is marker + content.
+        """
+        diff = _single_hunk("+++counter;\n+// measured: the claim\n", count = 2)
+        report = comment_gate.check_diff(diff)
+        assert report.scanned_lines == 1
+        assert [claim.line for claim in report.claims] == [2]
+        assert comment_gate._content("+counter;") == "+counter;"
+
+    def test_a_code_line_cannot_anchor_a_claim_in_a_real_diff(self):
+        """The round-4 escape, end to end.
+
+        The escape needed an added line whose FILE CONTENT is `+// MUT: x` — a
+        code line, which git spells `++// MUT: x`. (`+// MUT: x` in the diff is
+        a real comment, so it is not the shape.) With the fallback gone, that
+        code line no longer certifies the claim below it.
+        """
+        diff = _single_hunk("++// MUT: planted inside a code line\n+// measured: the claim\n", count = 2)
+        assert len(comment_gate.check_diff(diff).claims) == 1
+
     def test_bare_mut_prefix_does_not_anchor(self):
         # `MUT:` with no id names nothing. The next line is a claim, so the
         # whole block must report rather than pass on a dangling prefix.

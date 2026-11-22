@@ -97,7 +97,6 @@ commit was reviewed is not evidence, so there is no "head-less check" mode.
 """
 
 from __future__ import annotations
-
 import argparse
 import json
 import re
@@ -116,7 +115,7 @@ MIN_TITLE_LEN = 20
 # never false-positive.
 BANNED_TITLE_WORDS = {
     "wip", "draft", "probe", "test", "tmp", "todo", "fixme",
-    "t", "xxx", "placeholder",
+    "t", "xxx", "placeholder"
 }
 
 # Zero-width characters stripped before matching; Eastern-Arabic digits
@@ -161,32 +160,30 @@ _ZWJ_SPLIT_RE: "re.Pattern[str] | None" = None
 # occurrence.  The real whitelist has exactly one ZWJ sequence, so this is a
 # documented bound on the claim, not a live gap — a future entry needs the
 # matcher revisited, not just the list extended.
-
 # Private-use characters are invisible in every UI but land verbatim in the
 # squash subject, and a title has no legitimate reason to carry one.
 _PRIVATE_USE_RE = re.compile(
     "[\ue000-\uf8ff\U000f0000-\U000ffffd\U00100000-\U0010fffd]"
 )
 
-
 def _zwj_splitter() -> "re.Pattern[str] | None":
     """Regex that splits a title on whitelist ZWJ sequences (odd parts kept)."""
     global _ZWJ_EMOJIS, _ZWJ_SPLIT_RE
+
     # Both globals are the cache; checking one alone lets a caller clear the
     # other and keep using a stale regex (the trap the sentinel-era code left
     # behind).  Clearing `_ZWJ_EMOJIS` therefore really forces a rebuild —
     # which is what a test monkeypatching the whitelist expects.
-    if _ZWJ_SPLIT_RE is None or not _ZWJ_EMOJIS:
+    if (_ZWJ_SPLIT_RE is None) or not _ZWJ_EMOJIS:
         from celestia_devtools.vcs.commit_msg import GITMOJI_WHITELIST
 
-        _ZWJ_EMOJIS = tuple(
-            sorted((e for e in GITMOJI_WHITELIST if "\u200d" in e), key=len, reverse=True)
-        )
+        _ZWJ_EMOJIS = tuple(sorted((e for e in GITMOJI_WHITELIST if "\u200d" in e), key = len, reverse = True))
+
         if _ZWJ_EMOJIS:
             alternation = "|".join(re.escape(e) for e in _ZWJ_EMOJIS)
             _ZWJ_SPLIT_RE = re.compile(f"({alternation})")
-    return _ZWJ_SPLIT_RE
 
+    return _ZWJ_SPLIT_RE
 
 def _normalise_title(title: str) -> str:
     """Strip zero-width noise, keeping whitelist ZWJ sequences intact.
@@ -197,34 +194,30 @@ def _normalise_title(title: str) -> str:
     earlier sentinel design are gone rather than merely documented.
     """
     splitter = _zwj_splitter()
+
     if splitter is None:
         return title.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC).strip()
-    pieces = splitter.split(title)
-    return "".join(
-        piece if index % 2 else piece.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC)
-        for index, piece in enumerate(pieces)
-    ).strip()
 
+    pieces = splitter.split(title)
+    return "".join(piece if index % 2 else piece.translate(_ZERO_WIDTH).translate(_ARABIC_INDIC)for index, piece in enumerate(pieces)).strip()
 
 def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
     """PR-title problems beyond :func:`commit_msg.lint` (empty = compliant)."""
     from celestia_devtools.vcs.commit_msg import lint
 
     problems: list[str] = []
+
     # Invisible private-use characters land verbatim in the squash subject and
     # have no legitimate place in a title — refused on sight, at any position.
     if _PRIVATE_USE_RE.search(title):
-        problems.append(
-            "title contains an invisible private-use character — refused on sight"
-        )
+        problems.append("title contains an invisible private-use character — refused on sight")
+
     title = _normalise_title(title)
 
     if len(title) < MIN_TITLE_LEN:
-        problems.append(
-            f"title too short ({len(title)} chars) — reads as a probe/placeholder: {title!r}"
-        )
+        problems.append(f"title too short ({len(title)} chars) — reads as a probe/placeholder: {title!r}")
 
-    problems.extend(lint(title, allow_cjk=allow_cjk))
+    problems.extend(lint(title, allow_cjk = allow_cjk))
 
     for word in re.findall(r"[A-Za-z]+", title):
         if word.lower() in BANNED_TITLE_WORDS:
@@ -232,10 +225,11 @@ def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
 
     if _PR_REF_IN_TITLE.search(title):
         problems.append("title carries its own PR reference — the squash appends ' (#N)' itself")
+
     if _VERSION_MID_RE.search(title):
         problems.append("title contains a version word (v2-style); describe the change instead")
-    return problems
 
+    return problems
 
 # ── verify-record body check (workspace-scanner mirror) ─────────────────────
 #
@@ -243,19 +237,10 @@ def title_problems(title: str, *, allow_cjk: bool = False) -> list[str]:
 # which runs pre-merge (skill step 6) and post-merge every 6 hours.  Keep the
 # two in step when the record format evolves; this mirror must never be
 # LOOSER than that detector.
-
 _REQUIRED_FIELDS = ("rounds", "clean", "s0", "s1", "s2", "s3", "hardcap")
-_RECORD_RE = re.compile(
-    r"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*(?:verify|合计)[ \t*_`]*\**[ \t]*[:：][ \t\u3000]*"
-    r"(?=\W*[A-Za-z][\w-]*\s*=)(\S.*?)[ \t]*$",
-    re.IGNORECASE | re.MULTILINE,
-)
+_RECORD_RE = re.compile(r"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*(?:verify|合计)[ \t*_`]*\**[ \t]*[:：][ \t\u3000]*" r"(?=\W*[A-Za-z][\w-]*\s*=)(\S.*?)[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _TOKEN_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)[ \t]*=[ \t]*([^\s`*（(，,；;。+]+)")
-_KNOWN_FIELDS = {
-    "rounds", "clean", "s0", "s1", "s2", "s3", "hardcap",
-    "gates", "post-cap", "c3", "doc-lint", "budget", "hardware",
-    "gates-behavior", "gates-static",
-}
+_KNOWN_FIELDS = {"rounds", "clean", "s0", "s1", "s2", "s3", "hardcap", "gates", "post-cap", "c3", "doc-lint", "budget", "hardware", "gates-behavior", "gates-static"}
 _COUNTER_FIELDS = ("rounds", "clean", "s0", "s1", "s2", "s3", "gates", "post-cap", "c3", "doc-lint")
 _HARD_ROUND_CAP = 6
 _HARDCAP_VALUES = {"yes", "no"}
@@ -276,7 +261,6 @@ _BUDGET_VALUES = {"ok", "exhausted@3"}
 # nothing else: the title, the head pin, the base branch, the state and the
 # record's own well-formedness are checked exactly as before, so a waiver
 # cannot smuggle in a polluted title or an unreviewed head.
-
 # Two channels, one shape: the signed ``_alerts/`` file (``--waiver``, whose one
 # waivable refusal is the c3 floor) and the PR-body ``comment-gate-waiver:``
 # entry (which never reaches ``split_waivable`` at all). Both are read from the
@@ -284,24 +268,17 @@ _BUDGET_VALUES = {"ok", "exhausted@3"}
 # silent pass — but only the file channel names an audit artefact on disk.
 WAIVER_FILENAME_TEMPLATE = "pr-merge-waiver-{repo}-{pr}.md"
 
-
 def _waiver_filename_re(prefix: str) -> "re.Pattern[str]":
     """``<prefix>-<repo>-<pr>.md`` — the audit filename for one channel."""
     return re.compile(rf"^{re.escape(prefix)}-(?P<repo>[A-Za-z0-9._-]+)-(?P<pr>\d+)\.md$")
-
 
 # ``owner/name`` → the file is keyed by the REPOSITORY NAME, not the owner: one
 # directory (``_alerts/``) holds every repo's waivers, and the owner is always
 # ``celestia-island``.
 _WAIVER_FILENAME_RE = _waiver_filename_re("pr-merge-waiver")
 
-_WAIVER_SIGNED_RE = re.compile(
-    r"^signed:[ \t]*lead[ \t]+(?P<date>\d{4}-\d{2}-\d{2})[ \t]*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_WAIVER_C3_DECL_RE = re.compile(
-    r"^c3-not-fabricated:[ \t]*(?P<value>yes|no)[ \t]*$", re.IGNORECASE | re.MULTILINE
-)
+_WAIVER_SIGNED_RE = re.compile(r"^signed:[ \t]*lead[ \t]+(?P<date>\d{4}-\d{2}-\d{2})[ \t]*$", re.IGNORECASE | re.MULTILINE)
+_WAIVER_C3_DECL_RE = re.compile(r"^c3-not-fabricated:[ \t]*(?P<value>yes|no)[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _WAIVER_BASIS_MIN = 40
 # The audit home is enforced rather than assumed: a waiver consumed from /tmp
 # leaves no sticky artefact, and a channel whose whole justification is
@@ -330,8 +307,7 @@ COMMENT_GATE_CATEGORY = "comment-gate"
 #: shape, so seeing it is a refusal rather than a partial verdict.
 _DIFF_TRUNCATED_RE = re.compile(r"^\[truncated[^\]]*\]$", re.MULTILINE)
 
-
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class waiver:
     """A validated recorded-exception grant (one PR, one head SHA)."""
 
@@ -341,16 +317,13 @@ class waiver:
     head: str
     signed: str
 
-
 # Zero-width characters a rationale could hide behind.  ``str.strip()`` only
 # removes whitespace, so 40 U+200B characters would otherwise pass the floor.
 _INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff\u2060"), None)
 
-
 def _visible_len(text: str) -> int:
     """Characters that are neither whitespace nor zero-width."""
     return sum(1 for char in text.translate(_INVISIBLE) if not char.isspace())
-
 
 def _is_iso_date(value: str) -> bool:
     """A real calendar date (``datetime.date.fromisoformat`` rejects 2026-02-30)."""
@@ -360,25 +333,15 @@ def _is_iso_date(value: str) -> bool:
         datetime.date.fromisoformat(value)
     except ValueError:
         return False
-    return True
 
+    return True
 
 def _waiver_field(text: str, key: str) -> str | None:
     """The value of a ``key: value`` line, or ``None`` when the line is absent."""
-    match = re.search(
-        rf"^{re.escape(key)}:[ \t]*(?P<value>.*)$", text, re.IGNORECASE | re.MULTILINE
-    )
+    match = re.search(rf"^{re.escape(key)}:[ \t]*(?P<value>.*)$", text, re.IGNORECASE | re.MULTILINE)
     return match.group("value").strip() if match else None
 
-
-def read_waiver(
-    path: str | Path,
-    *,
-    repo: str,
-    pr: int,
-    head: str,
-    prefix: str = "pr-merge-waiver",
-) -> tuple[waiver | None, list[str]]:
+def read_waiver(path: str | Path, *, repo: str, pr: int, head: str, prefix: str = "pr-merge-waiver") -> tuple[waiver | None, list[str]]:
     """Validate a recorded-exception file; return ``(grant, problems)``.
 
     The file must be ``_alerts/<prefix>-<repo-name>-<pr>.md`` and carry:
@@ -413,10 +376,13 @@ def read_waiver(
         return None, [f"waiver {waiver_path}: must live in a {WAIVER_DIR_NAME!r} directory — a waiver consumed from elsewhere leaves no sticky audit artefact"]
 
     name_match = _waiver_filename_re(prefix).match(waiver_path.name)
+
     if not name_match:
         return None, [f"waiver {waiver_path.name}: name must be {template.format(repo='<repo>', pr='<pr>')}"]
+
     if name_match.group("repo").lower() != repo_name.lower():
         problems.append(f"waiver {waiver_path.name}: names repo {name_match.group('repo')!r}, this merge is {repo_name!r}")
+
     if int(name_match.group("pr")) != pr:
         problems.append(f"waiver {waiver_path.name}: names PR {name_match.group('pr')}, this merge is #{pr}")
 
@@ -424,7 +390,7 @@ def read_waiver(
         return None, problems
 
     try:
-        text = waiver_path.read_text(encoding="utf-8")
+        text = waiver_path.read_text(encoding = "utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         # UnicodeDecodeError is a ValueError, not an OSError: catching only
         # OSError let a non-UTF-8 waiver crash the gate with a traceback (still
@@ -473,19 +439,30 @@ def read_waiver(
         return None, problems
 
     assert signed is not None  # narrowing for type checkers; problems handles None
-    return (waiver(path=waiver_path, repo=repo, pr=pr, head=field_head.lower(), signed=signed.group("date")), [])
+    return (waiver(path = waiver_path, repo = repo, pr = pr, head = field_head.lower(), signed = signed.group("date")), [])
 
 def split_waivable(problems: list[str]) -> tuple[list[str], list[str]]:
-    """Split ``(blocking, waivable)``; the only waivable refusal is ``c3<3``."""
+    """Split ``(blocking, waivable)``; the only waivable refusal is ``c3<3``.
+
+    A refusal carrying the comment-gate category is NEVER waivable, whatever
+    ``_WAIVABLE_C3_RE`` happens to say. That check lives HERE rather than at the
+    call site on purpose: review rounds 3 and 4 each broke the guarantee by
+    editing the CALLER (widen the regex, move one statement, and the signed
+    ``--waiver`` file suppressed an unanchored claim). A property that survives
+    a refactor of its caller has to be implemented in the callee.
+    """
     blocking: list[str] = []
     waivable: list[str] = []
+
     for problem in problems:
-        if _WAIVABLE_C3_RE.match(problem):
+        if problem.startswith(COMMENT_GATE_CATEGORY):
+            blocking.append(problem)
+        elif _WAIVABLE_C3_RE.match(problem):
             waivable.append(problem)
         else:
             blocking.append(problem)
-    return blocking, waivable
 
+    return blocking, waivable
 
 def _split_fences(text: str) -> tuple[list[str], list[str], bool]:
     """Split fenced lines from prose; ``(fenced, prose, unclosed)``."""
@@ -493,30 +470,34 @@ def _split_fences(text: str) -> tuple[list[str], list[str], bool]:
     prose: list[str] = []
     fence_char: str | None = None
     fence_len = 0
+
     for line in text.splitlines():
         stripped = line.strip()
         core = re.sub(r"^(?:>\s*)+|^[-*+]\s+", "", stripped)
+
         if fence_char is None:
             m = re.match(r"(`{3,}|~{3,})", core)
+
             if m:
                 fence_char = m.group(1)[0]
                 fence_len = len(m.group(1))
                 fenced.append(line)
                 continue
+
             prose.append(line)
         else:
             fenced.append(line)
-            if core and set(core) == {fence_char} and len(core) >= fence_len:
-                fence_char = None
-    return fenced, prose, fence_char is not None
 
+            if core and (set(core) == {fence_char}) and (len(core) >= fence_len):
+                fence_char = None
+
+    return fenced, prose, fence_char is not None
 
 def _strip_decoration(text: str) -> str:
     """Drop markdown emphasis / inline-code markers before tokenising."""
     return text.replace("*", "").replace("`", "").strip()
 
-
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class comment_grant:
     """A ``comment-gate-waiver: <reason>`` entry read from the PR body.
 
@@ -527,7 +508,6 @@ class comment_grant:
 
     entry: str
     reason: str
-
 
 def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     """Read the PR-body comment-gate exception; ``(grant, problems)``.
@@ -545,14 +525,18 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     """
     fenced, prose, unclosed = _split_fences(body)
     entries: list[tuple[str, str]] = []
+
     for raw_line in prose:
         stripped = raw_line.strip()
+
         # Cheap prefix test first: the loose pattern matches way too much for a
         # scan that runs over every line of every PR body.
         if re.search(r"comment-gate-waiver", stripped, re.IGNORECASE):
             match = COMMENT_WAIVER_ENTRY_RE.match(raw_line)
+
             if match:
                 entries.append((stripped, match.group("reason").strip()))
+
     problems: list[str] = []
 
     # An unclosed fence that swallowed the entry must not read as "the PR
@@ -560,22 +544,20 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     # either way the fence decides, so this branch runs before `not entries`.
     if unclosed and any(COMMENT_WAIVER_ENTRY_RE.match(line) for line in [*prose, *fenced]):
         return None, ["comment-gate-waiver sits in an unclosed code fence — an unfinished template must not become a grant"]
+
     if not entries:
         return None, problems
+
     if len(entries) > 1:
-        return None, [
-            f"body carries {len(entries)} comment-gate-waiver entries (one exception "
-            "per PR; say why in a sentence, not in a list)"
-        ]
+        return None, [f"body carries {len(entries)} comment-gate-waiver entries (one exception " "per PR; say why in a sentence, not in a list)"]
+
     entry, reason = entries[0]
     reason = _strip_decoration(reason)
-    if len(reason) < COMMENT_WAIVER_REASON_MIN:
-        return None, [
-            f"{entry!r}: the reason is {len(reason)} characters, below the "
-            f"{COMMENT_WAIVER_REASON_MIN}-character floor — a waiver needs an argument"
-        ]
-    return comment_grant(entry=entry, reason=reason), problems
 
+    if len(reason) < COMMENT_WAIVER_REASON_MIN:
+        return None, [f"{entry!r}: the reason is {len(reason)} characters, below the " f"{COMMENT_WAIVER_REASON_MIN}-character floor — a waiver needs an argument"]
+
+    return comment_grant(entry = entry, reason = reason), problems
 
 def body_problems(body: str) -> list[str]:
     """Verify-record problems in a PR body (empty = exactly one clean record)."""
@@ -588,10 +570,13 @@ def body_problems(body: str) -> list[str]:
     problems.extend(waiver_problems)
 
     record_lines: list[tuple[str, str]] = []
+
     for raw_line in prose:
         m = _RECORD_RE.search(raw_line)
+
         if not m:
             continue
+
         # The authority strips emphasis / inline-code markers from EVERY
         # record (verify_account.parse_text), not just the whole-line-backtick
         # form — applying it conditionally made the mirror diverge both ways
@@ -599,10 +584,12 @@ def body_problems(body: str) -> list[str]:
         raw = _strip_decoration(m.group(1))
         lead = raw_line[: len(raw_line) - len(raw_line.lstrip())]
         shape = ""
-        if "\t" in lead or len(lead) >= 4:
+
+        if ("\t" in lead) or (len(lead) >= 4):
             shape = "indented code block"
         elif raw_line.lstrip().startswith(">") or re.match(r"^[-*+]\s*>", raw_line.lstrip()):
             shape = "block quote"
+
         record_lines.append((raw, shape))
 
     # A record inside a fence is never a record: with prose alongside it the set
@@ -612,44 +599,46 @@ def body_problems(body: str) -> list[str]:
     # unclosed fence that swallows nothing is harmless and stays accepted.
     if any(_RECORD_RE.search(line) for line in fenced):
         if unclosed:
-            problems.append(
-                "code fence never closes — an unfinished template must not become a record"
-            )
+            problems.append("code fence never closes — an unfinished template must not become a record")
         else:
-            problems.append(
-                "a verify record hides inside a fenced block — keep exactly the prose record"
-            )
+            problems.append("a verify record hides inside a fenced block — keep exactly the prose record")
 
     if len(record_lines) == 0:
         if not problems:
             problems.append("body carries no `verify:` record (the clean-streak merge record)")
+
         return problems
+
     if len(record_lines) > 1:
         problems.append(f"body carries {len(record_lines)} verify records (exactly one required)")
         return problems
 
     raw, shape = record_lines[0]
+
     if shape:
-        problems.append(
-            f"verify record sits in a {shape} — it reads as a format template, "
-            "not a record; move it into the prose"
-        )
+        problems.append(f"verify record sits in a {shape} — it reads as a format template, " "not a record; move it into the prose")
         return problems
 
     fields: dict[str, str] = {}
+
     for tok in _TOKEN_RE.finditer(raw):
         key = tok.group(1).lower().replace("_", "-")
         key = "post-cap" if key in {"postcap", "post-cap"} else key
+
         if key in fields:
             problems.append(f"verify record has a duplicate field {key!r}")
             return problems
+
         value = tok.group(2).rstrip(".,;)")
         fields[key] = value.lower() if key in {"hardcap", "budget"} else value
 
     missing = [k for k in _REQUIRED_FIELDS if k not in fields]
+
     if missing:
         return problems + [f"verify record is missing fields {missing} (placeholder template?)"]
+
     unknown = [k for k in fields if k not in _KNOWN_FIELDS]
+
     if unknown:
         return problems + [f"verify record has unknown fields {unknown} (typo or policy change?)"]
 
@@ -657,67 +646,75 @@ def body_problems(body: str) -> list[str]:
     # returns on the first non-integer, so a body like `c3=3）` is a clean
     # malformed_record there and must never raise here.
     numbers: dict[str, int] = {}
+
     for key in _COUNTER_FIELDS:
         if key not in fields:
             continue
+
         if not re.fullmatch(r"\d+", fields[key]):
-            return problems + [
-                f"verify record field {key}={fields[key]!r} is not a non-negative integer"
-            ]
+            return problems + [f"verify record field {key}={fields[key]!r} is not a non-negative integer"]
+
         numbers[key] = int(fields[key])
 
     rounds = numbers["rounds"]
     clean = numbers["clean"]
+
     if rounds < 1:
         problems.append("verify record rounds must be >= 1")
+
     if rounds > _HARD_ROUND_CAP:
-        problems.append(
-            f"verify record rounds={rounds} exceeds the hard cap {_HARD_ROUND_CAP} "
-            "(post-cap rounds are listed separately, not folded in)"
-        )
+        problems.append(f"verify record rounds={rounds} exceeds the hard cap {_HARD_ROUND_CAP} " "(post-cap rounds are listed separately, not folded in)")
+
     if clean > rounds:
         problems.append(f"verify record clean={clean} > rounds={rounds}")
+
     if fields["hardcap"] not in _HARDCAP_VALUES:
         problems.append(f"verify record hardcap={fields['hardcap']!r} must be yes or no")
-    if "budget" in fields and fields["budget"] not in _BUDGET_VALUES:
+
+    if ("budget" in fields) and (fields["budget"] not in _BUDGET_VALUES):
         problems.append(f"verify record budget={fields['budget']!r} must be ok or exhausted@3")
-    if fields["hardcap"] == "yes" and rounds != _HARD_ROUND_CAP:
-        problems.append(
-            f"verify record hardcap=yes requires rounds={_HARD_ROUND_CAP}, got {rounds}"
-        )
-    if numbers.get("post-cap", 0) > 0 and fields["hardcap"] != "yes":
+
+    if (fields["hardcap"] == "yes") and (rounds != _HARD_ROUND_CAP):
+        problems.append(f"verify record hardcap=yes requires rounds={_HARD_ROUND_CAP}, got {rounds}")
+
+    if (numbers.get("post-cap", 0) > 0) and (fields["hardcap"] != "yes"):
         problems.append("verify record post-cap>0 requires hardcap=yes (post-cap only follows the cap)")
-    if "hardware" in fields and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", fields["hardware"]):
+
+    if ("hardware" in fields) and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", fields["hardware"]):
         problems.append(f"verify record hardware={fields['hardware']!r} is not a registry hw-id")
+
     if problems:
         return problems
 
     if "c3" not in fields:
         # Structural-exemption lane (doc tooling): no streak proves closure, so
         # the record itself must be clean and show the gates really ran.
-        if clean < 1 or numbers.get("gates", 0) < 1:
+        if (clean < 1) or (numbers.get("gates", 0) < 1):
             problems.append("structural exemption needs clean>=1 and gates>=1")
-        if numbers.get("s0", 1) != 0 or numbers.get("s1", 1) != 0:
+
+        if (numbers.get("s0", 1) != 0) or (numbers.get("s1", 1) != 0):
             problems.append("structural exemption needs S0=S1=0 (unfixed reds never exempt)")
+
         return problems
 
     c3 = numbers["c3"]
+
     if c3 < 3:
         problems.append(f"verify record c3={c3} < 3")
+
     if rounds < max(4, c3 + 1):
         problems.append(f"verify record rounds={rounds} < max(4, c3+1)")
+
     return problems
 
-
 # ── PR-level checks ──────────────────────────────────────────────────────────
-
 
 def check_pr(
     pr: dict,
     expect_head: str | None = None,
     *,
     allow_cjk: bool = False,
-    base: str = DEFAULT_BASE,
+    base: str = DEFAULT_BASE
 ) -> list[str]:
     """All merge-blocking problems of one PR payload (empty = merge allowed)."""
     problems: list[str] = []
@@ -727,13 +724,17 @@ def check_pr(
 
     if pr.get("state") != "open":
         problems.append(f"PR state={pr.get('state')!r}, not open")
+
     if pr.get("draft") is True:
         problems.append("PR is a draft — publish it before merging")
+
     mergeable = pr.get("mergeable")
+
     if mergeable is None:
         problems.append("mergeable is unknown (GitHub still computing) — retry in a few seconds")
     elif mergeable is not True:
         problems.append(f"mergeable={mergeable} — conflicts or branch protection refuse the merge")
+
     if not base_ref:
         problems.append("PR payload carries no base branch — refusing to merge blind")
     elif base_ref != base:
@@ -746,35 +747,19 @@ def check_pr(
         # reviewed-head check would switch itself off.
         problems.append("no reviewed head SHA supplied — the closing verification is unverified")
     elif len(expect_head) < MIN_HEAD_PREFIX:
-        problems.append(
-            f"reviewed head {expect_head!r} is shorter than {MIN_HEAD_PREFIX} characters — "
-            "too little evidence to pin a commit"
-        )
-    elif not (head == expect_head or head.startswith(expect_head)):
-        problems.append(
-            f"head SHA {head[:12]} does not match the reviewed {expect_head[:12]} — "
-            "pushed after the last review, closing verification void"
-        )
+        problems.append(f"reviewed head {expect_head!r} is shorter than {MIN_HEAD_PREFIX} characters — " "too little evidence to pin a commit")
+    elif not ((head == expect_head) or head.startswith(expect_head)):
+        problems.append(f"head SHA {head[:12]} does not match the reviewed {expect_head[:12]} — " "pushed after the last review, closing verification void")
 
-    problems.extend(title_problems(title, allow_cjk=allow_cjk))
+    problems.extend(title_problems(title, allow_cjk = allow_cjk))
     problems.extend(body_problems(pr.get("body") or ""))
     return problems
-
 
 # ── gh plumbing (subprocess — gh carries its own auth) ───────────────────────
 
 _STATUS_LINE = re.compile(r"^HTTP/\S+\s+(\d{3})\b")
 
-
-def gh_api(
-    endpoint: str,
-    *,
-    method: str = "GET",
-    payload: dict | None = None,
-    runner=None,
-    accept: str | None = None,
-    raw: bool = False,
-) -> tuple[int, dict, str]:
+def gh_api(endpoint: str, *, method: str = "GET", payload: dict | None = None, runner = None, accept: str | None = None, raw: bool = False) -> tuple[int, dict, str]:
     """``gh api`` call returning ``(http_status, parsed_body, stderr)``.
 
     ``gh api`` exits 0 for every 2xx and does NOT print the numeric status, so
@@ -794,62 +779,63 @@ def gh_api(
     if accept:
         cmd.extend(["-H", f"Accept: {accept}"])
 
-    if payload is not None or method != "GET":
+    if (payload is not None) or (method != "GET"):
         cmd.extend(["-X", method])
 
     if payload is not None:
         cmd.extend(["--input", "-"])
+
     call = runner or subprocess.run
+
     try:
-        probe = call(
-            cmd,
-            input=json.dumps(payload) if payload is not None else None,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        probe = call(cmd, input = json.dumps(payload)if payload is not None else None, capture_output = True, text = True, encoding = "utf-8", errors = "replace", check = False)
     except OSError as exc:
         return 127, {}, str(exc)
 
     stdout = probe.stdout or ""
     status = 0
     body_text = stdout
+
     if stdout.startswith("HTTP/"):
         head, _, rest = stdout.partition("\n\n")
         m = _STATUS_LINE.match(head)
+
         if m:
             status = int(m.group(1))
+
         body_text = rest
+
     if not status:
         # No header block (old gh / a stub): a clean exit means "it worked".
         status = 200 if probe.returncode == 0 else probe.returncode
+
     if raw:
         return status, {"_raw": body_text}, (probe.stderr or "").strip()
+
     try:
         parsed = json.loads(body_text) if body_text.strip() else {}
     except json.JSONDecodeError:
         parsed = {}
+
     if not isinstance(parsed, dict):
         parsed = {"_raw": parsed}
+
     return status, parsed, (probe.stderr or "").strip()
 
-
 # ── CLI ──────────────────────────────────────────────────────────────────────
-
 
 def _failure_detail(status: int, body: dict, stderr: str) -> str:
     """Human detail for a failed call; never dresses an exit code as HTTP."""
     # 126/127 are the shell's "not executable" / "not found" codes and collide
     # with the HTTP range, so the launcher codes are excluded explicitly.
-    looks_http = 100 <= status <= 599 and status not in (126, 127)
+    looks_http = (100 <= status <= 599) and (status not in (126, 127))
+
     if looks_http:
         return f"http={status} {json.dumps(body)[:200] if body else ''}".rstrip()
+
     return f"transport failure (gh exit {status}) {stderr or 'no stderr'}"
 
-
-def comment_gate_problems(repo: str, pr: int, head: str, *, runner=None) -> list[str]:
+def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> list[str]:
     """Behaviour claims in this PR's test comments that name no mutation.
 
     The check itself lives in :mod:`celestia_devtools.lint.comment_gate`; this
@@ -873,26 +859,19 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner=None) -> list
     # merge gate keeps its import time down; the same lazy contract as core/cli.py.
     from celestia_devtools.lint import comment_gate
 
-    status, payload, stderr = gh_api(
-        f"repos/{repo}/pulls/{pr}",
-        runner=runner,
-        accept="application/vnd.github.diff",
-        raw=True,
-    )
+    status, payload, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner = runner, accept = "application/vnd.github.diff", raw = True)
+
     if status != 200:
-        return [
-            f"{COMMENT_GATE_CATEGORY}: cannot read the PR diff "
-            f"({_failure_detail(status, payload, stderr)}) — refusing blind"
-        ]
+        return [f"{COMMENT_GATE_CATEGORY}: cannot read the PR diff " f"({_failure_detail(status, payload, stderr)}) — refusing blind"]
+
     diff_text = payload.get("_raw") if isinstance(payload, dict) else payload
+
     if not isinstance(diff_text, str) or not diff_text.strip():
         return [f"{COMMENT_GATE_CATEGORY}: the PR diff is empty or unreadable — refusing blind"]
+
     if _DIFF_TRUNCATED_RE.search(diff_text):
-        return [
-            f"{COMMENT_GATE_CATEGORY}: GitHub truncated the PR diff for a large PR — "
-            "refusing to certify a diff the API cut short; split the PR or waive it "
-            "explicitly with `comment-gate-waiver:` in the body"
-        ]
+        return [f"{COMMENT_GATE_CATEGORY}: GitHub truncated the PR diff for a large PR — " "refusing to certify a diff the API cut short; split the PR or waive it " "explicitly with `comment-gate-waiver:` in the body"]
+
     if not any(comment_gate.is_test_path(path) for path in _diff_paths(diff_text)):
         print(f"⏭️  {COMMENT_GATE_CATEGORY}: no test-file changes in #{pr} — nothing to judge")
         return []
@@ -907,47 +886,35 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner=None) -> list
         f"{COMMENT_GATE_CATEGORY}: {problem}" for problem in report.problems
     ]
 
-
 def _diff_paths(diff_text: str) -> list[str]:
     """The new-side paths a unified diff touches."""
     pattern = re.compile(r"^diff --git a/(?P<old>.+?) b/(?P<new>.+)$")
     return [match.group("new") for match in (pattern.match(line) for line in diff_text.splitlines()) if match]
 
+def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_merge: bool, base: str = DEFAULT_BASE, runner = None, waiver: str | Path | None = None, comment_gate: bool = True) -> int:
+    status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner = runner)
 
-def _gate(
-    repo: str,
-    pr: int,
-    expect_head: str | None,
-    *,
-    allow_cjk: bool,
-    do_merge: bool,
-    base: str = DEFAULT_BASE,
-    runner=None,
-    waiver: str | Path | None = None,
-    comment_gate: bool = True,
-) -> int:
-    status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner=runner)
     if status != 200:
-        print(f"❌ GET pull request failed: {_failure_detail(status, data, stderr)}", file=sys.stderr)
+        print(f"❌ GET pull request failed: {_failure_detail(status, data, stderr)}", file = sys.stderr)
         return 1
 
     # The waiver is validated against the head the payload actually carries —
     # not against ``--expect-head``, which is the caller's claim.  A waiver for
     # a different commit must never authorise this one.
     grant: waiver | None = None
+
     if waiver is not None:
         payload_head = (data.get("head") or {}).get("sha") or ""
-        grant, waiver_problems = read_waiver(waiver, repo=repo, pr=pr, head=payload_head)
+        grant, waiver_problems = read_waiver(waiver, repo = repo, pr = pr, head = payload_head)
+
         if waiver_problems:
             for problem in waiver_problems:
-                print(f"❌ {problem}", file=sys.stderr)
-            print(
-                "MERGE REFUSED — the waiver does not cover this merge",
-                file=sys.stderr,
-            )
+                print(f"❌ {problem}", file = sys.stderr)
+
+            print("MERGE REFUSED — the waiver does not cover this merge", file = sys.stderr)
             return 1
 
-    problems = check_pr(data, expect_head, allow_cjk=allow_cjk, base=base)
+    problems = check_pr(data, expect_head, allow_cjk = allow_cjk, base = base)
     body_grant, _body_gate_problems = comment_waiver(data.get("body") or "")
     # The comment gate runs BEFORE the waiver split, and its refusals are held
     # apart from `problems` rather than merged into them. Merging first would
@@ -957,19 +924,14 @@ def _gate(
     # waiver suppressed an unanchored claim. Keeping them in a separate list
     # that `split_waivable` never sees makes the property structural.
     gated: list[str] = []
+
     if comment_gate:
         payload_head = (data.get("head") or {}).get("sha") or ""
-        gated = comment_gate_problems(repo, pr, payload_head, runner=runner)
+        gated = comment_gate_problems(repo, pr, payload_head, runner = runner)
 
-        if gated and body_grant is not None:
-            print(
-                f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {body_grant.entry!r} — "
-                f"reason: {body_grant.reason}"
-            )
-            print(
-                f"   suppressed {len(gated)} {COMMENT_GATE_CATEGORY} refusal(s); "
-                "the signed --waiver file never covers this gate"
-            )
+        if gated and (body_grant is not None):
+            print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {body_grant.entry!r} — " f"reason: {body_grant.reason}")
+            print(f"   suppressed {len(gated)} {COMMENT_GATE_CATEGORY} refusal(s); " "the signed --waiver file never covers this gate")
             gated = []
     elif body_grant is not None:
         print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-comment-gate)")
@@ -983,9 +945,11 @@ def _gate(
 
     if problems:
         for p in problems:
-            print(f"❌ {p}", file=sys.stderr)
-        print("MERGE REFUSED — fix every item above, then re-run", file=sys.stderr)
+            print(f"❌ {p}", file = sys.stderr)
+
+        print("MERGE REFUSED — fix every item above, then re-run", file = sys.stderr)
         return 1
+
     title = data.get("title") or ""
     head = (data.get("head") or {}).get("sha") or ""
     print(f"✅ gate passed: head={head[:12]} title={title!r}")
@@ -996,19 +960,22 @@ def _gate(
 
     status, merged, stderr = gh_api(
         f"repos/{repo}/pulls/{pr}/merge",
-        method="PUT",
+        method = "PUT",
         # `sha` pins the head the gate just validated: GitHub answers 409 when
         # the head has moved, so a push landing between the GET above and this
         # PUT can no longer be merged unvalidated.  (Without it the same-process
         # design merely removes the human step, not the race.)
-        payload={"merge_method": "squash", "sha": head},
-        runner=runner,
+        payload = {"merge_method": "squash", "sha": head},
+        runner = runner
     )
+
     if status not in (200, 201):
-        print(f"❌ merge request failed: {_failure_detail(status, merged, stderr)}", file=sys.stderr)
+        print(f"❌ merge request failed: {_failure_detail(status, merged, stderr)}", file = sys.stderr)
         return 1
+
     merged_sha = str(merged.get("sha") or "")
-    if merged.get("merged") is not True or not merged_sha:
+
+    if (merged.get("merged") is not True) or not merged_sha:
         # The merge may or may not have landed; do not claim either way, and do
         # not build a readback endpoint out of an empty SHA (it would hit the
         # list/latest-commit endpoint instead of the squash commit).
@@ -1018,96 +985,59 @@ def _gate(
             "(a retry of an already-merged PR is harmless, but do not assume success here)"
         )
         return 2
+
     print(f"✅ squash merged → {merged_sha[:12]}")
 
     expected_subject = f"{title} (#{pr})"
     subject: str | None = None
     attempts = 0
+
     for attempt in (1, 2):  # cannot read ≠ polluted — one transport retry
         attempts = attempt
-        status, commit, _stderr = gh_api(f"repos/{repo}/commits/{merged_sha}", runner=runner)
+        status, commit, _stderr = gh_api(f"repos/{repo}/commits/{merged_sha}", runner = runner)
+
         if status == 200:
             # An empty/absent message is "cannot read", not "polluted" — and an
             # unguarded splitlines()[0] would raise IndexError AFTER the merge
             # already landed, exiting rc 1 ("nothing merged") and inviting a
             # retry of an irreversible action.
             message = ((commit.get("commit") or {}).get("message") or "").strip()
+
             if message:
                 subject = message.splitlines()[0]
+
             break
+
         if attempt == 1:
             time.sleep(3)
+
     if subject is None:
-        print(
-            f"🚨 COMMIT-GET-FAILED: the merge happened but the commit subject is unreadable "
-            f"({attempts} attempt(s)) — verify the log by hand; no pollution marker written "
-            "(cannot read ≠ polluted)"
-        )
+        print(f"🚨 COMMIT-GET-FAILED: the merge happened but the commit subject is unreadable " f"({attempts} attempt(s)) — verify the log by hand; no pollution marker written " "(cannot read ≠ polluted)")
         return 2
+
     if subject != expected_subject:
-        print(
-            f"🚨 squash subject {subject!r} ≠ expected {expected_subject!r} — the caller "
-            "(workspace wrapper) owns the sticky pollution alert for this outcome"
-        )
+        print(f"🚨 squash subject {subject!r} ≠ expected {expected_subject!r} — the caller " "(workspace wrapper) owns the sticky pollution alert for this outcome")
         return 2
+
     print(f"✅ merged subject verified: {subject}")
     return 0
 
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="celestia-devtools pr-merge-gate",
-        description="Pre-squash-merge gate: title / head / verify-record checks + guarded squash.",
-    )
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(prog = "celestia-devtools pr-merge-gate", description = "Pre-squash-merge gate: title / head / verify-record checks + guarded squash.")
+    sub = parser.add_subparsers(dest = "cmd", required = True)
+
     for name in ("check", "merge"):
         sp = sub.add_parser(name)
-        sp.add_argument("--repo", required=True, help="OWNER/NAME")
-        sp.add_argument("--pr", required=True, type=int)
-        sp.add_argument(
-            "--expect-head",
-            required=True,
-            default=None,
-            help="head SHA verified by the review rounds (prefix ok)",
-        )
-        sp.add_argument(
-            "--allow-cjk",
-            action="store_true",
-            help="repo allows CJK summaries (easy-hydro family)",
-        )
-        sp.add_argument("--base", default=DEFAULT_BASE, help="branch the gate may merge into")
-        sp.add_argument(
-            "--waiver",
-            default=None,
-            metavar="PATH",
-            help=(
-                "signed recorded-exception file "
-                "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the "
-                "`verify record c3=<n> < 3` refusal, every other check still runs "
-                "— it does NOT cover the comment gate"
-            ),
-        )
-        sp.add_argument(
-            "--no-comment-gate",
-            dest="comment_gate",
-            action="store_false",
-            help=(
-                "skip the behaviour-claim comment gate (break-glass: the ONLY "
-                "supported exception is the PR-body "
-                "`comment-gate-waiver: <reason>` entry, which needs no flag)"
-            ),
-        )
+        sp.add_argument("--repo", required = True, help = "OWNER/NAME")
+        sp.add_argument("--pr", required = True, type = int)
+        sp.add_argument("--expect-head", required = True, default = None, help = "head SHA verified by the review rounds (prefix ok)")
+        sp.add_argument("--allow-cjk", action = "store_true", help = "repo allows CJK summaries (easy-hydro family)")
+        sp.add_argument("--base", default = DEFAULT_BASE, help = "branch the gate may merge into")
+        sp.add_argument("--waiver", default = None, metavar = "PATH", help = "signed recorded-exception file " "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the " "`verify record c3=<n> < 3` refusal, every other check still runs " "— it does NOT cover the comment gate")
+        sp.add_argument("--no-comment-gate", dest = "comment_gate", action = "store_false", help = "skip the behaviour-claim comment gate (break-glass: the ONLY " "supported exception is the PR-body " "`comment-gate-waiver: <reason>` entry, which needs no flag)")
+
     args = parser.parse_args(argv)
-    return _gate(
-        args.repo,
-        args.pr,
-        args.expect_head,
-        allow_cjk=args.allow_cjk,
-        do_merge=(args.cmd == "merge"),
-        base=args.base,
-        waiver=args.waiver,
-        comment_gate=args.comment_gate,
-    )
+    return _gate(args.repo, args.pr, args.expect_head, allow_cjk = args.allow_cjk, do_merge = args.cmd == "merge", base = args.base, waiver = args.waiver, comment_gate = args.comment_gate)
 
 if __name__ == "__main__":
     raise SystemExit(main())

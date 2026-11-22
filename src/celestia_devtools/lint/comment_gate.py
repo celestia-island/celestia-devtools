@@ -238,14 +238,23 @@ def is_anchor(line: str) -> bool:
     return _anchor_text(line)
 
 def _anchor_text(line: str) -> bool:
-    """The anchor test itself (callers strip the context marker first)."""
-    body = comment_body(line)
-    probe = body if body is not None else line
+    """The anchor test itself (callers strip the context marker first).
 
-    if _EXPLICIT_ANCHOR.search(probe) or _TABLE_REFERENCE.search(probe):
+    Only COMMENT text can anchor, mirroring the claim rule: a code line that
+    happens to contain `MUT: x` inside a string literal — or a line whose
+    content is `+// MUT: x`, which is content, not a comment — must not certify
+    a neighbouring claim. Review round 4 found the earlier fallback
+    (`probe = body if body is not None else line`) let exactly that through.
+    """
+    body = comment_body(line)
+
+    if body is None:
+        return False
+
+    if _EXPLICIT_ANCHOR.search(body) or _TABLE_REFERENCE.search(body):
         return True
 
-    return _is_row(probe)
+    return _is_row(body)
 
 def anchored(window: Iterable[str]) -> bool:
     """True when any line of ``window`` carries a mutation anchor."""
@@ -509,16 +518,17 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
 CONTEXT_MARK = "\x00"
 
 def _content(body: str) -> str:
-    """The FILE content of an ADDED hunk line, undoing git's one extra quote.
+    """The FILE content of an added hunk line.
 
-    Git names the file only in ``diff --git a/… b/…``; inside a hunk a line
-    carries a single marker. The header-like prefixes are the exception: an
-    added line whose content starts with ``+`` is emitted as ``++…`` (measured
-    against real ``git diff -U0``), so the line ``++// x`` means the file
-    contains ``+// x``. A leading ``-`` in the CONTENT is NOT quoted (``+-// x``
-    is a plain addition of ``-// x``), which is why only ``++…`` is undone.
+    ``body`` is everything after the one-character hunk marker, and git does NOT
+    quote the content further — measured against real ``git diff -U0``: file
+    content ``+// x`` is emitted as the hunk line ``++// x`` (marker plus
+    content), and content ``++counter;`` as ``+++counter;``. So the content is
+    exactly ``body``. An earlier revision stripped a leading ``+`` "to undo
+    quoting", which mangled genuine ``++``-content lines (review round 4); this
+    function stays as the single named place where that reading is stated.
     """
-    return body[1:] if body.startswith("++") else body
+    return body
 
 def _split_on_spacers(entries: Sequence[tuple[int, str]]) -> list[list[tuple[int, str]]]:
     """Split one section at blank comment lines (``//`` on its own).
