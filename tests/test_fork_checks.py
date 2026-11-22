@@ -149,107 +149,119 @@ def _condition_text(job: dict) -> str:
 
     return _normalise(raw)
 
-#: The three situations a job's ``if:`` has to get right. ``fork`` must be
-#: skipped (never run untrusted code on the fleet); the other two must RUN, or
-#: the required check never reports.
+#: The three situations a job's ``if:`` has to get right.
 FORK, SAME_REPO, NOT_A_PR = "fork", "same-repo", "dispatch"
 
-def _evaluate(condition: str, situation: str) -> bool:
-    """Evaluate a job ``if:`` against one situation, GitHub-semantics-approximate.
+#: What a fork, a same-repo PR and a dispatch actually look like. ``None``
+#: means "this situation has no pull request at all" — the value every
+#: ``github.event.pull_request.*`` read yields there, which is what makes
+#: ``x == null`` and ``x != true`` both true in that column.
+FACTS = {FORK: {"is_pr": True, "fork": True, "same_repo": False}, SAME_REPO: {"is_pr": True, "fork": False, "same_repo": True}, NOT_A_PR: {"is_pr": False, "fork": None, "same_repo": None}}
 
-    Deliberately tiny and TOTAL: it knows the handful of tokens these org
-    workflows use (``github.event_name``, ``github.event.pull_request``,
-    ``…head.repo.fork``, ``…head.repo.full_name``, ``inputs``/``vars``/``needs``,
-    ``always()``/``success()``, ``&&``/``||``/``!`` and comparisons), and it
-    answers the one question the test asks: would this skip the job?
+#: Returned when the evaluator meets a token it does not model. A GUARD check
+#: must be conservative: an unknown condition is not evidence of safety.
+UNKNOWN = object()
 
-    This replaced two arm-scanning predicates that each returned on the FIRST
-    matching arm, so a trailing ``|| … fork == true`` re-admitted what the guard
-    excluded (review of #307, N11-N13). A truth table cannot be fooled by the
-    order or the spelling of arms.
-    """
-    expr = _unwrap(condition.strip())
+def _value(atom: str, situation: str):
+    """The value of one operand in ``situation``, or :data:`UNKNOWN`."""
+    facts = FACTS[situation]
+    text = atom.strip()
 
-    if not expr:
-        return True  # no condition = run
+    if text.startswith("(") and text.endswith(")"):
+        return _truth(text[1:-1], situation)
 
-    # Split top-level `||` (GitHub's `||` returns the first truthy operand;
-    # for our boolean questions "any arm true" is the right reading).
-    arms = _split_top(expr, "||")
+    if text.startswith("!") and not text.startswith("!="):
+        inner = _value(text[1:], situation)
 
-    if len(arms) > 1:
-        return any(_evaluate(arm, situation) for arm in arms)
+        return UNKNOWN if inner is UNKNOWN else (not inner if isinstance(inner, bool) else UNKNOWN)
 
-    conj = _split_top(expr, "&&")
+    if text.lower() in ("true", "always()"):
+        return True
 
-    if len(conj) > 1:
-        return all(_evaluate(part, situation) for part in conj)
+    if text.lower() in ("false", "failure()", "cancelled()"):
+        return False
 
-    atom = expr.strip()
-
-    if atom.startswith("!") and not atom.startswith("!="):
-        return not _evaluate(atom[1:], situation)
-
-    # `always()` and a bare `true` run the job in EVERY situation — including
-    # for a fork — so on a served job they are filters, not passes. Returning
-    # True here made `always()` a no-op on a job that must skip forks.
-    if atom.lower() in ("always()", "true"):
-        return situation != FORK
-
-    if atom.lower() in ("success()", "cancelled()", "failure()", "false"):
-        return (situation == NOT_A_PR) and (atom.lower() == "success()")
-
-    # `github.event_name <op> 'value'`
-    event = re.match(r"^github\.event_name\s*(==|!=)\s*['\"]?([a-z_]+)['\"]?$", atom)
-
-    if event:
-        is_pr = event.group(2).startswith("pull_request")
-        equal = event.group(1) == "=="
-        actually_pr = situation in (FORK, SAME_REPO)
-        named_pr = is_pr
-        # A non-PR event test is true only in the dispatch situation.
-        hit = actually_pr if named_pr else (not actually_pr)
-        return hit if equal else (not hit)
-
-    # `github.event.pull_request` null checks
-    if re.match(r"^github\.event\.pull_request\s*==\s*null$", atom):
-        return situation == NOT_A_PR
-
-    if re.match(r"^github\.event\.pull_request\s*!=\s*null$", atom):
+    if text.lower() == "success()":
         return situation != NOT_A_PR
 
-    # The head repository: fork flag and full name.
-    fork = re.match(r"^github\.event\.pull_request\.head\.repo\.fork\s*(==|!=)\s*(true|false|null)$", atom)
+    event = re.match(r"^github\.event_name\s*(==|!=)\s*['\"]?([a-z_]+)['\"]?$", text)
 
-    if fork:
-        value = FORK if situation == FORK else (SAME_REPO if situation == SAME_REPO else None)
-        lowered = fork.group(2)
-        equal = fork.group(1) == "=="
+    if event:
+        named_pr = event.group(2).startswith("pull_request")
+        equal = event.group(1) == "=="
 
-        if lowered == "null":
-            # A fork's head repo always exists; a non-PR has no head repo.
-            actual = None if situation == NOT_A_PR else (situation == FORK)
-            return (actual is None) == equal
+        return (facts["is_pr"] == named_pr) == equal
 
-        actual_bool = value == FORK
-        return actual_bool == equal
+    if re.match(r"^github\.event\.pull_request\s*==\s*null$", text):
+        return not facts["is_pr"]
 
-    name = re.match(r"^github\.event\.pull_request\.head\.repo\.full_name\s*(==|!=)\s*github\.repository$", atom)
+    if re.match(r"^github\.event\.pull_request\s*!=\s*null$", text):
+        return facts["is_pr"]
 
-    if name:
-        same = situation == SAME_REPO
-        return same if name.group(1) == "==" else (not same)
+    flag = re.match(r"^github\.event\.pull_request\.head\.repo\.fork\s*(==|!=)\s*(true|false|null)$", text)
 
-    # Anything unrecognised is treated as RUN: the gate must not fail a job for
-    # a token it does not model, and the probes pin the shapes that matter.
-    return True
+    if flag:
+        actual = facts["fork"]
+        literal = {"true": True, "false": False, "null": None}[flag.group(2)]
+
+        return (actual == literal) if flag.group(1) == "==" else (actual != literal)
+
+    if re.match(r"^github\.event\.pull_request\.head\.repo\.full_name\s*==\s*github\.repository$", text):
+        return facts["same_repo"]
+
+    if re.match(r"^github\.event\.pull_request\.head\.repo\.full_name\s*!=\s*github\.repository$", text):
+        same = facts["same_repo"]
+
+        return UNKNOWN if same is None else (not same)
+
+    return UNKNOWN
+
+def _truth(condition: str, situation: str):
+    """Evaluate one expression, or :data:`UNKNOWN` when it cannot be modelled.
+
+    Deliberately small: it knows the tokens these workflows use and nothing
+    else, and it answers ``UNKNOWN`` rather than guessing. ``&&`` binds
+    tighter than ``||``, as in GitHub's expression language.
+    """
+    expr = _unwrap(condition)
+
+    if not expr:
+        return True
+
+    disjuncts = _split_top(expr, "||")
+
+    if len(disjuncts) > 1:
+        arms = [_truth(arm, situation) for arm in disjuncts]
+
+        if any(arm is True for arm in arms):
+            return True
+
+        if any(arm is UNKNOWN for arm in arms):
+            return UNKNOWN
+
+        return False
+
+    conjuncts = _split_top(expr, "&&")
+
+    if len(conjuncts) > 1:
+        parts = [_truth(part, situation) for part in conjuncts]
+
+        if any(part is False for part in parts):
+            return False
+
+        if any(part is UNKNOWN for part in parts):
+            return UNKNOWN
+
+        return True
+
+    return _value(expr, situation)
 
 def _unwrap(expr: str) -> str:
-    """Strip one ``${{ … }}`` wrapper.
+    """Strip one ``${{ … }}`` wrapper (before splitting on ``||``).
 
-    Done BEFORE splitting on ``||``: with the wrapper in place the first arm
-    keeps its opening ``${{`` and stops parsing as an atom, so every arm
-    silently evaluated to "run" and a guard's inverse passed (measured).
+    With the wrapper still in place the first arm keeps its opening ``${{`` and
+    stops parsing as an atom, so every arm silently evaluated to "run" and a
+    guard's inverse passed (measured).
     """
     text = expr.strip()
 
@@ -290,14 +302,19 @@ def _split_top(expr: str, operator: str) -> list[str]:
     return parts
 
 def _carries_fork_guard(condition: str) -> bool:
-    """The ONE definition: a farm guard must skip a fork and run otherwise.
+    """Farm duty — CONSERVATIVE: skip the fork, run the others, or it fails.
 
-    A whole truth table, not a shape: ``fork`` must be skipped, and the
-    same-repo PR and dispatch cases must run. That single check subsumes every
-    paraphrase — canonical, admitting, folded, parenthesised — and cannot be
-    fooled by a trailing arm that re-admits forks.
+    ``UNKNOWN`` counts as "no guard": a condition the evaluator cannot model is
+    not evidence that untrusted fork code stays off the shared fleet. The served
+    duty reads ``UNKNOWN`` the other way (a PR must not be blocked over a token
+    nobody modelled), which is why the two duties each own their wrapper rather
+    than sharing one predicate.
     """
-    return (not _evaluate(condition, FORK)) and _evaluate(condition, SAME_REPO) and _evaluate(condition, NOT_A_PR)
+
+    if not condition:
+        return False
+
+    return (_truth(condition, FORK) is False) and (_truth(condition, SAME_REPO) is True) and (_truth(condition, NOT_A_PR) is True)
 
 def _is_constant(condition: str) -> bool:
     """True when ``condition`` does not depend on any event or context."""
@@ -347,10 +364,10 @@ def _is_served_job_filtered(job: dict) -> str | None:
 
     text = _condition_text(job)
 
-    if not _evaluate(text, SAME_REPO):
+    if _truth(text, SAME_REPO) is False:
         return f"{condition!r} skips a same-repo pull request — the required check never reports"
 
-    if not _evaluate(text, FORK):
+    if _truth(text, FORK) is False:
         return f"{condition!r} skips a FORK pull request — a skipped job reports no check run, which is the 466d207 regression this file exists to prevent"
 
     return None
