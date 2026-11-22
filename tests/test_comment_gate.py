@@ -562,6 +562,10 @@ class test_round2_geometry:
         diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" "@@ -1,0 +1,1 @@\n+// measured: this catches it\n" + body + "\n@@ -11,0 +11,1 @@\n+// MUT: near\n"
         assert comment_gate.check_diff(diff).claims == ()
 
+def _py_diff(body: str, *, count: int) -> str:
+    """A one-file diff of a Python test module."""
+    return f"diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1,0 +1,{count} @@\n" + body
+
 class test_docstrings:
     """Python docstrings are statements, so they are in the gate's reach.
 
@@ -585,15 +589,7 @@ class test_docstrings:
     def test_a_single_line_docstring_does_not_leak_state(self):
         # One-line docstrings open and close; the following code must not be
         # read as prose.
-        diff = (
-            "diff --git a/tests/test_x.py b/tests/test_x.py\n"
-            "--- a/tests/test_x.py\n"
-            "+++ b/tests/test_x.py\n"
-            "@@ -1,0 +1,3 @@\n"
-            '+        """One line."""\n'
-            "+        assert 1 == 1\n"
-            "+        expect_that_never_reds_alone()\n"
-        )
+        diff = _py_diff('+        """One line."""\n+        assert 1 == 1\n+        expect_that_never_reds_alone()\n', count = 3)
         report = comment_gate.check_diff(diff)
         assert report.scanned_lines == 1
         assert report.claims == ()
