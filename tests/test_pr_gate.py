@@ -1191,6 +1191,24 @@ class test_comment_waiver_entry:
         assert grant is None
         assert problems and ("indented code block" in problems[0])
 
+    def test_a_tab_led_entry_is_indented_too(self):
+        """Round 6: a narrower regex let `"\t  entry"` through while the record refused it."""
+        text = "\t  comment-gate-waiver: the ids live in the linked issue, page two\n"
+        grant, problems = pr_gate_comment_waiver(text)
+        assert grant is None
+        assert problems and ("indented code block" in problems[0])
+
+    def test_three_spaces_are_prose_no_four_are_a_block(self):
+        # Parity with the verify record's own rule: lead of >=4 chars, or a tab.
+        assert pr_gate_comment_waiver("   comment-gate-waiver: the ids live in the linked issue, page two")[0] is not None
+        assert pr_gate_comment_waiver("    comment-gate-waiver: the ids live in the linked issue, page two")[0] is None
+
+    def test_a_zero_width_reason_is_not_a_reason(self):
+        # A floor a run of U+200B satisfies is a mute button (round 6).
+        grant, problems = pr_gate_comment_waiver("comment-gate-waiver: " + ("\u200b" * 30))
+        assert grant is None
+        assert problems
+
     def test_an_entry_in_prose_and_indented_refuses(self):
         text = "comment-gate-waiver: the ids live in the linked issue, page two\n    comment-gate-waiver: a second copy in an indented block\n"
         grant, problems = pr_gate_comment_waiver(text)

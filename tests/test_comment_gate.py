@@ -259,6 +259,16 @@ class test_window:
         assert len(report.claims) == 1
         assert any("comment-gate-ok with a thin reason" in term for term in report.claims[0].terms)
 
+    def test_the_thin_reason_marker_reaches_the_report(self):
+        """Round 6: the marker lived only in `claim.terms`, which no report renders."""
+        diff = _single_hunk("+// measured: this catches it comment-gate-ok:\n", count = 1)
+        claim = comment_gate.check_diff(diff).claims[0]
+        assert "comment-gate-ok with a thin reason" in claim.render()
+
+    def test_a_zero_width_directive_reason_suppresses_nothing(self):
+        diff = _single_hunk("+// measured: this catches it comment-gate-ok: " + ("\u200b" * 25) + "\n", count = 1)
+        assert len(comment_gate.check_diff(diff).claims) == 1
+
     def test_a_short_directive_reason_suppresses_nothing(self):
         diff = _single_hunk("+// measured: this catches it comment-gate-ok: flaky\n", count = 1)
         assert len(comment_gate.check_diff(diff).claims) == 1

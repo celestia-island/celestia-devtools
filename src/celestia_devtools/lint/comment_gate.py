@@ -156,7 +156,11 @@ class claim:
     terms: tuple[str, ...]
 
     def render(self) -> str:
-        return f"{self.path}:{self.line}: {self.text.strip()}"
+        # The terms ride along when they include a marker the report must SHOW
+        # (a thin `comment-gate-ok:` reason): a refusal that does not say why is
+        # the silence the gate exists to remove (review round 6).
+        marker = f"  [{', '.join(self.terms)}]" if any(term.startswith("comment-gate-ok") for term in self.terms) else ""
+        return f"{self.path}:{self.line}: {self.text.strip()}{marker}"
 
 @dataclass(frozen = True)
 class report:
@@ -210,6 +214,15 @@ def comment_body(line: str) -> str | None:
         return line
 
     return None
+
+#: Zero-width characters a "reason" could hide behind: ``str.strip()`` removes
+#: whitespace and nothing else, so twenty U+200B satisfied the floor before
+#: review round 6. Mirrors ``pr_gate._visible_len``'s filter.
+_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff\u2060"), None)
+
+def _visible(text: str) -> str:
+    """``text`` without leading/trailing space or zero-width characters."""
+    return text.translate(_INVISIBLE).strip()
 
 def _strip_comment_prefix(line: str) -> str:
     """The line without its comment opener (and, on doc rows, the leading ``*``)."""
@@ -299,7 +312,7 @@ def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[i
         directive = DIRECTIVE.search(text)
 
         if directive is not None:
-            reason = directive.group("reason").strip()
+            reason = _visible(directive.group("reason"))
 
             if len(reason) >= DIRECTIVE_REASON_MIN:
                 continue

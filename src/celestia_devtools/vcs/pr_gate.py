@@ -303,8 +303,17 @@ COMMENT_WAIVER_REASON_MIN = 20
 #: suppression list names WHAT was waived and a reader can grep it.
 COMMENT_GATE_CATEGORY = "comment-gate"
 #: An indented markdown code block. The verify record refuses the same shape for
-#: the same reason: it is a template someone copied, not a decision.
+#: the same reason: it is a template someone copied, not a decision. The rule is
+#: the RECORD's own: any tab in the lead, or a lead of four or more characters
+#: (``body_problems``'s ``"\t" in lead or len(lead) >= 4``) — a narrower regex
+#: let ``"\t  entry"`` through and the two lanes disagreed (round 6).
 COMMENT_WAIVER_INDENT_RE = re.compile(r"^(?:\t| {4,})\S")
+
+def _is_indented(line: str) -> bool:
+    """True when ``line`` sits in a markdown code block (the record's own rule)."""
+    lead = line[: len(line) - len(line.lstrip())]
+    return ("\t" in lead) or (len(lead) >= 4)
+
 #: GitHub appends this line (and stops) when a diff endpoint truncates a large
 #: PR. A truncated diff is exactly the "green line that certifies nothing"
 #: shape, so seeing it is a refusal rather than a partial verdict.
@@ -327,6 +336,10 @@ _INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff\u2060"), None)
 def _visible_len(text: str) -> int:
     """Characters that are neither whitespace nor zero-width."""
     return sum(1 for char in text.translate(_INVISIBLE) if not char.isspace())
+
+def _visible_len_text(text: str) -> str:
+    """``text`` with zero-width characters removed (the reason floor sees this)."""
+    return text.translate(_INVISIBLE)
 
 def _is_iso_date(value: str) -> bool:
     """A real calendar date (``datetime.date.fromisoformat`` rejects 2026-02-30)."""
@@ -536,7 +549,7 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
         # Cheap prefix test first: the loose pattern matches way too much for a
         # scan that runs over every line of every PR body.
         if re.search(r"comment-gate-waiver", stripped, re.IGNORECASE):
-            if COMMENT_WAIVER_INDENT_RE.match(raw_line):
+            if _is_indented(raw_line):
                 # A 4-space (or tab) indent is a markdown CODE BLOCK, and the
                 # verify record refuses the same shape ("it reads as a
                 # template, not a record"). Round 5 found the two lanes
@@ -571,7 +584,7 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
         return None, [f"body carries {len(entries)} comment-gate-waiver entries (one exception " "per PR; say why in a sentence, not in a list)"]
 
     entry, reason = entries[0]
-    reason = _strip_decoration(reason)
+    reason = _visible_len_text(_strip_decoration(reason))
 
     if len(reason) < COMMENT_WAIVER_REASON_MIN:
         return None, [f"{entry!r}: the reason is {len(reason)} characters, below the " f"{COMMENT_WAIVER_REASON_MIN}-character floor — a waiver needs an argument"]
