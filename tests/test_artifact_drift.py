@@ -277,17 +277,36 @@ class test_round2_regressions:
         """The generator's real version carrier is a TRAILING `// import` line.
 
         Round 4 found the round-3 fix had narrowed the version-source set past
-        the real shape: `export type * as X from './x.js'; // import
-        celestia:hikari-qr/types@0.1.0` is a trailing comment, and matching only
-        whole-line `// import` made the appendix dead code — a stale barrel then
-        passed (MUT:stale-import-appendix).
+        the real shape; round 5 found the first version of this test was not
+        load-bearing. The barrel carries NO `@module` header of its own — only
+        the import appendix — so this asserts the appendix alone is a source.
         """
         build_workspace(tmp_path)
         barrel = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "hikari_wasm_qr.d.ts"
-        barrel.write_text("// world root:component/root\nexport type * as QrTypes from './interfaces/celestia-hikari-qr-types.js'; // import celestia:hikari-qr/types@0.0.9\n", encoding = "utf-8")
+        barrel.write_text("// world root:component/root\nexport type * as Q from './i.js'; // import celestia:hikari-qr/types@0.0.9\n", encoding = "utf-8")
         findings = artifact_drift.check_repo(tmp_path).findings
         assert findings, "a stale import appendix must red"
         assert "artifact 0.0.9" in findings[0].detail
+
+    def test_a_matching_appendix_with_prose_mention_stays_green(self, tmp_path):
+        """The shape that DISTINGUISHES round 4 from round 3.
+
+        A correct appendix plus prose that names an old version: round 3's raw
+        scan reddened this (a false red, the defect round 3 fixed), round 4's
+        header filter leaves it green. Reverting `_header_text` reds this test
+        and nothing else — pinned by MUT:header-filter-removed.
+        """
+        build_workspace(tmp_path)
+        barrel = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "hikari_wasm_qr.d.ts"
+        barrel.write_text("// world root:component/root\nexport type * as Q from './i.js'; // import celestia:hikari-qr/types@0.1.0\n// migration: the old pin was celestia:hikari-qr/types@0.0.9\n", encoding = "utf-8")
+        assert artifact_drift.check_repo(tmp_path).ok
+
+    def test_a_matching_import_appendix_passes(self, tmp_path):
+        """The mirror, also end to end: the same line at the declared version."""
+        build_workspace(tmp_path)
+        barrel = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "hikari_wasm_qr.d.ts"
+        barrel.write_text("// world root:component/root\nexport type * as QrTypes from './interfaces/celestia-hikari-qr-types.js'; // import celestia:hikari-qr/types@0.1.0\n", encoding = "utf-8")
+        assert artifact_drift.check_repo(tmp_path).ok
 
     def test_matching_import_appendix_passes(self):
         """The mirror: the same line at the declared version is fine."""
