@@ -156,6 +156,24 @@ class test_scope:
         assert report.claims == ()
         assert report.scanned_lines == 0
 
+    def test_a_context_comment_is_not_a_claim_but_can_anchor(self):
+        """Context lines are geometry and anchors — never claims.
+
+        Round 3 measured the opposite: a context comment was reported as a
+        claim while `scanned_lines` stayed 0, so one diff produced "1 claim"
+        and "zero comment lines scanned" at the same time.
+        """
+        body = " // measured: this catches it\n-x\n+y\n"
+        diff = _single_hunk(body, start = 1, count = 2, old_count = 2)
+        report = comment_gate.check_diff(diff)
+        assert report.scanned_lines == 0
+        assert report.claims == ()
+
+    def test_a_context_anchor_still_binds_an_added_claim(self):
+        body = " // MUT: context-anchor\n-x\n+// measured: this catches it\n"
+        diff = _single_hunk(body, start = 1, count = 2, old_count = 2)
+        assert comment_gate.check_diff(diff).claims == ()
+
     def test_removed_lines_are_not_scanned(self):
         # A claim the PR DELETES cannot block the PR.
         diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n@@ -1,2 +1,2 @@\n-// measured: this pin catches it\n+// a neutral comment\n expect(1).toBe(1);\n"
@@ -446,11 +464,22 @@ class test_round2_geometry:
         diff = _diff(first, second, third)
         assert [claim.line for claim in comment_gate.check_diff(diff).claims] == [30]
 
-    def test_an_added_content_line_may_start_with_a_plus(self):
-        # A file line whose CONTENT begins with `+` reaches the diff as `++…`.
-        # Matching the header prefixes (`+++ `) instead of the first character
-        # dropped the line entirely.
-        diff = _single_hunk("+++hello world\n+// measured: this pin catches it\n", count = 2)
+    def test_a_content_line_that_starts_with_a_plus_is_not_a_comment(self):
+        # Git emits content `+// x` as the hunk line `++// x`. The scanner must
+        # read that as the FILE line `+// x` — which is not a comment — instead
+        # of treating `// x` as one. The old round-2 fixture (`+++hello`) never
+        # exercised this: `"+++hello".startswith("+++ ")` is False, and the
+        # round-3 review caught the resulting inert test.
+        diff = _single_hunk("++// measured: this pin catches it\n", count = 1)
+        report = comment_gate.check_diff(diff)
+        assert report.scanned_lines == 0
+        assert report.claims == ()
+
+    def test_the_line_after_a_plus_content_line_is_still_seen(self):
+        # The same diff, plus a REAL comment claim on the next line: the first
+        # line must not swallow the second, and the claim must be reported at
+        # the FILE line (2), not at the patch offset.
+        diff = _single_hunk("++// measured: this pin catches it\n+// measured: the real claim\n", count = 2)
         report = comment_gate.check_diff(diff)
         assert report.scanned_lines == 1
         assert [claim.line for claim in report.claims] == [2]

@@ -80,13 +80,14 @@ EXIT_USAGE = 2
 #: further down the file can excuse this one.
 ANCHOR_WINDOW = 10
 
-#: Behaviour-statement vocabulary. Matched case-insensitively on the raw text of
-#: the comment line. English is listed first; the four CJK entries are the ones
-#: the design document names, because the seam-pin comments in this org are
-#: written in both languages. ``catch`` is deliberately included next to
-#: ``catches`` (``does not catch`` / ``won't catch`` are the same claim), while
-#: ``reds`` already covers ``reds`` / ``reddens`` by substring — the two listed
-#: spellings stay in the table so deleting either one is a visible edit.
+#: Behaviour-statement vocabulary, matched case-insensitively as SUBSTRINGS. The
+#: English entries plus the design document's four CJK ones (seam-pin comments in
+#: this org are written in both languages). Two entries are deliberately shorter
+#: than the word a reader sees: ``catch`` covers ``catches``/``caught``, ``reds``
+#: covers ``reddens``, and ``doesn't`` is listed beside ``does not`` because the
+#: contraction is what people actually write. A review round flagged ``catches``
+#: as redundant next to ``catch``; it is, and that is the intent — every entry
+#: that can match is listed in full so a reader can see why a line was hit.
 BEHAVIOUR_TERMS: tuple[str, ...] = ("measured", "verified", "reds", "reddens", "does not", "doesn't", "catches", "catch", "only when", "never", "always", "抓不住", "抓住", "只在", "只有.*时才")
 
 #: A mutation id: ``MUT:<id>`` / ``mutate:<slug>``. The body must be non-empty —
@@ -232,7 +233,12 @@ def _is_row(line: str) -> bool:
     return bool(_ROW_VERDICT.search(stripped) or _ROW_ARROW.search(stripped))
 
 def is_anchor(line: str) -> bool:
-    """True when ``line`` can prove a claim (an id or a mutation-table row)."""
+    """True when ``line`` can prove a claim (an id, a table reference, a row)."""
+    line = line.removeprefix(CONTEXT_MARK)
+    return _anchor_text(line)
+
+def _anchor_text(line: str) -> bool:
+    """The anchor test itself (callers strip the context marker first)."""
     body = comment_body(line)
     probe = body if body is not None else line
 
@@ -243,7 +249,7 @@ def is_anchor(line: str) -> bool:
 
 def anchored(window: Iterable[str]) -> bool:
     """True when any line of ``window`` carries a mutation anchor."""
-    return any(is_anchor(line) for line in window)
+    return any(is_anchor(line.removeprefix(CONTEXT_MARK)) for line in window)
 
 def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[int]) -> tuple[list[claim], int]:
     """Claims without an anchor and the number of claim lines in ``lines``.
@@ -265,6 +271,9 @@ def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[i
         # Only COMMENT text can carry a claim. A code line in the window
         # matches the vocabulary often enough (`as [never]` in the corpus) and
         # reported as an accusation against a code line — measured twice.
+        if text.startswith(CONTEXT_MARK):
+            continue
+
         if comment_body(text) is None:
             continue
 
@@ -438,7 +447,9 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
 
         if prefix == "+":
             if current_path and is_test_path(current_path):
-                if (comment_body(body) is not None) and body.strip():
+                content = _content(body)
+
+                if (comment_body(content) is not None) and content.strip():
                     # Count each LINE once: an extended header can repeat one.
                     seen = scanned_numbers.setdefault(current_path, set())
 
@@ -446,7 +457,7 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
                         seen.add(cursor)
                         scanned += 1
 
-                add(cursor, body)
+                add(cursor, content)
 
             cursor += 1
             continue
@@ -457,7 +468,12 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
             # line that is CODE can never be read as a comment (`as [never]`
             # hit the vocabulary from inside a context line — measured).
             if (current_path is not None) and is_test_path(current_path):
-                add(cursor, " " + body)
+                # A context line is GEOMETRY for the window and nothing else:
+                # it can anchor a claim (it is a line of the file the reader
+                # sees) but it can never BE a claim, because the gate judges
+                # what this change adds. Prefixing it with an explicit context
+                # marker is what makes that structural rather than incidental.
+                add(cursor, CONTEXT_MARK + body)
 
             cursor += 1
             continue
@@ -485,6 +501,24 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         notes.append("no added/modified test-file comment lines in the diff")
 
     return claims, hits, scanned, notes
+
+#: A context line's marker. NUL cannot appear in a source line, so a context
+#: line can never accidentally look like a comment — the previous "prepend a
+#: space" trick FAILED for a context line whose text started with ``//`` (the
+#: space is stripped by every comment matcher).
+CONTEXT_MARK = "\x00"
+
+def _content(body: str) -> str:
+    """The FILE content of an ADDED hunk line, undoing git's one extra quote.
+
+    Git names the file only in ``diff --git a/… b/…``; inside a hunk a line
+    carries a single marker. The header-like prefixes are the exception: an
+    added line whose content starts with ``+`` is emitted as ``++…`` (measured
+    against real ``git diff -U0``), so the line ``++// x`` means the file
+    contains ``+// x``. A leading ``-`` in the CONTENT is NOT quoted (``+-// x``
+    is a plain addition of ``-// x``), which is why only ``++…`` is undone.
+    """
+    return body[1:] if body.startswith("++") else body
 
 def _split_on_spacers(entries: Sequence[tuple[int, str]]) -> list[list[tuple[int, str]]]:
     """Split one section at blank comment lines (``//`` on its own).

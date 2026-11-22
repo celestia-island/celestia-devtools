@@ -948,28 +948,38 @@ def _gate(
             return 1
 
     problems = check_pr(data, expect_head, allow_cjk=allow_cjk, base=base)
-    if grant is not None:
-        problems, suppressed = split_waivable(problems)
-        detail = "; ".join(suppressed) if suppressed else "nothing (waiver unused)"
-        print(f"🔓 waiver: {grant.path} (signed {grant.signed}) — suppressed: {detail}")
-
     body_grant, _body_gate_problems = comment_waiver(data.get("body") or "")
+    # The comment gate runs BEFORE the waiver split, and its refusals are held
+    # apart from `problems` rather than merged into them. Merging first would
+    # have made "--waiver never covers the comment gate" a property of the
+    # ORDER of two statements, not of a guard: review round 3 widened
+    # `_WAIVABLE_C3_RE` and moved the merge above the split, and the signed
+    # waiver suppressed an unanchored claim. Keeping them in a separate list
+    # that `split_waivable` never sees makes the property structural.
+    gated: list[str] = []
     if comment_gate:
         payload_head = (data.get("head") or {}).get("sha") or ""
-        comment_problems = comment_gate_problems(repo, pr, payload_head, runner=runner)
-        if comment_problems and body_grant is not None:
+        gated = comment_gate_problems(repo, pr, payload_head, runner=runner)
+
+        if gated and body_grant is not None:
             print(
                 f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {body_grant.entry!r} — "
                 f"reason: {body_grant.reason}"
             )
             print(
-                f"   suppressed {len(comment_problems)} {COMMENT_GATE_CATEGORY} refusal(s); "
+                f"   suppressed {len(gated)} {COMMENT_GATE_CATEGORY} refusal(s); "
                 "the signed --waiver file never covers this gate"
             )
-            comment_problems = []
-        problems.extend(comment_problems)
+            gated = []
     elif body_grant is not None:
         print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-comment-gate)")
+
+    if grant is not None:
+        problems, suppressed = split_waivable(problems)
+        detail = "; ".join(suppressed) if suppressed else "nothing (waiver unused)"
+        print(f"🔓 waiver: {grant.path} (signed {grant.signed}) — suppressed: {detail}")
+
+    problems = [*problems, *gated]
 
     if problems:
         for p in problems:

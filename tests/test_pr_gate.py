@@ -9,6 +9,7 @@ debug probe renamed a PR and the squash merge carried the polluted title into
 branch must turn them red.
 """
 
+import inspect
 import json
 from celestia_devtools.vcs.pr_gate import _gate, body_problems, check_pr, title_problems
 from celestia_devtools.vcs import pr_gate as pr_gate_module
@@ -1053,6 +1054,21 @@ class test_comment_gate_plumbing:
         runner = diff_runner(pr, "   \n")
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner) == 1
         assert "refusing blind" in capsys.readouterr().err
+
+    def test_the_scanner_refusals_reach_the_merge_chain(self, capsys):
+        """Zero-hit / zero-scanned refusals must refuse the MERGE, not just the module.
+
+        Round 3's mutation 2 deleted the `report.problems` forwarding and every
+        plumbing test stayed green: the scanner refused a comment-only neutral
+        diff while the gate printed "gate passed". This is that case at the
+        gate's own level.
+        """
+        pr, diff = _comment_pr("@@ -1,0 +1,1 @@\n+// a neutral comment\n", filename="packages/vue/src/neutral.test.ts")
+        runner = diff_runner(pr, diff)
+        assert _gate("o/r", 1, "a" * 40, allow_cjk=False, do_merge=False, runner=runner) == 1
+        err = capsys.readouterr().err
+        assert "zero behaviour-claim hits" in err
+        assert "MERGE REFUSED" in err
 
     def test_break_glass_flag_skips_the_gate(self, capsys):
         pr, diff = _comment_pr(COMMENT_CLAIM_PATCH)
