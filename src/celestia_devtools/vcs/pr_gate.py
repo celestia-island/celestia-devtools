@@ -277,13 +277,24 @@ _BUDGET_VALUES = {"ok", "exhausted@3"}
 # record's own well-formedness are checked exactly as before, so a waiver
 # cannot smuggle in a polluted title or an unreviewed head.
 
+# Two channels, one shape: the signed ``_alerts/`` file (``--waiver``, whose one
+# waivable refusal is the c3 floor) and the PR-body ``comment-gate-waiver:``
+# entry (which never reaches ``split_waivable`` at all). Both are read from the
+# PR the caller is merging, both must carry a real reason, and neither is ever a
+# silent pass — but only the file channel names an audit artefact on disk.
 WAIVER_FILENAME_TEMPLATE = "pr-merge-waiver-{repo}-{pr}.md"
+
+
+def _waiver_filename_re(prefix: str) -> "re.Pattern[str]":
+    """``<prefix>-<repo>-<pr>.md`` — the audit filename for one channel."""
+    return re.compile(rf"^{re.escape(prefix)}-(?P<repo>[A-Za-z0-9._-]+)-(?P<pr>\d+)\.md$")
+
+
 # ``owner/name`` → the file is keyed by the REPOSITORY NAME, not the owner: one
 # directory (``_alerts/``) holds every repo's waivers, and the owner is always
 # ``celestia-island``.
-_WAIVER_FILENAME_RE = re.compile(
-    r"^pr-merge-waiver-(?P<repo>[A-Za-z0-9._-]+)-(?P<pr>\d+)\.md$"
-)
+_WAIVER_FILENAME_RE = _waiver_filename_re("pr-merge-waiver")
+
 _WAIVER_SIGNED_RE = re.compile(
     r"^signed:[ \t]*lead[ \t]+(?P<date>\d{4}-\d{2}-\d{2})[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
@@ -300,10 +311,28 @@ _WAIVER_BASIS_MIN = 40
 WAIVER_DIR_NAME = "_alerts"
 # The single refusal a waiver may suppress.
 _WAIVABLE_C3_RE = re.compile(r"^verify record c3=(?P<c3>\d+) < 3$")
+#: The PR-body exception entry for comment-gate, and how it is recognised.
+#: ``comment-gate-waiver: <reason>`` on one prose line (fenced blocks excluded,
+#: same fence splitter as the verify record). Nothing else reaches it: the
+#: signed ``--waiver`` file does NOT (its one waivable refusal stays the c3
+#: floor), there is no `*` wildcard, and there is no silent fallback.
+COMMENT_WAIVER_ENTRY_RE = re.compile(r"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*comment-gate-waiver[*_`]*[ \t]*[:：][ \t\u3000]*(?P<reason>.*)$", re.IGNORECASE)
+#: A reason shorter than this is not a reason: "ok", "meh" and "n/a" all pass a
+#: bare non-empty test, and a waiver channel whose bar is that low is a mute
+#: button. The floor matches the signed file's ``basis:`` field, for the same
+#: reason (a rationale has to be long enough to argue with).
+COMMENT_WAIVER_REASON_MIN = 20
+#: The category the comment-gate refusal carries internally, so the printed
+#: suppression list names WHAT was waived and a reader can grep it.
+COMMENT_GATE_CATEGORY = "comment-gate"
+#: GitHub appends this line (and stops) when a diff endpoint truncates a large
+#: PR. A truncated diff is exactly the "green line that certifies nothing"
+#: shape, so seeing it is a refusal rather than a partial verdict.
+_DIFF_TRUNCATED_RE = re.compile(r"^\[truncated[^\]]*\]$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
-class Waiver:
+class waiver:
     """A validated recorded-exception grant (one PR, one head SHA)."""
 
     path: Path
@@ -343,11 +372,16 @@ def _waiver_field(text: str, key: str) -> str | None:
 
 
 def read_waiver(
-    path: str | Path, *, repo: str, pr: int, head: str
-) -> tuple[Waiver | None, list[str]]:
+    path: str | Path,
+    *,
+    repo: str,
+    pr: int,
+    head: str,
+    prefix: str = "pr-merge-waiver",
+) -> tuple[waiver | None, list[str]]:
     """Validate a recorded-exception file; return ``(grant, problems)``.
 
-    The file must be ``_alerts/pr-merge-waiver-<repo-name>-<pr>.md`` and carry:
+    The file must be ``_alerts/<prefix>-<repo-name>-<pr>.md`` and carry:
 
     * ``pr: <N>``                 — matching ``--pr``;
     * ``head: <sha>``             — the head this waiver covers (a prefix of the
@@ -359,37 +393,33 @@ def read_waiver(
       still records the real ``c3``;
     * ``signed: lead <YYYY-MM-DD>`` — the sign-off.
 
+    ``prefix`` selects the channel: ``pr-merge-waiver`` (the ``--waiver`` c3
+    floor) or ``comment-gate-waiver`` (the PR-body comment-gate exception).
+    Everything else — fields, floor, audit home, mismatch behaviour — is shared,
+    so a hardening lands on both channels by construction.
+
     Anything missing or mismatched is a refusal; a waiver that does not apply is
     never treated as "no waiver needed".
     """
     waiver_path = Path(path)
     problems: list[str] = []
     repo_name = repo.rsplit("/", 1)[-1]
+    template = prefix + "-{repo}-{pr}.md"
 
     if not waiver_path.is_file():
         return None, [f"waiver {waiver_path}: not a readable file"]
 
     if waiver_path.parent.name != WAIVER_DIR_NAME:
-        return None, [
-            f"waiver {waiver_path}: must live in a {WAIVER_DIR_NAME!r} directory — "
-            "a waiver consumed from elsewhere leaves no sticky audit artefact"
-        ]
+        return None, [f"waiver {waiver_path}: must live in a {WAIVER_DIR_NAME!r} directory — a waiver consumed from elsewhere leaves no sticky audit artefact"]
 
-    name_match = _WAIVER_FILENAME_RE.match(waiver_path.name)
+    name_match = _waiver_filename_re(prefix).match(waiver_path.name)
     if not name_match:
-        return None, [
-            f"waiver {waiver_path.name}: name must be "
-            f"{WAIVER_FILENAME_TEMPLATE.format(repo='<repo>', pr='<pr>')}"
-        ]
+        return None, [f"waiver {waiver_path.name}: name must be {template.format(repo='<repo>', pr='<pr>')}"]
     if name_match.group("repo").lower() != repo_name.lower():
-        problems.append(
-            f"waiver {waiver_path.name}: names repo {name_match.group('repo')!r}, "
-            f"this merge is {repo_name!r}"
-        )
+        problems.append(f"waiver {waiver_path.name}: names repo {name_match.group('repo')!r}, this merge is {repo_name!r}")
     if int(name_match.group("pr")) != pr:
-        problems.append(
-            f"waiver {waiver_path.name}: names PR {name_match.group('pr')}, this merge is #{pr}"
-        )
+        problems.append(f"waiver {waiver_path.name}: names PR {name_match.group('pr')}, this merge is #{pr}")
+
     if problems:
         return None, problems
 
@@ -402,77 +432,48 @@ def read_waiver(
         return None, [f"waiver {waiver_path}: unreadable ({exc})"]
 
     field_pr = _waiver_field(text, "pr")
+
     if field_pr is None:
         problems.append(f"waiver {waiver_path.name}: missing a `pr:` line")
     elif field_pr != str(pr):
-        problems.append(
-            f"waiver {waiver_path.name}: `pr: {field_pr}` does not match #{pr}"
-        )
+        problems.append(f"waiver {waiver_path.name}: `pr: {field_pr}` does not match #{pr}")
 
     field_head = _waiver_field(text, "head")
     wanted_head = (head or "").strip()
+
     if field_head is None:
         problems.append(f"waiver {waiver_path.name}: missing a `head:` line")
     elif not wanted_head:
-        problems.append(
-            f"waiver {waiver_path.name}: the PR payload carries no head SHA to match"
-        )
+        problems.append(f"waiver {waiver_path.name}: the PR payload carries no head SHA to match")
     elif not re.fullmatch(r"[0-9a-f]{7,40}", field_head.lower()):
-        problems.append(
-            f"waiver {waiver_path.name}: `head: {field_head}` is not a commit SHA"
-        )
-    elif not (
-        wanted_head == field_head or wanted_head.startswith(field_head.lower())
-    ):
-        problems.append(
-            f"waiver {waiver_path.name}: `head: {field_head[:12]}` does not match the "
-            f"PR head {wanted_head[:12]}"
-        )
+        problems.append(f"waiver {waiver_path.name}: `head: {field_head}` is not a commit SHA")
+    elif not (wanted_head.startswith(field_head.lower()) or (wanted_head == field_head)):
+        problems.append(f"waiver {waiver_path.name}: `head: {field_head[:12]}` does not match the PR head {wanted_head[:12]}")
 
     basis = _waiver_field(text, "basis") or ""
-    if len(basis) < _WAIVER_BASIS_MIN or not _visible_len(basis) >= _WAIVER_BASIS_MIN:
-        problems.append(
-            f"waiver {waiver_path.name}: `basis:` needs at least "
-            f"{_WAIVER_BASIS_MIN} characters of rationale, got {len(basis)}"
-        )
+
+    if (len(basis) < _WAIVER_BASIS_MIN) or (_visible_len(basis) < _WAIVER_BASIS_MIN):
+        problems.append(f"waiver {waiver_path.name}: `basis:` needs at least {_WAIVER_BASIS_MIN} characters of rationale, got {len(basis)}")
 
     decl = _WAIVER_C3_DECL_RE.search(text)
+
     if decl is None:
-        problems.append(
-            f"waiver {waiver_path.name}: missing `c3-not-fabricated: yes` "
-            "(the verify line must keep the recorded c3, never a back-filled 3)"
-        )
+        problems.append(f"waiver {waiver_path.name}: missing `c3-not-fabricated: yes` (the verify line must keep the recorded c3, never a back-filled 3)")
     elif decl.group("value").lower() != "yes":
-        problems.append(
-            f"waiver {waiver_path.name}: `c3-not-fabricated: {decl.group('value')}` — "
-            "a waiver may not bless a fabricated c3"
-        )
+        problems.append(f"waiver {waiver_path.name}: `c3-not-fabricated: {decl.group('value')}` — a waiver may not bless a fabricated c3")
 
     signed = _WAIVER_SIGNED_RE.search(text)
+
     if signed is None:
-        problems.append(
-            f"waiver {waiver_path.name}: missing the sign-off line "
-            "`signed: lead <YYYY-MM-DD>`"
-        )
+        problems.append(f"waiver {waiver_path.name}: missing the sign-off line `signed: lead <YYYY-MM-DD>`")
     elif not _is_iso_date(signed.group("date")):
-        problems.append(
-            f"waiver {waiver_path.name}: `signed: … {signed.group('date')}` is not a real date"
-        )
+        problems.append(f"waiver {waiver_path.name}: `signed: … {signed.group('date')}` is not a real date")
 
     if problems:
         return None, problems
-    assert signed is not None  # narrowing for type checkers; problems handles None
-    return (
-        Waiver(
-            path=waiver_path,
-            repo=repo,
-            pr=pr,
-            head=field_head.lower(),
-            signed=signed.group("date"),
-        ),
-        [],
-    )
 
+    assert signed is not None  # narrowing for type checkers; problems handles None
+    return (waiver(path=waiver_path, repo=repo, pr=pr, head=field_head.lower(), signed=signed.group("date")), [])
 
 def split_waivable(problems: list[str]) -> tuple[list[str], list[str]]:
     """Split ``(blocking, waivable)``; the only waivable refusal is ``c3<3``."""
@@ -515,10 +516,76 @@ def _strip_decoration(text: str) -> str:
     return text.replace("*", "").replace("`", "").strip()
 
 
+@dataclass(frozen=True)
+class comment_grant:
+    """A ``comment-gate-waiver: <reason>`` entry read from the PR body.
+
+    ``entry`` is the raw line and ``reason`` the text after the colon; ``None``
+    means "the body carries none". A malformed entry (too short a reason, or
+    two entries) is a PROBLEM, never an implicit grant.
+    """
+
+    entry: str
+    reason: str
+
+
+def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
+    """Read the PR-body comment-gate exception; ``(grant, problems)``.
+
+    This is the ONE channel that may exempt a comment-gate refusal (the signed
+    ``--waiver`` file cannot: its waivable set stays exactly the ``c3 < 3``
+    floor, and ``split_waivable`` proves it). The entry is deliberately a
+    different token, on a different surface, so waiving the comment gate is a
+    visible act in the PR text a maintainer reads — not a hidden flag.
+
+    Fenced blocks are excluded (an entry in a code fence is a template, not a
+    grant); two entries are refused (a PR gets one exception, not a list); a
+    reason below :data:`COMMENT_WAIVER_REASON_MIN` is refused (a waiver with no
+    argument is a mute button).
+    """
+    fenced, prose, unclosed = _split_fences(body)
+    entries: list[tuple[str, str]] = []
+    for raw_line in prose:
+        stripped = raw_line.strip()
+        # Cheap prefix test first: the loose pattern matches way too much for a
+        # scan that runs over every line of every PR body.
+        if re.search(r"comment-gate-waiver", stripped, re.IGNORECASE):
+            match = COMMENT_WAIVER_ENTRY_RE.match(raw_line)
+            if match:
+                entries.append((stripped, match.group("reason").strip()))
+    problems: list[str] = []
+
+    # An unclosed fence that swallowed the entry must not read as "the PR
+    # carries none", and an entry INSIDE a well-formed fence is a template —
+    # either way the fence decides, so this branch runs before `not entries`.
+    if unclosed and any(COMMENT_WAIVER_ENTRY_RE.match(line) for line in [*prose, *fenced]):
+        return None, ["comment-gate-waiver sits in an unclosed code fence — an unfinished template must not become a grant"]
+    if not entries:
+        return None, problems
+    if len(entries) > 1:
+        return None, [
+            f"body carries {len(entries)} comment-gate-waiver entries (one exception "
+            "per PR; say why in a sentence, not in a list)"
+        ]
+    entry, reason = entries[0]
+    reason = _strip_decoration(reason)
+    if len(reason) < COMMENT_WAIVER_REASON_MIN:
+        return None, [
+            f"{entry!r}: the reason is {len(reason)} characters, below the "
+            f"{COMMENT_WAIVER_REASON_MIN}-character floor — a waiver needs an argument"
+        ]
+    return comment_grant(entry=entry, reason=reason), problems
+
+
 def body_problems(body: str) -> list[str]:
     """Verify-record problems in a PR body (empty = exactly one clean record)."""
     problems: list[str] = []
     fenced, prose, unclosed = _split_fences(body)
+    # The comment-gate exception is validated here so a malformed one is
+    # refused at merge time — before anything runs the comment gate — instead of
+    # being discovered as "the gate still says no" with no explanation.
+    _grant, waiver_problems = comment_waiver(body)
+    problems.extend(waiver_problems)
 
     record_lines: list[tuple[str, str]] = []
     for raw_line in prose:
@@ -705,6 +772,8 @@ def gh_api(
     method: str = "GET",
     payload: dict | None = None,
     runner=None,
+    accept: str | None = None,
+    raw: bool = False,
 ) -> tuple[int, dict, str]:
     """``gh api`` call returning ``(http_status, parsed_body, stderr)``.
 
@@ -712,10 +781,22 @@ def gh_api(
     the status is read from the ``-i`` header block (``HTTP/2.0 200 OK``).
     A non-zero exit means the request failed and the exit code is reported
     when no status line exists.  Never raises (rc 127 = gh unusable).
+
+    Two arguments exist for the comment gate's diff read:
+
+    * ``accept`` — the media type (``application/vnd.github.diff``);
+    * ``raw`` — return the body VERBATIM under ``{"_raw": <text>}`` instead of
+      parsing it as JSON (a diff is not JSON, and ``json.loads`` would turn the
+      whole evidence into ``{}`` and read as "no findings").
     """
     cmd = ["gh", "api", "-i", endpoint]
+
+    if accept:
+        cmd.extend(["-H", f"Accept: {accept}"])
+
     if payload is not None or method != "GET":
         cmd.extend(["-X", method])
+
     if payload is not None:
         cmd.extend(["--input", "-"])
     call = runner or subprocess.run
@@ -744,6 +825,8 @@ def gh_api(
     if not status:
         # No header block (old gh / a stub): a clean exit means "it worked".
         status = 200 if probe.returncode == 0 else probe.returncode
+    if raw:
+        return status, {"_raw": body_text}, (probe.stderr or "").strip()
     try:
         parsed = json.loads(body_text) if body_text.strip() else {}
     except json.JSONDecodeError:
@@ -766,6 +849,63 @@ def _failure_detail(status: int, body: dict, stderr: str) -> str:
     return f"transport failure (gh exit {status}) {stderr or 'no stderr'}"
 
 
+def comment_gate_problems(repo: str, pr: int, head: str, *, runner=None) -> list[str]:
+    """Behaviour claims in this PR's test comments that name no mutation.
+
+    The check itself lives in :mod:`celestia_devtools.lint.comment_gate`; this
+    function owns only the *plumbing* — which endpoint to read, how to tell a
+    cut body from a real one, and the refusal wording — so the merge chain gains
+    one call and the scanner stays a pure, separately tested module.
+
+    The evidence is the PR's unified diff (``Accept: application/vnd.github.diff``
+    on ``/pulls/<n>``), NOT the per-file patches from ``/files``: a patch list
+    is paginated per FILE and a PR over 300 files is truncated with no marker,
+    which would silently exempt the tail. The diff endpoint has the same trap
+    at 3000 lines, and that one is detectable — a truncated body ends in
+    ``[truncated …]`` and this function refuses instead of certifying the part
+    it happened to see.
+
+    A PR that touches no test file is a *skip*, announced on stdout: the gate
+    has nothing to judge there, and a silent pass would make the green line
+    mean nothing.
+    """
+    # py-style-ok: no-block-imports: imported here, not at module scope, so the
+    # merge gate keeps its import time down; the same lazy contract as core/cli.py.
+    from celestia_devtools.lint import comment_gate
+
+    status, payload, stderr = gh_api(
+        f"repos/{repo}/pulls/{pr}",
+        runner=runner,
+        accept="application/vnd.github.diff",
+        raw=True,
+    )
+    if status != 200:
+        return [
+            f"{COMMENT_GATE_CATEGORY}: cannot read the PR diff "
+            f"({_failure_detail(status, payload, stderr)}) — refusing blind"
+        ]
+    diff_text = payload.get("_raw") if isinstance(payload, dict) else payload
+    if not isinstance(diff_text, str) or not diff_text.strip():
+        return [f"{COMMENT_GATE_CATEGORY}: the PR diff is empty or unreadable — refusing blind"]
+    if _DIFF_TRUNCATED_RE.search(diff_text):
+        return [
+            f"{COMMENT_GATE_CATEGORY}: GitHub truncated the PR diff for a large PR — "
+            "refusing to certify a diff the API cut short; split the PR or waive it "
+            "explicitly with `comment-gate-waiver:` in the body"
+        ]
+    if not any(comment_gate.is_test_path(path) for path in _diff_paths(diff_text)):
+        print(f"⏭️  {COMMENT_GATE_CATEGORY}: no test-file changes in #{pr} — nothing to judge")
+        return []
+    report = comment_gate.check_diff(diff_text)
+    return [f"{COMMENT_GATE_CATEGORY}: {claim.render()}" for claim in report.claims]
+
+
+def _diff_paths(diff_text: str) -> list[str]:
+    """The new-side paths a unified diff touches."""
+    pattern = re.compile(r"^diff --git a/(?P<old>.+?) b/(?P<new>.+)$")
+    return [match.group("new") for match in (pattern.match(line) for line in diff_text.splitlines()) if match]
+
+
 def _gate(
     repo: str,
     pr: int,
@@ -776,6 +916,7 @@ def _gate(
     base: str = DEFAULT_BASE,
     runner=None,
     waiver: str | Path | None = None,
+    comment_gate: bool = True,
 ) -> int:
     status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner=runner)
     if status != 200:
@@ -785,7 +926,7 @@ def _gate(
     # The waiver is validated against the head the payload actually carries —
     # not against ``--expect-head``, which is the caller's claim.  A waiver for
     # a different commit must never authorise this one.
-    grant: Waiver | None = None
+    grant: waiver | None = None
     if waiver is not None:
         payload_head = (data.get("head") or {}).get("sha") or ""
         grant, waiver_problems = read_waiver(waiver, repo=repo, pr=pr, head=payload_head)
@@ -803,6 +944,25 @@ def _gate(
         problems, suppressed = split_waivable(problems)
         detail = "; ".join(suppressed) if suppressed else "nothing (waiver unused)"
         print(f"🔓 waiver: {grant.path} (signed {grant.signed}) — suppressed: {detail}")
+
+    body_grant, _body_gate_problems = comment_waiver(data.get("body") or "")
+    if comment_gate:
+        payload_head = (data.get("head") or {}).get("sha") or ""
+        comment_problems = comment_gate_problems(repo, pr, payload_head, runner=runner)
+        if comment_problems and body_grant is not None:
+            print(
+                f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {body_grant.entry!r} — "
+                f"reason: {body_grant.reason}"
+            )
+            print(
+                f"   suppressed {len(comment_problems)} {COMMENT_GATE_CATEGORY} refusal(s); "
+                "the signed --waiver file never covers this gate"
+            )
+            comment_problems = []
+        problems.extend(comment_problems)
+    elif body_grant is not None:
+        print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-comment-gate)")
+
     if problems:
         for p in problems:
             print(f"❌ {p}", file=sys.stderr)
@@ -905,7 +1065,18 @@ def main(argv: list[str] | None = None) -> int:
             help=(
                 "signed recorded-exception file "
                 "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the "
-                "`verify record c3=<n> < 3` refusal, every other check still runs"
+                "`verify record c3=<n> < 3` refusal, every other check still runs "
+                "— it does NOT cover the comment gate"
+            ),
+        )
+        sp.add_argument(
+            "--no-comment-gate",
+            dest="comment_gate",
+            action="store_false",
+            help=(
+                "skip the behaviour-claim comment gate (break-glass: the ONLY "
+                "supported exception is the PR-body "
+                "`comment-gate-waiver: <reason>` entry, which needs no flag)"
             ),
         )
     args = parser.parse_args(argv)
@@ -917,8 +1088,8 @@ def main(argv: list[str] | None = None) -> int:
         do_merge=(args.cmd == "merge"),
         base=args.base,
         waiver=args.waiver,
+        comment_gate=args.comment_gate,
     )
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
