@@ -474,8 +474,8 @@ class test_round4_regressions:
         assert _gate("o/r", 1, "", allow_cjk = False, do_merge = True, runner = runner) == 1
         # The gate reads three things before it can act: the PR payload, the
         # comment gate's diff, and the artifact gate's file list. "One payload
-        # read" is therefore about /pulls/<n> ALONE — the point of the test is
-        # that a refused gate never reaches the merge PUT.
+        # read" is therefore about /pulls/<n> ALONE — MUT:payload-read-count,
+        # where counting every call instead reads 3 (payload + diff + files).
         json_reads = [c for c in runner.calls if c[-1].endswith("/pulls/1")]
         assert len(json_reads) == 1, "an unverified head must never reach the merge PUT"
         assert not any("merge" in " ".join(c) for c in runner.calls)
@@ -983,8 +983,8 @@ class diff_runner(_FakeRunner):
         self.pr = pr
         self.diff = diff
         self.diff_status = diff_status
-        #: What ``/pulls/<n>/files`` answers. Defaults to the diff's own path so
-        #: a caller that does not care gets a consistent answer.
+        #: What ``/pulls/<n>/files`` answers. Defaulting it to the diff's own
+        #: path keeps a caller that does not care consistent — MUT:files-default.
         self.files = files if files is not None else [line.split(" b/")[-1] for line in diff.splitlines() if line.startswith("diff --git")]
         super().__init__([])
 
@@ -1291,7 +1291,8 @@ class test_comment_gate_cli:
 #   * a PR that touches either root runs the comparison against the checkout,
 #     and a drift refusal reaches the merge verdict;
 #   * `--waiver` does NOT reach it (the refusals ride the same `gated` channel
-#     the comment gate uses), and the PR-body `artifact-gate-waiver:` entry does;
+#     the comment gate uses) — MUT:artifact-waiver-blocked; and the PR-body
+#     `artifact-gate-waiver:` entry does;
 #   * the two gates are independent: waiving one is not waiving the other.
 ARTIFACT_WIT_PATH = "packages/wasm/qr/wit/qr.wit"
 

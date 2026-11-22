@@ -79,8 +79,8 @@ def _artifact_gate_root(tmp_path, monkeypatch):
     # Only when the OPERATOR or another fixture has not already named a root:
     # `os.environ` is read, not "did I set it", because monkeypatch registers
     # cleanup before the test call so a second autouse fixture's value is
-    # already visible here. Nothing may clobber an explicit root — that
-    # refusal contract is the point of round 2/3's fixes.
+    # already visible here. Nothing may clobber an explicit root — pinned by
+    # MUT:cli-waiver-independence (an exported root survives this fixture).
     if "CELESTIA_ARTIFACT_ROOT" not in os.environ:
         monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(stub))
 
