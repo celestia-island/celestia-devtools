@@ -37,6 +37,10 @@ jobs:
     # Python-stdlib-only and sub-second: it belongs with the other org checks on
     # the self-hosted fleet. No GitHub-hosted job here — private repos must not
     # add billed ubuntu-latest runs (AGENTS §8.2).
+    # A fork pull request is not served on the self-hosted fleet: a called
+    # workflow inherits its CALLER's github context, so a pull_request-triggered
+    # caller brings fork content here. `test_fork_checks` pins this clause.
+    if: ${{ github.event.pull_request == null || github.event.pull_request.head.repo.fork != true }}
     runs-on: [self-hosted, linux, x64, local]
     timeout-minutes: 120
     permissions:
