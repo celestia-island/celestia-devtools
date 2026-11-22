@@ -38,6 +38,10 @@ jobs:
     name: Family dependency identity
     # Org convention: real work runs on the org self-hosted runners (hosted
     # provisioning has been observed failing at the org billing tier).
+    # A fork pull request is not served on the self-hosted fleet: a called
+    # workflow inherits its CALLER's github context, so a pull_request-triggered
+    # caller brings fork content here. `test_fork_checks` pins this clause.
+    if: ${{ github.event.pull_request == null || github.event.pull_request.head.repo.fork != true }}
     runs-on: ${{ fromJSON(inputs.runner || '["self-hosted", "linux", "x64", "local"]') }}
     timeout-minutes: 60
     permissions:
