@@ -26,7 +26,7 @@ install:
 
 # Verify all modules import and CLI responds, then run pytest.
 test:
-    {{python_cmd}} -c "from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate, dispatch; from celestia_devtools.repo import locate, init, fetch_just; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; from celestia_devtools.lint import nav_lint, p0_gate, rules_lint; from celestia_devtools.vcs import upstream, worktree; from celestia_devtools.env import dev_watch, vite; from celestia_devtools.npm import release; print('imports ok')"
+    {{python_cmd}} -c "from celestia_devtools import devguard; from celestia_devtools.core import cli, logger, scheduler; from celestia_devtools.build import cache_guard, cross_deps, prefetch, gate, dispatch; from celestia_devtools.repo import locate, init, fetch_just; from celestia_devtools.doc import markdown; from celestia_devtools.doc.linter import fence, i18n, tabs, external; from celestia_devtools.lint import nav_lint, p0_gate, rules_lint; from celestia_devtools.vcs import upstream, worktree; from celestia_devtools.env import dev_watch, vite; from celestia_devtools.npm import release; print('imports ok')"
     {{ _devtools }} --help
     {{ _devtools }} --version
     {{ _devtools }} include-path
