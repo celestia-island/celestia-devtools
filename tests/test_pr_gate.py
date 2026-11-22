@@ -1430,3 +1430,17 @@ class test_artifact_gate_round2:
         root, problems = pr_gate_module._artifact_root()
         assert root is None
         assert problems and ("refusing blind rather than judging a tree nobody named" in problems[0])
+
+    def test_a_cwd_that_is_a_checkout_is_accepted(self, tmp_path, monkeypatch):
+        """The accepted-cwd branch needs its own test, not just the refusal."""
+        stub = tmp_path / "hikari-like"
+        (stub / "packages" / "wasm" / "qr" / "wit").mkdir(parents = True)
+        (stub / "packages" / "wasm" / "qr" / "wit" / "qr.wit").write_text("package celestia:hikari-qr@0.1.0;\ninterface types {}\nworld qr {}\n", encoding = "utf-8")
+        interfaces = stub / "packages" / "vue" / "src" / "wasm" / "qr" / "interfaces"
+        interfaces.mkdir(parents = True)
+        (interfaces / "celestia-hikari-qr-types.d.ts").write_text("/** @module Interface celestia:hikari-qr/types@0.1.0 **/\n", encoding = "utf-8")
+        monkeypatch.delenv("CELESTIA_ARTIFACT_ROOT", raising = False)
+        monkeypatch.chdir(stub)
+        root, problems = pr_gate_module._artifact_root()
+        assert root == str(stub)
+        assert problems == []

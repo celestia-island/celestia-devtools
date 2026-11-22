@@ -272,3 +272,24 @@ class test_round2_regressions:
         rc = artifact_drift.main(["--root", str(tmp_path), "--quiet"])
         assert rc == 0
         capsys.readouterr()
+
+    def test_a_stale_import_appendix_reds(self, tmp_path):
+        """The generator's real version carrier is a TRAILING `// import` line.
+
+        Round 4 found the round-3 fix had narrowed the version-source set past
+        the real shape: `export type * as X from './x.js'; // import
+        celestia:hikari-qr/types@0.1.0` is a trailing comment, and matching only
+        whole-line `// import` made the appendix dead code — a stale barrel then
+        passed (MUT:stale-import-appendix).
+        """
+        build_workspace(tmp_path)
+        barrel = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "hikari_wasm_qr.d.ts"
+        barrel.write_text("// world root:component/root\nexport type * as QrTypes from './interfaces/celestia-hikari-qr-types.js'; // import celestia:hikari-qr/types@0.0.9\n", encoding = "utf-8")
+        findings = artifact_drift.check_repo(tmp_path).findings
+        assert findings, "a stale import appendix must red"
+        assert "artifact 0.0.9" in findings[0].detail
+
+    def test_matching_import_appendix_passes(self):
+        """The mirror: the same line at the declared version is fine."""
+        line = "export type * as X from './i.js'; // import celestia:hikari-qr/types@0.1.0"
+        assert artifact_drift._header_text(line).strip()

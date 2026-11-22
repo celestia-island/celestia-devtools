@@ -74,14 +74,26 @@ _LINE_COMMENT = re.compile(r"//[^\n]*")
 #: The one comment shape that IS a version source: jco's module header.
 _MODULE_HEADER = re.compile(r"^\s*/\*\*\s*@module\s+Interface\s+.*?\*\*/", re.MULTILINE)
 
+#: jco's import appendix. It is a TRAILING comment on a `export type * as …`
+#: line, not a whole-line comment — measured on all four components of the real
+#: corpus, where this appendix is the barrel's ONLY package-version token
+#: (`export type * as X from './interfaces/x.js'; // import celestia:hikari-qr/
+#: types@0.1.0`). Matching only whole-line `// import` made the appendix dead
+#: code and let a stale barrel pass (round 4 of this PR).
+#: No word boundary before `//`: in the real shape the comment follows `;`
+#: (`…from './x.js'; // import …`), and `\b` does not match between `;` and `/`.
+_IMPORT_LINE = re.compile(r"^.*//\s*import\s+\S+", re.MULTILINE)
+
 def _header_text(text: str) -> str:
-    """Only the lines that name a module: ``@module`` headers and ``// import``.
+    """Only the lines that name a module: ``@module`` headers and import lines.
 
     Everything else in a ``.d.ts`` is prose or TypeScript, and a version quoted
-    in either is not a generated binding — reading it as one is a false red.
+    in either is not a generated binding — reading it as one is a false red
+    (round 3). The import appendix IS a naming line, in its real trailing form
+    (round 4). Both directions are pinned by tests.
     """
     kept = _MODULE_HEADER.findall(text)
-    kept.extend(line for line in text.splitlines() if line.strip().startswith("// import"))
+    kept.extend(_IMPORT_LINE.findall(text))
     return "\n".join(kept)
 
 def _strip_comments(text: str) -> str:

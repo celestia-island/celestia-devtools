@@ -976,7 +976,6 @@ def artifact_drift_problems(repo: str, pr: int, *, runner = None) -> list[str]:
 
     return [f"{ARTIFACT_GATE_CATEGORY}: {item.render()}" for item in result.findings] + [f"{ARTIFACT_GATE_CATEGORY}: {item}" for item in result.problems]
 
-# py-style-ok: no-block-imports: stdlib, one call site, kept lazy like the other gate imports
 def _artifact_root() -> tuple[str | None, list[str]]:
     """The checkout to compare against; ``(root, problems)``.
 
@@ -986,6 +985,7 @@ def _artifact_root() -> tuple[str | None, list[str]]:
     and the gate then judged a tree the operator had not named. That is the
     silent fallback the workspace rules forbid.
     """
+    # py-style-ok: no-block-imports: kept lazy with the other gate imports in this file
     import os
 
     explicit = os.environ.get("CELESTIA_ARTIFACT_ROOT")

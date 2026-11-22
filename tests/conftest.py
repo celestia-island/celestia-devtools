@@ -76,6 +76,11 @@ def _artifact_gate_root(tmp_path, monkeypatch):
     interfaces.mkdir(parents = True, exist_ok = True)
     (interfaces / "celestia-hikari-stub-types.d.ts").write_text("/** @module Interface celestia:hikari-stub/types@0.1.0 **/\n", encoding = "utf-8")
 
+    # Only when the OPERATOR or another fixture has not already named a root:
+    # `os.environ` is read, not "did I set it", because monkeypatch registers
+    # cleanup before the test call so a second autouse fixture's value is
+    # already visible here. Nothing may clobber an explicit root — that
+    # refusal contract is the point of round 2/3's fixes.
     if "CELESTIA_ARTIFACT_ROOT" not in os.environ:
         monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(stub))
 
