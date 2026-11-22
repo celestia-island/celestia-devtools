@@ -288,12 +288,18 @@ _WAIVER_BASIS_MIN = 40
 WAIVER_DIR_NAME = "_alerts"
 # The single refusal a waiver may suppress.
 _WAIVABLE_C3_RE = re.compile(r"^verify record c3=(?P<c3>\d+) < 3$")
+
 #: The PR-body exception entry for comment-gate, and how it is recognised.
 #: ``comment-gate-waiver: <reason>`` on one prose line (fenced blocks excluded,
 #: same fence splitter as the verify record). Nothing else reaches it: the
 #: signed ``--waiver`` file does NOT (its one waivable refusal stays the c3
 #: floor), there is no `*` wildcard, and there is no silent fallback.
-COMMENT_WAIVER_ENTRY_RE = re.compile(r"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*comment-gate-waiver[*_`]*[ \t]*[:：][ \t\u3000]*(?P<reason>.*)$", re.IGNORECASE)
+def _gate_entry_re(token: str) -> "re.Pattern[str]":
+    """The body entry for one gate's waiver token, e.g. ``comment-gate-waiver``."""
+    return re.compile(rf"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*{re.escape(token)}[*_`]*[ \t]*[:：][ \t\u3000]*(?P<reason>.*)$", re.IGNORECASE)
+
+COMMENT_WAIVER_ENTRY_RE = _gate_entry_re("comment-gate-waiver")
+ARTIFACT_WAIVER_ENTRY_RE = _gate_entry_re("artifact-gate-waiver")
 #: A reason shorter than this is not a reason: "ok", "meh" and "n/a" all pass a
 #: bare non-empty test, and a waiver channel whose bar is that low is a mute
 #: button. The floor matches the signed file's ``basis:`` field, for the same
@@ -528,17 +534,28 @@ class comment_grant:
 def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     """Read the PR-body comment-gate exception; ``(grant, problems)``.
 
-    This is the ONE channel that may exempt a comment-gate refusal (the signed
+    See :func:`_gate_waiver` — the parser is shared with the artifact gate so
+    the two channels cannot drift into different floors, fence rules or
+    one-entry discipline.
+    """
+    return _gate_waiver(body, "comment-gate-waiver")
+
+def _gate_waiver(body: str, token: str) -> tuple[comment_grant | None, list[str]]:
+    """Read one gate's PR-body exception; ``(grant, problems)``.
+
+    This is the ONE channel that may exempt a gate refusal (the signed
     ``--waiver`` file cannot: its waivable set stays exactly the ``c3 < 3``
     floor, and ``split_waivable`` proves it). The entry is deliberately a
-    different token, on a different surface, so waiving the comment gate is a
+    different token per gate, on a different surface, so waiving a gate is a
     visible act in the PR text a maintainer reads — not a hidden flag.
 
     Fenced blocks are excluded (an entry in a code fence is a template, not a
-    grant); two entries are refused (a PR gets one exception, not a list); a
-    reason below :data:`COMMENT_WAIVER_REASON_MIN` is refused (a waiver with no
-    argument is a mute button).
+    grant); an indented entry is excluded for the same reason (the verify
+    record refuses that shape too); two entries are refused (a PR gets one
+    exception per gate, not a list); a reason below
+    :data:`COMMENT_WAIVER_REASON_MIN` is refused, zero-width characters first.
     """
+    entry_re = _gate_entry_re(token)
     fenced, prose, unclosed = _split_fences(body)
     entries: list[tuple[str, str]] = []
     indented: list[str] = []
@@ -546,48 +563,42 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     for raw_line in prose:
         stripped = raw_line.strip()
 
-        # Cheap prefix test first: the loose pattern matches way too much for a
-        # scan that runs over every line of every PR body.
-        if re.search(r"comment-gate-waiver", stripped, re.IGNORECASE):
-            if _is_indented(raw_line):
-                # A 4-space (or tab) indent is a markdown CODE BLOCK, and the
-                # verify record refuses the same shape ("it reads as a
-                # template, not a record"). Round 5 found the two lanes
-                # disagreeing: a template copy-pasted into an indented block
-                # became a live grant here.
+        # Cheap prefix test first: the loose pattern matches too much for a scan
+        # that runs over every line of every PR body.
+        if re.search(re.escape(token), stripped, re.IGNORECASE):
+            lead = raw_line[: len(raw_line) - len(raw_line.lstrip())]
+
+            if ("\t" in lead) or (len(lead) >= 4):
                 indented.append(stripped)
                 continue
 
-            match = COMMENT_WAIVER_ENTRY_RE.match(raw_line)
+            match = entry_re.match(raw_line)
 
             if match:
                 entries.append((stripped, match.group("reason").strip()))
 
     problems: list[str] = []
 
-    if indented and not entries:
+    if indented and (not entries):
         return None, [f"{indented[0]!r} sits in an indented code block — it reads as a template, not a grant"]
 
     if indented and entries:
-        return None, [f"comment-gate-waiver appears as prose AND in an indented code block ({len(indented)} indented) — one grant, stated once"]
+        return None, [f"{token} appears as prose AND in an indented code block ({len(indented)} indented) — one grant, stated once"]
 
-    # An unclosed fence that swallowed the entry must not read as "the PR
-    # carries none", and an entry INSIDE a well-formed fence is a template —
-    # either way the fence decides, so this branch runs before `not entries`.
-    if unclosed and any(COMMENT_WAIVER_ENTRY_RE.match(line) for line in [*prose, *fenced]):
-        return None, ["comment-gate-waiver sits in an unclosed code fence — an unfinished template must not become a grant"]
+    if unclosed and any(entry_re.match(line) for line in [*prose, *fenced]):
+        return None, [f"{token} sits in an unclosed code fence — an unfinished template must not become a grant"]
 
     if not entries:
         return None, problems
 
     if len(entries) > 1:
-        return None, [f"body carries {len(entries)} comment-gate-waiver entries (one exception " "per PR; say why in a sentence, not in a list)"]
+        return None, [f"body carries {len(entries)} {token} entries (one exception per PR; say why in a sentence, not in a list)"]
 
     entry, reason = entries[0]
     reason = _visible_len_text(_strip_decoration(reason))
 
     if len(reason) < COMMENT_WAIVER_REASON_MIN:
-        return None, [f"{entry!r}: the reason is {len(reason)} characters, below the " f"{COMMENT_WAIVER_REASON_MIN}-character floor — a waiver needs an argument"]
+        return None, [f"{entry!r}: the reason is {len(reason)} characters, below the {COMMENT_WAIVER_REASON_MIN}-character floor — a waiver needs an argument"]
 
     return comment_grant(entry = entry, reason = reason), problems
 
@@ -595,11 +606,13 @@ def body_problems(body: str) -> list[str]:
     """Verify-record problems in a PR body (empty = exactly one clean record)."""
     problems: list[str] = []
     fenced, prose, unclosed = _split_fences(body)
+
     # The comment-gate exception is validated here so a malformed one is
     # refused at merge time — before anything runs the comment gate — instead of
     # being discovered as "the gate still says no" with no explanation.
-    _grant, waiver_problems = comment_waiver(body)
-    problems.extend(waiver_problems)
+    for grant_fn in (comment_waiver, artifact_waiver):
+        _grant, waiver_problems = grant_fn(body)
+        problems.extend(waiver_problems)
 
     record_lines: list[tuple[str, str]] = []
 
@@ -923,7 +936,118 @@ def _diff_paths(diff_text: str) -> list[str]:
     pattern = re.compile(r"^diff --git a/(?P<old>.+?) b/(?P<new>.+)$")
     return [match.group("new") for match in (pattern.match(line) for line in diff_text.splitlines()) if match]
 
-def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_merge: bool, base: str = DEFAULT_BASE, runner = None, waiver: str | Path | None = None, comment_gate: bool = True) -> int:
+ARTIFACT_GATE_CATEGORY = "artifact-drift"
+
+def artifact_drift_problems(repo: str, pr: int, *, runner = None) -> list[str]:
+    """WIT contract vs generated bindings, for a PR that touches either root.
+
+    The comparison itself lives in :mod:`celestia_devtools.lint.artifact_drift`;
+    this function owns the reachability question the design names: the gate is
+    only meaningful for a PR that changes a WIT contract or the generated
+    bindings, so a PR touching neither is a LOUD SKIP rather than a green line
+    that certifies nothing.
+
+    The bindings are regenerated by the build, not committed by hand, so this
+    never shells out: it reads the checkout the merge is happening in. That is
+    the same checkout the reviewer just ran, and a regenerated tree is a
+    different diff (the regenerated files show up in the PR) — so a PASS here
+    means the tree the merge will produce is consistent.
+    """
+    # py-style-ok: no-block-imports: lazy, same contract as the comment gate below.
+    from celestia_devtools.lint import artifact_drift
+
+    manifest, problems = _pr_file_list(repo, pr, runner = runner)
+
+    if manifest is None:
+        return problems
+
+    relevant = artifact_drift.relevant_paths(manifest)
+
+    if not relevant:
+        print(f"⏭️  {ARTIFACT_GATE_CATEGORY}: no WIT / wasm-binding changes in #{pr} — nothing to judge")
+        return []
+
+    root, root_problems = _artifact_root()
+
+    if root is None:
+        return root_problems
+
+    result = artifact_drift.check_repo(root)
+
+    return [f"{ARTIFACT_GATE_CATEGORY}: {item.render()}" for item in result.findings] + [f"{ARTIFACT_GATE_CATEGORY}: {item}" for item in result.problems]
+
+def _artifact_root() -> tuple[str | None, list[str]]:
+    """The checkout to compare against; ``(root, problems)``.
+
+    An explicit ``CELESTIA_ARTIFACT_ROOT`` is honoured or REFUSED — never
+    silently replaced by a different tree. Round 2 of this PR found the earlier
+    fallthrough: a typo'd override quietly resolved to ``/mnt/codespace/hikari``
+    and the gate then judged a tree the operator had not named. That is the
+    silent fallback the workspace rules forbid.
+    """
+    # py-style-ok: no-block-imports: kept lazy with the other gate imports in this file
+    import os
+
+    explicit = os.environ.get("CELESTIA_ARTIFACT_ROOT")
+
+    if explicit:
+        if (Path(explicit) / "packages" / "wasm").is_dir():
+            return explicit, []
+
+        return None, [f"{ARTIFACT_GATE_CATEGORY}: CELESTIA_ARTIFACT_ROOT={explicit!r} has no packages/wasm — refusing rather than judging a tree the caller did not name"]
+
+    # The cwd is the checkout the merge is happening in — a defensible default.
+    # The workspace hikari path is NOT: it is a different repository, and using
+    # it would judge a tree nobody named (round 3 of this PR found the earlier
+    # fallthrough still doing exactly that on this branch).
+    if (Path.cwd() / "packages" / "wasm").is_dir():
+        return str(Path.cwd()), []
+
+    return None, [f"{ARTIFACT_GATE_CATEGORY}: no packages/wasm in {Path.cwd()} — this is not a hikari checkout; set CELESTIA_ARTIFACT_ROOT to the tree the merge should be judged against (refusing blind rather than judging a tree nobody named)"]
+
+def _pr_file_list(repo: str, pr: int, *, runner = None) -> tuple[list[str] | None, list[str]]:
+    """Every path the PR touches, paginated; ``(paths, problems)``."""
+    paths: list[str] = []
+    page = 1
+
+    while True:
+        status, payload, stderr = gh_api(f"repos/{repo}/pulls/{pr}/files?per_page=100&page={page}", runner = runner)
+
+        if status != 200:
+            return None, [f"{ARTIFACT_GATE_CATEGORY}: cannot read the PR file list ({_failure_detail(status, payload, stderr)}) — refusing blind"]
+
+        # `gh_api` wraps a top-level JSON array as {"_raw": [...]}; a bare list
+        # is accepted too so a stub need not mimic that.
+        files = payload if isinstance(payload, list) else payload.get("_raw")
+
+        if not isinstance(files, list) or not files:
+            if files is None:
+                return None, [f"{ARTIFACT_GATE_CATEGORY}: the PR file list is not a list — refusing blind"]
+
+            break
+
+        paths.extend(str(entry.get("filename") or "") for entry in files if isinstance(entry, dict))
+
+        if len(files) < 100:
+            break
+
+        page += 1
+
+    if not paths:
+        return None, [f"{ARTIFACT_GATE_CATEGORY}: the PR carries no file entries — refusing blind"]
+
+    return paths, []
+
+def artifact_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
+    """Read the PR-body artifact-gate exception; ``(grant, problems)``.
+
+    Same contract as :func:`comment_waiver` — one entry, a real reason, prose
+    only — under a token of its own, so waiving one gate is never a side effect
+    of waiving the other.
+    """
+    return _gate_waiver(body, "artifact-gate-waiver")
+
+def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_merge: bool, base: str = DEFAULT_BASE, runner = None, waiver: str | Path | None = None, comment_gate: bool = True, artifact_drift: bool = True) -> int:
     status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner = runner)
 
     if status != 200:
@@ -948,6 +1072,7 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
 
     problems = check_pr(data, expect_head, allow_cjk = allow_cjk, base = base)
     body_grant, _body_gate_problems = comment_waiver(data.get("body") or "")
+    artifact_grant, _artifact_waiver_problems = artifact_waiver(data.get("body") or "")
     # The comment gate runs BEFORE the waiver split, and its refusals are held
     # apart from `problems` rather than merged into them. Merging first would
     # have made "--waiver never covers the comment gate" a property of the
@@ -972,6 +1097,27 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
         problems, suppressed = split_waivable(problems)
         detail = "; ".join(suppressed) if suppressed else "nothing (waiver unused)"
         print(f"🔓 waiver: {grant.path} (signed {grant.signed}) — suppressed: {detail}")
+
+    # The artifact gate rides the SAME channel: its refusals are appended to
+    # `gated`, the list `split_waivable` never sees, so `--waiver` cannot
+    # suppress them either — and a PR that touches neither root is a LOUD skip
+    # instead of a green line that certifies nothing.
+    if artifact_drift:
+        artifact_problems = artifact_drift_problems(repo, pr, runner = runner)
+
+        if artifact_problems and (artifact_grant is not None):
+            print(f"🔓 {ARTIFACT_GATE_CATEGORY}-waiver (PR body): {artifact_grant.entry!r} — reason: {artifact_grant.reason}")
+            print(f"   suppressed {len(artifact_problems)} {ARTIFACT_GATE_CATEGORY} refusal(s)")
+        else:
+            gated.extend(artifact_problems)
+    else:
+        if artifact_grant is not None:
+            print(f"🔓 {ARTIFACT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-artifact-gate)")
+        else:
+            # A break-glass skip must leave a trace in the merge log, exactly
+            # like the comment gate's: an unrecorded skip is a green line that
+            # certifies nothing (round 2 of this PR).
+            print(f"⏭️  {ARTIFACT_GATE_CATEGORY}: SKIPPED by --no-artifact-gate on #{pr} — no contract/binding comparison ran")
 
     problems = [*problems, *gated]
 
@@ -1067,9 +1213,10 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--base", default = DEFAULT_BASE, help = "branch the gate may merge into")
         sp.add_argument("--waiver", default = None, metavar = "PATH", help = "signed recorded-exception file " "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the " "`verify record c3=<n> < 3` refusal, every other check still runs " "— it does NOT cover the comment gate")
         sp.add_argument("--no-comment-gate", dest = "comment_gate", action = "store_false", help = "skip the behaviour-claim comment gate (break-glass: the ONLY " "supported exception is the PR-body " "`comment-gate-waiver: <reason>` entry, which needs no flag)")
+        sp.add_argument("--no-artifact-gate", dest = "artifact_drift", action = "store_false", help = "skip the WIT-vs-bindings drift gate (the ONLY supported exception is the PR-body `artifact-gate-waiver: <reason>` entry, which needs no flag)")
 
     args = parser.parse_args(argv)
-    return _gate(args.repo, args.pr, args.expect_head, allow_cjk = args.allow_cjk, do_merge = args.cmd == "merge", base = args.base, waiver = args.waiver, comment_gate = args.comment_gate)
+    return _gate(args.repo, args.pr, args.expect_head, allow_cjk = args.allow_cjk, do_merge = args.cmd == "merge", base = args.base, waiver = args.waiver, comment_gate = args.comment_gate, artifact_drift = args.artifact_drift)
 
 if __name__ == "__main__":
     raise SystemExit(main())
