@@ -64,7 +64,8 @@ def _artifact_gate_root(tmp_path, monkeypatch):
     """
     # Outside tmp_path's default scan root as seen by other suites: pages /
     # nav-lint / type-escapes walk the CWD, and a `.d.ts` planted there is
-    # picked up by them (measured: 18 unrelated failures).
+    # picked up by them — MUT:stub-inside-tmp-path, where keeping the stub in
+    # tmp_path turned 18 unrelated tests red (measured before moving it).
     stub = tmp_path.parent / f"{tmp_path.name}-artifact-root"
     wit = stub / "packages" / "wasm" / "stub" / "wit"
     wit.mkdir(parents = True, exist_ok = True)
