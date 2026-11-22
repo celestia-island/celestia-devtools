@@ -896,8 +896,16 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner=None) -> list
     if not any(comment_gate.is_test_path(path) for path in _diff_paths(diff_text)):
         print(f"⏭️  {COMMENT_GATE_CATEGORY}: no test-file changes in #{pr} — nothing to judge")
         return []
+
     report = comment_gate.check_diff(diff_text)
-    return [f"{COMMENT_GATE_CATEGORY}: {claim.render()}" for claim in report.claims]
+    # BOTH halves of the verdict, not just the claims: the scanner also refuses
+    # "zero scanned comment lines" and "zero vocabulary hits", and those are its
+    # defence against a mis-typed pattern reading as green. Forwarding only
+    # `report.claims` silently disabled that defence in the one place it exists
+    # for — found in review round 2.
+    return [f"{COMMENT_GATE_CATEGORY}: {claim.render()}" for claim in report.claims] + [
+        f"{COMMENT_GATE_CATEGORY}: {problem}" for problem in report.problems
+    ]
 
 
 def _diff_paths(diff_text: str) -> list[str]:

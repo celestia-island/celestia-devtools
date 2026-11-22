@@ -1091,7 +1091,7 @@ class test_comment_gate_waiver:
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner) == 0
         out = capsys.readouterr().out
         assert "comment-gate-waiver (PR body)" in out
-        assert "suppressed 1 comment-gate refusal" in out
+        assert "suppressed 2 comment-gate refusal(s)" in out
 
     def test_body_entry_does_not_excuse_a_bad_title(self, capsys):
         body = GOOD_RECORD + "\ncomment-gate-waiver: the probe ids live in the linked issue, not the file\n"

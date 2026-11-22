@@ -396,3 +396,79 @@ class test_repo_self_proof:
 
     def test_module_importable_from_the_checkout(self):
         assert Path(sys.modules["celestia_devtools.lint.comment_gate"].__file__).is_file()
+
+def _hunk(body: str, *, start: int = 1, count: int = 1, old_count: int = 0) -> str:
+    """A hunk whose body is written literally (``+``/``-``/space prefixed)."""
+    return f"@@ -{start},{old_count} +{start},{count} @@\n" + body
+
+def _diff(*hunks: str) -> str:
+    """A one-file diff built from already-built hunks."""
+    return "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" + "".join(hunks)
+
+def _single_hunk(body: str, *, start: int = 1, count: int = 1, old_count: int = 0) -> str:
+    """One-hunk diff: the shape every simple regression uses."""
+    return _diff(_hunk(body, start = start, count = count, old_count = old_count))
+
+class test_round2_geometry:
+    """Regressions from the independent review round — all four were real.
+
+    Each test constructs the exact diff that failed, so the fix cannot silently
+    regress: the assertions are about FILE-line distance, which is the property
+    the design names ("上下 10 行内"), not about patch-line arithmetic.
+    """
+
+    def test_anchor_beyond_the_window_does_not_bind_across_a_hunk(self):
+        # Review round 2: the gap was measured as `start - new_line`, a count of
+        # PATCH lines. A hunk declared as one line but carrying ten made a
+        # sixteen-file-line gap look like two, and the anchor bound.
+        # The claim is file line 1; nine expects follow (2..10); the LAST line
+        # of the next hunk is at 17, i.e. SIXTEEN lines below the claim — the
+        # distance the pre-round-2 code wrongly bound as "two".
+        body = "\n".join(["+expect(0).toBe(0);"] * 9)
+        diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" "@@ -1,0 +1,1 @@\n+// measured: this catches it\n" + body + "\n@@ -3,0 +17,1 @@\n+// MUT: far\n"
+        report = comment_gate.check_diff(diff)
+        assert [claim.line for claim in report.claims] == [1]
+
+    def test_declared_body_smaller_than_actual_does_not_shorten_the_window(self):
+        # Same defect, opposite direction: the hunk's declared body ignores how
+        # many lines it actually carries.
+        claim = _hunk("+// measured: this catches it\n", count = 6)
+        filler = "\n".join(["+expect(0);"] * 5)
+        anchor = _hunk("+// MUT: far\n", start = 20)
+        diff = _diff(claim + filler + "\n" + anchor)
+        assert [claim.line for claim in comment_gate.check_diff(diff).claims] == [1]
+
+    def test_a_backwards_hunk_is_not_spliced_onto_the_previous_section(self):
+        # A non-monotonic hunk start is a concatenation, not a continuation.
+        first = _hunk("+expect(1).toBe(1);\n+expect(2).toBe(2);\n", start = 20, count = 2)
+        second = _hunk("+// MUT: early\n")
+        third = _hunk("+// measured: this catches it\n+expect(3);\n", start = 30, count = 2)
+        diff = _diff(first, second, third)
+        assert [claim.line for claim in comment_gate.check_diff(diff).claims] == [30]
+
+    def test_an_added_content_line_may_start_with_a_plus(self):
+        # A file line whose CONTENT begins with `+` reaches the diff as `++…`.
+        # Matching the header prefixes (`+++ `) instead of the first character
+        # dropped the line entirely.
+        diff = _single_hunk("+++hello world\n+// measured: this pin catches it\n", count = 2)
+        report = comment_gate.check_diff(diff)
+        assert report.scanned_lines == 1
+        assert [claim.line for claim in report.claims] == [2]
+
+    def test_an_added_content_line_may_start_with_a_minus(self):
+        diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" "@@ -1,0 +1,2 @@\n+--keep this\n+// measured: this pin catches it\n"
+        assert [claim.line for claim in comment_gate.check_diff(diff).claims] == [2]
+
+    def test_file_line_numbers_survive_removals_and_context(self):
+        # Removals do not advance the NEW file; context does. A claim after a
+        # 3-line removal and a 2-line context must report its true file line.
+        diff = _single_hunk("-a\n-b\n-c\n expect(1);\n expect(2);\n-x\n+// measured: this catches it\n+y\n", count = 8, old_count = 6)
+        report = comment_gate.check_diff(diff)
+        assert [claim.line for claim in report.claims] == [3]
+
+    def test_anchor_inside_the_window_binds(self):
+        # The mirror of the round-2 fix: a window that is too NARROW would red
+        # every anchored claim, so the same geometry is pinned from both sides.
+        body = "\n".join(["+expect(0).toBe(0);"] * 9)
+        diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" "@@ -1,0 +1,1 @@\n+// measured: this catches it\n" + body + "\n@@ -11,0 +11,1 @@\n+// MUT: near\n"
+        assert comment_gate.check_diff(diff).claims == ()

@@ -248,12 +248,15 @@ def anchored(window: Iterable[str]) -> bool:
 def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[int]) -> tuple[list[claim], int]:
     """Claims without an anchor and the number of claim lines in ``lines``.
 
-    ``lines`` are the comment lines of a contiguous block (blank lines allowed
-    inside a doc comment) and ``line_numbers`` their positions in the file; the
-    anchor window is :data:`ANCHOR_WINDOW` lines on either side, clamped to the
-    block. Widening past the block on both sides would let a neighbouring
-    function's table excuse an unrelated claim — the block is the unit a reader
-    actually reads.
+    ``lines`` are the lines of one section (blank lines allowed inside a doc
+    comment) and ``line_numbers`` their positions in the FILE. The anchor window
+    is :data:`ANCHOR_WINDOW` **file lines** on either side, clamped to the
+    section: slicing by index instead made a patch that SKIPS lines (``-U0``
+    hunks, an elided gap) look adjacent — a claim at line 1 and an anchor at
+    line 17 sat ten indices apart and bound, which is the whole defect the
+    round-2 review found. Widening past the section on both sides would let a
+    neighbouring function's table excuse an unrelated claim — the section is the
+    unit a reader actually reads.
     """
     claims: list[claim] = []
     hits = 0
@@ -275,12 +278,14 @@ def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[i
         if DIRECTIVE.search(text):
             continue
 
-        # Inclusive slice bounds: a claim at block index i sees indices
-        # i-ANCHOR_WINDOW .. i+ANCHOR_WINDOW, symmetric by construction.
-        low = max(0, index - ANCHOR_WINDOW)
-        high = min(len(lines), index + ANCHOR_WINDOW + 1)
+        # Distance is measured in FILE LINE NUMBERS, not list indices: a diff
+        # that skips lines would otherwise make a distant anchor look adjacent.
+        here = line_numbers[index]
+        low = max(0, here - ANCHOR_WINDOW)
+        high = here + ANCHOR_WINDOW
+        window = [text for text, number in zip(lines, line_numbers, strict = True) if low <= number <= high]
 
-        if anchored(lines[low:high]):
+        if anchored(window):
             continue
 
         claims.append(claim(path = path, line = line_numbers[index], text = text.strip(), terms = terms))
@@ -330,16 +335,19 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
     change adds*, and complaining about a file a PR merely touches would block
     work on evidence the author did not write.
 
-    The unit of scanning is **one section of one file**, where a section is a
-    contiguous run the patch actually shows (a hunk, or an added block between
-    context). :data:`ANCHOR_WINDOW` is measured inside that run, so it can only
-    ever be narrower than the real distance in the file — a window that reached
-    across unseen lines would let a table 400 lines away excuse a claim, which
-    defeats the point (measured while writing these tests).
+    The unit of scanning is **one section of one file**, and a section is a run
+    of lines the patch actually shows, laid out by **file line number**. The
+    section CLOSES (it never splices) when the file changes, when a hunk starts
+    after a gap of more than ``2 * ANCHOR_WINDOW`` file lines, when a hunk's
+    start goes backwards (a concatenation, not a continuation), and at a blank
+    comment line (``//`` on its own) — the spacer a reader reads as a section
+    break, and exactly where a mutation table at the top of a heading block
+    would otherwise leak into the next one.
 
-    A blank comment line (``//`` on its own) also cuts: it is what separates two
-    sections a reader treats as separate, and it is exactly where a mutation
-    table at the top of a heading block would otherwise leak into the next one.
+    Every distance compared here is a FILE line number, never a count of patch
+    lines: found the hard way (round 2), a hunk declared as one line but
+    carrying ten made ``start - new_line`` look like a two-line gap while the
+    file distance was sixteen, and an anchor sixteen lines away bound.
     """
     claims: list[claim] = []
     hits = 0
@@ -347,28 +355,45 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
     notes: list[str] = []
     scanned_numbers: dict[str, set[int]] = {}
     per_file: list[tuple[str, list[list[tuple[int, str]]]]] = []
-    current: list[tuple[int, str]] | None = None
+    section: list[tuple[int, str]] = []
     sections: list[list[tuple[int, str]]] = []
     current_path: str | None = None
-    new_line = 0
+    last_file_line: int | None = None
+    cursor = 1
     in_hunk = False
 
-    def close_file() -> None:
-        nonlocal current, sections, current_path
+    def close_section() -> None:
+        nonlocal section
 
-        # The LAST section is still in ``current`` when the file closes: without
-        # this append a single-section file reached the scanner with zero
-        # blocks and every claim in it vanished (measured — the corpus control
-        # passed for the wrong reason before this line existed).
-        if current:
-            sections.append(current)
+        if section:
+            sections.append(section)
+
+        section = []
+
+    def close_file() -> None:
+        nonlocal sections, current_path, last_file_line, in_hunk
+
+        close_section()
 
         if sections:
             per_file.append((current_path or "", sections))
 
-        current = None
         sections = []
         current_path = None
+        last_file_line = None
+        in_hunk = False
+
+    def add(file_line: int, text: str) -> None:
+        nonlocal last_file_line
+
+        # A line that goes BACKWARDS or jumps over a gap wider than the window
+        # cannot be in the same section; splicing it would silently redefine
+        # every distance measured inside that section.
+        if (last_file_line is not None) and (file_line <= last_file_line):
+            close_section()
+
+        section.append((file_line, text))
+        last_file_line = file_line
 
     for raw in diff.splitlines():
         header = _FILE_HEADER.match(raw)
@@ -376,23 +401,6 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         if header:
             close_file()
             current_path = header.group("new")
-            current = None
-            in_hunk = False
-            continue
-
-        if raw.startswith("+++ "):
-            # An INLINE mode change emits `--- a/f` / `+++ b/f` INSIDE a hunk.
-            # Treating that as a file header closed the block and the claim
-            # escaped (measured while writing these tests, twice); only a label
-            # reached from outside a hunk can rename the file.
-            label = _NEW_FILE.match(raw)
-
-            if label and (not in_hunk) and (current_path is not None):
-                current_path = label.group("path")
-
-            continue
-
-        if raw.startswith("--- "):
             continue
 
         hunk = _HUNK_HEADER.match(raw)
@@ -400,78 +408,73 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         if hunk:
             start = int(hunk.group("start"))
 
-            if current is not None:
-                # Consecutive hunks CONTINUE the section while they are close
-                # enough to matter (>2 * ANCHOR_WINDOW lines apart closes it):
-                # their patch distance is only a bound on the file distance, so
-                # a slice must never cross a gap wider than the window itself —
-                # that is what let a table 400 lines away excuse a claim
-                # (measured). Padding the gap with "unknown" is not needed
-                # either: a window that wide can never bind.
-                gap_is_wide = (start - new_line) > (2 * ANCHOR_WINDOW)
+            # Hunk-start comparison is a cheap BOUND only (a hunk's declared
+            # body can be smaller than the lines it carries); the binding test
+            # that matters is the per-line one in `add()`.
+            gap_is_wide = (last_file_line is not None) and (start > (last_file_line + (2 * ANCHOR_WINDOW)))
 
-                if (sections or current) and gap_is_wide:
-                    # A wide gap closes the section. (The section is kept even
-                    # when only context closes it — a later hunk 20 lines on
-                    # must not be spliced onto it.)
-                    sections.append(current)
-                    current = []
+            if gap_is_wide:
+                close_section()
 
-            new_line = start
+            cursor = start
             in_hunk = True
             continue
 
         if not in_hunk:
+            # Header block only: the per-file label, which for a new file is
+            # the only place the real path appears (`a/` is ``/dev/null``).
+            label = _NEW_FILE.match(raw)
+
+            if label and (current_path is not None):
+                current_path = label.group("path")
+
             continue
 
-        if raw.startswith("+"):
-            added = raw[1:]
+        # A hunk line is classified by its FIRST character ONLY, and the rest
+        # of the line is the CONTENT that follows it. Matching the header
+        # prefixes instead (`+++ ` / `--- `) ate a real added line whose content
+        # itself began with `++` — found in round 2 with a live `git diff`.
+        prefix, body = raw[:1], raw[1:]
 
+        if prefix == "+":
             if current_path and is_test_path(current_path):
-                if (comment_body(added) is not None) and added.strip():
-                    # Count each LINE once: a line that appears in two hunks
-                    # (an extended header, a re-emitted context line) is one
-                    # comment line, not two.
-                    if new_line not in scanned_numbers.setdefault(current_path, set()):
-                        scanned_numbers[current_path].add(new_line)
+                if (comment_body(body) is not None) and body.strip():
+                    # Count each LINE once: an extended header can repeat one.
+                    seen = scanned_numbers.setdefault(current_path, set())
+
+                    if cursor not in seen:
+                        seen.add(cursor)
                         scanned += 1
 
-                if current is None:
-                    current = []
+                add(cursor, body)
 
-                current.append((new_line, added))
-
-            new_line += 1
+            cursor += 1
             continue
 
-        if raw.startswith(" "):
-            # Context: it feeds the window geometry (file lines) but is never a
-            # claim candidate of its own — the gate judges this change.
+        if prefix == " ":
+            # Context feeds the geometry but is never a claim candidate: the
+            # gate judges what this change ADDS. It is prefixed so a context
+            # line that is CODE can never be read as a comment (`as [never]`
+            # hit the vocabulary from inside a context line — measured).
             if (current_path is not None) and is_test_path(current_path):
-                if current is None:
-                    current = []
+                add(cursor, " " + body)
 
-                # Prefixed with a space so a context line that is CODE can never
-                # be read as a comment (`as [never]` used to hit the vocabulary
-                # from inside a context line — measured, 11 hits instead of 9).
-                current.append((new_line, " " + raw[1:]))
+            cursor += 1
+            continue
 
-            new_line += 1
+        if prefix in ("-", "\\"):
+            # A removal shifts nothing in the NEW file: `-` lines do not advance
+            # its line numbers, and `\\ No newline` is not a line at all.
             continue
 
         if raw == "":
-            # An empty line is not a diff line; counting it would shift every
-            # subsequent file line number.
-            continue
-
-        if raw.startswith("-") or raw.startswith("\\"):
             continue
 
     close_file()
 
     for path, file_sections in per_file:
-        for section in file_sections:
-            for block in _split_on_spacers(section):
+        for section_lines in file_sections:
+            for block in _split_on_spacers(section_lines):
                 numbers = [number for number, _ in block]
                 texts = [text for _, text in block]
                 block_claims, block_hits = scan_comment_block(texts, path, numbers)
