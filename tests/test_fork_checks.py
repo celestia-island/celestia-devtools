@@ -33,16 +33,16 @@ So the contract below is: a fork must reach the job, and the job must not
 require a secret (a fork run gets none, so any required secret would turn every
 outside PR red).
 
-*Why the fork clause disappeared, measured rather than assumed:* a called
-workflow inherits the **caller's** ``github`` context (GitHub docs, "reusing
-workflow configurations": "the ``github`` context is always associated with the
-caller workflow"). So ``workflow_call`` is NOT what the callee sees — a
-``pull_request``-triggered caller DOES give the callee
-``event_name == 'pull_request'``. The clause went dead because the org's
-canonical CALLERS are dispatch-only: ``5fcb8db`` (#264, 2026-11-06) removed the
-``pull_request`` trigger from both workflows, and ``a802e08`` (#294) then
-deleted the resulting dead code. *Effect* right; *reason* not this file's own
-trigger list.
+*Why the fork clause disappeared:* a called workflow inherits the **caller's**
+``github`` context (GitHub docs, "reusing workflow configurations"), so
+``workflow_call`` is NOT what the callee sees — a ``pull_request``-triggered
+caller gives the callee ``event_name == 'pull_request'``. The clause went dead
+because the org's canonical CALLERS are dispatch-only: ``5fcb8db`` (#264)
+removed the ``pull_request`` trigger, and ``a802e08`` (#294) then deleted the
+resulting dead code. *Effect* right; *reason* not this file's own trigger list.
+Mutation MUT:fork-premise-wrong — write the guard as if the callee's own
+trigger list settled it (`if: github.event_name != 'pull_request'` and nothing
+else) and ``test_job_is_not_skipped_for_forks`` reds.
 
 *What this file therefore asserts:* the 466d207 property is "no condition may
 filter a fork out of a required check". A condition that mentions ``fork`` or
@@ -158,8 +158,11 @@ FORK, SAME_REPO, NOT_A_PR = "fork", "same-repo", "dispatch"
 #: ``x == null`` and ``x != true`` both true in that column.
 FACTS = {FORK: {"is_pr": True, "fork": True, "same_repo": False}, SAME_REPO: {"is_pr": True, "fork": False, "same_repo": True}, NOT_A_PR: {"is_pr": False, "fork": None, "same_repo": None}}
 
-#: Returned when the evaluator meets a token it does not model. A GUARD check
-#: must be conservative: an unknown condition is not evidence of safety.
+#: Returned when the evaluator meets a token it does not model. The two duties
+#: read it in opposite directions — see `_carries_fork_guard` (conservative)
+#: and `_is_served_job_filtered` (must not block a PR) — and both directions are
+#: pinned: MUT:unmodelled-token, where `contains(...)` as a farm guard reds the
+#: farm duty while a served job is not blocked by it.
 UNKNOWN = object()
 
 def _value(atom: str, situation: str):
