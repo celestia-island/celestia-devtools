@@ -51,3 +51,38 @@ def _bind_to_checkout() -> None:
     os.environ["PYTHONPATH"] = (text + os.pathsep + existing) if existing else text
 
 _bind_to_checkout()
+import pytest
+
+@pytest.fixture(autouse=True)
+def _artifact_gate_root(tmp_path, monkeypatch):
+    """Point the artifact gate at a stub checkout for every test.
+
+    The gate refuses to run outside a hikari-style checkout (it will not judge
+    a tree nobody named), and the devtools repository is not one. Tests that
+    care about the comparison set ``CELESTIA_ARTIFACT_ROOT`` themselves and
+    override this.
+    """
+    # Outside tmp_path's default scan root as seen by other suites: pages /
+    # nav-lint / type-escapes walk the CWD, and a `.d.ts` planted there is
+    # picked up by them — MUT:stub-inside-tmp-path, where keeping the stub in
+    # tmp_path turned 18 unrelated tests red (measured before moving it).
+    stub = tmp_path.parent / f"{tmp_path.name}-artifact-root"
+    wit = stub / "packages" / "wasm" / "stub" / "wit"
+    wit.mkdir(parents = True, exist_ok = True)
+    # One contract WITH its bindings: the gate refuses a checkout whose
+    # packages/wasm holds nothing (zero production must fail), and a stub that
+    # merely exists would trip that guard for every test.
+    (wit / "stub.wit").write_text("package celestia:hikari-stub@0.1.0;\n\ninterface types {\n}\n\nworld stub {\n}\n", encoding = "utf-8")
+    interfaces = stub / "packages" / "vue" / "src" / "wasm" / "stub" / "interfaces"
+    interfaces.mkdir(parents = True, exist_ok = True)
+    (interfaces / "celestia-hikari-stub-types.d.ts").write_text("/** @module Interface celestia:hikari-stub/types@0.1.0 **/\n", encoding = "utf-8")
+
+    # Only when the OPERATOR or another fixture has not already named a root:
+    # `os.environ` is read, not "did I set it", because monkeypatch registers
+    # cleanup before the test call so a second autouse fixture's value is
+    # already visible here. Nothing may clobber an explicit root — pinned by
+    # MUT:cli-waiver-independence (an exported root survives this fixture).
+    if "CELESTIA_ARTIFACT_ROOT" not in os.environ:
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(stub))
+
+    return stub
