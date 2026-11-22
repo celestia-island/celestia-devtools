@@ -51,3 +51,32 @@ def _bind_to_checkout() -> None:
     os.environ["PYTHONPATH"] = (text + os.pathsep + existing) if existing else text
 
 _bind_to_checkout()
+import pytest
+
+@pytest.fixture(autouse=True)
+def _artifact_gate_root(tmp_path, monkeypatch):
+    """Point the artifact gate at a stub checkout for every test.
+
+    The gate refuses to run outside a hikari-style checkout (it will not judge
+    a tree nobody named), and the devtools repository is not one. Tests that
+    care about the comparison set ``CELESTIA_ARTIFACT_ROOT`` themselves and
+    override this.
+    """
+    # Outside tmp_path's default scan root as seen by other suites: pages /
+    # nav-lint / type-escapes walk the CWD, and a `.d.ts` planted there is
+    # picked up by them (measured: 18 unrelated failures).
+    stub = tmp_path.parent / f"{tmp_path.name}-artifact-root"
+    wit = stub / "packages" / "wasm" / "stub" / "wit"
+    wit.mkdir(parents = True, exist_ok = True)
+    # One contract WITH its bindings: the gate refuses a checkout whose
+    # packages/wasm holds nothing (zero production must fail), and a stub that
+    # merely exists would trip that guard for every test.
+    (wit / "stub.wit").write_text("package celestia:hikari-stub@0.1.0;\n\ninterface types {\n}\n\nworld stub {\n}\n", encoding = "utf-8")
+    interfaces = stub / "packages" / "vue" / "src" / "wasm" / "stub" / "interfaces"
+    interfaces.mkdir(parents = True, exist_ok = True)
+    (interfaces / "celestia-hikari-stub-types.d.ts").write_text("/** @module Interface celestia:hikari-stub/types@0.1.0 **/\n", encoding = "utf-8")
+
+    if "CELESTIA_ARTIFACT_ROOT" not in os.environ:
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(stub))
+
+    return stub

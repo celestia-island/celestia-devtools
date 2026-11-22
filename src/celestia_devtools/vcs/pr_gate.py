@@ -976,6 +976,7 @@ def artifact_drift_problems(repo: str, pr: int, *, runner = None) -> list[str]:
 
     return [f"{ARTIFACT_GATE_CATEGORY}: {item.render()}" for item in result.findings] + [f"{ARTIFACT_GATE_CATEGORY}: {item}" for item in result.problems]
 
+# py-style-ok: no-block-imports: stdlib, one call site, kept lazy like the other gate imports
 def _artifact_root() -> tuple[str | None, list[str]]:
     """The checkout to compare against; ``(root, problems)``.
 
@@ -995,11 +996,14 @@ def _artifact_root() -> tuple[str | None, list[str]]:
 
         return None, [f"{ARTIFACT_GATE_CATEGORY}: CELESTIA_ARTIFACT_ROOT={explicit!r} has no packages/wasm — refusing rather than judging a tree the caller did not name"]
 
-    for candidate in (str(Path.cwd()), "/mnt/codespace/hikari"):
-        if (Path(candidate) / "packages" / "wasm").is_dir():
-            return candidate, []
+    # The cwd is the checkout the merge is happening in — a defensible default.
+    # The workspace hikari path is NOT: it is a different repository, and using
+    # it would judge a tree nobody named (round 3 of this PR found the earlier
+    # fallthrough still doing exactly that on this branch).
+    if (Path.cwd() / "packages" / "wasm").is_dir():
+        return str(Path.cwd()), []
 
-    return None, [f"{ARTIFACT_GATE_CATEGORY}: no checkout with packages/wasm found (set CELESTIA_ARTIFACT_ROOT) — refusing blind"]
+    return None, [f"{ARTIFACT_GATE_CATEGORY}: no packages/wasm in {Path.cwd()} — this is not a hikari checkout; set CELESTIA_ARTIFACT_ROOT to the tree the merge should be judged against (refusing blind rather than judging a tree nobody named)"]
 
 def _pr_file_list(repo: str, pr: int, *, runner = None) -> tuple[list[str] | None, list[str]]:
     """Every path the PR touches, paginated; ``(paths, problems)``."""

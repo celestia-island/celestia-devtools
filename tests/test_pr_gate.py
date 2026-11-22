@@ -1417,3 +1417,16 @@ class test_artifact_gate_round2:
         pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH])
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files), artifact_drift = False) == 0
         assert "SKIPPED by --no-artifact-gate" in capsys.readouterr().out
+
+    def test_an_unidentifiable_cwd_refuses_instead_of_judging_hikari(self, tmp_path, monkeypatch):
+        """A repo whose cwd is not a hikari checkout must not be judged against one.
+
+        Round 3 found the earlier fix covering only the EXPLICIT branch: with no
+        env var, a cwd without packages/wasm silently resolved to
+        /mnt/codespace/hikari — a different repository entirely.
+        """
+        monkeypatch.delenv("CELESTIA_ARTIFACT_ROOT", raising = False)
+        monkeypatch.chdir(tmp_path)
+        root, problems = pr_gate_module._artifact_root()
+        assert root is None
+        assert problems and ("refusing blind rather than judging a tree nobody named" in problems[0])

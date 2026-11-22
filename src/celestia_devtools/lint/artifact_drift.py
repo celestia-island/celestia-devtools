@@ -71,6 +71,19 @@ _PACKAGE = re.compile(r"^package\s+(?P<id>[A-Za-z0-9][A-Za-z0-9._:-]*)(?:@(?P<ve
 _BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT = re.compile(r"//[^\n]*")
 
+#: The one comment shape that IS a version source: jco's module header.
+_MODULE_HEADER = re.compile(r"^\s*/\*\*\s*@module\s+Interface\s+.*?\*\*/", re.MULTILINE)
+
+def _header_text(text: str) -> str:
+    """Only the lines that name a module: ``@module`` headers and ``// import``.
+
+    Everything else in a ``.d.ts`` is prose or TypeScript, and a version quoted
+    in either is not a generated binding — reading it as one is a false red.
+    """
+    kept = _MODULE_HEADER.findall(text)
+    kept.extend(line for line in text.splitlines() if line.strip().startswith("// import"))
+    return "\n".join(kept)
+
 def _strip_comments(text: str) -> str:
     """WIT source without its comments, newlines preserved."""
     spaced = _BLOCK_COMMENT.sub(lambda match: "\n" * match.group(0).count("\n"), text)
@@ -127,7 +140,7 @@ def _module_versions(bindings: Path, component: str) -> dict[str, set[str]]:
         except (OSError, UnicodeDecodeError):
             continue
 
-        for match in _MODULE.finditer(text):
+        for match in _MODULE.finditer(_header_text(text)):
             if match.group("component") != component:
                 continue
 

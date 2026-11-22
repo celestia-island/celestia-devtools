@@ -228,12 +228,33 @@ class test_round2_regressions:
         assert parsed.version == "0.1.0"
         assert artifact_drift.check_repo(tmp_path).ok
 
-    def test_a_line_commented_package_line_does_not_win(self, tmp_path):
+    def test_a_trailing_line_comment_cannot_supply_the_version(self, tmp_path):
+        """A `//` comment BEFORE a real declaration is inert for a different reason.
+
+        `^package` cannot match text after `//`, so that shape passes with or
+        without comment stripping — an unfalsifiable test (round 3 of this PR
+        measured it green even with stripping disabled). What IS falsifiable is
+        that a line carrying both a declaration and a trailing comment parses.
+        """
         build_workspace(tmp_path)
         wit = tmp_path / "packages" / "wasm" / "qr" / "wit" / "qr.wit"
-        text = wit.read_text(encoding = "utf-8")
-        wit.write_text("// package celestia:hikari-qr@0.0.9;\n" + text, encoding = "utf-8")
-        assert artifact_drift.read_contract(wit).version == "0.1.0"
+        wit.write_text("// a leading note\npackage celestia:hikari-qr@0.1.0; // trailing note\ninterface types {}\nworld qr {}\n", encoding = "utf-8")
+        parsed = artifact_drift.read_contract(wit)
+        assert parsed.version == "0.1.0"
+        assert parsed.package == "celestia:hikari-qr"
+
+    def test_a_prose_mention_in_a_binding_is_not_a_header(self, tmp_path):
+        """A version quoted in a docstring must not red a correct tree."""
+        build_workspace(tmp_path)
+        header = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "interfaces" / "celestia-hikari-qr-types.d.ts"
+        header.write_text(header.read_text(encoding = "utf-8") + "// migration note: pin `celestia:hikari-qr/types@0.0.9` when debugging\n", encoding = "utf-8")
+        assert artifact_drift.check_repo(tmp_path).ok
+
+    def test_a_real_stale_header_still_reds(self, tmp_path):
+        """The mirror: a genuine @module header at the wrong version must red."""
+        build_workspace(tmp_path, version = "0.2.0", artifact_version = "0.1.0")
+        findings = artifact_drift.check_repo(tmp_path).findings
+        assert findings and ("wit@0.2.0" in findings[0].detail)
 
     def test_a_nested_interfaces_directory_is_not_counted(self, tmp_path):
         """Only the component's OWN interfaces/ counts; a stale dist/ copy is not live."""
