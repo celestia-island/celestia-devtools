@@ -33,6 +33,16 @@ So the contract below is: a fork must reach the job, and the job must not
 require a secret (a fork run gets none, so any required secret would turn every
 outside PR red).
 
+*How "must reach the job" is spelled since 2026-11-20:* both workflows became
+``workflow_dispatch`` + ``workflow_call`` only (the 2026-11-06 dispatch-only
+trigger policy), so they can no longer RECEIVE a ``pull_request`` event. At
+that point the ``event_name != 'pull_request' || ...`` guard is constant true
+for every reachable event, and #294 deleted it — correctly. This test therefore
+asserts the property twice over: a workflow that cannot receive a PR event must
+carry no fork clause (a dead ``false`` is the very 466d207 breakage), and one
+that can must carry the clause that serves forks. Adding a ``pull_request``
+trigger back makes the second duty live again, and the suite says so.
+
 *A note on scope:* the other reusable workflows (``p0-gate`` and
 ``rules-lint``-adjacent lanes aside) grew a ``runner`` lane override in #305:
 ``family-versions`` and ``verify-versions`` default to the self-hosted fleet
@@ -53,10 +63,10 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
-#: The clause that makes a fork PR reachable, whitespace-normalised so that
-#: reformatting the YAML does not break the contract while a semantic flip
-#: (``== false``, a dropped clause) still does.
-FORK_CLAUSE = "head.repo.fork==true"
+#: The event names that can reach these workflows. A job-level ``if:`` that
+#: only discriminates ``pull_request`` is dead weight when nothing in the
+#: trigger list can produce that event — see :func:`_can_receive_a_pull_request`.
+PR_ONLY = "pull_request"
 
 #: Reusable workflows served to the fleet as required checks and reachable by
 #: fork PRs after the fix: both jobs are sub-minute, stdlib-only, hold no
@@ -72,17 +82,83 @@ FORK_MARKER = "head.repo.fork"
 def _normalise(expr: object) -> str:
     return re.sub(r"\s+", "", str(expr))
 
+#: ``on`` is YAML 1.1 boolean ``true`` when unquoted — the key every GitHub
+#: workflow file uses.
+_TRIGGER_KEYS = ("on", True)
+
+def _doc(filename: str) -> dict:
+    return yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding = "utf-8"))
+
+def _triggers(filename: str) -> set:
+    """The event names a workflow can be started by."""
+    doc = _doc(filename)
+    spec = next((doc[key] for key in _TRIGGER_KEYS if key in doc), None)
+
+    if isinstance(spec, str):
+        return {spec}
+
+    if isinstance(spec, list):
+        return set(spec)
+
+    if isinstance(spec, dict):
+        return set(spec)
+
+    return set()
+
 def _job(filename: str, job_id: str) -> dict:
-    doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding = "utf-8"))
-    return doc["jobs"][job_id]
+    return _doc(filename)["jobs"][job_id]
+
+def _can_receive_a_pull_request(filename: str) -> bool:
+    """True when some trigger could deliver a ``pull_request`` event."""
+    triggers = _triggers(filename)
+    return any((trigger == PR_ONLY) or trigger.startswith(f"{PR_ONLY}_") for trigger in triggers)
 
 @pytest.mark.parametrize("filename,job_id", sorted(FORK_SERVED.items()))
 class test_fork_pull_requests_are_served:
     def test_job_is_not_skipped_for_forks(self, filename: str, job_id: str) -> None:
-        """A fork PR must reach the job, or the required check never reports."""
+        """A fork PR must reach the job, or the required check never reports.
+
+        The duty is: **no job-level condition may filter a fork out**. 466d207
+        broke it with a guard that skipped fork PRs; #160/#294 made the same
+        workflows dispatch-only, at which point a guard mentioning
+        ``head.repo.fork`` can no longer evaluate — the event name is
+        ``workflow_dispatch``/``workflow_call``, never ``pull_request``, so the
+        old ``event_name != 'pull_request' || ...`` form was constant true and
+        #294 correctly deleted it.
+
+        So this asserts the PROPERTY, not the deleted literal: either the
+        workflow cannot receive a ``pull_request`` event at all (nothing can
+        skip a fork), or the job's condition must not name the fork fields. The
+        old assertion was inverted for the first case — it demanded the very
+        clause whose evaluation is impossible — which is how #294 and this test
+        came to disagree with both of them green.
+        """
         condition = _job(filename, job_id).get("if")
-        assert condition is not None, (f"{filename}:{job_id} lost its condition entirely; the callers rely on " "the callee to decide whether a run is served")
-        assert FORK_CLAUSE in _normalise(condition), (f"{filename}:{job_id} no longer admits fork pull requests (expected the " f"clause {FORK_CLAUSE!r}). A skipped job reports no check run, so every " "outside contribution stays BLOCKED - the exact regression 466d207 caused " "and this test exists to prevent.")
+
+        if not _can_receive_a_pull_request(filename):
+            # Unreachable by a PR event: a fork clause here would be dead code,
+            # and a *false* dead clause is exactly the 466d207 breakage.
+            dead_guard = f"{filename}:{job_id} carries a fork condition, but no trigger can deliver a pull_request event - the clause is dead, and a dead `false` is the 466d207 bug"
+            assert (condition is None) or (FORK_MARKER not in _normalise(condition)), dead_guard
+            return
+
+        assert condition is not None, (f"{filename}:{job_id} can receive pull_request events and has no condition; the " "callees rely on the job to decide whether a run is served")
+        assert "fork==true" in _normalise(condition), (f"{filename}:{job_id} no longer admits fork pull requests. A skipped job reports no " "check run, so every outside contribution stays BLOCKED - the regression 466d207 " "caused and this test exists to prevent")
+
+    def test_the_dispatch_only_premise_is_what_the_guard_rests_on(self, filename: str, job_id: str) -> None:
+        """The justification for any missing fork guard, stated as a test.
+
+        #294 removed the guards because no trigger can produce a
+        ``pull_request`` event. If a future change adds such a trigger, the
+        fork duty is live again and this test says so in the same breath as the
+        one above: the pair cannot both pass on a workflow that serves PRs
+        without a fork clause.
+        """
+
+        if _can_receive_a_pull_request(filename):
+            pytest.skip(f"{filename} can receive pull_request events; the fork clause must exist")
+
+        assert (_job(filename, job_id).get("if") is None) or (FORK_MARKER not in _normalise(_job(filename, job_id).get("if"))), (f"{filename}:{job_id} guards on fork fields it can never receive")
 
     def test_job_requires_no_secret(self, filename: str, job_id: str) -> None:
         """A fork run gets no secrets, so a required one would fail every outside PR."""
@@ -100,7 +176,6 @@ def test_farm_pinned_workflows_keep_the_guard(filename: str) -> None:
     guarded = [job_id for job_id, job in doc["jobs"].items()if FORK_MARKER not in str(job.get("if", ""))]
     assert guarded, (f"{filename} now serves fork PRs on a self-hosted runner. That is fine only " "once the job resolves its lane from the event rather than from a caller " "input or org variable - update this test and the fix note together.")
 
-
 def test_runner_override_falls_back_to_the_fleet_labels():
     """#305: an empty ``runner`` input must resolve to exactly the fleet
     labels both workflows hardcoded before the override existed."""
@@ -108,11 +183,10 @@ def test_runner_override_falls_back_to_the_fleet_labels():
 
     workflows = Path(".github/workflows")
     fallback = re.compile(r"runs-on: \$\{\{ fromJSON\(inputs\.runner \|\| '([^']+)'\) \}\}")
+
     for name in ("verify-versions.yml", "family-versions.yml"):
-        text = (workflows / name).read_text(encoding="utf-8")
+        text = (workflows / name).read_text(encoding = "utf-8")
         match = fallback.search(text)
         assert match is not None, f"{name} lost the runner override expression"
-        assert json.loads(match.group(1)) == ["self-hosted", "linux", "x64", "local"], (
-            f"{name} fallback literal drifted"
-        )
+        assert json.loads(match.group(1)) == ["self-hosted", "linux", "x64", "local"], (f"{name} fallback literal drifted")
         assert "runner:" in text, f"{name} lost the runner input declaration"
