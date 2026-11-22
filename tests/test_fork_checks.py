@@ -33,12 +33,15 @@ So the contract below is: a fork must reach the job, and the job must not
 require a secret (a fork run gets none, so any required secret would turn every
 outside PR red).
 
-*A note on scope:* the other reusable workflows (``p0-gate``,
-``family-versions``, ``verify-versions``; ``rules-lint`` takes its lane as an
-input) still pin ``runs-on`` to the self-hosted fleet, so opening them to forks
-would put untrusted content on org runners. They keep the guard until each
-grows a lane override; ``test_farm_pinned_workflows_keep_the_guard`` records
-that this is deliberate rather than forgotten.
+*A note on scope:* the other reusable workflows (``p0-gate`` and
+``rules-lint``-adjacent lanes aside) grew a ``runner`` lane override in #305:
+``family-versions`` and ``verify-versions`` default to the self-hosted fleet
+and may opt into hosted runners (outside-org consumers where org runners
+cannot pick jobs up at all). Whether a fork may *use* the override on org
+runners is a separate decision these jobs do not grant — the override only
+ever moves work OFF the fleet. ``p0-gate`` still pins ``runs-on`` to the
+self-hosted fleet outright; ``test_farm_pinned_workflows_keep_the_guard``
+records that this is deliberate rather than forgotten.
 """
 
 from __future__ import annotations
@@ -96,3 +99,20 @@ def test_farm_pinned_workflows_keep_the_guard(filename: str) -> None:
     doc = yaml.safe_load((WORKFLOW_DIR / filename).read_text(encoding = "utf-8"))
     guarded = [job_id for job_id, job in doc["jobs"].items()if FORK_MARKER not in str(job.get("if", ""))]
     assert guarded, (f"{filename} now serves fork PRs on a self-hosted runner. That is fine only " "once the job resolves its lane from the event rather than from a caller " "input or org variable - update this test and the fix note together.")
+
+
+def test_runner_override_falls_back_to_the_fleet_labels():
+    """#305: an empty ``runner`` input must resolve to exactly the fleet
+    labels both workflows hardcoded before the override existed."""
+    import json
+
+    workflows = Path(".github/workflows")
+    fallback = re.compile(r"runs-on: \$\{\{ fromJSON\(inputs\.runner \|\| '([^']+)'\) \}\}")
+    for name in ("verify-versions.yml", "family-versions.yml"):
+        text = (workflows / name).read_text(encoding="utf-8")
+        match = fallback.search(text)
+        assert match is not None, f"{name} lost the runner override expression"
+        assert json.loads(match.group(1)) == ["self-hosted", "linux", "x64", "local"], (
+            f"{name} fallback literal drifted"
+        )
+        assert "runner:" in text, f"{name} lost the runner input declaration"

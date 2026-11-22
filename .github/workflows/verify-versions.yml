@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: "master"
+      runner:
+        description: "Optional runner override as a JSON array (depspec-lint form): org callers keep the default self-hosted farm; consumers outside the org (where org runners cannot pick jobs up) pass e.g. '[\"ubuntu-latest\"]'."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   verify:
@@ -15,7 +20,7 @@ jobs:
     # Org convention: real work runs on the org self-hosted runners (hosted
     # provisioning has been observed failing at the org billing tier; the
     # shared node also preinstalls celestia-devtools for fast starts).
-    runs-on: [self-hosted, linux, x64, local]
+    runs-on: ${{ fromJSON(inputs.runner || '["self-hosted", "linux", "x64", "local"]') }}
     timeout-minutes: 60
     permissions:
       contents: read
