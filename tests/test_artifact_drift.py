@@ -294,7 +294,9 @@ class test_round2_regressions:
         A correct appendix plus prose that names an old version: round 3's raw
         scan reddened this (a false red, the defect round 3 fixed), round 4's
         header filter leaves it green. Reverting `_header_text` reds this test
-        and nothing else — pinned by MUT:header-filter-removed.
+        AND `test_a_prose_mention_in_a_binding_is_not_a_header` — two, not one;
+        the first draft of this docstring claimed "and nothing else", which the
+        round-5 measurement of the revert contradicted.
         """
         build_workspace(tmp_path)
         barrel = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "hikari_wasm_qr.d.ts"

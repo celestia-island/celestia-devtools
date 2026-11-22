@@ -561,3 +561,35 @@ class test_round2_geometry:
         body = "\n".join(["+expect(0).toBe(0);"] * 9)
         diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" "@@ -1,0 +1,1 @@\n+// measured: this catches it\n" + body + "\n@@ -11,0 +11,1 @@\n+// MUT: near\n"
         assert comment_gate.check_diff(diff).claims == ()
+
+def _py_diff(body: str, *, count: int) -> str:
+    """A one-file diff of a Python test module."""
+    return f"diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1,0 +1,{count} @@\n" + body
+
+class test_docstrings:
+    """Python docstrings are statements, so they are in the gate's reach.
+
+    Measured on this gate's own first follow-up (#310): a docstring claiming
+    "reverting `_header_text` reds this test and nothing else" was invisible,
+    because a Python docstring's continuation lines carry no marker and the
+    scanner only knew marked comment syntax.
+    """
+
+    def test_a_docstring_claim_is_reported(self):
+        diff = "diff --git a/tests/test_x.py b/tests/test_x.py\n" "--- a/tests/test_x.py\n" "+++ b/tests/test_x.py\n" "@@ -1,0 +1,3 @@\n" '+        """The shape that distinguishes the two.\n' "+\n" "+        Reverting the filter reds this test.\n" '+        """\n'
+        report = comment_gate.check_diff(diff)
+        assert len(report.claims) == 1
+        assert report.claims[0].line == 3
+        assert report.claims[0].render() == "tests/test_x.py:3: Reverting the filter reds this test."
+
+    def test_a_docstring_claim_with_an_anchor_passes(self):
+        diff = "diff --git a/tests/test_x.py b/tests/test_x.py\n" "--- a/tests/test_x.py\n" "+++ b/tests/test_x.py\n" "@@ -1,0 +1,4 @@\n" '+        """The shape.\n' "+        Reverting the filter reds this test.\n" "+        MUT: header-filter-removed\n" '+        """\n'
+        assert comment_gate.check_diff(diff).claims == ()
+
+    def test_a_single_line_docstring_does_not_leak_state(self):
+        # One-line docstrings open and close; the following code must not be
+        # read as prose.
+        diff = _py_diff('+        """One line."""\n+        assert 1 == 1\n+        expect_that_never_reds_alone()\n', count = 3)
+        report = comment_gate.check_diff(diff)
+        assert report.scanned_lines == 1
+        assert report.claims == ()
