@@ -1180,6 +1180,23 @@ class test_comment_waiver_entry:
         assert grant is None
         assert problems == []
 
+    def test_an_indented_entry_is_not_a_grant(self):
+        """Round 5: a template copy-pasted into an indented block became a live grant.
+
+        The verify record already refuses exactly this shape ("it reads as a
+        template, not a record"); the waiver lane now agrees with it.
+        """
+        text = "verify: x\n\n    comment-gate-waiver: the ids live in the linked issue, page two\n"
+        grant, problems = pr_gate_comment_waiver(text)
+        assert grant is None
+        assert problems and ("indented code block" in problems[0])
+
+    def test_an_entry_in_prose_and_indented_refuses(self):
+        text = "comment-gate-waiver: the ids live in the linked issue, page two\n    comment-gate-waiver: a second copy in an indented block\n"
+        grant, problems = pr_gate_comment_waiver(text)
+        assert grant is None
+        assert problems and ("indented code block" in problems[0])
+
     def test_unclosed_fence_refuses(self):
         text = "```\ncomment-gate-waiver: the ids live in the linked issue, page two\n"
         grant, problems = pr_gate_comment_waiver(text)

@@ -104,11 +104,14 @@ _TABLE_REFERENCE = re.compile(r"mutation\s+table|变异表|mutation\s+matrix", r
 
 #: Prose that removes a line from the gate's reach. A ``comment-gate-ok:``
 #: directive is the escape hatch for a claim the author can defend without a
-#: mutation (a reproducibility note about a toolchain quirk, say), and it forces
-#: a reason onto the line so the next reader sees the argument, not a silence.
-#: ``MUT:`` / ``mutate:`` are *not* skipped: their ids are scanned normally even
-#: when they sit inside a fenced block.
-DIRECTIVE = re.compile(r"comment-gate-ok:", re.IGNORECASE)
+#: mutation (a reproducibility note about a toolchain quirk, say). The reason is
+#: part of the pattern, not a nicety: review round 5 pointed out that a bare
+#: ``comment-gate-ok:`` suppressed a claim with no argument at all, which makes
+#: the escape hatch the one silent path in an otherwise announce-everywhere
+#: design. :data:`DIRECTIVE_REASON_MIN` is the same argument standard the PR-body
+#: waiver is held to. ``MUT:`` / ``mutate:`` are never treated as a directive.
+DIRECTIVE_REASON_MIN = 20
+DIRECTIVE = re.compile(r"comment-gate-ok:[ \t]*(?P<reason>.*)$", re.IGNORECASE)
 
 #: A mutation-table row. TWO shapes, both mechanical enough that a statement
 #: writer cannot satisfy them by accident, which is the whole point — a plain
@@ -293,8 +296,17 @@ def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[i
 
         hits += 1
 
-        if DIRECTIVE.search(text):
-            continue
+        directive = DIRECTIVE.search(text)
+
+        if directive is not None:
+            reason = directive.group("reason").strip()
+
+            if len(reason) >= DIRECTIVE_REASON_MIN:
+                continue
+
+            # A directive without an argument suppresses nothing: the claim is
+            # reported, and the reader sees why (the reason was too thin).
+            terms = (*(term for term in terms), "comment-gate-ok with a thin reason")
 
         # Distance is measured in FILE LINE NUMBERS, not list indices: a diff
         # that skips lines would otherwise make a distant anchor look adjacent.

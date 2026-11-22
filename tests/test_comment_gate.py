@@ -248,6 +248,21 @@ class test_window:
         diff = _add_claim_diff("// catches the reload") + filler + "\n+// MUT: too-far\n"
         assert len(comment_gate.check_diff(diff).claims) == 1
 
+    def test_a_bare_directive_suppresses_nothing(self):
+        """Round 5: `comment-gate-ok:` with no argument is a silent pass.
+
+        The escape hatch must carry a reason — the same argument standard the
+        PR-body waiver is held to — or it is a mute button on the gate.
+        """
+        diff = _single_hunk("+// measured: this catches it comment-gate-ok:\n", count = 1)
+        report = comment_gate.check_diff(diff)
+        assert len(report.claims) == 1
+        assert any("comment-gate-ok with a thin reason" in term for term in report.claims[0].terms)
+
+    def test_a_short_directive_reason_suppresses_nothing(self):
+        diff = _single_hunk("+// measured: this catches it comment-gate-ok: flaky\n", count = 1)
+        assert len(comment_gate.check_diff(diff).claims) == 1
+
     def test_directive_suppresses_one_line(self):
         diff = "diff --git a/a.test.ts b/a.test.ts\n" "--- a/a.test.ts\n" "+++ b/a.test.ts\n" "@@ -1,0 +1,2 @@\n" "+// measured on this node only — comment-gate-ok: a toolchain quirk, not a seam\n" "+expect(1).toBe(1);\n"
         report = comment_gate.check_diff(diff)

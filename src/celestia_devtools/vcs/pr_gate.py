@@ -302,6 +302,9 @@ COMMENT_WAIVER_REASON_MIN = 20
 #: The category the comment-gate refusal carries internally, so the printed
 #: suppression list names WHAT was waived and a reader can grep it.
 COMMENT_GATE_CATEGORY = "comment-gate"
+#: An indented markdown code block. The verify record refuses the same shape for
+#: the same reason: it is a template someone copied, not a decision.
+COMMENT_WAIVER_INDENT_RE = re.compile(r"^(?:\t| {4,})\S")
 #: GitHub appends this line (and stops) when a diff endpoint truncates a large
 #: PR. A truncated diff is exactly the "green line that certifies nothing"
 #: shape, so seeing it is a refusal rather than a partial verdict.
@@ -525,6 +528,7 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     """
     fenced, prose, unclosed = _split_fences(body)
     entries: list[tuple[str, str]] = []
+    indented: list[str] = []
 
     for raw_line in prose:
         stripped = raw_line.strip()
@@ -532,12 +536,27 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
         # Cheap prefix test first: the loose pattern matches way too much for a
         # scan that runs over every line of every PR body.
         if re.search(r"comment-gate-waiver", stripped, re.IGNORECASE):
+            if COMMENT_WAIVER_INDENT_RE.match(raw_line):
+                # A 4-space (or tab) indent is a markdown CODE BLOCK, and the
+                # verify record refuses the same shape ("it reads as a
+                # template, not a record"). Round 5 found the two lanes
+                # disagreeing: a template copy-pasted into an indented block
+                # became a live grant here.
+                indented.append(stripped)
+                continue
+
             match = COMMENT_WAIVER_ENTRY_RE.match(raw_line)
 
             if match:
                 entries.append((stripped, match.group("reason").strip()))
 
     problems: list[str] = []
+
+    if indented and not entries:
+        return None, [f"{indented[0]!r} sits in an indented code block — it reads as a template, not a grant"]
+
+    if indented and entries:
+        return None, [f"comment-gate-waiver appears as prose AND in an indented code block ({len(indented)} indented) — one grant, stated once"]
 
     # An unclosed fence that swallowed the entry must not read as "the PR
     # carries none", and an entry INSIDE a well-formed fence is a template —
