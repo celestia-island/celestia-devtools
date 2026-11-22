@@ -133,6 +133,13 @@ _SLASH_COMMENT = re.compile(r"^\s*(?://|/\*|\*|\*/)")
 #: ``#`` comments (Python, shell, TOML, YAML, Ruby). ``#!`` shebangs included —
 #: harmless, they never carry behaviour vocabulary.
 _HASH_COMMENT = re.compile(r"^\s*#(?!\[)")
+#: A Python docstring (and its continuations), opened or closed by a triple
+#: quote. Docstrings are how Python states what a test pins, so leaving them out
+#: of the scanner's reach meant a docstring could claim behaviour with no anchor
+#: at all — measured on PR #306's own successor: a docstring saying "reverting
+#: `_header_text` reds this test and nothing else" was invisible to the gate
+#: that exists to catch exactly that sentence.
+_DOCSTRING = re.compile(r'^\s*(?:[rRuUbBfF]{0,2}"""(?!")|\'\'\'(?!\'))')
 #: ``--`` comments (Lua, SQL, Haskell).
 _DASH_COMMENT = re.compile(r"^\s*--")
 #: ``;`` comments (Lisp family).
@@ -160,7 +167,8 @@ class claim:
         # (a thin `comment-gate-ok:` reason): a refusal that does not say why is
         # the silence the gate exists to remove (review round 6).
         marker = f"  [{', '.join(self.terms)}]" if any(term.startswith("comment-gate-ok") for term in self.terms) else ""
-        return f"{self.path}:{self.line}: {self.text.strip()}{marker}"
+        text = self.text.strip().lstrip(DOC_CONTINUATION).strip()
+        return f"{self.path}:{self.line}: {text}{marker}"
 
 @dataclass(frozen = True)
 class report:
@@ -210,7 +218,17 @@ def comment_body(line: str) -> str | None:
     if _SLASH_COMMENT.match(line) or _HASH_COMMENT.match(line):
         return line
 
+    if line.startswith(DOC_CONTINUATION):
+        return line[len(DOC_CONTINUATION):]
+
     if _DASH_COMMENT.match(line) or _SEMI_COMMENT.match(line) or _HTML_COMMENT.match(line):
+        return line
+
+    # `https://` inside code is not a comment: the triple-quote opener is what
+    # decides, and a continuation line of a docstring is plain prose with no
+    # marker at all — the block state that makes those visible lives in
+    # `_docstring_blocks`, which the diff walker calls.
+    if _DOCSTRING.match(line):
         return line
 
     return None
@@ -413,6 +431,12 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
 
         section = []
 
+    # Python docstrings: a continuation line carries no marker, so the walker
+    # tracks the block state itself. Reset whenever the file changes or a hunk
+    # jumps backwards (a concatenation is not a continuation).
+    doc_open = ""
+    doc_quote = ""
+
     def close_file() -> None:
         nonlocal sections, current_path, last_file_line, in_hunk
 
@@ -482,6 +506,12 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         if prefix == "+":
             if current_path and is_test_path(current_path):
                 content = _content(body)
+                doc_open, doc_quote = _doc_state(content, doc_open, doc_quote)
+
+                if (comment_body(content) is None) and doc_open:
+                    # A docstring continuation is COMMENT TEXT that happens to
+                    # carry no marker — not context. It keeps claim candidacy.
+                    content = DOC_CONTINUATION + content
 
                 if (comment_body(content) is not None) and content.strip():
                     # Count each LINE once: an extended header can repeat one.
@@ -541,6 +571,11 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
 #: space" trick FAILED for a context line whose text started with ``//`` (the
 #: space is stripped by every comment matcher).
 CONTEXT_MARK = "\x00"
+#: A docstring continuation line: comment text with no marker of its own. It is
+#: DELIBERATELY a different sentinel from :data:`CONTEXT_MARK` — a context line
+#: is never a claim (the gate judges what the change adds), while a docstring
+#: line very much can be one.
+DOC_CONTINUATION = "\x01"
 
 def _content(body: str) -> str:
     """The FILE content of an added hunk line.
@@ -554,6 +589,74 @@ def _content(body: str) -> str:
     function stays as the single named place where that reading is stated.
     """
     return body
+
+_DOC_OPEN = re.compile(r'^\s*[rRuUbBfF]{0,2}("""|\'\'\')')
+
+def _doc_state(line: str, opened: str, quote: str) -> tuple[str, str]:
+    """Advance the docstring block state by one line; ``(opened, quote)``.
+
+    ``opened`` is empty, or ``"continuing"`` meaning the NEXT line is already
+    inside the block (a one-line docstring opens and closes without continuing).
+    """
+
+    if not opened:
+        opener = _DOC_OPEN.match(line)
+
+        if opener is None:
+            return "", ""
+
+        chosen = opener.group(1)
+        rest = line[opener.end():]
+
+        if chosen in rest:
+            return "", ""
+
+        return "continuing", chosen
+
+    if quote and (quote in line):
+        return "", ""
+
+    return "continuing", quote
+
+_DOC_OPEN = re.compile(r'^\s*[rRuUbBfF]{0,2}("""|\'\'\')')
+_DOC_CLOSE = re.compile(r'("""|\'\'\')\s*$')
+
+def _docstring_lines(lines, numbers):
+    """Continuation lines of Python docstrings, as ``{index: True}``.
+
+    A docstring's FIRST line carries the opener and `comment_body` already sees
+    it; its CONTINUATION lines carry no marker whatsoever, so without block
+    state they read as code. That is the blind spot measured on this gate's own
+    first follow-up PR: a docstring claiming a mutation's scope sat inside one.
+    """
+    inside = False
+    quote = ""
+    found = {}
+
+    for index, text in enumerate(lines):
+        stripped = text.strip()
+
+        if not inside:
+            opener = _DOC_OPEN.match(text)
+
+            if opener:
+                quote = opener.group(1)
+                # A one-line docstring opens and closes on the same line.
+                rest = text[opener.end():]
+
+                if not _DOC_CLOSE.search(rest) or (quote not in rest):
+                    inside = True
+
+                continue
+
+            continue
+
+        found[index] = True
+
+        if quote in stripped:
+            inside = False
+
+    return found
 
 def _split_on_spacers(entries: Sequence[tuple[int, str]]) -> list[list[tuple[int, str]]]:
     """Split one section at blank comment lines (``//`` on its own).
