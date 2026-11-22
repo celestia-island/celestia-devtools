@@ -22,6 +22,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 import pytest
+from celestia_devtools.core.cli import COMMANDS
 from celestia_devtools.lint import artifact_drift
 
 HIKARI = Path("/mnt/codespace/hikari")
@@ -208,3 +209,45 @@ class test_real_corpus:
         findings = artifact_drift.check_repo(copied).findings
         assert [item.component for item in findings] == ["qr"], [item.render() for item in findings]
         assert ("wit@0.2.0" in findings[0].detail) and ("0.1.0" in findings[0].detail)
+
+class test_round2_regressions:
+    """Defects the independent review of this PR found, each pinned."""
+
+    def test_a_commented_out_package_line_does_not_win(self, tmp_path):
+        """A commented-out older contract above the real one must not be parsed.
+
+        `re.search` takes the first match, so without comment stripping the
+        block comment's `@0.0.9` became "the" version and the gate reported
+        drift that did not exist (MUT:block-comment-poison).
+        """
+        build_workspace(tmp_path)
+        wit = tmp_path / "packages" / "wasm" / "qr" / "wit" / "qr.wit"
+        text = wit.read_text(encoding = "utf-8")
+        wit.write_text("/*\npackage celestia:hikari-qr@0.0.9;\n*/\n" + text, encoding = "utf-8")
+        parsed = artifact_drift.read_contract(wit)
+        assert parsed.version == "0.1.0"
+        assert artifact_drift.check_repo(tmp_path).ok
+
+    def test_a_line_commented_package_line_does_not_win(self, tmp_path):
+        build_workspace(tmp_path)
+        wit = tmp_path / "packages" / "wasm" / "qr" / "wit" / "qr.wit"
+        text = wit.read_text(encoding = "utf-8")
+        wit.write_text("// package celestia:hikari-qr@0.0.9;\n" + text, encoding = "utf-8")
+        assert artifact_drift.read_contract(wit).version == "0.1.0"
+
+    def test_a_nested_interfaces_directory_is_not_counted(self, tmp_path):
+        """Only the component's OWN interfaces/ counts; a stale dist/ copy is not live."""
+        build_workspace(tmp_path)
+        ghost = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "dist" / "interfaces"
+        ghost.mkdir(parents = True)
+        (ghost / "celestia-hikari-qr-ghost.d.ts").write_text("/** @module Interface celestia:hikari-qr/types@0.1.0 **/\n", encoding = "utf-8")
+        assert artifact_drift.check_repo(tmp_path).ok
+
+    def test_the_cli_is_registered_and_runs(self, tmp_path, capsys):
+        """The design names `lint-artifact-drift`; an unregistered module is unreachable."""
+        assert "lint-artifact-drift" in COMMANDS
+        assert COMMANDS["lint-artifact-drift"] == "celestia_devtools.lint.artifact_drift"
+        build_workspace(tmp_path)
+        rc = artifact_drift.main(["--root", str(tmp_path), "--quiet"])
+        assert rc == 0
+        capsys.readouterr()

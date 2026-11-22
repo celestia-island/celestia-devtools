@@ -977,16 +977,29 @@ def artifact_drift_problems(repo: str, pr: int, *, runner = None) -> list[str]:
     return [f"{ARTIFACT_GATE_CATEGORY}: {item.render()}" for item in result.findings] + [f"{ARTIFACT_GATE_CATEGORY}: {item}" for item in result.problems]
 
 def _artifact_root() -> tuple[str | None, list[str]]:
-    """The hikari checkout to compare against; ``(root, problems)``."""
+    """The checkout to compare against; ``(root, problems)``.
+
+    An explicit ``CELESTIA_ARTIFACT_ROOT`` is honoured or REFUSED — never
+    silently replaced by a different tree. Round 2 of this PR found the earlier
+    fallthrough: a typo'd override quietly resolved to ``/mnt/codespace/hikari``
+    and the gate then judged a tree the operator had not named. That is the
+    silent fallback the workspace rules forbid.
+    """
     import os
 
-    candidates = [os.environ.get("CELESTIA_ARTIFACT_ROOT"), str(Path.cwd()), "/mnt/codespace/hikari"]
+    explicit = os.environ.get("CELESTIA_ARTIFACT_ROOT")
 
-    for candidate in candidates:
-        if candidate and (Path(candidate) / "packages" / "wasm").is_dir():
+    if explicit:
+        if (Path(explicit) / "packages" / "wasm").is_dir():
+            return explicit, []
+
+        return None, [f"{ARTIFACT_GATE_CATEGORY}: CELESTIA_ARTIFACT_ROOT={explicit!r} has no packages/wasm — refusing rather than judging a tree the caller did not name"]
+
+    for candidate in (str(Path.cwd()), "/mnt/codespace/hikari"):
+        if (Path(candidate) / "packages" / "wasm").is_dir():
             return candidate, []
 
-    return None, [f"{ARTIFACT_GATE_CATEGORY}: no hikari checkout with packages/wasm found (set CELESTIA_ARTIFACT_ROOT) — refusing blind"]
+    return None, [f"{ARTIFACT_GATE_CATEGORY}: no checkout with packages/wasm found (set CELESTIA_ARTIFACT_ROOT) — refusing blind"]
 
 def _pr_file_list(repo: str, pr: int, *, runner = None) -> tuple[list[str] | None, list[str]]:
     """Every path the PR touches, paginated; ``(paths, problems)``."""
@@ -1093,8 +1106,14 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
             print(f"   suppressed {len(artifact_problems)} {ARTIFACT_GATE_CATEGORY} refusal(s)")
         else:
             gated.extend(artifact_problems)
-    elif artifact_grant is not None:
-        print(f"🔓 {ARTIFACT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-artifact-gate)")
+    else:
+        if artifact_grant is not None:
+            print(f"🔓 {ARTIFACT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-artifact-gate)")
+        else:
+            # A break-glass skip must leave a trace in the merge log, exactly
+            # like the comment gate's: an unrecorded skip is a green line that
+            # certifies nothing (round 2 of this PR).
+            print(f"⏭️  {ARTIFACT_GATE_CATEGORY}: SKIPPED by --no-artifact-gate on #{pr} — no contract/binding comparison ran")
 
     problems = [*problems, *gated]
 

@@ -1394,3 +1394,26 @@ class test_artifact_gate_waiver:
     def test_a_malformed_artifact_entry_refuses_at_merge_time(self):
         problems = body_problems(GOOD_RECORD + "\nartifact-gate-waiver: ok\n")
         assert any("floor" in item for item in problems)
+
+class test_artifact_gate_round2:
+    """Defects the review of this PR found in the WIRING."""
+
+    def test_a_bad_explicit_root_refuses_instead_of_falling_back(self, monkeypatch):
+        """A typo'd CELESTIA_ARTIFACT_ROOT must not silently judge /mnt/codespace/hikari."""
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", "/nonexistent/typo")
+        root, problems = pr_gate_module._artifact_root()
+        assert root is None
+        assert problems and ("refusing rather than judging a tree the caller did not name" in problems[0])
+
+    def test_a_valid_explicit_root_wins_over_the_cwd(self, tmp_path, monkeypatch):
+        _artifact_workspace(tmp_path, monkeypatch)
+        root, problems = pr_gate_module._artifact_root()
+        assert root == str(tmp_path)
+        assert problems == []
+
+    def test_the_break_glass_skip_is_announced(self, tmp_path, monkeypatch, capsys):
+        """An unrecorded skip is a green line that certifies nothing."""
+        _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
+        pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files), artifact_drift = False) == 0
+        assert "SKIPPED by --no-artifact-gate" in capsys.readouterr().out

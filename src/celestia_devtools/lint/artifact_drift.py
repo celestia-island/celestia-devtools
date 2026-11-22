@@ -65,6 +65,17 @@ BINDINGS_GLOB = "packages/vue/src/wasm/{component}"
 RELEVANT_PATTERNS = (re.compile(r"^packages/wasm/[^/]+/wit/"), re.compile(r"^packages/vue/src/wasm/"))
 
 _PACKAGE = re.compile(r"^package\s+(?P<id>[A-Za-z0-9][A-Za-z0-9._:-]*)(?:@(?P<version>[0-9][0-9A-Za-z.\-]*))?\s*;", re.MULTILINE)
+#: A WIT block comment and a line comment. Both are stripped before parsing: a
+#: commented-out older contract above the real one would otherwise win
+#: (`re.search` takes the first match) and report drift that does not exist.
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_LINE_COMMENT = re.compile(r"//[^\n]*")
+
+def _strip_comments(text: str) -> str:
+    """WIT source without its comments, newlines preserved."""
+    spaced = _BLOCK_COMMENT.sub(lambda match: "\n" * match.group(0).count("\n"), text)
+    return _LINE_COMMENT.sub("", spaced)
+
 _INTERFACE = re.compile(r"^\s*interface\s+(?P<name>[A-Za-z0-9][A-Za-z0-9-]*)\s*\{", re.MULTILINE)
 #: A generated module header, e.g. ``/** @module Interface celestia:hikari-qr/types@0.1.0 **/``.
 _MODULE = re.compile(r"celestia:hikari-(?P<component>[A-Za-z0-9-]+)/(?P<interface>[A-Za-z0-9-]+)@(?P<version>[0-9][0-9A-Za-z.\-]*)")
@@ -94,7 +105,7 @@ class finding:
 def read_contract(wit_path: str | Path) -> contract:
     """Parse one ``.wit``; ``(package, version, interfaces)``."""
     path = Path(wit_path)
-    text = path.read_text(encoding = "utf-8")
+    text = _strip_comments(path.read_text(encoding = "utf-8"))
     package = _PACKAGE.search(text)
 
     if package is None:
@@ -157,7 +168,9 @@ def check_component(root: str | Path, parsed: contract) -> list[finding]:
 
     # Layer 2 — the interface files on disk are exactly the declared ones.
     declared = {parsed.binding_filename(name) for name in parsed.interfaces}
-    present = {path.name for path in canonical if (path.parent.name == "interfaces") and path.name.startswith(f"{parsed.package.replace(':', '-')}-")}
+    # Only the component's OWN ``interfaces/`` directory counts: a stale copy
+    # under e.g. ``dist/interfaces/`` is not a live generated file.
+    present = {path.name for path in canonical if (path.parent == (bindings_root / "interfaces")) and path.name.startswith(f"{parsed.package.replace(':', '-')}-")}
     missing = sorted(declared - present)
 
     if missing:
@@ -196,9 +209,6 @@ def check_repo(root: str | Path) -> report:
     for parsed in contracts:
         findings.extend(check_component(root, parsed))
 
-    if contracts and not findings and not problems:
-        pass
-
     return report(contracts = tuple(contracts), findings = tuple(findings), problems = tuple(problems))
 
 def relevant_paths(paths: Sequence[str]) -> list[str]:
@@ -206,7 +216,7 @@ def relevant_paths(paths: Sequence[str]) -> list[str]:
     return [path for path in paths if any(pattern.match(path) for pattern in RELEVANT_PATTERNS)]
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI: ``lint-artifact-drift [--root DIR] [--component C ...] [--json]``."""
+    """CLI: ``lint-artifact-drift [--root DIR] [--component C ...] [--quiet]``."""
     parser = argparse.ArgumentParser(prog = "celestia-devtools lint-artifact-drift", description = "Fail when a WIT contract and its generated bindings disagree (version / interface list).")
     parser.add_argument("--root", default = ".", help = "checkout to scan (the hikari repository)")
     parser.add_argument("--component", action = "append", default = None, help = "scan only this component (repeatable)")
