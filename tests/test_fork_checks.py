@@ -66,6 +66,7 @@ import re
 from pathlib import Path
 import pytest
 import yaml
+from celestia_devtools.ci import workflow_audit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
@@ -125,30 +126,18 @@ def _can_receive_a_pull_request(filename: str) -> bool:
     triggers = _triggers(filename)
     return any((trigger == PR_ONLY) or trigger.startswith(f"{PR_ONLY}_") for trigger in triggers)
 
-#: Substrings that make a job-level condition a FORK FILTER — about meaning, not
-#: one spelling: the 466d207 guard compared ``head.repo.full_name``, and a test
-#: that only looked for ``head.repo.fork`` passed straight over it (review of
-#: #307, probe 6).
-_FORK_FILTERS = ("head.repo.fork", "head.repo.full_name", "pull_request.head")
-
-#: The 466d207 guard's FIRST clause, on its own a fork filter: it says "skip
-#: every pull request that did not come from this repository". A test that only
-#: looked for the fork fields missed it (review of #307, probe 7).
-_PULL_REQUEST_EXCLUSION = "event_name!='pull_request'"
-
-#: The admitting form: "when there is no pull request at all, run anyway".
-_PULL_REQUEST_NULL = "pull_request==null"
-
-#: The fork comparison inside an admitting guard — any spelling of the fields.
-_FORK_FIELDS_IN_ADMITTING = "head.repo"
+#: The org's canonical fork guard, imported from the ONE place that already owns
+#: the definition (`ci.workflow_audit`). Re-declaring it here is how two
+#: contradictory "canonical guard" notions came to coexist (review of #307).
+CANONICAL_GUARD = workflow_audit.FORK_GUARD
+EQUIVALENT_GUARDS = workflow_audit.FORK_GUARD_MARKERS
 
 def _condition_text(job: dict) -> str:
     """A job's ``if:`` as whitespace-free text (``""`` when absent).
 
-    ``if: false`` parses as a YAML BOOLEAN, not the string "false", so the value
-    has to be stringified before normalising — ``job.get("if") or ""`` turned it
-    into the empty string and the constant detector saw "no condition" (found
-    while re-running the review probes; probe 5a survived because of it).
+    ``if: false`` parses as a YAML BOOLEAN, so the value is stringified before
+    normalising — ``job.get("if") or ""`` turned it into the empty string and a
+    constant detector saw "no condition" (measured while fixing #307).
     """
     raw = job.get("if")
 
@@ -160,56 +149,63 @@ def _condition_text(job: dict) -> str:
 
     return _normalise(raw)
 
-def _serves_a_fork_guard(condition: str) -> bool:
-    """True when ``condition`` POSITIVELY admits the non-PR case.
+def _guard_is_admitting(condition: str) -> bool:
+    """True when ``condition`` POSITIVELY admits everything except a fork PR.
 
-    The farm-pinned jobs live in a *called* workflow and see their caller's
-    event, so the only safe shape is the admitting guard: run when there is no
-    pull request, and when there is one, refuse forks. Its absence is what
-    "runs untrusted fork content on the shared fleet" looks like.
-    """
-    lowered = condition.lower()
-    return ("||" in condition) and (_PULL_REQUEST_NULL in lowered) and (_FORK_FIELDS_IN_ADMITTING in lowered)
+    Judged by the expression's SHAPE, not by one remembered spelling (review of
+    #307 measured five paraphrases that a literal search accepted):
 
-def _is_fork_filter(condition: str) -> bool:
-    """True when ``condition`` could exclude a fork pull request.
+    * it must be a disjunction whose first arm admits the no-pull-request case
+      (``github.event.pull_request == null``);
+    * its arm about the head repository must EXCLUDE a fork — ``fork != true`` or
+      ``full_name == github.repository`` — never the inverse.
 
-    The judgement is about SHAPE, in this order:
-
-    1. a logical join (``||``) that admits the non-pull-request case
-       (``build_pull_request == null || …``) is an ADMITTING guard, not a
-       filter — that is the #160 fix and it must stay green;
-    2. otherwise any mention of the fork fields, the full-repo-name
-       comparison, or "skip anything that is not a local pull request" is a
-       filter, because in a non-admitting condition each of those clauses can
-       only exclude.
-
-    Review of #307 showed why the second half cannot be a literal search alone:
-    the original guard used ``head.repo.full_name``, and a test looking only for
-    ``head.repo.fork`` passed straight over it (probe 6) — then the first fix
-    over-corrected and rejected the admitting guard (inverse probe).
+    A condition naming an event (``event_name == 'workflow_dispatch'``) is not
+    admitting: it skips every pull request, fork or not.
     """
 
-    if not condition:
+    if ("||" not in condition) or ("pull_request==null" not in condition.lower()):
         return False
 
-    lowered = condition.lower()
+    arms = [arm.lower() for arm in condition.split("||")]
 
-    if ("||" in condition) and (_PULL_REQUEST_NULL in lowered):
-        return False
+    for arm in arms:
+        if "head.repo.fork" in arm:
+            return ("!=true" in arm) or ("==false" in arm)
 
-    if _PULL_REQUEST_EXCLUSION in lowered:
-        return True
+        if "head.repo.full_name" in arm:
+            return "==github.repository" in arm
 
-    return any(needle in lowered for needle in _FORK_FILTERS)
+    return False
 
-#: Contexts a condition may legitimately depend on. A condition naming NONE of
-#: them is constant, and a constant ``false`` skips the job — hence reports no
-#: check run — which is 466d207's effect without naming a fork (probes 5a/5b).
-_EVENT_CONTEXTS = ("github.", "inputs.", "vars.", "needs.", "env.", "steps.", "job.", "strategy.", "matrix.")
+def _carries_fork_guard(condition: str) -> bool:
+    """Either accepted guard form: the admitting one, or the canonical one.
+
+    One predicate for every caller, so the two cannot drift into disagreeing
+    the way the served-job and farm tests did (review of #307, finding S2).
+    """
+    return _guard_is_admitting(condition) or _is_canonical_guard(condition)
+
+def _is_canonical_guard(condition: str) -> bool:
+    """True when the condition IS the org's canonical guard, in any marker spelling.
+
+    The canonical form opens with ``event_name != 'pull_request'`` and then
+    admits same-repo PRs — a valid guard, and the one `ci.workflow_audit`
+    tells repositories to use. Recognising it by the single owner's markers is
+    the point: a second, home-grown notion of "canonical" is how #307's first
+    two cuts came to reject the guard they meant to require.
+    """
+    # Quotes are stripped, so compare quote-free needles too.
+    compact = "".join(condition.split()).replace("'", "")
+    # Both halves are required: the event arm admits pushes and dispatches, the
+    # repository arm excludes forks. A repository arm ALONE filters every
+    # non-PR run out (probe 3, review of #307).
+    admits_non_pr = "event_name!=pull_request" in compact
+
+    return admits_non_pr and any(marker.replace("'", "") in compact for marker in EQUIVALENT_GUARDS)
 
 def _is_constant(condition: str) -> bool:
-    """True when ``condition`` does not depend on any event at all."""
+    """True when ``condition`` does not depend on any event or context."""
 
     if not condition:
         return False
@@ -218,43 +214,64 @@ def _is_constant(condition: str) -> bool:
 
     return not any(context in bare for context in _EVENT_CONTEXTS)
 
+#: Contexts a condition may legitimately depend on.
+_EVENT_CONTEXTS = ("github.", "inputs.", "vars.", "needs.", "env.", "steps.", "job.", "strategy.", "matrix.")
+
+#: Event tests that deny ALL pull requests when they stand ALONE. They are only
+#: a filter in a single-arm condition: the org's canonical guard opens with
+#: ``event_name != 'pull_request' || …`` and then serves same-repo PRs, so the
+#: arm must be judged with the rest of the disjunction (review of #307 caught
+#: this rejecting the canonical guard).
+_PR_DENYING_ARMS = ("event_name!='pull_request'", "event_name=='workflow_dispatch'", "event_name=='workflow_call'", "event_name=='push'")
+
+def _excludes_a_pull_request(condition: str) -> bool:
+    """True when a NON-admitting condition skips pull requests entirely.
+
+    Only single-arm event tests qualify. ``pull_request_target`` is deliberately
+    NOT a filter: it is a pull-request event, and a fork reaches it — treating it
+    as an exclusion left that probe green (review of #307).
+    """
+    lowered = condition.lower()
+
+    if "||" in condition:
+        return False
+
+    return any(arm in lowered for arm in _PR_DENYING_ARMS)
+
+def _is_served_job_filtered(job: dict) -> str | None:
+    """The reason a job would filter a fork (or skip PRs entirely), else ``None``."""
+    condition = _condition_text(job)
+
+    if _is_constant(condition):
+        return f"a CONSTANT condition ({job.get('if')!r}) — a constant false skips the job, and a skipped job reports no check run (466d207)"
+
+    if _guard_is_admitting(condition) or _is_canonical_guard(condition):
+        return None
+
+    if _excludes_a_pull_request(condition):
+        return f"{job.get('if')!r} skips pull requests entirely — the 466d207 blank check run, whatever the fork fields say"
+
+    if condition and ("head.repo" in condition.lower()):
+        return f"{job.get('if')!r} names the head repository but does not exclude a fork — the guard's INVERSE admits one"
+
+    return None
+
 @pytest.mark.parametrize("filename,job_id", sorted(FORK_SERVED.items()))
 class test_fork_pull_requests_are_served:
     def test_job_is_not_skipped_for_forks(self, filename: str, job_id: str) -> None:
         """No job-level condition may filter a fork pull request out.
 
-        This is the 466d207 property, and it is asserted ABOUT THE CONDITION —
-        not about whether a ``pull_request`` event reaches the job today. A
-        called workflow sees its CALLER's event name, so "the workflow is
-        dispatch-only" bounds nothing: the next ``pull_request`` caller makes
-        any surviving filter live again.
-
-        The two shapes that filter a fork are both covered: a condition naming
-        the fork fields (``head.repo.fork`` / ``head.repo.full_name`` — the
-        466d207 guard used the second), and a constant, because
-        ``if: false`` skips the job and a skipped job reports no check run,
-        which is the same user-visible outcome with no fork mentioned at all.
+        The 466d207 property. Judged by what the condition DOES, not by a
+        spelling: a constant, a PR-excluding event test, an inverted fork
+        comparison and a bare ``head.repo`` mention are all caught, and the
+        admitting guard in every accepted paraphrase passes (review of #307
+        measured five paraphrases a literal search accepted and one it wrongly
+        rejected).
         """
         job = _job(filename, job_id)
-        condition = _condition_text(job)
+        reason = _is_served_job_filtered(job)
 
-        assert not _is_constant(condition), f"{filename}:{job_id} has a CONSTANT job condition ({job.get('if')!r}) — a constant false skips the job, and a skipped job reports no check run (466d207)"
-        assert not _is_fork_filter(condition), f"{filename}:{job_id} filters fork pull requests ({job.get('if')!r}); a skipped job reports no check run, so every outside contribution stays BLOCKED - the regression 466d207 caused and this test exists to prevent"
-
-    def test_the_caller_regime_is_recorded(self, filename: str, job_id: str) -> None:
-        """Name the regime instead of hiding it, so the next reader knows the risk.
-
-        The fork clause was deleted because the org's canonical CALLERS are
-        dispatch-only (#264), not because this workflow's own trigger list
-        settles the question — a ``pull_request`` caller delivers
-        ``event_name == 'pull_request'`` to the callee. This test records which
-        regime the workflow is in and asserts the consequence that matters
-        either way: no filter, and no secret (asserted in the sibling test).
-        """
-        regime = "pull_request-capable" if _can_receive_a_pull_request(filename) else "called/dispatched-into"
-        # The assertion is the invariant; the regime is the explanation. A
-        # failure above reads alongside this line.
-        assert not _is_fork_filter(_condition_text(_job(filename, job_id))), f"{filename}:{job_id} ({regime}) must not filter forks"
+        assert reason is None, f"{filename}:{job_id} would not serve a fork pull request: {reason}. A skipped job reports no check run, so every outside contribution stays BLOCKED - the regression 466d207 caused and this test exists to prevent"
 
     def test_job_requires_no_secret(self, filename: str, job_id: str) -> None:
         """A fork run gets no secrets, so a required one would fail every outside PR."""
@@ -267,23 +284,17 @@ class test_fork_pull_requests_are_served:
 
 @pytest.mark.parametrize("filename", FARM_PINNED)
 def test_farm_pinned_workflows_keep_the_guard(filename: str) -> None:
-    """Farm-pinned jobs must not be OPENED to forks while they run untrusted code.
+    """Farm-pinned jobs must exclude forks PRECISELY, not approximately.
 
-    Rewritten in the #307 review: the previous version selected the jobs WITHOUT
-    a fork marker and asserted that list was non-empty — i.e. it passed only
-    when the job was UNGUARDED, the exact opposite of its docstring. All three
-    files currently carry no condition, so it was green by accident and would
-    stay green while a guard was removed.
-
-    The invariant: a job on the self-hosted fleet must not be reachable by a
-    fork pull request. Since a called workflow sees its caller's event, a
-    condition that names fork fields is the guard; its absence means the job
-    runs for forks on the farm.
+    Rewritten twice after review: the original selected the jobs WITHOUT a fork
+    marker and asserted that list was non-empty (green only while UNGUARDED),
+    then a substring test accepted the guard's inverse. A farm job must carry a
+    guard that EXCLUDES a fork — discharging to closed, never open.
     """
     doc = _doc(filename)
-    unguarded = [job_id for job_id, job in doc["jobs"].items() if not _serves_a_fork_guard(_condition_text(job))]
+    unguarded = [job_id for job_id, job in doc["jobs"].items() if not _carries_fork_guard(_condition_text(job))]
 
-    assert not unguarded, f"{filename}: jobs {unguarded} run on the self-hosted fleet with no fork guard. Add the admitting clause (`if: ${{ github.event.pull_request == null || github.event.pull_request.head.repo.fork != true }}`), or move the job off the farm and update FARM_PINNED together with the fix note"
+    assert not unguarded, f"{filename}: jobs {unguarded} run on the self-hosted fleet without a fork-EXCLUDING guard. Use `if: {CANONICAL_GUARD}` (or the `sits: fork == false` equivalent), or move the job off the farm and update FARM_PINNED with the fix note"
 
 def test_runner_override_falls_back_to_the_fleet_labels():
     """#305: an empty ``runner`` input must resolve to exactly the fleet
