@@ -270,6 +270,18 @@ class _FakeRunner:
 
             return _diff_response()
 
+        # The artifact gate asks `/pulls/<n>/files`; like the diff read it must
+        # not consume a queued payload, or every existing response list shifts.
+        if "/files" in " ".join(argv):
+            self.calls.append(tuple(argv))
+
+            class _files_response:
+                returncode = 0
+                stdout = 'HTTP/2.0 200 OK\n\n[{"filename": "docs/readme.md"}, {"filename": "packages/wasm/qr/wit/qr.wit"}]'
+                stderr = ""
+
+            return _files_response()
+
         self.calls.append(tuple(cmd))
 
         class _P:
@@ -460,7 +472,11 @@ class test_round4_regressions:
     def test_merge_lane_never_puts_with_an_empty_pin(self):
         runner = _FakeRunner([(200, self._pr())])
         assert _gate("o/r", 1, "", allow_cjk = False, do_merge = True, runner = runner) == 1
-        json_reads = [c for c in runner.calls if "vnd.github.diff" not in " ".join(c)]
+        # The gate reads three things before it can act: the PR payload, the
+        # comment gate's diff, and the artifact gate's file list. "One payload
+        # read" is therefore about /pulls/<n> ALONE — the point of the test is
+        # that a refused gate never reaches the merge PUT.
+        json_reads = [c for c in runner.calls if c[-1].endswith("/pulls/1")]
         assert len(json_reads) == 1, "an unverified head must never reach the merge PUT"
         assert not any("merge" in " ".join(c) for c in runner.calls)
 
@@ -963,10 +979,13 @@ class diff_runner(_FakeRunner):
     silent-green shape this harness exists to catch.
     """
 
-    def __init__(self, pr, diff, *, diff_status = 200):
+    def __init__(self, pr, diff, *, diff_status = 200, files = None):
         self.pr = pr
         self.diff = diff
         self.diff_status = diff_status
+        #: What ``/pulls/<n>/files`` answers. Defaults to the diff's own path so
+        #: a caller that does not care gets a consistent answer.
+        self.files = files if files is not None else [line.split(" b/")[-1] for line in diff.splitlines() if line.startswith("diff --git")]
         super().__init__([])
 
     def __call__(self, cmd, **kwargs):
@@ -985,9 +1004,16 @@ class diff_runner(_FakeRunner):
             stdout = ""
             stderr = ""
 
-        if wants_diff and ("/pulls/" in " ".join(argv)):
+        joined = " ".join(argv)
+
+        if "/files" in joined:
+            # The artifact gate asks which paths a PR touches, NOT which patch
+            # lines it changes: a PR can regenerate bindings without editing the
+            # WIT, and that is exactly the drift this gate looks for.
+            status, body = 200, [{"filename": path} for path in self.files]
+        elif wants_diff and ("/pulls/" in joined):
             status, body = self.diff_status, self.diff
-        elif "/pulls/" in " ".join(argv):
+        elif "/pulls/" in joined:
             status, body = 200, self.pr
         else:
             return super().__call__(cmd, **kwargs)
@@ -1254,3 +1280,117 @@ class test_comment_gate_cli:
         rc = pr_gate_module.main(["check", "--repo", "o/r", "--pr", "1", "--expect-head", "a" * 40, "--no-comment-gate"])
         assert rc == 0
         assert seen["comment_gate"] is False
+
+# ── artifact gate (phase 4, second cut) ─────────────────────────────────────
+#
+# The WIT-vs-bindings comparison lives in `celestia_devtools.lint.artifact_drift`;
+# what these tests pin is the PLUMBING and the reach:
+#
+#   * a PR that touches neither the WIT nor the wasm bindings is a LOUD SKIP,
+#     with no comparison run at all;
+#   * a PR that touches either root runs the comparison against the checkout,
+#     and a drift refusal reaches the merge verdict;
+#   * `--waiver` does NOT reach it (the refusals ride the same `gated` channel
+#     the comment gate uses), and the PR-body `artifact-gate-waiver:` entry does;
+#   * the two gates are independent: waiving one is not waiving the other.
+ARTIFACT_WIT_PATH = "packages/wasm/qr/wit/qr.wit"
+
+def _artifact_workspace(tmp_path, monkeypatch, *, artifact_version = "0.1.0", wit_version = "0.1.0"):
+    """A miniature hikari checkout and the env var that points the gate at it."""
+    from celestia_devtools.lint import artifact_drift
+
+    wit_dir = tmp_path / "packages" / "wasm" / "qr" / "wit"
+    wit_dir.mkdir(parents = True)
+    wit = f"package celestia:hikari-qr@{wit_version};\n\ninterface types {{\n    record thing {{ size: u8, }}\n}}\n\nworld qr {{\n    use types.{{thing}};\n}}\n"
+    (wit_dir / "qr.wit").write_text(wit, encoding = "utf-8")
+    interfaces = tmp_path / "packages" / "vue" / "src" / "wasm" / "qr" / "interfaces"
+    interfaces.mkdir(parents = True)
+    (interfaces / "celestia-hikari-qr-types.d.ts").write_text(f"/** @module Interface celestia:hikari-qr/types@{artifact_version} **/\n", encoding = "utf-8")
+    monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(tmp_path))
+    assert artifact_drift is not None
+    return tmp_path
+
+def _artifact_pr(files, body = GOOD_RECORD, **overrides):
+    """A PR payload whose file list is ``files`` (the diff is irrelevant here)."""
+    pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+    pr.update(overrides)
+    # A neutral claim-free patch: these tests are about the ARTIFACT gate, so the
+    # comment gate must have nothing to say (a claim here would refuse first).
+    neutral = _diff_for("@@ -1,0 +1,3 @@\n+// MUT: neutral-fixture\n+// measured: the fixture claim the MUT line above anchors\n+expect(1).toBe(1);\n", filename = "packages/vue/src/useHighlight.test.ts")
+    return pr, neutral, files
+
+class test_artifact_gate_plumbing:
+    def test_a_pr_touching_neither_root_is_a_loud_skip(self, tmp_path, monkeypatch, capsys):
+        _artifact_workspace(tmp_path, monkeypatch)
+        pr, diff, files = _artifact_pr(["packages/vue/src/App.vue"])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files)) == 0
+        assert "artifact-drift: no WIT / wasm-binding changes" in capsys.readouterr().out
+
+    def test_a_matching_tree_passes(self, tmp_path, monkeypatch, capsys):
+        _artifact_workspace(tmp_path, monkeypatch)
+        pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files)) == 0
+        capsys.readouterr()
+
+    def test_a_version_drift_refuses_the_merge(self, tmp_path, monkeypatch, capsys):
+        """The #1485 shape, at the merge chain: WIT moved, bindings did not."""
+        _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
+        pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files)) == 1
+        err = capsys.readouterr().err
+        assert "artifact-drift: qr: types: wit@0.2.0 artifact 0.1.0" in err
+        assert "MERGE REFUSED" in err
+
+    def test_a_bindings_only_change_also_triggers_the_gate(self, tmp_path, monkeypatch, capsys):
+        # Regenerating without moving the WIT is still drift surface.
+        _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
+        pr, diff, files = _artifact_pr(["packages/vue/src/wasm/qr/interfaces/celestia-hikari-qr-types.d.ts"])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files)) == 1
+        assert "artifact-drift:" in capsys.readouterr().err
+
+    def test_the_break_glass_flag_skips_it(self, tmp_path, monkeypatch, capsys):
+        _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
+        pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH])
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files), artifact_drift = False) == 0
+        capsys.readouterr()
+
+class test_artifact_gate_waiver:
+    def _waiver(self, tmp_path):
+        alerts = tmp_path / "_alerts"
+        alerts.mkdir()
+        path = alerts / "pr-merge-waiver-r-1.md"
+        path.write_text("pr: 1\nhead: " + ("a" * 40) + "\n" "basis: " + ("x" * 60) + "\n" "c3-not-fabricated: yes\nsigned: lead 2026-11-22\n", encoding = "utf-8")
+        return path
+
+    def test_signed_waiver_does_not_excuse_a_drift(self, tmp_path, monkeypatch, capsys):
+        _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
+        pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH])
+        rc = _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files), waiver = self._waiver(tmp_path))
+        assert rc == 1
+        assert "artifact-drift: qr:" in capsys.readouterr().err
+
+    def test_body_entry_excuses_and_is_announced(self, tmp_path, monkeypatch, capsys):
+        _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
+        body = GOOD_RECORD + "\nartifact-gate-waiver: the bindings ship from a separate release train\n"
+        pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH], body = body)
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files)) == 0
+        out = capsys.readouterr().out
+        assert "artifact-drift-waiver (PR body)" in out
+        assert "suppressed 1 artifact-drift refusal(s)" in out
+
+    def test_the_two_gate_waivers_are_independent(self, tmp_path, monkeypatch, capsys):
+        """Waiving the artifact gate must not waive the comment gate."""
+        _artifact_workspace(tmp_path, monkeypatch)
+        body = GOOD_RECORD + "\nartifact-gate-waiver: the bindings ship from a separate release train\n"
+        pr, diff = _comment_pr(COMMENT_CLAIM_PATCH, body = body)
+        assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff)) == 1
+        assert "comment-gate: packages/vue/src/useHighlight.test.ts:1" in capsys.readouterr().err
+
+    def test_a_short_artifact_reason_is_refused(self):
+        grant, problems = pr_gate_module.artifact_waiver("artifact-gate-waiver: ok")
+        assert grant is None
+        assert problems and ("floor" in problems[0])
+
+    def test_a_malformed_artifact_entry_refuses_at_merge_time(self):
+        problems = body_problems(GOOD_RECORD + "\nartifact-gate-waiver: ok\n")
+        assert any("floor" in item for item in problems)
