@@ -97,6 +97,19 @@ class test_tables:
 class test_the_directive:
     """``body-gate-ok:`` is the printed, argument-bearing escape hatch."""
 
+    def test_a_visible_reason_at_the_floor_is_honoured(self):
+        # MUT:directive-floor-edge — the comment-close hedge must apply only to
+        # a hidden directive; a visible `>` at the floor is the author's.
+        body = "It printed 120 passed. body-gate-ok: " + ("y" * 19) + ">"
+        assert body_gate.check_body(body + "\n").ok
+
+    def test_a_refusal_never_prints_a_skip(self):
+        # MUT:skip-vs-refusal — `ok=False` and a skip line in one report makes
+        # the merge log say both "nothing to judge" and "refused".
+        result = body_gate.check_body("Add the thing. <!-- body-gate-ok: the log lives in the issue page two -->\n")
+        assert not result.ok
+        assert result.skipped is None
+
     def test_the_directive_needs_a_reason(self):
         # MUT:directive-floor — a thin reason must suppress nothing.
         assert not body_gate.check_body("It printed 120 passed. body-gate-ok: ok\n").ok

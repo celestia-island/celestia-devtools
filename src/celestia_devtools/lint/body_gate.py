@@ -446,8 +446,13 @@ def directive_reason(line: str) -> str | None:
 
     reason = line[match.start("reason"):].translate(_INVISIBLE).strip()
 
-    # Trim what the line ends with: an HTML comment's close, markdown emphasis.
-    return reason.rstrip("->").strip()
+    # Only a directive that came out of an HTML comment carries the comment's
+    # close (` -->`) in its reason; a visible directive's reason is taken as
+    # written (a `>` at the floor is the author's character, not our noise).
+    if _hidden_directive(line):
+        return reason.rstrip("->").strip()
+
+    return reason
 
 def is_reading_row(line: str) -> bool:
     """True when a table row is a label followed by readings.
@@ -611,7 +616,12 @@ def check_body(body: str) -> report:
     findings = [stmt for stmt in statements if not sourced(lines, _index_of(lines, stmt), evidence)]
 
     if not statements:
-        return report(scanned_lines = scanned, statements = (), findings = (), problems = tuple(problems), directives = directives, skipped = f"no quantity or behaviour statement in {scanned} prose line(s) — nothing to judge")
+        # A body that states nothing is a skip — unless something else already
+        # refuses it (a hidden directive's note, an unclosed fence), in which
+        # case the merge log must not print "nothing to judge" beside a refusal.
+        skipped = None if problems else f"no quantity or behaviour statement in {scanned} prose line(s) — nothing to judge"
+
+        return report(scanned_lines = scanned, statements = (), findings = (), problems = tuple(problems), directives = directives, skipped = skipped)
 
     return report(scanned_lines = scanned, statements = tuple(statements), findings = tuple(findings), problems = tuple(problems), directives = directives)
 
