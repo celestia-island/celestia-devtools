@@ -1161,14 +1161,44 @@ def _remote_refspec(root: str) -> str:
     return (probe.stdout or "").strip() or "unset"
 
 def _refspec_brings_branches(refspec: str) -> bool:
-    """True when the refspec already covers every branch.
+    """True when every one of this refspec's SOURCES covers all branches.
 
-    The common case is a wildcard source (``+refs/heads/*:refs/remotes/origin/*``)
-    or no configured refspec at all (git's default is the wildcard). A narrowed
-    refspec — ``+refs/heads/master:refs/remotes/origin/master`` — is the one that
-    makes a plain `git fetch origin` insufficient.
+    Git's ``remote.origin.fetch`` is a multi-valued setting, so ``refspec`` is
+    the config value verbatim: one entry per line, each ``[+]<src>[:<dst>]``.
+
+    The judgement is on the SOURCE side and by equality, because both weaker
+    readings were measured wrong:
+
+    * searching for ``refs/heads/*`` ANYWHERE in the string accepts
+      ``+refs/heads/master:refs/remotes/origin/*`` — the shape
+      ``--single-branch --branch master`` and mirror-style setups produce — whose
+      DESTINATION is a wildcard while it fetches exactly one branch. That made
+      the advice say "this fetch brings every branch, the failure must be
+      something else" for a checkout that plainly does not, and it suppressed
+      the one command that would have fixed it.
+    * a substring test also accepts ``refs/heads/*-release:...``, a legitimate
+      narrow pattern.
+
+    An unset entry, and "we could not read the config", both mean "no narrowing
+    evidence": git's default is the full wildcard, so the advice must not claim
+    a plain fetch is insufficient.
     """
-    return (refspec in ("unset", "unknown")) or ("refs/heads/*" in refspec)
+
+    if (refspec or "").strip() in ("", "unset", "unknown"):
+        return True
+
+    entries = [entry.strip() for entry in refspec.splitlines() if entry.strip()]
+
+    if not entries:
+        return True
+
+    for entry in entries:
+        source = entry.removeprefix("+").split(":", 1)[0]
+
+        if source != "refs/heads/*":
+            return False
+
+    return True
 
 def _fetch_command(head: str, branch: str) -> str:
     """The command that would make this checkout able to judge the PR.

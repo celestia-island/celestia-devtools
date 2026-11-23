@@ -1350,6 +1350,76 @@ def test_the_fetch_command_is_pasteable():
     assert command == "git fetch origin refs/heads/feature/x", command
     assert "'" not in command, command
 
+def test_a_narrowed_refspec_gets_the_explicit_fetch_advice(tmp_path, monkeypatch):
+    """The one cell the matrix did not pin: a narrowed refspec must SAY so.
+
+    A unit test on `_refspec_brings_branches` is not enough — the LIVE message
+    could still claim a plain `git fetch origin` would work. This drives the
+    resolver against a real repository whose `remote.origin.fetch` is the
+    narrowed form, with a head it does not have, and asserts the advice names
+    the explicit refspec and would actually help.
+
+    Includes the shapes that string searching got wrong: a wildcard
+    DESTINATION, and a legitimately narrow `*-release` source.
+    """
+
+    def make(base, refspec):
+        base.mkdir(parents = True, exist_ok = True)
+        repo = base / "repo"
+        repo.mkdir()
+
+        for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+            subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+        (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        # An `origin` that cannot be reached, so the self-heal fetch fails fast.
+        (base / "nowhere.git").mkdir()
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(base / "nowhere.git")], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "config", "remote.origin.fetch", refspec], check = True, capture_output = True)
+
+        return repo
+
+    # Both are VALID refspecs that fetch exactly one branch. `refs/remotes/origin/*`
+    # as a DESTINATION is rejected by git itself ("invalid refspec"), which breaks
+    # every later git call in the repository — the shape to guard against is a
+    # wildcard-looking destination that git DOES accept, like a shadow branch.
+    for index, refspec in enumerate(("+refs/heads/master:refs/remotes/origin/master", "+refs/heads/master:refs/remotes/origin/master/x")):
+        repo = make(tmp_path / f"case{index}", refspec)
+        monkeypatch.chdir(repo)
+        root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+        assert root is None, (refspec, root)
+        joined = " ".join(problems)
+        assert "does not bring a PR branch" in joined, (refspec, problems)
+        assert "git fetch origin refs/heads/feature/x" in joined, (refspec, problems)
+        assert "fetches all branches" not in joined, (refspec, problems)
+
+def test_a_wildcard_refspec_is_not_blamed(tmp_path, monkeypatch):
+    """The other side: a wildcard SOURCE already fetches every branch."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(tmp_path / "nowhere.git")], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+    assert root is None, root
+    joined = " ".join(problems)
+    assert "fetches all branches" in joined, problems
+    assert "does not bring a PR branch" not in joined, problems
+
+def test_a_narrow_release_pattern_is_not_a_wildcard():
+    """`refs/heads/*-release` is a narrow source, not the full wildcard."""
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/*-release:refs/remotes/origin/*-release")
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/*")
+    assert pr_gate_module._refspec_brings_branches("+refs/heads/*:refs/remotes/origin/*")
+
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):
         pr, diff = _comment_pr(COMMENT_CLAIM_PATCH)
