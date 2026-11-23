@@ -179,8 +179,14 @@ _COMMIT = re.compile(r"(?<![\w])[0-9a-f]{7,40}(?![\w])", re.IGNORECASE)
 _CHECKSUM_WORD = re.compile(r"\bsha-?(?:1|256|512)\b|\bmd5\b", re.IGNORECASE)
 #: A `file:line` reference: a dotted filename, a colon, a line number.
 #: A test pointer: a module and the test that pins the claim (`a.py::test_b`,
-#: `x.test.ts`, `y_test.rs`). A line-level source: it names a place to open.
-_TEST_REF = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|rs)::[\w:.-]+|[\w./-]+\.(?:test|spec)\.[a-z]+|[\w./-]+_test\.(?:py|rs)")
+#: `x.test.ts`, `y_test.rs`). It is a SPAN-level source — a sentence may cite a
+#: test, but citing one does not evidence what the sentence says about it (a
+#: bare `(x.test.ts)` was standing in for "the path was never exercised").
+#: A test pointer that names a CASE (`a.py::test_b`) or carries a line
+#: (`x.test.ts:88`) is line-level evidence: it opens at a specific assertion.
+#: A bare test FILE name (`x.test.ts`) is span-level only — citing a file says
+#: the file exists, not that the sentence's claim about behaviour holds.
+_TEST_REF = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|rs)::[\w:.-]+|[\w./-]+\.(?:test|spec)\.[a-z]+\s*:\s*\d+|[\w./-]+_test\.(?:py|rs)\s*:\s*\d+")
 
 _FILE_LINE = re.compile(r"[\w./-]+\.(?:rs|ts|tsx|js|jsx|py|md|toml|yml|yaml|json|sql|wit|vue|sh|just|lock|txt)\s*:\s*\d+")
 _EVIDENCE = re.compile(r"\bevidence\s*:", re.IGNORECASE)
@@ -197,10 +203,6 @@ _SPAN = re.compile(r"`[^`\n]+`")
 #: lowercase words with no article. That is the line the lead drew: `a b` and
 #: `the thing` are prose, and a span that cannot be told from prose is not a
 #: source.
-#: A line that opens with a code span (an optional table pipe first): the span is
-#: the sentence's SUBJECT, so it cannot also be the evidence for it.
-_OPENS_WITH_SPAN = re.compile(r"^\s*\|?\s*`")
-
 _SPAN_SOURCE = re.compile(r"--?[a-z][\w-]*|\w+\(|\w_\w|[a-z][A-Z]|\w{2,}/\w|\.\w{1,6}$|:\d|=\S|^(?!(?:the|a|an|of|to|and|or|is|was) )[a-z][a-z0-9_-]*(?:\s+[a-z][\w-]*){1,2}$")
 
 #: The marker set, in the order the docstring lists it.
@@ -463,7 +465,13 @@ def is_source(line: str) -> bool:
     for word in DISCLAIMERS:
         text = text.replace(word, " " * len(word))
 
-    for pattern in (_EVIDENCE, _PR_REF, _URL, _CHECKSUM_WORD, _FILE_LINE, _TEST_REF, comment_gate._EXPLICIT_ANCHOR):
+    # A pointer to a specific TEST CASE (`a.py::test_b`, `x.test.ts:88`) is
+    # line-level: it opens at an assertion. A bare test FILE name is not — it
+    # only says the file exists (see the span branch below).
+    if _TEST_REF.search(text):
+        return True
+
+    for pattern in (_EVIDENCE, _PR_REF, _URL, _CHECKSUM_WORD, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
         if pattern.search(text):
             return True
 
@@ -485,7 +493,7 @@ def is_source(line: str) -> bool:
         return False
 
     for span in code_spans(text):
-        if span_is_source(span):
+        if span_is_source(span) or _TEST_REF.fullmatch(span.strip()):
             return True
 
     return False

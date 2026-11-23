@@ -113,6 +113,14 @@ class test_span_evidence:
         for text in ["The gate doesn't flag `x` output.", "The gate reds only when the fixture carries `y` output.", "只有 `z` 出现时才红。", "这条规则抓不住 `w` 那种写法。"]:
             assert not body_gate.check_body(text + "\n").ok, text
 
+    def test_citing_a_test_file_does_not_evidence_a_behaviour_claim(self):
+        # MUT:test-ref-span — a bare `(x.test.ts)` proves the file exists, not
+        # that the path was never exercised. Only a case pointer does more.
+        for text in ["The armed path was never exercised", "The armed path was never exercised (`x.test.ts`)", "The armed path was never exercised, per foo.test.z", "The armed path was never exercised (README.test.md)"]:
+            assert not body_gate.check_body(text + "\n").ok, text
+
+        assert body_gate.check_body("The armed path was never exercised (`x.test.ts:88`).\n").ok
+
     def test_a_version_still_names_its_line(self):
         assert body_gate.check_body("`just` >= 1.36 makes duplicate definitions a hard parse error.\n").ok
 
@@ -246,7 +254,7 @@ class test_vocabulary:
 class test_corpus:
     """The published bodies, pinned: the gate's behaviour cannot drift silently."""
 
-    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 4), ("corpus-2813", 67, 32), ("corpus-2821", 20, 8)])
+    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 6), ("corpus-2813", 67, 32), ("corpus-2821", 20, 8)])
     def test_the_corpus_rows(self, name, sentences, refused):
         result = body_gate.check_body(_fixture(name + ".md"))
         assert (len(result.statements), len(result.findings)) == (sentences, refused)
