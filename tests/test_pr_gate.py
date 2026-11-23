@@ -1124,7 +1124,7 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         patch = "@@ -200,0 +200,2 @@\n+# measured: this pin catches the reload\n+x = 1\n"
         pr, diff = _comment_pr(patch, filename = "tests/test_far.py")
         problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
-        assert any("does not contain the PR head" in problem for problem in problems), problems
+        assert any("does not contain that commit" in problem for problem in problems), problems
 
     def test_no_checkout_with_a_python_diff_refuses_rather_than_passing(self, tmp_path, monkeypatch):
         """The silent-pass this round found: no checkout must refuse, not return [].
@@ -1202,7 +1202,7 @@ def test_an_unusable_head_string_does_not_crash_the_resolver(tmp_path, monkeypat
     monkeypatch.chdir(repo)
     root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = True)
     assert root is None, root
-    assert any("could not be fetched" in problem for problem in problems), problems
+    assert any("carries a NUL byte" in problem for problem in problems), problems
     # The unusable head reaches the reader escaped, never as raw bytes.
     assert all("\x00" not in problem for problem in problems), problems
     # Not required: no refusal, and no root either — the scanner is called with
@@ -1292,6 +1292,63 @@ def test_a_checkout_that_lacks_the_head_fetches_it_before_refusing(tmp_path, mon
     root, problems = pr_gate_module._comment_gate_root(head, required = True, branch = "feature/x")
     assert problems == [], problems
     assert root is not None, "the resolver must fetch the head instead of refusing"
+
+def test_a_missing_git_is_named_as_such_not_blamed_on_the_checkout(tmp_path, monkeypatch):
+    """Round 8's S1: "git is not installed" must not read as "not a checkout".
+
+    Folding the two into one boolean produced a refusal that blamed the
+    repository, its refspec and a `git fetch` command for a machine where git
+    cannot run at all — three false statements in one line.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    # Every `git` invocation now fails to start, the shape of "git not on PATH".
+    monkeypatch.setenv("PATH", str(tmp_path / "no-such-bin"))
+    root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+    assert root is None, root
+    joined = " ".join(problems)
+    assert ("git could not be run here" in joined) and ("not found on PATH" in joined), problems
+    assert "does not contain" not in joined, problems
+    assert "refspec" not in joined, problems
+
+def test_a_checkout_with_no_remote_says_so(tmp_path, monkeypatch):
+    """Round 8's S2: no `origin` means no fetch was attempted, and the message must not claim one failed."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+    assert root is None, root
+    joined = " ".join(problems)
+    assert "no `origin` remote" in joined, problems
+    assert "refspec" not in joined, problems
+    assert "does not bring a PR branch" not in joined, problems
+
+def test_a_default_refspec_is_not_blamed_for_the_failure(tmp_path, monkeypatch):
+    """A wildcard refspec already fetches every branch: the advice must not say otherwise."""
+    assert pr_gate_module._refspec_brings_branches("+refs/heads/*:refs/remotes/origin/*")
+    assert pr_gate_module._refspec_brings_branches("unset")
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/master")
+
+def test_the_fetch_command_is_pasteable():
+    """`shlex.quote`, not `repr`: a branch name must survive being pasted into a shell."""
+    command = pr_gate_module._fetch_command("a" * 40, "feature/x")
+    assert command == "git fetch origin refs/heads/feature/x", command
+    assert "'" not in command, command
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):

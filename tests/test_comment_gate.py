@@ -782,6 +782,23 @@ def test_a_claim_never_carries_the_walkers_own_markers():
         assert not any(ord(char) < 32 for char in entry.text), entry.text
         assert not any(ord(char) < 32 for char in entry.render()), entry.render()
 
+def test_an_unusable_revision_refuses_instead_of_raising(tmp_path):
+    """A revision git cannot be asked about must refuse, not traceback.
+
+    `check_diff(root=..., rev=...)` is a public entry point (the module's CLI
+    exposes `--rev`-shaped lanes), so an API-sourced revision carrying a NUL
+    reaches `git show`. `subprocess` raises `ValueError` — NOT `OSError` — for
+    an argument with a NUL, so an `except OSError` let it escape and took the
+    caller (the merge gate) down with a traceback instead of a refusal.
+
+    Measured with `except OSError` restored: this raises `ValueError`; with the
+    guard it returns a refusal naming the file.
+    """
+    repo, diff = _repo_with_change(tmp_path, '"""A."""\n\nx = 1\n', '"""A."""\n\nx = 2\n')
+    report = comment_gate.check_diff(diff, root = repo, rev = "HEAD\x00tail")
+    assert not report.ok, report
+    assert any("is not shown by the patch" in problem for problem in report.problems), report.problems
+
 def _hunk_starts(diff: str) -> list[int]:
     """The NEW-side start line of every hunk in ``diff``."""
     starts: list[int] = []

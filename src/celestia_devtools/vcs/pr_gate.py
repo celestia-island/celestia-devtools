@@ -100,6 +100,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -1010,6 +1011,14 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "") -> tuple[
 
     try:
         probe = subprocess.run(["git", "-C", str(Path.cwd()), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
+    except FileNotFoundError:
+        # No checkout can exist without git, and the caller's refusal has to say
+        # which of the two it is: a machine without git is an environment problem,
+        # not a repository that happens to lack a commit.
+        if required:
+            return None, [f"{COMMENT_GATE_CATEGORY}: git could not be run here (not found on PATH), so this diff's file text cannot be read — refusing rather than certifying a docstring state it never read"]
+
+        return None, []
     except (OSError, ValueError):
         return None, []
 
@@ -1024,21 +1033,60 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "") -> tuple[
     if not head:
         return root, []
 
-    if _checkout_has(root, head):
+    has_head, reason = _checkout_has(root, head)
+
+    if has_head:
         return root, []
 
-    if _fetch_head(root, head, branch):
+    fetched, why = _fetch_head(root, head, branch)
+
+    if fetched:
         return root, []
 
     if not required:
         return None, []
 
-    # The head is quoted through repr: an unusable string (a NUL, say) must reach
-    # the reader as an escaped literal, not as raw bytes in a log line.
-    return None, [f"{COMMENT_GATE_CATEGORY}: the checkout at {root} does not contain the PR head {head!r} and it could not be fetched — refusing rather than judging another commit's file text. This checkout's refspec is {_remote_refspec(root)}, so a plain `git fetch origin` does not bring a PR branch; run `{_fetch_command(head, branch)}`, or waive the gate explicitly with `comment-gate-waiver:` in the body"]
+    return None, [f"{COMMENT_GATE_CATEGORY}: cannot judge this diff's file text — {reason} and {why}. Refusing rather than judging another commit's. {_advice(root, head, branch)}"]
 
-def _checkout_has(root: str, head: str) -> bool:
-    """True when ``root`` holds ``head`` as a commit.
+def _advice(root: str, head: str, branch: str) -> str:
+    """What the reader can DO about a missing head.
+
+    Branches on what is actually true of this checkout: a repository with no
+    ``origin`` cannot be fetched at all, and a default (unset or wildcard)
+    refspec already brings every branch — telling that reader to run a fetch
+    would be advice that does nothing.
+    """
+
+    waiver = "or waive the gate explicitly with `comment-gate-waiver:` in the body"
+
+    if _has_remote(root):
+        refspec = _remote_refspec(root)
+
+        if _refspec_brings_branches(refspec):
+            return f"This checkout fetches all branches (`remote.origin.fetch={refspec}`), so `git fetch origin` should bring it — the fetch failed for another reason (network, credentials). Re-run it, {waiver}"
+
+        return f"This checkout's refspec is `{refspec}`, so a plain `git fetch origin` does not bring a PR branch; run `{_fetch_command(head, branch)}`, {waiver}"
+
+    return f"This checkout has no `origin` remote, so nothing can be fetched; add one and re-run, {waiver}"
+
+def _has_remote(root: str) -> bool:
+    """True when ``root`` has an ``origin`` remote."""
+
+    try:
+        probe = subprocess.run(["git", "-C", root, "remote"], capture_output = True, check = False, text = True)
+    except (OSError, ValueError):
+        return False
+
+    return "origin" in (probe.stdout or "").split()
+
+def _checkout_has(root: str, head: str) -> tuple[bool, str]:
+    """Whether ``root`` holds ``head``, and why not when it does not.
+
+    The second element is a REASON, not a boolean negation: "git could not be
+    run at all" and "this commit is not in the checkout" lead to completely
+    different advice, and folding them together produced a refusal that blamed
+    the repository, its refspec and a `git fetch` command for a machine where
+    git is not even installed.
 
     ``ValueError`` is caught with ``OSError`` because ``subprocess`` raises it —
     not ``OSError`` — for an argument carrying a NUL, and the head arrives from
@@ -1047,18 +1095,25 @@ def _checkout_has(root: str, head: str) -> bool:
 
     try:
         probe = subprocess.run(["git", "-C", root, "cat-file", "-e", f"{head}^{{commit}}"], capture_output = True, check = False)
-    except (OSError, ValueError):
-        return False
+    except FileNotFoundError:
+        return False, "git could not be run here (not found on PATH)"
+    except OSError as exc:
+        return False, f"git could not be run here ({exc})"
+    except ValueError:
+        return False, "the PR head is not a name git can be asked about (it carries a NUL byte)"
 
-    return probe.returncode == 0
+    if probe.returncode == 0:
+        return True, ""
 
-def _fetch_head(root: str, head: str, branch: str) -> bool:
-    """Try to MAKE the checkout contain ``head``; True when it now does.
+    return False, "this checkout does not contain that commit"
+
+def _fetch_head(root: str, head: str, branch: str) -> tuple[bool, str]:
+    """Try to MAKE the checkout contain ``head``; ``(got_it, why_not)``.
 
     Branch first: ``git fetch origin refs/heads/<branch>`` is always allowed,
     while fetching by SHA needs ``uploadpack.allowReachableSHA1InWant`` on the
     server, which is not guaranteed. A fetch that fails for lack of network is
-    not an error to report here — the caller's refusal says what to run.
+    not an error to report as a bug — the caller's advice says what to run.
     """
 
     wants: list[list[str]] = []
@@ -1069,16 +1124,31 @@ def _fetch_head(root: str, head: str, branch: str) -> bool:
     if re.fullmatch(r"[0-9a-fA-F]{7,40}", head):
         wants.append(["fetch", "--no-tags", "origin", head])
 
+    if not wants:
+        return False, "the PR head is not a name a fetch could ask for"
+
+    if not _has_remote(root):
+        return False, "there is no `origin` remote to fetch from"
+
+    tried: list[str] = []
+
     for argv in wants:
         try:
-            subprocess.run(["git", "-C", root, *argv], capture_output = True, check = False)
-        except (OSError, ValueError):
+            probe = subprocess.run(["git", "-C", root, *argv], capture_output = True, check = False)
+        except (OSError, ValueError) as exc:
+            return False, f"git could not run the fetch ({exc})"
+
+        if probe.returncode != 0:
+            tried.append(f"`git {' '.join(argv)}` failed")
+
             continue
 
-        if _checkout_has(root, head):
-            return True
+        if _checkout_has(root, head)[0]:
+            return True, ""
 
-    return False
+        tried.append(f"`git {' '.join(argv)}` did not bring the commit")
+
+    return False, "fetching it did not work (" + "; ".join(tried) + ")"
 
 def _remote_refspec(root: str) -> str:
     """``remote.origin.fetch`` as the message should show it."""
@@ -1090,13 +1160,25 @@ def _remote_refspec(root: str) -> str:
 
     return (probe.stdout or "").strip() or "unset"
 
+def _refspec_brings_branches(refspec: str) -> bool:
+    """True when the refspec already covers every branch.
+
+    The common case is a wildcard source (``+refs/heads/*:refs/remotes/origin/*``)
+    or no configured refspec at all (git's default is the wildcard). A narrowed
+    refspec — ``+refs/heads/master:refs/remotes/origin/master`` — is the one that
+    makes a plain `git fetch origin` insufficient.
+    """
+    return (refspec in ("unset", "unknown")) or ("refs/heads/*" in refspec)
+
 def _fetch_command(head: str, branch: str) -> str:
     """The command that would make this checkout able to judge the PR.
 
-    Both names are rendered through ``repr``: the head comes from an API payload
-    and an unusable value must reach the reader escaped rather than as raw bytes.
+    ``shlex.quote`` rather than ``repr``: this string is MEANT to be pasted into
+    a shell, and ``refs/heads/'feature/x'`` survives a shell but not a
+    ``git fetch`` argument.
     """
-    return f"git fetch origin refs/heads/{branch!r}" if branch else f"git fetch origin {head!r}"
+
+    return f"git fetch origin refs/heads/{shlex.quote(branch)}" if branch else f"git fetch origin {shlex.quote(head)}"
 
 def _diff_paths(diff_text: str) -> list[str]:
     """The new-side paths a unified diff touches."""
