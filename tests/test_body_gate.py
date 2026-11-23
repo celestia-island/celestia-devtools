@@ -130,9 +130,11 @@ class test_negative_controls:
         assert _lines(result) == [6, 7, 8]
 
     def test_the_same_restatement_with_a_disclaimer_passes(self):
-        # The disclaimer goes where the figures are: on or beside them — the
+        # The disclaimer goes where the figures are: on or beside them. The
         # window is one line, so an addendum far below the paragraph does not
-        # reach it (and must not: it would excuse every paragraph above it).
+        # reach it (it would excuse every paragraph above it).
+        # MUT:window-one-line — widening the window to the paragraph passes the
+        # `test_the_window_is_one_line_up` / `_down` cases in the wrong direction.
         body = _fixture("negative-2821-dom-counts.md")
         disclaimed = body.replace("  12 in rounds 2-3; post-unmount = 11 every round.", "  12 in rounds 2-3; post-unmount = 11 every round. Why `before` moves is an inference.")
         assert disclaimed != body
@@ -151,7 +153,9 @@ class test_negative_controls:
     def test_the_window_is_one_line_up(self):
         # The anchor on the line above binds …
         assert body_gate.check_body("```\nvite build → rc=0\n```\nIt printed 120 passed.\n").ok
-        # … and the line above THAT does not.
+        # An anchor one further line up anchors nothing.
+        # MUT:window-one-line — the two-away anchor is what the widen mutation
+        # must keep out.
         assert not body_gate.check_body("`vite build` printed this.\n\nIt printed 120 passed.\n").ok
 
     def test_the_window_is_one_line_down(self):
@@ -189,6 +193,9 @@ class test_captured_tables:
         # `| before | 0 | 0 | 0 | 3 |` is a prose row with a label. Its table is
         # trusted only when it carries a verdict row (a mutation/verification
         # table); alone, the figures have no stated source.
+        # MUT:labelled-numeric-row — dropping the verdict-row requirement makes
+        # this case green while its neighbour (`test_captured_numeric_columns_
+        # are_output`) stays green too, which is why the control is separate.
         body = "| round | canvases | timers |\n|---|---|---|\n| before | 0 | 0 |\n"
         assert not body_gate.check_body(body).ok
 
@@ -242,8 +249,10 @@ class test_scope_exclusions:
     def test_the_verify_record_is_not_a_claim(self):
         assert body_gate.check_body("verify: rounds=6 clean=3 S0=0 S1=0 S2=0 S3=9 gates=5 hardcap=no c3=3\nText.\n").ok
 
+#: MUT:zero-production — deleting the empty-body / zero-prose refusals in
+#: `check_body` makes the first two cases below green instead of red.
 class test_zero_production:
-    """Zero production is an error, never a silent pass."""
+    """Zero production is an error; MUT:zero-production proves the refusals bite."""
 
     def test_an_empty_body_refuses(self):
         result = body_gate.check_body("")

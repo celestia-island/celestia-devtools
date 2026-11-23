@@ -1329,8 +1329,9 @@ def _artifact_pr(files, body: str | None = None, **overrides):
     return pr, neutral, files
 
 # The PR-body prose gate rides the SAME family: refusals in `gated` (never in
-# the waiver split), its own body token, and a loud skip when the body states
-# nothing. These pin the plumbing; the scan itself is tested in
+# the waiver split), its own body token, and a loud skip when the body
+# states nothing. MUT:body-gate-not-in-gated proves the split: moving the
+# refusals into `problems` makes the signed-waiver case pass, not refuse. These pin the plumbing; the scan itself is tested in
 # `tests/test_body_gate.py`.
 BODY_UNSOURCED = "The suite went from 12 failed to 0 over the cut.\n"
 BODY_ANCHORED = "The suite went from `12 failed` to `0` over the cut (`vite build` → rc=0).\n"
