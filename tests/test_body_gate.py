@@ -7,7 +7,7 @@ channel with **correct code and a wrong sentence in the body** (hikari #1476 /
 The comment gate (#306) covers test-file comments; nothing covered body prose.
 
 Every case here is a mechanical control against a real corpus, checked in under
-``tests/fixtures/body_gate/`` exactly as the bodies were published:
+``tests/fixtures/body_prose/`` exactly as the bodies were published:
 
 * **known negatives** — the sentences that were false in those PRs. The
   ``#2813`` mutation tally (``1 failed / 5 passed``) is refused in its own
@@ -32,7 +32,12 @@ from pathlib import Path
 import pytest
 from celestia_devtools.lint import body_gate, comment_gate
 
-FIXTURES = Path(__file__).resolve().parent / "fixtures" / "body_gate"
+#: Prose fixtures live beside the tree, NOT under ``tests/``: the comment gate
+#: treats every path segment named ``test``/``tests`` as a test tree and scans
+#: the ``.md`` files' markdown line starts as ``#`` comments. A whole PR body
+#: pasted there is a corpus of true statements, not of comments, so the tree
+#: `body_prose` is the honest home for it.
+FIXTURES = Path(__file__).resolve().parent / "fixtures" / "body_prose"
 
 def _fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding = "utf-8")
