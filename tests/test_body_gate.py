@@ -146,7 +146,7 @@ class test_negative_controls:
         assert disclaimed != body
         # One disclaimer line covers the figures one line ABOVE or BELOW it, not
         # a whole paragraph: the paragraph head keeps its own finding.
-        assert _lines(body_gate.check_body(disclaimed)) == []
+        assert _lines(body_gate.check_body(disclaimed)) == [6]
 
     def test_an_unsourced_quantity_is_refused(self):
         assert not body_gate.check_body("The suite went from 12 failed to 0 over the cut.\n").ok
@@ -201,6 +201,24 @@ class test_round5_width:
         # a reader can open the identifier, so the sentence is naming it.
         assert body_gate.check_body("`hostSurface.test.ts` observes the real surface, verified against the source.\n").ok
         assert body_gate.check_body("`expect(seam.x).toBe(Y)` is the regression guard, verified.\n").ok
+
+class test_round8_holes:
+    """Round 8: the hash rule and the ASCII arrow spelling."""
+
+    def test_a_hash_needs_a_hash_label(self):
+        # MUT:sha-heuristic — a line with any colon/backtick/pipe blanked the
+        # whole SHA rule and the free pass came back.
+        assert not body_gate.has_anchor("Status: 41b88015 — still 12 failed")
+        assert not body_gate.check_body("Status: 41b88015 — still 12 failed.\n").ok
+        assert not body_gate.check_body("41b88015 | 12 failed\n").ok
+        assert body_gate.has_anchor("sha: 41b88015")
+        assert body_gate.has_anchor("Head is `a04d5f4`.")
+
+    def test_ascii_arrows_are_tallies_too(self):
+        # MUT:arrow-ascii — `2->0->2` was swallowed by the ratio look-ahead.
+        assert body_gate.unquoted_digits("2->0->2")
+        assert not body_gate.check_body("Counters 2->0->2 on the reload.\n").ok
+        assert not body_gate.check_body("The counter went 12->0.\n").ok
 
 class test_round6_holes:
     """Round 6: a citation is not a subject, a verdict is not a licence."""
@@ -486,7 +504,7 @@ class test_corpus_scan:
         lines = _lines(result)
         # 202 prose lines, 35 statements, 20 refusals on this head; the
         # narrative tally paragraph is among them.
-        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 46, 39)
+        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 46, 40)
         # 189 is the tallied "2 red / 4 green" line; 73 the bare "Reproduced 3/3".
         assert (73 in lines) and (189 in lines) and (12 in lines)
 

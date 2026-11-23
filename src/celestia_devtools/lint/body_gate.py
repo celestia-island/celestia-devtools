@@ -66,13 +66,13 @@ statement's own line and the line above or below it:
   recompute this" is a valid answer; writing a cause you cannot check is not,
   and that is the entire disease;
 * **a captured table** — a statement INSIDE a markdown table is satisfied when
-  that table holds a verdict row (its LAST cell is ``3 red`` / ``4 green``, see
-  :func:`row_is_verdict`), a captured telemetry row, or the statement's own row
-  is nothing but captured cells (a row of numbers, a cell that is only a
-  reading such as ``9041 bytes``). The table is the evidence block when it is
-  captured output; a prose line saying ``rc=0``, or a row whose last cell is a
-  sentence, is not (see :func:`is_captured_verdict`), so a table cannot become
-  a blanket exemption.
+  the table is CAPTURED: it opens with a header row of words
+  (:func:`table_has_header`) or holds a verdict row whose LAST cell is
+  ``3 red`` / ``4 green`` (:func:`row_is_verdict`), and its own row is a
+  metrics row (a label then readings, :data:`_METRIC_CELL`) or a row of
+  captured cells. A grid of numbers with no header, a prose line saying
+  ``rc=0`` and a row whose last cell is a sentence are all judged as prose, so
+  a table cannot become a blanket exemption.
 
 The window is one line up and one line down on purpose. This gate runs against
 real bodies, and a correct body very often puts the sentence first and the
@@ -460,11 +460,15 @@ def unquoted_digits(text: str) -> tuple[str, ...]:
 
         # A figure glued to a unit (`3.3 MB`), a ratio or a dimension (`8/310`,
         # `220×220`) or followed by a unit word (`48400 px`) belongs to the
-        # quantity patterns, not to prose arithmetic.
-        if re.match(r"^\s?(?:%|[×*]|\d+\s*[×*]|/\s*\d|[A-Za-z]{1,6}\b(?![\s,.;:)]|$))", following):
+        # quantity patterns, not to prose arithmetic. An ARROW (`2->0->2`,
+        # `2 => 0`) continues the tally: the figure before it is a count.
+        glued = re.match(r"^\s?(?:%|[×*]|\d+\s*[×*]|/\s*\d|[A-Za-z]{1,6}\b(?![\s,.;:)]|$))", following) is not None
+        arrow = re.match(r"^\s?(?:→|->|=>)", following) is not None
+
+        if glued and (not arrow):
             continue
 
-        if (following[:1] != " ") and (not re.match(r"^[\u4e00-\u9fff]", following)):
+        if (following[:1] != " ") and (not re.match(r"^[\u4e00-\u9fff]", following)) and (not arrow):
             continue
 
         if tail in ("§", "-", "—", "(", "[", "/", ">", "≥", "<", "≤", "="):
@@ -504,9 +508,10 @@ _SPAN_CODE = re.compile(r"[\w.]+\(|_|--?[a-z][\w-]*|[a-z][A-Z]|^[a-z]+(?:\.[a-z]
 #: A tool named WITH its version (``` `vite 8.2` ```): the tool is the subject.
 _TOOL_VERSION = re.compile(r"[A-Za-z][\w-]*\s+\d+(?:\.\d+)*")
 
-#: A figure written as an arrow sequence (`2 → 0 → 2`) counts a counter's
-#: HISTORY — it is a claim about a run (round 7: excluding it made a wired
-#: counter tally invisible). Kept as a definition so the arm below can name it.
+#: A figure sequence in a tally (`2 → 0 → 2`, `2->0->2`): every figure in it is
+#: a count, so `unquoted_digits` keeps them instead of reading the arrow as a
+#: unit. (Round 7 excluded the sequence from the scan, which made a wired
+#: counter tally invisible; round 8 restored the claim and the ASCII arrows.)
 _SEQUENCE = re.compile(r"\d+(?:\s*(?:→|->|=>)\s*\d+)+")
 
 def names_a_thing(line: str) -> bool:
@@ -703,9 +708,32 @@ _RESULT_MARKER = re.compile(r"\brc\s*=\s*-?\d+|\bexit\s*\d+|→|->|=>|\d+|[:;,.=
 
 #: A commit hash quoted as a value.
 _SHA = re.compile(r"(?<![\w])[0-9a-fA-F]{7,40}(?![\w])")
-#: A line that is ABOUT a hash: it says `sha` / `commit` / `head` or quotes a
-#: diff/blame fragment, i.e. the hash is the substance, not a decoration.
-_SHA_ABOUT = re.compile(r"\bsha\b|\bcommitted\b|\bat (?:the )?head\b|\bpin(?:ned)? (?:at|to)\b|diff|blame|revert|\bhead (?:is|was|moves?|at)\b|\b(?:commit|head|revision) (?:is|was|:)\b", re.IGNORECASE)
+#: The forms where a hash IS the substance: stands alone, or follows a label
+#: (`sha:`, `commit:`, `head:`, `@`). Anything else names the commit.
+_SHA_QUOTED = re.compile(r"\bsha-?(?:1|256|512)?\s*[:=]\s*$|\b(?:commit|head|revision)\s*(?:is|=|:)\s*$|@$|\s$", re.IGNORECASE)
+#: Labels that merely NAME a state, not a hash (`Status: <hash>`) — a hash after
+#: one of these is the line's subject, not the thing quoted.
+_SHA_LABEL_FALSE = re.compile(r"\b(?:status|state|now|still|then)\s*[:=]\s*$", re.IGNORECASE)
+
+def _unbacktick_hash(text: str) -> str:
+    """``text`` with every bare hash replaced; a ``` `hash` ``` stays quoted.
+
+    A hash in backticks is quoted FROM something (a log, a review round): that
+    is a reference, and it may anchor. Only the bare form has to prove it is
+    the subject.
+    """
+
+    return re.sub(r"`([0-9a-fA-F]{7,40})`", lambda match: match.group(1), text)
+
+def _keep_hash_value(match) -> str:
+    """The hash, if the text before it says the hash is the value quoted."""
+    before = match.string[: match.start()]
+
+    # `\s$` means "the hash is a separate token, not glued to prose"; a line
+    # that OPENS with a hash is not a reference to it.
+    quoted = (match.start() != 0) and (_SHA_QUOTED.search(before) is not None) and (_SHA_LABEL_FALSE.search(before) is None)
+
+    return match.group(0) if quoted else " " * len(match.group(0))
 
 #: A metrics-table cell: a bare number (with an optional unit) or a `#ref`.
 _METRIC_CELL = re.compile(r"-?\d+(?:\.\d+)?\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
@@ -889,10 +917,10 @@ def has_anchor(line: str) -> bool:
     # commit 41b88015 takes the 2 leaked timers away" names a commit and claims
     # something else. It anchors a line only when the line is ABOUT a hash — a
     # line that is nothing but hex, or one that also names a source.
-    sha_shaped = bool(re.search(r"(?<![\w])[0-9a-fA-F]{7,40}(?![\w])", text))
-
-    if sha_shaped and (not _SHA_ABOUT.search(text)) and (not re.search(r"[/:`|]|#[0-9]", text)):
-        text = _SHA.sub(" ", text)
+    # A commit hash is a NAME unless it is the thing quoted: a bare hash, a
+    # `sha:<hash>` / `commit: <hash>` / `head: <hash>` value, a `@<hash>` pin, or
+    # the body of a `diff`/`blame` line. Any other occurrence is a subject.
+    text = _SHA.sub(_keep_hash_value, _unbacktick_hash(text))
 
     # A bare path in backticks is a CITATION (round 6): it is blanked so the
     # path marker cannot fire on it, while `file:line` and the other markers
