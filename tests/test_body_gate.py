@@ -138,11 +138,11 @@ class test_span_evidence:
     # and an underscored identifier through, so a bare test FILE name has to be
     # refused before the shape test. Each case below is its own test so a
     # failure names the shape that broke.
-    @pytest.mark.parametrize("name", ["test.ts", "spec.ts", "x.test.ts", "y_test.rs", "dir/test.ts", "a/test.py", "tests/test_body_gate.py"])
+    @pytest.mark.parametrize("name", ["test.ts", "spec.ts", "x.test.ts", "y_test.rs", "dir/test.ts", "a/test.py", "tests/test_body_gate.py", "src/a.user.test.ts", "api.user.test.ts", "user.component.test.tsx", "tests/fixtures/x/useHighlight.coldPath.test.ts", "test.tsx", "x.test.tsx", "dir/test.pyi", "test_util.ts"])
     def test_a_bare_test_file_name_is_not_a_source(self, name):
         assert not body_gate.span_is_source(name), name
 
-    @pytest.mark.parametrize("name", ["x.test.ts:88", "a.py::test_b", "vite build", "api.rs:463"])
+    @pytest.mark.parametrize("name", ["x.test.ts:88", "a.py::test_b", "vite build", "api.rs:463", "contest.ts", "mytest.py", "tests/__tests__/x.ts"])
     def test_a_case_pointer_or_command_is_still_a_source(self, name):
         assert body_gate.span_is_source(name), name
 

@@ -433,7 +433,7 @@ def code_spans(text: str) -> tuple[str, ...]:
 #: A BARE test file name: a module called `x.test.ts` / `test.ts` / `y_test.rs`
 #: with no `::case` and no `:line`. Citing it names a file, not a place where an
 #: assertion lives, so it evidences nothing.
-_BARE_TEST_NAME = re.compile(r"(?:^|/)(?:test|spec)(?:[_-][\w-]+)?\.[A-Za-z0-9]+$|(?:^|/)(?:[\w-]+\.)?(?:test|spec)\.[A-Za-z0-9]+$|(?:^|/)[\w-]+_test\.[A-Za-z0-9]+$")
+_BARE_TEST_NAME = re.compile(r"(?:^|/)(?:test|spec)(?:[_-][\w-]+)?\.[A-Za-z0-9]+$|(?:^|/)(?:[\w-]+\.)*(?:test|spec)\.[A-Za-z0-9]+$|(?:^|/)[\w-]+_test\.[A-Za-z0-9]+$")
 
 def span_is_source(span: str) -> bool:
     """True when a span is shaped like a command, flag, call, identifier or path.
