@@ -68,7 +68,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -349,9 +349,33 @@ def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[i
         if anchored(window):
             continue
 
-        claims.append(claim(path = path, line = line_numbers[index], text = text.strip(), terms = terms))
+        claims.append(claim(path = path, line = line_numbers[index], text = _claim_text(text), terms = terms))
 
     return claims, hits
+
+def _claim_text(line: str) -> str:
+    """A claim's text with the walker's own markers removed.
+
+    Both sentinels are internal: :data:`CONTEXT_MARK` marks a line that is
+    GEOMETRY only, and :data:`DOC_CONTINUATION` marks a prose line with no
+    opener of its own. A claim can be built from a line carrying either (a docstring continuation
+    nested in a context run carries BOTH, and in the order ``\\x01\\x00``), and
+    the markers then reach the reader through ``render()`` — a raw NUL in a
+    report is unreadable in a terminal and invisible in a log (measured: a
+    docstring continuation claim rendered as ``tests/x.py:2: \\x00Reverting``).
+    The loop runs twice, once per marker: each pass removes whichever of the
+    two is on the front, so order-independence is a side effect of covering
+    both markers rather than a separate promise — deleting either strip reds
+    ``test_a_claim_never_carries_the_walkers_own_markers``. Order-independence
+    comes for free: two passes cover both arrival orders, and a single pass in
+    either order leaves a marker behind.
+    """
+    text = line.strip()
+
+    for _ in range(2):
+        text = text.removeprefix(DOC_CONTINUATION).removeprefix(CONTEXT_MARK).strip()
+
+    return text
 
 def _comment_blocks(lines: Sequence[str], numbers: Sequence[int]) -> list[tuple[list[str], list[int]]]:
     """Group the comment lines of one file into contiguous blocks."""
@@ -389,7 +413,7 @@ def scan_file(path: str, text: str) -> tuple[list[claim], int]:
 
     return claims, hits
 
-def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
+def scan_diff(diff: str, contents: Mapping[str, Sequence[str]] | None = None) -> tuple[list[claim], int, int, list[str]]:
     """Scan a unified diff; return ``(claims, hits, scanned_comment_lines, notes)``.
 
     Only ``+`` lines of test files are candidates — the gate judges what *this
@@ -409,11 +433,50 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
     lines: found the hard way (round 2), a hunk declared as one line but
     carrying ten made ``start - new_line`` look like a two-line gap while the
     file distance was sixteen, and an anchor sixteen lines away bound.
+
+    *Docstring block state needs the WHOLE file, not the hunks.* A patch shows
+    only the lines it changed, so a walker that advances the docstring state
+    over hunk lines alone never sees the lines BETWEEN hunks — and a ``\"\"\"``
+    that CLOSES a docstring then reads as one that OPENS it. Measured on
+    hikari's artifact-retire branch (``a7c20c3b`` against ``master``): a closing
+    ``\"\"\"`` in the second hunk of ``packages/wasm/component_descriptor_test.py``
+    was read as an opener, which marked 8 more lines of that file as docstring
+    prose than the file really has. (The commit first believed to be the
+    corpus, ``49e96e0d``, touches one file and 18 lines — it is not it; the
+    28482-line diff's 90-file name set matches ``a7c20c3b`` exactly.)
+
+    To rebuild that corpus after ``a7c20c3b`` merges (a ``origin/master...a7c20c3b``
+    comparison is then EMPTY, which reads as "the corpus is gone")::
+
+        git -C <hikari> diff a7c20c3b^..a7c20c3b > /tmp/artifact-retire.diff
+        # 28482 lines, 90 files, 4786045 bytes; the 8-lines-marked-as-prose
+        # defect is the second hunk of packages/wasm/component_descriptor_test.py
+
+    A merge-base spelling works too — ``git diff $(git merge-base a7c20c3b^ origin/master)..a7c20c3b``.
+
+    ``contents`` is therefore the whole NEW-side file per changed path, and the
+    state machine walks it: unshown lines only advance the state, shown ones are
+    also classified. :func:`check_diff` fills ``contents`` from git.
+
+    When ``contents`` is absent for a file — a ``--diff`` from somewhere with no
+    checkout behind it, or a file git cannot produce — the walk has only the
+    shown lines, and the two gaps it cannot bridge are reported as notes (the
+    gate refuses): a line with no text at all, and a block still open at the
+    last shown line. That is the other half of the same defect: an unterminated
+    ``\"\"\"`` used to turn real code into comment text for the rest of the file,
+    and a code line can then be refused as an anchorless claim — a fail-OPEN in
+    a gate whose whole job is to refuse.
+
+    ``contents`` is what makes that refusal narrow: with the whole new side
+    known, "this hunk starts at line 25" is not a reason to refuse — only a
+    block that really never closes in the FILE is.
     """
     claims: list[claim] = []
     hits = 0
     scanned = 0
     notes: list[str] = []
+    #: ``(path, line, text)`` of every added test line, classified after the walk.
+    shown_after_walk: list[tuple[str, int, str]] = []
     scanned_numbers: dict[str, set[int]] = {}
     per_file: list[tuple[str, list[list[tuple[int, str]]]]] = []
     section: list[tuple[int, str]] = []
@@ -431,11 +494,19 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
 
         section = []
 
-    # Python docstrings: a continuation line carries no marker, so the walker
-    # tracks the block state itself. Reset whenever the file changes or a hunk
-    # jumps backwards (a concatenation is not a continuation).
-    doc_open = ""
-    doc_quote = ""
+    # Python docstrings: a continuation line carries no marker, so the file's
+    # block state has to be tracked. It is tracked PER FILE and BEFORE any line
+    # is classified (`docstring_span` below): the state depends on lines this
+    # patch may never show, and a hunk-local walk reads a CLOSING ``\"\"\"`` as an
+    # opening one (hikari's artifact-retire, hunk 3 of
+    # ``packages/wasm/component_descriptor_test.py``).
+    #: Every line this diff SHOWS, per file, keyed by its NEW-side line number.
+    shown_lines: dict[str, dict[int, str]] = {}
+    #: NEW-side lines that sit inside a docstring, per file (filled after the walk).
+    inside_docstrings: dict[str, set[int]] = {}
+    #: Each file's shown lines, kept for the after-the-walk docstring pass.
+    per_file_shown: dict[str, dict[int, str]] = {}
+    contents = contents or {}
 
     def close_file() -> None:
         nonlocal sections, current_path, last_file_line, in_hunk
@@ -445,12 +516,22 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         if sections:
             per_file.append((current_path or "", sections))
 
+        if current_path is not None:
+            per_file_shown[current_path] = shown_lines.get(current_path, {})
+
         sections = []
         current_path = None
         last_file_line = None
         in_hunk = False
 
-    def add(file_line: int, text: str) -> None:
+    def add(file_line: int, line: str) -> None:
+        """Append one SHOWN line to the current section (``line`` is the file text).
+
+        The parameter is not called ``text``: a name that shadows a value the
+        caller still needs turns a wrong answer into a silent one (this closure
+        and its caller share one scope, and an earlier revision re-bound the
+        caller's own local — found by tracing the state machine line by line).
+        """
         nonlocal last_file_line
 
         # A line that goes BACKWARDS or jumps over a gap wider than the window
@@ -459,8 +540,69 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         if (last_file_line is not None) and (file_line <= last_file_line):
             close_section()
 
-        section.append((file_line, text))
+        section.append((file_line, line))
         last_file_line = file_line
+
+    def docstring_span(path: str, shown: Mapping[int, str]) -> tuple[set[int], list[str]]:
+        """File lines that sit INSIDE a Python docstring, for one file.
+
+        The state can only be computed from the file's lines in order, so this
+        runs ONCE PER FILE over every line the file HAS: ``shown`` supplies the
+        ones the patch shows and ``contents`` the rest. Walking the hunks alone
+        never sees the lines between them, and a ``\"\"\"`` that CLOSES a
+        docstring then reads as one that OPENS it (hikari's artifact-retire: 8
+        lines marked as prose that are code).
+
+        Without ``contents`` the walk covers the shown lines only, and the two
+        gaps it can no longer bridge are reported as ``problems`` — a line with
+        no text at all, and a block still open at the last shown line. Both make
+        every later line's classification a guess, and the caller refuses rather
+        than guessing. WITH ``contents`` neither is possible: the walk has every
+        line, so nothing is reported for "the patch does not show line N" (the
+        shape that made the hunk-only version refuse almost every real diff).
+
+        Returns ``(lines_inside, problems)``.
+        """
+        whole = contents.get(path) or None
+        opened = ""
+        quote = ""
+        inside: set[int] = set()
+        problems: list[str] = []
+        unplaceable: int | None = None
+        total = max([0, *(shown or {}), *(range(1, len(whole) + 1) if whole else [])])
+
+        for number in range(1, total + 1):
+            line = (shown or {}).get(number)
+
+            if line is None:
+                line = whole[number - 1] if (whole is not None) and ((number - 1) < len(whole)) else None
+
+            if line is None:
+                if unplaceable is None:
+                    unplaceable = number
+
+                continue
+
+            # The state BEFORE this line decides: a closer is prose too.
+            was_inside = bool(opened)
+            opened, quote = _doc_state(line, opened, quote)
+
+            if was_inside:
+                inside.add(number)
+
+        if opened:
+            problems.append(f"{path}: the docstring opened near line {total} is never closed in the file — refusing to judge lines whose comment/code classification would be a guess")
+
+        if unplaceable is not None:
+            # Two cases reach here, and the message has to say which: no file
+            # text was available at all, or the text ran out before this line
+            # (a short `contents` from a caller, or a file git could not
+            # produce). Both leave the state unknowable, so both refuse.
+            source = "the file behind it was not supplied" if whole is None else f"the supplied file text ends at line {len(whole)}"
+
+            problems.append(f"{path}: line {unplaceable} is not shown by the patch and {source} — the docstring state there is unknowable, so refusing to judge the rest of the file")
+
+        return inside, problems
 
     for raw in diff.splitlines():
         header = _FILE_HEADER.match(raw)
@@ -506,21 +648,11 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         if prefix == "+":
             if current_path and is_test_path(current_path):
                 content = _content(body)
-                doc_open, doc_quote = _doc_state(content, doc_open, doc_quote)
-
-                if (comment_body(content) is None) and doc_open:
-                    # A docstring continuation is COMMENT TEXT that happens to
-                    # carry no marker — not context. It keeps claim candidacy.
-                    content = DOC_CONTINUATION + content
-
-                if (comment_body(content) is not None) and content.strip():
-                    # Count each LINE once: an extended header can repeat one.
-                    seen = scanned_numbers.setdefault(current_path, set())
-
-                    if cursor not in seen:
-                        seen.add(cursor)
-                        scanned += 1
-
+                shown_lines.setdefault(current_path, {})[cursor] = content
+                # Classification is deferred: whether this line is prose depends
+                # on the file's docstring state, which needs lines this hunk may
+                # never show. `settle()` below applies it once, after the walk.
+                shown_after_walk.append((current_path, cursor, content))
                 add(cursor, content)
 
             cursor += 1
@@ -537,6 +669,12 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
                 # sees) but it can never BE a claim, because the gate judges
                 # what this change adds. Prefixing it with an explicit context
                 # marker is what makes that structural rather than incidental.
+                #
+                # Its TEXT is recorded for the per-file docstring pass: a
+                # context line is real file content, and a state computed
+                # without it reads the next hunk's closer as an opener — the
+                # round-7 defect.
+                shown_lines.setdefault(current_path, {}).setdefault(cursor, body)
                 add(cursor, CONTEXT_MARK + body)
 
             cursor += 1
@@ -551,6 +689,39 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
             continue
 
     close_file()
+
+    # The docstring state, ONCE PER FILE, over every line the file has (shown
+    # lines from the patch, the rest from `contents`). Only then can a line be
+    # classified: a ``\"\"\"`` that closes a block is prose even though it ends the
+    # block, which a per-hunk state cannot know.
+    for path, shown in per_file_shown.items():
+        inside_docstrings[path], problems = docstring_span(path, shown)
+        notes.extend(problems)
+
+    for path, file_sections in per_file:
+        for section_lines in file_sections:
+            for index, (number, content) in enumerate(section_lines):
+                if (comment_body(content) is not None):
+                    continue
+
+                if (number in inside_docstrings.get(path, set())) and (comment_body(DOC_CONTINUATION + content) is not None):
+                    # A docstring continuation is COMMENT TEXT with no marker of
+                    # its own. It keeps claim candidacy (and the marker keeps it
+                    # out of the window's code lines).
+                    section_lines[index] = (number, DOC_CONTINUATION + content)
+
+    for path, number, content in shown_after_walk:
+        marked = number in inside_docstrings.get(path, set())
+
+        continuation = comment_body(DOC_CONTINUATION + content)
+
+        if (comment_body(content) is not None) or (marked and (continuation is not None)):
+            # Count each LINE once: an extended header can repeat one.
+            seen = scanned_numbers.setdefault(path, set())
+
+            if number not in seen:
+                seen.add(number)
+                scanned += 1
 
     for path, file_sections in per_file:
         for section_lines in file_sections:
@@ -590,73 +761,145 @@ def _content(body: str) -> str:
     """
     return body
 
-_DOC_OPEN = re.compile(r'^\s*[rRuUbBfF]{0,2}("""|\'\'\')')
+#: A triple-quoted string opening a line: a docstring, or a literal ASSIGNED to
+#: a name (``PURE_WIT = """package ...``). Both open a block that runs to the
+#: next line carrying the same quote, so both must be tracked — hikari's
+#: ``component_descriptor_test.py`` is half literals, and an opener test anchored
+#: to the line start missed every one of them.
+#: Where a triple quote may START a line's own text: at its beginning, or after
+#: a character that cannot END a string. The check exists because ``"""`` also
+#: appears at the end of a line whose string merely finishes with two quotes
+#: (``path = "...{component}.wasm"`` followed by ``"""``) — that is a CLOSER, not
+#: an opener, and treating it as one measured a docstring closed by the very
+#: next line in ten consecutive blocks.
+_QUOTE_BOUNDARY = frozenset(" \t\r\n:=,(+[-*/%&|")
+#: A triple quote at the start of a line, optionally preceded by a string
+#: prefix and by an ``name =`` assignment (a module-level literal such as
+#: ``PURE_WIT = \"\"\"package ...`` is a docstring-shaped block for this walker).
+_DOC_QUOTE = re.compile('("""|\'\'\')')
+
+def _doc_open_at(line: str) -> str:
+    """The delimiter ``line`` opens a block with, or ``""`` when it opens none."""
+    text = line.lstrip()
+    # ``head`` is where ``text`` starts in the line: the boundary test below is
+    # about the character the QUOTE follows in the real line, so the offsets
+    # have to survive the assignment and the string prefix being skipped.
+    head = len(line) - len(text)
+    assignment = re.match(r"[\w.\[\]]+\s*=\s*", text)
+
+    if assignment:
+        text = text[assignment.end():]
+        head = len(line) - len(text)
+
+    prefix = re.match(r"[rRuUbBfF]{0,2}", text)
+
+    if prefix and (text[prefix.end():prefix.end() + 1] in ("\"", "'")):
+        text = text[prefix.end():]
+        head = len(line) - len(text)
+
+    opener = _DOC_QUOTE.search(text)
+
+    # Only code before the quote: a ``#`` comment ends the line's code, and a
+    # quote after it is prose inside the comment, never a block.
+    if (opener is None) or ("#" in text[:opener.start()]):
+        return ""
+
+    # A triple quote INSIDE a string literal does not open a block — it is the
+    # literal's CONTENT. ``re.search(r"(\\'\\'\\'|\\"\\"\\")[^\\n]*", SHIM)`` holds both
+    # delimiters as data, and reading them as openers left a block open for the
+    # rest of the file, so every later line was judged as prose and the gate
+    # refused a file whose only sin is naming the delimiters (measured on this
+    # repository's own ``tests/test_pyshim.py``: one such line).
+    if _inside_string_literal(text, opener.start()):
+        return ""
+
+    # A quote right after a character that could END a string literal is the
+    # tail of that literal (`path = "...x"` then `"""` on the next line), not
+    # the start of a block. Right after a letter it IS the start of one — that
+    # letter is a string prefix (`r`, ``f``, ``rb``).
+    quote_at = head + opener.start()
+
+    if quote_at > 0:
+        after = line[quote_at - 1]
+
+        if (not after.isalpha()) and (after not in _QUOTE_BOUNDARY):
+            return ""
+
+    return opener.group(1)
+
+def _inside_string_literal(text: str, at: int) -> bool:
+    """True when ``text[at]`` sits inside a single-quoted string literal.
+
+    A small scanner rather than a regex: the question is "how many string
+    literals opened before this offset and never closed", and that needs the
+    quote CHARACTER to be tracked (``'a " b'`` opens and closes on ``'``). Only
+    the shapes this walker has to get right are handled — a backslash escapes
+    the next character, and a quote of the OTHER kind is data.
+    """
+    quote = ""
+    index = 0
+
+    while index < at:
+        char = text[index]
+
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+
+            if char == quote:
+                quote = ""
+
+            index += 1
+            continue
+
+        if char in ("\"", "'"):
+            quote = char
+
+        index += 1
+
+    return bool(quote)
 
 def _doc_state(line: str, opened: str, quote: str) -> tuple[str, str]:
     """Advance the docstring block state by one line; ``(opened, quote)``.
 
     ``opened`` is empty, or ``"continuing"`` meaning the NEXT line is already
     inside the block (a one-line docstring opens and closes without continuing).
+
+    At most ONE transition per line, which is what Python does: a line either
+    opens a block and leaves it open, closes the block it is inside, or does
+    neither. Counting quote pairs up and down a line (an earlier revision in
+    this PR) gets an assignment whose value starts with a triple quote WRONG:
+    that line opens a block, and the lone triple-quoted line that closes it
+    then reads as a fresh opener under pair counting. Measured on hikari's
+    ``component_descriptor_test.py``: six transitions instead of three, with
+    the block left open at EOF.
     """
 
     if not opened:
-        opener = _DOC_OPEN.match(line)
+        chosen = _doc_open_at(line)
 
-        if opener is None:
+        if not chosen:
             return "", ""
 
-        chosen = opener.group(1)
-        rest = line[opener.end():]
+        rest = line[line.index(chosen) + len(chosen):]
 
+        # ONE line, both quotes: a one-line docstring, nothing continues.
         if chosen in rest:
             return "", ""
 
         return "continuing", chosen
 
-    if quote and (quote in line):
+    if not quote:
         return "", ""
 
-    return "continuing", quote
+    if quote not in line:
+        return "continuing", quote
 
-_DOC_OPEN = re.compile(r'^\s*[rRuUbBfF]{0,2}("""|\'\'\')')
-_DOC_CLOSE = re.compile(r'("""|\'\'\')\s*$')
-
-def _docstring_lines(lines, numbers):
-    """Continuation lines of Python docstrings, as ``{index: True}``.
-
-    A docstring's FIRST line carries the opener and `comment_body` already sees
-    it; its CONTINUATION lines carry no marker whatsoever, so without block
-    state they read as code. That is the blind spot measured on this gate's own
-    first follow-up PR: a docstring claiming a mutation's scope sat inside one.
-    """
-    inside = False
-    quote = ""
-    found = {}
-
-    for index, text in enumerate(lines):
-        stripped = text.strip()
-
-        if not inside:
-            opener = _DOC_OPEN.match(text)
-
-            if opener:
-                quote = opener.group(1)
-                # A one-line docstring opens and closes on the same line.
-                rest = text[opener.end():]
-
-                if not _DOC_CLOSE.search(rest) or (quote not in rest):
-                    inside = True
-
-                continue
-
-            continue
-
-        found[index] = True
-
-        if quote in stripped:
-            inside = False
-
-    return found
+    # The line closes the block. Anything after the closer is CODE, and code is
+    # what this walker must not read as prose — so the block is closed and the
+    # rest of the line is left to the language, not re-parsed here.
+    return "", ""
 
 def _split_on_spacers(entries: Sequence[tuple[int, str]]) -> list[list[tuple[int, str]]]:
     """Split one section at blank comment lines (``//`` on its own).
@@ -702,6 +945,109 @@ def _git_env() -> dict[str, str]:
     env["GIT_OPTIONAL_LOCKS"] = "0"
     return env
 
+def _diff_new_paths(diff: str) -> list[str]:
+    """The NEW-side path of every file the diff touches, in order, deduplicated."""
+    paths: list[str] = []
+    current: str | None = None
+
+    for raw in diff.splitlines():
+        header = _FILE_HEADER.match(raw)
+
+        if header:
+            current = header.group("new")
+
+            if (current not in paths) and (current != "/dev/null"):
+                paths.append(current)
+
+            continue
+
+        label = _NEW_FILE.match(raw)
+
+        if label and (current is not None):
+            # A new file spells its path only here (`a/` is ``/dev/null``).
+            current = label.group("path")
+
+            if current not in paths:
+                paths.append(current)
+
+    return paths
+
+def _new_side_contents(diff: str, *, root: str | Path | None, rev: str | None) -> dict[str, list[str]]:
+    """The NEW-side file text of every test file the diff touches (``git show``).
+
+    Only files the gate actually judges are read, and only when both ``root``
+    and ``rev`` are given. A file git cannot produce leaves NO entry, and the
+    walker then reports that it could not establish the docstring state instead
+    of guessing — silently walking the hunk alone is the defect this closes: a
+    hunk-local ``\"\"\"`` reads as an opener because the lines between hunks were
+    never seen.
+
+    This is what makes the gate's verdict independent of hunk boundaries. A
+    diff the caller can point at a checkout and a revision gets every line of
+    the file, so "the patch does not show line 25" stops being a reason to
+    refuse: only a block that really never closes in the file is.
+    """
+
+    if (root is None) or (rev is None):
+        return {}
+
+    contents: dict[str, list[str]] = {}
+
+    for path in _diff_new_paths(diff):
+        if not is_test_path(path):
+            continue
+
+        try:
+            probe = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
+        except (OSError, ValueError):
+            # ``ValueError`` is what subprocess raises for an argument carrying a
+            # NUL — not ``OSError`` — and ``rev`` can come from an API payload.
+            # A file that cannot be read leaves NO entry, so the walker reports
+            # that it could not establish the state instead of raising out of
+            # the merge gate.
+            continue
+
+        if probe.returncode == 0:
+            contents[path] = probe.stdout.splitlines()
+
+    return contents
+
+def _git_revision(args: argparse.Namespace, *, staged: bool) -> str | None:
+    """The commit whose NEW side the CLI's diff describes (``None`` = unknown).
+
+    Each lane names its own NEW side, and a wrong answer is worse than none: the
+    walker would compute the docstring state from ANOTHER commit's text and
+    certify a classification the patch does not have.
+
+    * ``--staged`` describes the INDEX, which is not a commit — there is nothing
+      to ask for, so ``None`` (the walker then refuses if a block is left open).
+    * ``--range A..B`` (also ``A...B``) describes ``B``.
+    * ``--base X`` describes ``HEAD``.
+    """
+
+    if staged:
+        return None
+
+    spec = "HEAD"
+
+    if args.range:
+        # `A..B` and `A...B` both end with the NEW side; a bare `A` would mean
+        # `A..HEAD` to git, but the CLI spells the range explicitly.
+        spec = args.range.split("...", 1)[1] if "..." in args.range else args.range.split("..", 1)[1] if ".." in args.range else "HEAD"
+
+        if not spec:
+            return None
+
+    try:
+        probe = subprocess.run(["git", "-C", str(args.git_root or "."), "rev-parse", "--verify", f"{spec}^{{commit}}"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
+    except OSError:
+        return None
+
+    if probe.returncode != 0:
+        return None
+
+    return probe.stdout.strip() or None
+
 def _collect_diff(workspace: str | Path, base: str | None, rev_range: str | None, staged: bool, git_root: str | Path | None) -> tuple[str | None, list[str]]:
     """Run ``git diff``; ``(diff_text, problems)``. Never raises."""
     cmd = ["git"]
@@ -735,9 +1081,21 @@ def _collect_diff(workspace: str | Path, base: str | None, rev_range: str | None
 
     return probe.stdout, []
 
-def check_diff(diff: str) -> report:
-    """The gate's verdict over one unified diff."""
-    claims, hits, scanned, notes = scan_diff(diff)
+def check_diff(diff: str, *, root: str | Path | None = None, rev: str | None = None) -> report:
+    """The gate's verdict over one unified diff.
+
+    ``scan_diff`` classifies a line by whether it sits inside a Python
+    docstring, and that state lives in the WHOLE file: the lines a hunk does
+    not show are exactly where a block opens or closes. ``root`` is the
+    checkout and ``rev`` the commit whose NEW side the diff describes; when
+    both are given their contents are read and handed to the walker.
+
+    Both default to ``None``, which keeps the hunk-only walk for a diff from
+    somewhere that has no checkout behind it — the walker then refuses if the
+    hunk leaves a block open rather than guessing. A file git cannot produce
+    is NOT silently degraded to that walk: it refuses and names the line.
+    """
+    claims, hits, scanned, notes = scan_diff(diff, contents = _new_side_contents(diff, root = root, rev = rev))
     problems = list(notes)
 
     if scanned == 0:
@@ -813,7 +1171,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"❌ comment-gate: unreadable diff {args.diff} ({exc})", file = sys.stderr)
             return EXIT_USAGE
 
-        report = check_diff(diff_text)
+        # ``--diff`` names no revision, so the file text cannot be read: the
+        # walker keeps the shown lines and refuses only if a block is left open.
+        report = check_diff(diff_text, root = args.git_root, rev = None)
         label = args.diff
     elif args.file:
         report = check_files(args.file)
@@ -831,7 +1191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             return EXIT_USAGE
 
-        report = check_diff(diff_text)
+        report = check_diff(diff_text, root = args.git_root or ".", rev = _git_revision(args, staged = args.staged))
         label = args.range or ("index" if args.staged else (args.base or "origin/master") + "...HEAD")
 
     for claim in report.claims:

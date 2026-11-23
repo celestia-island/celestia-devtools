@@ -12,6 +12,7 @@ branch must turn them red.
 import inspect
 import json
 import re
+import subprocess
 from celestia_devtools.vcs.pr_gate import _gate, body_problems, check_pr, title_problems
 from celestia_devtools.vcs import pr_gate as pr_gate_module
 from celestia_devtools.vcs.pr_gate import comment_waiver as pr_gate_comment_waiver
@@ -1031,6 +1032,425 @@ def _comment_pr(patch: str, filename: str = "packages/vue/src/useHighlight.test.
     pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
     pr.update(overrides)
     return pr, _diff_for(patch, filename)
+
+#: A hunk that starts at line 200 — the shape almost every real PR has, and the
+#: one a hunk-only scan refuses with "line 1 is not shown by the patch".
+_FAR_HUNK_TS = "@@ -200,0 +200,3 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n+// MUT: reload-dropped\n"
+_FAR_HUNK_PY = "@@ -200,0 +200,3 @@\n+# measured: this pin catches the reload\n+x = 1\n+# MUT: reload-dropped\n"
+
+class test_comment_gate_reads_the_file_behind_the_diff:
+    """The merge chain must hand the scanner the checkout and the PR head.
+
+    Round 4 found the seam this class exists for: `comment_gate_problems` called
+    `check_diff(diff_text)` with no `root`/`rev`, so the scanner could not read
+    the file text — and a diff whose first hunk starts past line 1 was refused
+    with "line 1 is not shown by the patch". That refusal is language-agnostic
+    (it fires for `.ts` exactly as for `.py`), so on the merge chain it would
+    have refused almost every PR in the family.
+
+    25 existing tests call `check_diff` directly, which is why the hole was
+    invisible: they exercise the scanner, not the plumbing. These cases go
+    through `comment_gate_problems`, the function the merge gate actually calls.
+    """
+
+    def test_a_hunk_starting_past_line_one_is_judged_not_refused(self, tmp_path, monkeypatch):
+        """The S0 shape, through the plumbing the merge gate uses.
+
+        A real repository whose HEAD holds the test files, and the PR head is
+        that commit — exactly what production passes (`payload.head.sha`). The
+        fixture must be a REAL commit: with an unresolvable head the scanner
+        cannot read the file text and refuses, which is correct behaviour but
+        would make this case test nothing.
+        """
+        repo = tmp_path / "repo"
+        files = {"packages/vue/src/far.test.ts": "\n".join("x" for _ in range(220)) + "\n", "tests/test_far.py": "\n".join("x = 1" for _ in range(220)) + "\n"}
+
+        for path, text in files.items():
+            target = repo / path
+            target.parent.mkdir(parents = True, exist_ok = True)
+            target.write_text(text, encoding = "utf-8")
+
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check = True, capture_output = True)
+
+        for key, value in (("core.hooksPath", "/dev/null"), ("user.email", "gate@example.invalid"), ("user.name", "gate")):
+            subprocess.run(["git", "-C", str(repo), "config", key, value], check = True, capture_output = True)
+
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "heads"], check = True, capture_output = True)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+        # The gate resolves its checkout from the working DIRECTORY (not from
+        # `CELESTIA_ARTIFACT_ROOT`, which belongs to the artifact gate), so the
+        # case runs from the throwaway repository it built.
+        monkeypatch.chdir(repo)
+
+        for patch, filename in ((_FAR_HUNK_TS, "packages/vue/src/far.test.ts"), (_FAR_HUNK_PY, "tests/test_far.py")):
+            pr, diff = _comment_pr(patch, filename = filename)
+            problems = pr_gate_module.comment_gate_problems("o/r", 1, head, runner = diff_runner(pr, diff))
+            assert not any("is not shown by the patch" in problem for problem in problems), (filename, problems)
+
+    def test_an_unanchored_claim_far_down_the_file_is_still_caught(self):
+        """The control: refusing stopped, judging did not.
+
+        A TS file, so the "checkout must contain the PR head" rule does not
+        apply (a JS/TS comment cannot span hunks, so no file text is needed) —
+        which is exactly why a stub head is honest here. The Python equivalent
+        of this case is `test_a_hunk_starting_past_line_one_is_judged_not_refused`,
+        which uses a real repository and that repository's real head.
+        """
+        patch = "@@ -200,0 +200,2 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n"
+        pr, diff = _comment_pr(patch, filename = "packages/vue/src/far.test.ts")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert any(("useHighlight" not in problem) and ("far.test.ts:200" in problem) for problem in problems), problems
+
+    def test_a_checkout_without_the_pr_head_is_refused_for_python(self, tmp_path, monkeypatch):
+        """Round 4's fail-open: a tree that lacks ``head`` would certify another commit's text.
+
+        Reading file text from a checkout that does not contain the PR head
+        silently erases every "state unknowable" refusal — the gate goes green
+        on files it never read. For a diff holding a Python test file (the only
+        kind whose state needs the text) that is a refusal, never a fallback.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+            subprocess.run(command, check = True, capture_output = True)
+
+        (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        monkeypatch.chdir(repo)
+        patch = "@@ -200,0 +200,2 @@\n+# measured: this pin catches the reload\n+x = 1\n"
+        pr, diff = _comment_pr(patch, filename = "tests/test_far.py")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert any("does not contain that commit" in problem for problem in problems), problems
+
+    def test_no_checkout_with_a_python_diff_refuses_rather_than_passing(self, tmp_path, monkeypatch):
+        """The silent-pass this round found: no checkout must refuse, not return [].
+
+        With no git repository, the resolver produces no problem — and skipping
+        the scanner on "no root" then skipped the scanner's OWN hunk-only
+        refusal too, so a Python diff was certified by returning an empty list.
+        A diff that needs file text cannot be judged without it: that is a
+        refusal.
+        """
+        monkeypatch.chdir(tmp_path)
+        assert pr_gate_module._comment_gate_root("a" * 40, required = True) == (None, [])
+        patch = "@@ -200,0 +200,2 @@\n+# measured: this pin catches the reload\n+x = 1\n"
+        pr, diff = _comment_pr(patch, filename = "tests/test_far.py")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert problems, "a Python diff with no checkout to read must refuse, not pass"
+        assert any("cannot read the file text" in problem for problem in problems), problems
+
+    def test_no_checkout_with_only_a_ts_diff_does_not_refuse(self, tmp_path, monkeypatch):
+        """The other half of the scope: a TS-only diff needs no file text."""
+        monkeypatch.chdir(tmp_path)
+        patch = "@@ -200,0 +200,2 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n"
+        pr, diff = _comment_pr(patch, filename = "packages/vue/src/far.test.ts")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert not any("cannot read the file text" in problem for problem in problems), problems
+
+    def test_the_pr_head_is_taken_from_the_working_checkout(self, tmp_path, monkeypatch):
+        """The happy path of the resolver: cwd's toplevel, and its own head resolves."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+            subprocess.run(command, check = True, capture_output = True)
+
+        (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+        monkeypatch.chdir(repo)
+        root, problems = pr_gate_module._comment_gate_root(head, required = True)
+        assert problems == [], problems
+        assert root == str(repo.resolve()), root
+
+def test_only_python_shapes_need_the_file_text():
+    """Which paths make the scanner need the whole file.
+
+    A JS/TS comment cannot span hunk boundaries, so a TS-only PR must never be
+    blocked by the "checkout must contain the PR head" rule. A Python file can,
+    in every spelling — including the case-insensitive and stub-file forms a
+    case-sensitive `.endswith('.py')` used to skip.
+    """
+
+    for path in ("tests/test_x.py", "tests/TEST_X.PY", "tests/types.pyi", "tests\\test_x.py"):
+        assert pr_gate_module._needs_file_text(path), path
+
+    for path in ("packages/vue/src/x.test.ts", "tests/test_x.ts", "README.md", "tests/test_x.py/"):
+        assert not pr_gate_module._needs_file_text(path), path
+
+def test_an_unusable_head_string_does_not_crash_the_resolver(tmp_path, monkeypatch):
+    """A NUL in the head raises ValueError from subprocess, not OSError.
+
+    The head comes from an API payload; a resolver must not propagate an
+    exception out of the merge gate for a string it was handed. An unresolvable
+    head is a refusal when the text is required, and "no tree" when it is not.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+        subprocess.run(command, check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = True)
+    assert root is None, root
+    assert any("carries a NUL byte" in problem for problem in problems), problems
+    # The unusable head reaches the reader escaped, never as raw bytes.
+    assert all("\x00" not in problem for problem in problems), problems
+    # Not required: no refusal, and no root either — the scanner is called with
+    # `root=None` and judges the hunks, which is complete for a non-Python diff.
+    root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = False)
+    assert root is None, root
+    assert problems == [], problems
+
+def test_the_resolver_ignores_the_artifact_gates_variable(tmp_path, monkeypatch):
+    """`CELESTIA_ARTIFACT_ROOT` belongs to the artifact gate, not to this one.
+
+    An earlier revision read it as a hint and fell through to the cwd, which is
+    how the two gates came to disagree about one variable (and how 16 cases in
+    this file broke). The variable must have no effect here — including when it
+    names a directory that is not a checkout at all, the shape its own tests use.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+        subprocess.run(command, check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+    plain = tmp_path / "not-a-checkout"
+    plain.mkdir()
+    monkeypatch.chdir(repo)
+
+    for value in (str(plain), "/nonexistent/typo", str(repo)):
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", value)
+        root, problems = pr_gate_module._comment_gate_root(head, required = True)
+        assert root == str(repo.resolve()), (value, root)
+        assert problems == [], (value, problems)
+
+def test_a_checkout_that_lacks_the_head_fetches_it_before_refusing(tmp_path, monkeypatch):
+    """The normal state, not an operator error: a CI clone with a narrow refspec.
+
+    Several repositories in this family set `remote.origin.fetch` to the trunk
+    only, so `git fetch origin` never brings a pull-request branch. The merge
+    gate's own clone is in exactly that state for any PR it did not create. The
+    resolver therefore fetches the head itself — by BRANCH when the payload
+    supplied `head.ref` (always allowed), and only then refuses.
+
+    Built as two repositories over the filesystem so no network is involved.
+    """
+
+    def git(repo, *argv):
+        return subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True, encoding = "utf-8")
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+
+    subprocess.run(["git", "init", "-q", "--bare", str(upstream)], check = True, capture_output = True)
+
+    work = tmp_path / "work"
+    work.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g"), ("checkout", "-q", "-b", "master")):
+        git(work, *argv)
+
+    # A trunk commit first, so the clone has something to check out.
+    (work / "trunk.txt").write_text("t\n", encoding = "utf-8")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "trunk")
+    git(work, "remote", "add", "origin", str(upstream))
+    git(work, "push", "-q", "origin", "master")
+    # Then the PR branch, whose head the clone will NOT have.
+    git(work, "checkout", "-q", "-b", "feature/x")
+    (work / "f.py").write_text("x = 1\n", encoding = "utf-8")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "feature")
+    head = git(work, "rev-parse", "HEAD").stdout.strip()
+    git(work, "push", "-q", "origin", "feature/x")
+
+    # The clone the merge gate runs in: initialized EMPTY and given the narrow
+    # refspec several repositories here use, so the PR branch is genuinely absent.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    git(clone, "init", "-q")
+    git(clone, "remote", "add", "origin", str(upstream))
+    git(clone, "config", "remote.origin.fetch", "+refs/heads/master:refs/remotes/origin/master")
+    git(clone, "fetch", "-q", "origin", "master")
+    assert subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"{head}^{{commit}}"], capture_output = True).returncode != 0, "the fixture must start WITHOUT the head"
+    monkeypatch.chdir(clone)
+    root, problems = pr_gate_module._comment_gate_root(head, required = True, branch = "feature/x")
+    assert problems == [], problems
+    assert root is not None, "the resolver must fetch the head instead of refusing"
+
+def test_a_missing_git_is_named_as_such_not_blamed_on_the_checkout(tmp_path, monkeypatch):
+    """Round 8's S1: "git is not installed" must not read as "not a checkout".
+
+    Folding the two into one boolean produced a refusal that blamed the
+    repository, its refspec and a `git fetch` command for a machine where git
+    cannot run at all — three false statements in one line.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    # Every `git` invocation now fails to start, the shape of "git not on PATH".
+    monkeypatch.setenv("PATH", str(tmp_path / "no-such-bin"))
+    root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+    assert root is None, root
+    joined = " ".join(problems)
+    assert ("git could not be run here" in joined) and ("not found on PATH" in joined), problems
+    assert "does not contain" not in joined, problems
+    assert "refspec" not in joined, problems
+
+def test_a_checkout_with_no_remote_says_so(tmp_path, monkeypatch):
+    """Round 8's S2: no `origin` means no fetch was attempted, and the message must not claim one failed."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+    assert root is None, root
+    joined = " ".join(problems)
+    assert "no `origin` remote" in joined, problems
+    assert "refspec" not in joined, problems
+    assert "does not bring a PR branch" not in joined, problems
+
+def test_a_default_refspec_is_not_blamed_for_the_failure(tmp_path, monkeypatch):
+    """A wildcard refspec already fetches every branch: the advice must not say otherwise."""
+    assert pr_gate_module._refspec_brings_branches("+refs/heads/*:refs/remotes/origin/*")
+    assert pr_gate_module._refspec_brings_branches("unset")
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/master")
+
+def test_the_fetch_command_is_pasteable():
+    """`shlex.quote`, not `repr`: a branch name must survive being pasted into a shell."""
+    command = pr_gate_module._fetch_command("a" * 40, "feature/x")
+    assert command == "git fetch origin refs/heads/feature/x", command
+    assert "'" not in command, command
+
+def test_a_narrowed_refspec_gets_the_explicit_fetch_advice(tmp_path, monkeypatch):
+    """The one cell the matrix did not pin: a narrowed refspec must SAY so.
+
+    A unit test on `_refspec_brings_branches` is not enough — the LIVE message
+    could still claim a plain `git fetch origin` would work. This drives the
+    resolver against a real repository whose `remote.origin.fetch` is the
+    narrowed form, with a head it does not have, and asserts the advice names
+    the explicit refspec and would actually help.
+
+    Includes the shapes that string searching got wrong: a wildcard
+    DESTINATION, and a legitimately narrow `*-release` source.
+    """
+
+    def make(base, refspec):
+        base.mkdir(parents = True, exist_ok = True)
+        repo = base / "repo"
+        repo.mkdir()
+
+        for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+            subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+        (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        # An `origin` that cannot be reached, so the self-heal fetch fails fast.
+        (base / "nowhere.git").mkdir()
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(base / "nowhere.git")], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "config", "remote.origin.fetch", refspec], check = True, capture_output = True)
+
+        return repo
+
+    # Both are VALID refspecs that fetch exactly one branch. `refs/remotes/origin/*`
+    # as a DESTINATION is rejected by git itself ("invalid refspec"), which breaks
+    # every later git call in the repository — the shape to guard against is a
+    # wildcard-looking destination that git DOES accept, like a shadow branch.
+    for index, refspec in enumerate(("+refs/heads/master:refs/remotes/origin/master", "+refs/heads/master:refs/remotes/origin/master/x")):
+        repo = make(tmp_path / f"case{index}", refspec)
+        monkeypatch.chdir(repo)
+        root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+        assert root is None, (refspec, root)
+        joined = " ".join(problems)
+        assert "does not bring a PR branch" in joined, (refspec, problems)
+        assert "git fetch origin refs/heads/feature/x" in joined, (refspec, problems)
+        assert "fetches all branches" not in joined, (refspec, problems)
+
+def test_a_wildcard_refspec_is_not_blamed(tmp_path, monkeypatch):
+    """The other side: a wildcard SOURCE already fetches every branch."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(tmp_path / "nowhere.git")], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "feature/x")
+    assert root is None, root
+    joined = " ".join(problems)
+    assert "fetches all branches" in joined, problems
+    assert "does not bring a PR branch" not in joined, problems
+
+def test_a_narrow_release_pattern_is_not_a_wildcard():
+    """`refs/heads/*-release` is a narrow source, not the full wildcard."""
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/*-release:refs/remotes/origin/*-release")
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/*")
+    assert pr_gate_module._refspec_brings_branches("+refs/heads/*:refs/remotes/origin/*")
+
+def test_every_fetch_refspec_is_read_not_only_the_last(tmp_path):
+    """`--get` returns one value; the setting is multi-valued.
+
+    A checkout can carry several `remote.origin.fetch` entries. Reading only the
+    last one judges the checkout on whichever was written last — and a narrow
+    entry followed by a wildcard one then reads as "fetches everything" when it
+    does not. `--get-all` is what makes the judgement cover what git will
+    actually fetch.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(tmp_path / "nowhere.git")], check = True, capture_output = True)
+    # `remote add` writes the default wildcard refspec itself; clear it so the
+    # fixture is exactly the two narrow entries this case is about.
+    subprocess.run(["git", "-C", str(repo), "config", "--unset-all", "remote.origin.fetch"], check = True, capture_output = True)
+    # Two narrow entries: `--get` would return only the second.
+    subprocess.run(["git", "-C", str(repo), "config", "--add", "remote.origin.fetch", "+refs/heads/master:refs/remotes/origin/master"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "config", "--add", "remote.origin.fetch", "+refs/heads/release:refs/remotes/origin/release"], check = True, capture_output = True)
+    entries = pr_gate_module._remote_refspec(str(repo))
+    assert ("master" in entries) and ("release" in entries), entries
+    assert not pr_gate_module._refspec_brings_branches(entries), entries
+    # Multiple refspecs fetch INDEPENDENTLY: one wildcard source covers every
+    # branch, so the mixed shape DOES bring them all. Asserting the opposite
+    # pinned a bug against git's own semantics (round 11).
+    assert pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/master\n+refs/heads/*:refs/remotes/origin/*")
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):
