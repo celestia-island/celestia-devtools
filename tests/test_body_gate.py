@@ -106,6 +106,13 @@ class test_span_evidence:
         assert not body_gate.check_body("The mock was inverted, so the armed path was never exercised.\n").ok
         assert not body_gate.check_body("The fault fixture is always-failing, which is why the case passes.\n").ok
 
+    def test_the_span_rule_uses_the_comment_gates_own_vocabulary(self):
+        # MUT:span-attribution — a hand-transcribed subset of BEHAVIOUR_TERMS
+        # (the first cut kept 9 of 15 entries) lets `doesn't` / `only when` /
+        # the CJK terms pass with only a span as evidence.
+        for text in ["The gate doesn't flag `x` output.", "The gate reds only when the fixture carries `y` output.", "只有 `z` 出现时才红。", "这条规则抓不住 `w` 那种写法。"]:
+            assert not body_gate.check_body(text + "\n").ok, text
+
     def test_a_version_still_names_its_line(self):
         assert body_gate.check_body("`just` >= 1.36 makes duplicate definitions a hard parse error.\n").ok
 

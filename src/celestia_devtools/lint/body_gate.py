@@ -440,13 +440,6 @@ def has_quote(text: str) -> bool:
     """True when ``text`` carries an inline-code span at all."""
     return bool(_SPAN.search(text))
 
-#: Words that assert something ABOUT code rather than name it: a span beside
-#: one of these names the subject, so it cannot also be the evidence for what
-#: the sentence says about it. This is NOT a vocabulary of causes — it is the
-#: set of claim words the span rule needs, and the behaviour list itself
-#: (``BEHAVIOUR_TERMS``) supplies most of it.
-_ATTRIBUTION = re.compile(r"\b(?:never|always|catches|catch|reds|reddens|measured|verified|does not)\b", re.IGNORECASE)
-
 def is_source(line: str) -> bool:
     """True when ``line`` carries one of :data:`ANCHORS`.
 
@@ -484,7 +477,11 @@ def is_source(line: str) -> bool:
         return True
 
     # A span names its subject; it does not evidence a claim ABOUT that subject.
-    if _ATTRIBUTION.search(text):
+    # The vocabulary is the comment gate's own list, matched by its own
+    # function — not a copy: a hand-transcribed 9-word regex dropped `doesn't`,
+    # `only when` and all four CJK entries, and review caught the body claiming
+    # "the same list" while the code held a subset.
+    if behaviour_terms(text):
         return False
 
     for span in code_spans(text):
