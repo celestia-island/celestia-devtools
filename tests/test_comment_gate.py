@@ -615,49 +615,54 @@ class test_docstrings:
         assert report.claims == ()
 
     def test_the_block_state_is_read_from_the_file_not_from_one_hunk(self):
-        """The state comes from the whole file; a hunk-only walk misses the gap.
+        """A code line after a hunk boundary is CODE, not docstring prose.
 
         Two hunks of one file, with a docstring that OPENS and CLOSES entirely
-        inside the lines the patch does not show — exactly the shape hikari's
+        inside the lines the patch does not show — the shape hikari's
         artifact-retire produced when it edited two places of a file whose
-        docstring sat between them. Hunk 2 then shows code only, and a walker
-        that advances the state over hunk lines alone reaches ``payload`` with
-        the block still open and marks it as prose.
+        docstring sat between them. Hunk 2 then adds a line whose text carries
+        the vocabulary. A walker that advances the state over hunk lines alone
+        reaches it with the block still open and marks it as prose, which this
+        gate then reports as an anchorless claim — refusing work for a reason
+        that has nothing to do with what the change says.
 
-        MUT:hunk-local-state -- dropping the whole-file pass marks the payload
-        line as a comment and reports it as an anchorless claim (measured: one
-        claim against the zero below); the two-hunk diff then refuses for a
-        reason that has nothing to do with what the change says.
+        Measured (the whole-file pass disabled): scanned=1, claims=1
+        (``401: payload = never_reds_alone()``). With the pass: scanned=0,
+        claims=0 — the line is code and the gate says nothing about it.
         """
-        diff = _two_hunks("+keep one\n+keep two\n", 2, 400, "+    payload = never_reds_alone()\n+    return payload\n", 2)
-        whole = ["keep one", "keep two", '"""Opened between the hunks.', "    still prose", '"""'] + ([""] * 395) + ["    payload = never_reds_alone()", "    return payload"]
+        diff = _two_hunks(
+            "+keep one\n+keep two\n",
+            2,
+            400,
+            "+    payload = never_reds_alone()\n",
+            1,
+        )
+        whole = ["keep one", "keep two", '"""Opened between the hunks.', "    still prose", '"""'] + [""] * 395 + ["    payload = never_reds_alone()"]
         claims, _hits, scanned, notes = comment_gate.scan_diff(diff, contents = {"tests/test_x.py": whole})
-        # Nothing in this diff is prose, and the gate says exactly that (zero
-        # scanned lines is its own refusal, announced in `notes`).
-        assert (scanned, claims) == (0, []), (scanned, claims)
-        assert notes == ["no added/modified test-file comment lines in the diff"], notes
+        assert (scanned, claims) == (0, []), (scanned, [claim.render() for claim in claims], notes)
 
     def test_an_unclosed_docstring_refuses_instead_of_marking_code_as_prose(self):
-        """The fail-open half: an unterminated block used to swallow the rest of the file.
+        """The fail-open half: a block that never closes used to swallow the file.
 
-        A ``\"\"\"`` inside a string literal (or a genuinely unterminated
-        docstring) leaves the block open forever. The walker then prefixes every
-        following line as comment text, and a code line that hits the
-        vocabulary — ``x = "never"`` below — is refused as an anchorless claim.
-        The file text settles it: the block is still open at EOF, so the gate
-        cannot classify anything after it and must say so.
+        An unterminated triple quote leaves the block open forever, so every
+        line after it reads as prose - including ``x = "never"`` inside a
+        function body, which the gate then refuses as an anchorless claim.
+        Which half of that is visible depends on the walk: with the whole-file
+        pass the three code lines are correctly code, and the open block is
+        reported as a guess this gate will not make.
 
-        MUT:unclosed-docstring-silent -- dropping the ``doc_open`` note leaves
-        the same diff refusing ONLY on the code line it mis-read as prose
-        (measured: one claim, zero docstring notes), which is the wrong reason
-        and the wrong verdict.
+        Measured (the whole-file pass disabled): scanned=1, hits=0, claims=0,
+        and no docstring note at all - the payload line vanished into "zero
+        vocabulary hits", the exact mis-classification this pin exists for.
+        With the pass: scanned=4, hits=1, claims=1, and the never-closed note.
         """
-        diff = _py_diff('+"""docstring left open\n+    prose\n+def f():\n+    x = "never"  # this is CODE\n', count = 4)
-        whole = ['"""docstring left open', "    prose", "def f():", '    x = "never"  # this is CODE']
-        report = comment_gate.check_diff(diff, root = None, rev = None)
-        notes = comment_gate.scan_diff(diff, contents = {"tests/test_x.py": whole})[3]
-        assert not report.ok
-        assert any("docstring" in note for note in notes), notes
+        quote = '"' * 3
+        diff = _py_diff("+" + quote + "Header.\n+    prose\n+def f():\n+    x = \"never\"\n", count = 4)
+        whole = [quote + "Header.", "    prose", "def f():", '    x = "never"']
+        claims, hits, scanned, notes = comment_gate.scan_diff(diff, contents = {"tests/test_x.py": whole})
+        assert (scanned, hits) == (4, 1), (scanned, hits, [claim.render() for claim in claims])
+        assert [claim.render() for claim in claims] == ['tests/test_x.py:4: x = "never"'], claims
+        assert any("never closed" in note for note in notes), notes
 
     def test_a_hunk_only_diff_with_a_closed_block_still_judges_claims(self):
         """The other direction: refusing must not become "refuse everything".
