@@ -752,6 +752,32 @@ def test_a_range_reads_its_own_new_side_which_head_cannot_stand_in_for(tmp_path)
     assert not any("never closed" in problem for problem in from_range.problems), from_range.problems
     assert any("never closed" in problem for problem in from_head.problems), from_head.problems
 
+def test_a_claim_never_carries_the_walkers_own_markers():
+    """A report line must be readable: the internal sentinels never reach it.
+
+    The walker marks a context line with ``CONTEXT_MARK`` (NUL) and a prose line
+    with ``DOC_CONTINUATION`` (SOH); a docstring continuation inside a context
+    run carries BOTH, in that order. ``claim.text`` is what a reader sees through
+    ``render()``, so a raw control character there is unreadable in a terminal
+    and invisible in a log. Measured before the fix: ``tests/x.py:2: \x00...``.
+
+    The line below is deliberately built to carry both markers, so deleting
+    either strip reds this case (the round-2 mutation that stripped only the
+    doc marker SURVIVED the whole file — this is what pins it).
+    """
+    marked = comment_gate.CONTEXT_MARK + comment_gate.DOC_CONTINUATION + "Reverting the filter reds this test."
+    diff = "diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n" "@@ -1,4 +1,4 @@\n" ' """Header.\n' " Reverting the filter reds this test.\n" ' """\n' " x = 1\n"
+    claims, _hits, _scanned, _notes = comment_gate.scan_diff(diff)
+    assert [entry.line for entry in claims] == [2], claims
+    control = [ord(char) for char in marked if char in (comment_gate.CONTEXT_MARK, comment_gate.DOC_CONTINUATION)]
+    assert control, "the fixture must carry both markers"
+    assert comment_gate._claim_text(marked) == "Reverting the filter reds this test."
+    assert comment_gate._claim_text(comment_gate.DOC_CONTINUATION + marked) == "Reverting the filter reds this test."
+
+    for entry in claims:
+        assert not any(ord(char) < 32 for char in entry.text), entry.text
+        assert not any(ord(char) < 32 for char in entry.render()), entry.render()
+
 def _hunk_starts(diff: str) -> list[int]:
     """The NEW-side start line of every hunk in ``diff``."""
     starts: list[int] = []
