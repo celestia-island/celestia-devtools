@@ -1,4 +1,4 @@
-<p align="center"><img src="https://celestia.world/logos/celestia.webp" alt="celestia-devtools" width="200" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/celestia-island/celestia-island.github.io/main/res/logos/celestia.webp" alt="celestia-devtools" width="200" /></p>
 
 <h1 align="center">celestia-devtools</h1>
 
