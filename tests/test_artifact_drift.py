@@ -122,13 +122,35 @@ class test_negative_controls:
         assert not report.ok
         assert report.problems and ("zero component contracts" in report.problems[0])
 
-    def test_control_3_contract_without_bindings_refuses(self, tmp_path):
+    def test_control_3_contract_without_bindings_refuses(self, tmp_path, capsys):
+        # The bindings are generated, not committed (hikari retired the
+        # checked-in copies), so a checkout that never ran the build is the
+        # FIRST state this gate sees -- and it must not read as contract drift.
+        # The refusal has to name the command that makes the bindings exist.
+        # MUT:absent-names-build -- with the message back to a bare "absent",
+        # the exit code is unchanged and the reader is told nothing they can act on.
         wit = tmp_path / "packages" / "wasm" / "qr" / "wit" / "qr.wit"
         wit.parent.mkdir(parents = True)
         wit.write_text(WIT.format(component = "qr", version = "0.1.0"), encoding = "utf-8")
         report = artifact_drift.check_repo(tmp_path)
         assert not report.ok
-        assert any("no generated bindings" in item.detail for item in report.findings)
+        assert any("bindings absent" in item.detail for item in report.findings)
+        assert all(artifact_drift.BUILD_COMMAND in item.detail for item in report.findings), [item.detail for item in report.findings]
+        assert artifact_drift.main(["--root", str(tmp_path)]) == 1
+        assert artifact_drift.BUILD_COMMAND in capsys.readouterr().out
+
+    def test_absent_bindings_are_not_reported_as_a_version_disagreement(self, tmp_path):
+        # A missing artifact must never be dressed as a stale one: the two need
+        # different fixes, and only one of them is in the WIT.
+        # MUT:absent-is-drift -- appending "regenerate the bindings" to the
+        # absent message reddens this case while the CLI exit code stays 1.
+        wit = tmp_path / "packages" / "wasm" / "qr" / "wit" / "qr.wit"
+        wit.parent.mkdir(parents = True)
+        wit.write_text(WIT.format(component = "qr", version = "0.1.0"), encoding = "utf-8")
+        findings = artifact_drift.check_repo(tmp_path).findings
+        assert findings
+        assert not any("regenerate the bindings" in item.detail for item in findings), [item.detail for item in findings]
+        assert not any("nothing was generated" in item.detail for item in findings), [item.detail for item in findings]
 
     def test_control_3_bindings_without_any_module_header_refuses(self, tmp_path):
         build_workspace(tmp_path)

@@ -32,6 +32,22 @@ declares ``@0.1.0``. This gate is the only thing that can stop that.
   phase-two cost; layers 1 and 2 already cover version drift and interface
   add/remove, the two highest-frequency shapes.
 
+*This gate reads the WORKING TREE, not git.* The bindings are no longer checked
+in — hikari retired the committed copies, so ``packages/vue/src/wasm/**`` is jco
+output: gitignored, and produced by ``python3 packages/wasm/build.py``. Reading
+the working tree is what keeps the gate usable *while* a change is being made
+(it runs before the merge, when the regenerated files are present but not yet
+committed); the consequence is that a checkout which has never built them
+reports them as absent rather than as drift.
+
+*Absent is not drift, and must say so.* Two different states used to share one
+message: "this checkout never built the bindings" (no fix in WIT and no fix in
+any committed file — run the build) and "the bindings disagree with the
+contract" (a real defect). The second is a finding; the first is a refusal
+whose text names ``python3 packages/wasm/build.py``. The report also names the
+components it scanned, so a run that judged nothing cannot read like a green
+one.
+
 *Scope:* components are discovered from ``packages/wasm/*/wit/*.wit`` — not
 hardcoded, so a new component joins the gate by existing. ``palette.wit`` lives
 outside ``packages/wasm`` and is not a wasm component contract (no version, no
@@ -55,6 +71,12 @@ EXIT_USAGE = 2
 #: filter and the scan itself can never disagree.
 WIT_GLOB = "packages/wasm/*/wit/*.wit"
 BINDINGS_GLOB = "packages/vue/src/wasm/{component}"
+
+#: The one command that produces the bindings (they are not checked in). Every
+#: "absent" message names it: a gate that says "absent" without saying how to
+#: make them present turns a build prerequisite into an apparent contract
+#: regression.
+BUILD_COMMAND = "python3 packages/wasm/build.py"
 
 #: The paths a PR must touch for this gate to have anything to say. Same two
 #: roots the design names, expressed as prefixes so a merge-gate filter can test
@@ -160,6 +182,13 @@ def _module_versions(bindings: Path, component: str) -> dict[str, set[str]]:
 
     return seen
 
+def _absent(bindings_root: Path) -> str:
+    """The message for bindings that were never built (a prerequisite, not drift)."""
+    return (f"bindings absent at {bindings_root} — they are generated, not committed; "
+            f"build them with `{BUILD_COMMAND}` (a WIT/artifact disagreement cannot be "
+            f"judged until they exist)")
+
+
 def check_component(root: str | Path, parsed: contract) -> list[finding]:
     """Every drift this component shows (empty = the bindings agree with the WIT)."""
     findings: list[finding] = []
@@ -172,12 +201,12 @@ def check_component(root: str | Path, parsed: contract) -> list[finding]:
         return [finding(parsed.component, f"{parsed.wit.name} declares no @version — a wasm component contract is versioned (see hikari #1485)")]
 
     if not bindings_root.is_dir():
-        return [finding(parsed.component, f"no generated bindings at {bindings_root} — the contract has never been generated")]
+        return [finding(parsed.component, _absent(bindings_root))]
 
     canonical = sorted(path for path in bindings_root.rglob("*.d.ts"))
 
     if not canonical:
-        return [finding(parsed.component, f"no *.d.ts under {bindings_root} — nothing was generated")]
+        return [finding(parsed.component, _absent(bindings_root))]
 
     # Layer 1 — every module header must carry the WIT's version.
     versions = _module_versions(bindings_root, parsed.component)
@@ -267,7 +296,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"❌ {item.render()}")
 
     if not result.ok:
-        print(f"ARTIFACT-DRIFT REFUSED — {len(result.findings)} finding(s), {len(result.problems)} problem(s)", file = sys.stderr)
+        # Name what was scanned as well as what failed: a run that examined zero
+        # components must not read like a run that examined four and found
+        # something. `--component` narrows the scan, so the count is not always 4.
+        print(f"ARTIFACT-DRIFT REFUSED — {len(result.findings)} finding(s), {len(result.problems)} problem(s) across {len(result.contracts)} component(s)", file = sys.stderr)
         return EXIT_FINDINGS
 
     if not args.quiet:
