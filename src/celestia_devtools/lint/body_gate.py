@@ -504,8 +504,9 @@ _SPAN_CODE = re.compile(r"[\w.]+\(|_|--?[a-z][\w-]*|[a-z][A-Z]|^[a-z]+(?:\.[a-z]
 #: A tool named WITH its version (``` `vite 8.2` ```): the tool is the subject.
 _TOOL_VERSION = re.compile(r"[A-Za-z][\w-]*\s+\d+(?:\.\d+)*")
 
-#: Figures written as arrows or ranges (`2 → 0 → 2`, `16→17`) are a COUNT
-#: SEQUENCE — a change in a counter — not a measured quantity.
+#: A figure written as an arrow sequence (`2 → 0 → 2`) counts a counter's
+#: HISTORY — it is a claim about a run (round 7: excluding it made a wired
+#: counter tally invisible). Kept as a definition so the arm below can name it.
 _SEQUENCE = re.compile(r"\d+(?:\s*(?:→|->|=>)\s*\d+)+")
 
 def names_a_thing(line: str) -> bool:
@@ -581,7 +582,7 @@ def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if terms:
         kinds.append("behaviour")
 
-    if (not kinds) and unquoted_digits(_SEQUENCE.sub(" ", line)):
+    if (not kinds) and unquoted_digits(line):
         kinds.append("unquoted digit")
 
     return tuple(kinds), terms
@@ -699,6 +700,12 @@ def is_table_verdict(line: str) -> bool:
 #: Prose that marks a command's OWN result (`→ rc=0`, `: 0`, `-> pass`): the
 #: leftover after stripping a command span may be this and nothing else.
 _RESULT_MARKER = re.compile(r"\brc\s*=\s*-?\d+|\bexit\s*\d+|→|->|=>|\d+|[:;,.=|`\s]")
+
+#: A commit hash quoted as a value.
+_SHA = re.compile(r"(?<![\w])[0-9a-fA-F]{7,40}(?![\w])")
+#: A line that is ABOUT a hash: it says `sha` / `commit` / `head` or quotes a
+#: diff/blame fragment, i.e. the hash is the substance, not a decoration.
+_SHA_ABOUT = re.compile(r"\bsha\b|\bcommitted\b|\bat (?:the )?head\b|\bpin(?:ned)? (?:at|to)\b|diff|blame|revert|\bhead (?:is|was|moves?|at)\b|\b(?:commit|head|revision) (?:is|was|:)\b", re.IGNORECASE)
 
 #: A metrics-table cell: a bare number (with an optional unit) or a `#ref`.
 _METRIC_CELL = re.compile(r"-?\d+(?:\.\d+)?\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
@@ -878,6 +885,15 @@ def has_anchor(line: str) -> bool:
     if (re.search(r"[A-Za-z\u4e00-\u9fff]", leftover) is None) and any(span_is_source(span) for span in spans):
         return True
 
+    # A commit SHA is the line's SUBJECT, not its evidence (round 7): "this
+    # commit 41b88015 takes the 2 leaked timers away" names a commit and claims
+    # something else. It anchors a line only when the line is ABOUT a hash — a
+    # line that is nothing but hex, or one that also names a source.
+    sha_shaped = bool(re.search(r"(?<![\w])[0-9a-fA-F]{7,40}(?![\w])", text))
+
+    if sha_shaped and (not _SHA_ABOUT.search(text)) and (not re.search(r"[/:`|]|#[0-9]", text)):
+        text = _SHA.sub(" ", text)
+
     # A bare path in backticks is a CITATION (round 6): it is blanked so the
     # path marker cannot fire on it, while `file:line` and the other markers
     # keep working from the same text.
@@ -900,6 +916,29 @@ def satisfies(line: str) -> bool:
     """The whole one-line test: a disclaimer, an anchor, an outcome row or a pasted output."""
     return has_disclaimer(line) or is_outcome_row(line) or has_anchor(line) or pastes_quoted_output(line)
 
+def table_has_header(lines: Sequence[_line], section: int) -> bool:
+    """True when the table in ``section`` opens with a header row of words.
+
+    A metrics table is declared by its header (`| repo | PR | prose lines |`);
+    a headerless grid of numbers is a list of figures with no declared columns
+    and is judged as prose (round 7).
+    """
+
+    same_table = [part for part in lines if (part.section == section) and part.tabular]
+
+    if len(same_table) < 2:
+        return False
+
+    head = same_table[0].text.strip().strip("|").split("|")
+    body = same_table[1].text.strip().strip("|").split("|")
+
+    if not (len(head) > 1) or (len(body) != len(head)):
+        return False
+
+    # A header row is words in EVERY column; `| label | 1 | 2 |` is a data row
+    # whose first cell happens to be a word.
+    return all(re.search(r"[A-Za-z\u4e00-\u9fff]", cell) for cell in head)
+
 def scan_body(body: str) -> tuple[list[statement], int, list[str]]:
     """Every claim line of ``body``: ``(statements, scanned_lines, notes)``.
 
@@ -909,11 +948,16 @@ def scan_body(body: str) -> tuple[list[statement], int, list[str]]:
     other line of a table is judged like any other prose, which is what keeps
     this rule from becoming "tables are exempt".
     """
-    lines, notes, _evidence, _omitted = prosaic(body)
+    rows, notes, _evidence, _omitted = prosaic(body)
+    lines = rows
     statements: list[statement] = []
 
+    headerless = {part.section for part in lines if part.tabular and (not table_has_header(lines, part.section))}
+
     for row in lines:
-        if row.tabular and is_captured_cell(row.text):
+        # A table WITHOUT a header row is not a captured metrics block: its rows
+        # are prose (round 7), so they are not skipped.
+        if row.tabular and (row.section not in headerless) and is_captured_cell(row.text):
             continue
 
         kinds, terms = claim_kinds(row.text)
@@ -953,11 +997,19 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
 
     if row.tabular:
         same_table = [part for part in lines if part.section == row.section]
+        header = same_table[0].text if same_table else ""
+
+        # An all-numbers table with no header row is not a metrics capture
+        # (round 7: `| fable | 999 | 4242 |` passed with no run behind it).
+        has_header = bool(re.search(r"[A-Za-z\u4e00-\u9fff]", (header.strip().strip("|").split("|") or [""])[0]))
 
         # A table is captured output only when it is CAPTURED: a row whose
         # last cell is a verdict (`| drop the guard | 3 red |`) or a wide
         # telemetry row. One verdict row does not license the prose rows beside
         # it (round 6: `| suite | 3 green |` excused `| login | 9041 bytes |`).
+        if (not has_header) and (not any(row_is_verdict(part.text) for part in same_table)):
+            return False
+
         if any(row_is_verdict(part.text) or is_outcome_row(part.text) for part in same_table):
             return any(is_captured_cell(part.text) for part in same_table if part.number == row.number) or bool(row_is_verdict(row.text) or is_outcome_row(row.text))
 

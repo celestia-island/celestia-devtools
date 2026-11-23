@@ -256,7 +256,7 @@ class test_round4_holes:
         # MUT:hex-word-anchor — `defaced` / `effaced` anchored anything.
         assert not body_gate.has_anchor("the copy was defaced")
         assert body_gate.has_anchor("reverted to 1a2b3c4d")
-        assert body_gate.has_anchor("the commit aabbccdd is clean")
+        assert body_gate.has_anchor("Head is `a04d5f4`.")
 
 class test_naming:
     """A sentence that names its code is not a claim about a run."""
@@ -476,7 +476,9 @@ class test_corpus_scan:
         are pinned here so a silent swing either way is a red.
         """
         result = body_gate.check_body(_fixture("corpus-1474.md"))
-        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 13, 0)
+        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 14, 1)
+        # The arrow count `2 → 0 → 2` is a claim about a counter's history.
+        assert [stmt.line for stmt in result.findings] == [70]
         assert 53 in {stmt.line for stmt in result.statements}
 
     def test_corpus_2813_refusals_include_the_arithmetic_paragraph(self):
