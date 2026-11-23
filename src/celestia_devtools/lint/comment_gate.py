@@ -365,10 +365,10 @@ def _claim_text(line: str) -> str:
     docstring continuation claim rendered as ``tests/x.py:2: \\x00Reverting``).
     The loop runs twice, once per marker: each pass removes whichever of the
     two is on the front, so order-independence is a side effect of covering
-    both markers rather than a separate promise — a single pass that dropped
-    either one left a control character in the report. Deleting either strip,
-    and running one pass in the other order, all red
-    ``test_a_claim_never_carries_the_walkers_own_markers``.
+    both markers rather than a separate promise — deleting either strip reds
+    ``test_a_claim_never_carries_the_walkers_own_markers``. Order-independence
+    comes for free: two passes cover both arrival orders, and a single pass in
+    either order leaves a marker behind.
     """
     text = line.strip()
 

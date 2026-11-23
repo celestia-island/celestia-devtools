@@ -1126,10 +1126,30 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
         assert any("does not contain the PR head" in problem for problem in problems), problems
 
-    def test_a_directory_that_is_not_a_checkout_leaves_the_hunk_only_walk(self, tmp_path, monkeypatch):
-        """No repository at all: no invented text, and the scanner's own refusal stands."""
+    def test_no_checkout_with_a_python_diff_refuses_rather_than_passing(self, tmp_path, monkeypatch):
+        """The silent-pass this round found: no checkout must refuse, not return [].
+
+        With no git repository, the resolver produces no problem — and skipping
+        the scanner on "no root" then skipped the scanner's OWN hunk-only
+        refusal too, so a Python diff was certified by returning an empty list.
+        A diff that needs file text cannot be judged without it: that is a
+        refusal.
+        """
         monkeypatch.chdir(tmp_path)
         assert pr_gate_module._comment_gate_root("a" * 40, required = True) == (None, [])
+        patch = "@@ -200,0 +200,2 @@\n+# measured: this pin catches the reload\n+x = 1\n"
+        pr, diff = _comment_pr(patch, filename = "tests/test_far.py")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert problems, "a Python diff with no checkout to read must refuse, not pass"
+        assert any("cannot read the file text" in problem for problem in problems), problems
+
+    def test_no_checkout_with_only_a_ts_diff_does_not_refuse(self, tmp_path, monkeypatch):
+        """The other half of the scope: a TS-only diff needs no file text."""
+        monkeypatch.chdir(tmp_path)
+        patch = "@@ -200,0 +200,2 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n"
+        pr, diff = _comment_pr(patch, filename = "packages/vue/src/far.test.ts")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert not any("cannot read the file text" in problem for problem in problems), problems
 
     def test_the_pr_head_is_taken_from_the_working_checkout(self, tmp_path, monkeypatch):
         """The happy path of the resolver: cwd's toplevel, and its own head resolves."""
@@ -1147,6 +1167,73 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         root, problems = pr_gate_module._comment_gate_root(head, required = True)
         assert problems == [], problems
         assert root == str(repo.resolve()), root
+
+def test_only_python_shapes_need_the_file_text():
+    """Which paths make the scanner need the whole file.
+
+    A JS/TS comment cannot span hunk boundaries, so a TS-only PR must never be
+    blocked by the "checkout must contain the PR head" rule. A Python file can,
+    in every spelling — including the case-insensitive and stub-file forms a
+    case-sensitive `.endswith('.py')` used to skip.
+    """
+
+    for path in ("tests/test_x.py", "tests/TEST_X.PY", "tests/types.pyi", "tests\\test_x.py"):
+        assert pr_gate_module._needs_file_text(path), path
+
+    for path in ("packages/vue/src/x.test.ts", "tests/test_x.ts", "README.md", "tests/test_x.py/"):
+        assert not pr_gate_module._needs_file_text(path), path
+
+def test_an_unusable_head_string_does_not_crash_the_resolver(tmp_path, monkeypatch):
+    """A NUL in the head raises ValueError from subprocess, not OSError.
+
+    The head comes from an API payload; a resolver must not propagate an
+    exception out of the merge gate for a string it was handed. An unresolvable
+    head is a refusal when the text is required, and "no tree" when it is not.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+        subprocess.run(command, check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    monkeypatch.chdir(repo)
+    root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = True)
+    assert root is None, root
+    assert any("cannot be resolved" in problem for problem in problems), problems
+    root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = False)
+    assert root == str(repo.resolve()), root
+    assert problems == [], problems
+
+def test_the_resolver_ignores_the_artifact_gates_variable(tmp_path, monkeypatch):
+    """`CELESTIA_ARTIFACT_ROOT` belongs to the artifact gate, not to this one.
+
+    An earlier revision read it as a hint and fell through to the cwd, which is
+    how the two gates came to disagree about one variable (and how 16 cases in
+    this file broke). The variable must have no effect here — including when it
+    names a directory that is not a checkout at all, the shape its own tests use.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+        subprocess.run(command, check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+    plain = tmp_path / "not-a-checkout"
+    plain.mkdir()
+    monkeypatch.chdir(repo)
+
+    for value in (str(plain), "/nonexistent/typo", str(repo)):
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", value)
+        root, problems = pr_gate_module._comment_gate_root(head, required = True)
+        assert root == str(repo.resolve()), (value, root)
+        assert problems == [], (value, problems)
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):

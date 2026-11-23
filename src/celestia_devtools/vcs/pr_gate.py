@@ -933,13 +933,22 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
     # Only Python files need the file text (a JS/TS comment cannot span hunks),
     # so a checkout that lacks this PR's head is a refusal only when such a file
     # is actually in the diff — a TS-only PR must not be blocked by it.
-    needs_file_text = any(path.endswith(".py") for path in _diff_paths(diff_text) if comment_gate.is_test_path(path))
+    needs_file_text = any(_needs_file_text(path) for path in _diff_paths(diff_text))
     root, root_problems = _comment_gate_root(head, required = needs_file_text)
 
     if root is None:
-        # Nothing to refuse about (no checkout) leaves the scanner's own
-        # hunk-only refusal in charge; a refusal the resolver produced is final.
-        return root_problems or []
+        # A resolver refusal is final. When the resolver produced NO problem but
+        # the diff NEEDS file text, there is no checkout to read and "nothing to
+        # report" would be a silent pass — the scanner's own hunk-only refusal
+        # would have caught it, and skipping the call skipped that too. So say
+        # it here: this is a refusal, never an empty list.
+        if root_problems:
+            return root_problems
+
+        if needs_file_text:
+            return [f"{COMMENT_GATE_CATEGORY}: cannot read the file text this diff needs (no git checkout here, or the PR head {head!r} is empty/unusable) — refusing rather than certifying a docstring state it never read"]
+
+        return []
 
     report = comment_gate.check_diff(diff_text, root = root, rev = head)
     # BOTH halves of the verdict, not just the claims: the scanner also refuses
@@ -950,6 +959,21 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
     return [f"{COMMENT_GATE_CATEGORY}: {claim.render()}" for claim in report.claims] + [
         f"{COMMENT_GATE_CATEGORY}: {problem}" for problem in report.problems
     ]
+
+def _needs_file_text(path: str) -> bool:
+    """True when judging ``path`` requires the file's text, not just the hunk.
+
+    Only PYTHON comments can span hunk boundaries (a docstring continuation has
+    no marker of its own), which is the one reason the scanner needs the whole
+    file. The test is case-insensitive and covers ``.pyi``: a Windows checkout
+    can spell ``.PY``, and a stub file is parsed by the same state machine, so a
+    case-sensitive ``.endswith('.py')`` would silently skip the head refusal for
+    exactly those inputs. A ``.py`` DIRECTORY in the path is not a module and is
+    excluded by looking at the final segment only.
+    """
+    suffix = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+    return suffix.endswith(".py") or suffix.endswith(".pyi")
 
 def _comment_gate_root(head: str, *, required: bool) -> tuple[str | None, list[str]]:
     """The checkout the comment gate reads file text from; ``(root, problems)``.
@@ -981,6 +1005,7 @@ def _comment_gate_root(head: str, *, required: bool) -> tuple[str | None, list[s
     Returns ``(None, [])`` when there is nothing to refuse about (no repository
     at all): the scanner then falls back to its honest hunk-only refusal.
     """
+
     try:
         probe = subprocess.run(["git", "-C", str(Path.cwd()), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
     except OSError:
@@ -997,10 +1022,14 @@ def _comment_gate_root(head: str, *, required: bool) -> tuple[str | None, list[s
     if not head:
         return root, []
 
+    # ``ValueError`` is here because ``subprocess`` raises it — not ``OSError`` — for
+    # an argument carrying a NUL, and the head arrives from an API payload. A
+    # resolver must not raise on a string it was handed; an unusable head is
+    # simply "cannot name the head", which the branches above already handle.
     try:
         has_head = subprocess.run(["git", "-C", root, "cat-file", "-e", f"{head}^{{commit}}"], capture_output = True, check = False)
-    except OSError:
-        return root, []
+    except (OSError, ValueError):
+        return (root, []) if not required else (None, [f"{COMMENT_GATE_CATEGORY}: the PR head {head!r} cannot be resolved — refusing rather than judging another commit's file text"])
 
     if (has_head.returncode != 0) and required:
         return None, [f"{COMMENT_GATE_CATEGORY}: the checkout at {root} does not contain the PR head {head}, and this diff has a Python test file whose docstring state needs that commit's text — refusing rather than judging another commit's (fetch and re-run, or waive explicitly with `comment-gate-waiver:` in the body)"]
