@@ -433,7 +433,7 @@ def code_spans(text: str) -> tuple[str, ...]:
 #: A BARE test file name: a module called `x.test.ts` / `test.ts` / `y_test.rs`
 #: with no `::case` and no `:line`. Citing it names a file, not a place where an
 #: assertion lives, so it evidences nothing.
-_BARE_TEST_NAME = re.compile(r"^(?:[\w./-]*\.)?(?:test|spec)(?:\.\w+)?$|^[\w./-]*(?:\.(?:test|spec)|_test)\.\w+$")
+_BARE_TEST_NAME = re.compile(r"(?:^|/)(?:test|spec)(?:[_-][\w-]+)?\.[A-Za-z0-9]+$|(?:^|/)(?:[\w-]+\.)?(?:test|spec)\.[A-Za-z0-9]+$|(?:^|/)[\w-]+_test\.[A-Za-z0-9]+$")
 
 def span_is_source(span: str) -> bool:
     """True when a span is shaped like a command, flag, call, identifier or path.
@@ -445,8 +445,19 @@ def span_is_source(span: str) -> bool:
     """
     text = span.strip()
 
-    if _BARE_TEST_NAME.fullmatch(text):
+    # The rule is about a FILE NAME; a case or line suffix opens a specific
+    # assertion, so only the head is tested here (`x.test.ts:88` stays a source).
+    # The test is `search` on a pattern anchored to a path boundary: a directory
+    # prefix is allowed on either side (`tests/test_body_gate.py`), because a
+    # test FILE is a test file wherever it lives.
+    head = re.split(r"[:#]", text)[0]
+    has_suffix = head != text.strip()
+
+    if (not has_suffix) and _BARE_TEST_NAME.search(head):
         return False
+
+    if has_suffix and _TEST_REF.search(text):
+        return True
 
     return bool(_SPAN_SOURCE.search(text)) or (bool(re.search(r"\.\w{1,6}$", text)) and (len(text) >= 4))
 
