@@ -257,6 +257,13 @@ class test_zero_statement_floor:
         assert result.ok
         assert result.skipped is not None
 
+    def test_the_floor_itself_is_the_boundary(self):
+        # MUT:min-prose-lines — the floor binds AT `MIN_PROSE_LINES`, not above
+        # it; a +5 slack let a future tightening of the floor pass silently.
+        line = "This sentence describes the change with no figure."
+        assert body_gate.check_body("\n".join([line] * (body_gate.MIN_PROSE_LINES - 1)) + "\n").ok
+        assert not body_gate.check_body("\n".join([line] * body_gate.MIN_PROSE_LINES) + "\n").ok
+
     def test_a_long_body_with_no_statement_refuses(self):
         # MUT:min-prose-lines — deleting the floor makes this a silent skip.
         body = "\n".join(["This sentence describes the change with no figure."] * (body_gate.MIN_PROSE_LINES + 5))
