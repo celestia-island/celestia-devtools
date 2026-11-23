@@ -562,17 +562,37 @@ class test_round2_geometry:
         diff = "diff --git a/a.test.ts b/a.test.ts\n--- a/a.test.ts\n+++ b/a.test.ts\n" "@@ -1,0 +1,1 @@\n+// measured: this catches it\n" + body + "\n@@ -11,0 +11,1 @@\n+// MUT: near\n"
         assert comment_gate.check_diff(diff).claims == ()
 
-def _py_diff(body: str, *, count: int) -> str:
-    """A one-file diff of a Python test module."""
-    return f"diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1,0 +1,{count} @@\n" + body
+def _py_diff(body: str, *, count: int, start: int = 1) -> str:
+    """A one-hunk diff of a Python test module (``tests/test_x.py``)."""
+    return f"diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -{start},0 +{start},{count} @@\n" + body
+
+def _two_hunks(first: str, first_count: int, second_start: int, second: str, second_count: int) -> str:
+    """One Python file, two hunks — where a block can open in one and close in the other."""
+    return f"diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n@@ -1,0 +1,{first_count} @@\n{first}@@ -{second_start},0 +{second_start},{second_count} @@\n{second}"
 
 class test_docstrings:
-    """Python docstrings are statements, so they are in the gate's reach.
+    """Python docstrings are comment text, and the state that decides that lives in the FILE.
 
-    Measured on this gate's own first follow-up (#310): a docstring claiming
-    "reverting `_header_text` reds this test and nothing else" was invisible,
-    because a Python docstring's continuation lines carry no marker and the
-    scanner only knew marked comment syntax.
+    Measured twice on the real chain, and the second measurement is why this
+    class has this shape.
+
+    #310 taught the walker to mark a docstring continuation with its own
+    sentinel, but it advanced the block state over HUNK lines only. A patch
+    shows the lines it changed, so a ``\"\"\"`` that CLOSES a docstring reads as
+    one that OPENS it whenever the closing line is a line the walker never fed
+    it — and every following line is then judged as prose. hikari's
+    artifact-retire branch (``49e96e0d``) is the standing corpus: its
+    ``packages/wasm/component_descriptor_test.py`` opened a docstring in hunk 1
+    and closed it in hunk 2 (``+start=42``), so hunk 3 (``+start=363``) ran with
+    the state open and its code lines were prefixed as comment text. The
+    direction is what makes this urgent: a CODE line read as a comment can be
+    refused as an anchorless claim, so the gate fails OPEN on code it should
+    ignore.
+
+    #310's own three tests drove ``check_diff`` and were green — they were
+    green because the one state they exercised (a block that opens and closes
+    inside a single hunk) is exactly the case where hunk-local tracking happens
+    to be right. None of them crossed a hunk boundary, which is the defect.
     """
 
     def test_a_docstring_claim_is_reported(self):
@@ -593,3 +613,97 @@ class test_docstrings:
         report = comment_gate.check_diff(diff)
         assert report.scanned_lines == 1
         assert report.claims == ()
+
+    def test_the_block_state_is_read_from_the_file_not_from_one_hunk(self):
+        """The state comes from the whole file; a hunk-only walk misses the gap.
+
+        Two hunks of one file, with a docstring that OPENS and CLOSES entirely
+        inside the lines the patch does not show — exactly the shape hikari's
+        artifact-retire produced when it edited two places of a file whose
+        docstring sat between them. Hunk 2 then shows code only, and a walker
+        that advances the state over hunk lines alone reaches ``payload`` with
+        the block still open and marks it as prose.
+
+        MUT:hunk-local-state -- dropping the whole-file pass marks the payload
+        line as a comment and reports it as an anchorless claim (measured: one
+        claim against the zero below); the two-hunk diff then refuses for a
+        reason that has nothing to do with what the change says.
+        """
+        diff = _two_hunks("+keep one\n+keep two\n", 2, 400, "+    payload = never_reds_alone()\n+    return payload\n", 2)
+        whole = ["keep one", "keep two", '"""Opened between the hunks.', "    still prose", '"""'] + ([""] * 395) + ["    payload = never_reds_alone()", "    return payload"]
+        claims, _hits, scanned, notes = comment_gate.scan_diff(diff, contents = {"tests/test_x.py": whole})
+        # Nothing in this diff is prose, and the gate says exactly that (zero
+        # scanned lines is its own refusal, announced in `notes`).
+        assert (scanned, claims) == (0, []), (scanned, claims)
+        assert notes == ["no added/modified test-file comment lines in the diff"], notes
+
+    def test_an_unclosed_docstring_refuses_instead_of_marking_code_as_prose(self):
+        """The fail-open half: an unterminated block used to swallow the rest of the file.
+
+        A ``\"\"\"`` inside a string literal (or a genuinely unterminated
+        docstring) leaves the block open forever. The walker then prefixes every
+        following line as comment text, and a code line that hits the
+        vocabulary — ``x = "never"`` below — is refused as an anchorless claim.
+        The file text settles it: the block is still open at EOF, so the gate
+        cannot classify anything after it and must say so.
+
+        MUT:unclosed-docstring-silent -- dropping the ``doc_open`` note leaves
+        the same diff refusing ONLY on the code line it mis-read as prose
+        (measured: one claim, zero docstring notes), which is the wrong reason
+        and the wrong verdict.
+        """
+        diff = _py_diff('+"""docstring left open\n+    prose\n+def f():\n+    x = "never"  # this is CODE\n', count = 4)
+        whole = ['"""docstring left open', "    prose", "def f():", '    x = "never"  # this is CODE']
+        report = comment_gate.check_diff(diff, root = None, rev = None)
+        notes = comment_gate.scan_diff(diff, contents = {"tests/test_x.py": whole})[3]
+        assert not report.ok
+        assert any("docstring" in note for note in notes), notes
+
+    def test_a_hunk_only_diff_with_a_closed_block_still_judges_claims(self):
+        """The other direction: refusing must not become "refuse everything".
+
+        A one-hunk diff whose docstring opens and closes inside the hunk needs
+        no file text at all — the state is complete without it. This is the
+        control that keeps the new refusal from swallowing every Python diff.
+        """
+        diff = _py_diff('+"""One hunk, self-contained.\n+    and this one reds\n+"""\n', count = 3)
+        report = comment_gate.check_diff(diff, root = None, rev = None)
+        assert [claim.line for claim in report.claims] == [2]
+
+    def test_the_gate_reads_the_new_side_file_from_git(self, tmp_path):
+        """The merge-chain lane: ``check_diff(root=..., rev=...)`` reads the file.
+
+        A real repository and a real ``git show``: the diff alone cannot tell a
+        closing quote from an opening one, and the file behind it can. This is
+        the wiring the ``--diff``/merge lane depends on, driven end to end
+        instead of by handing the scanner a hand-made mapping.
+
+        ``core.hooksPath`` is pinned empty: a throwaway repository under
+        ``/tmp`` is still inside the workspace's hook scope, and the commit is
+        not what this case is about.
+        """
+        repo = tmp_path / "repo"
+        (repo / "tests").mkdir(parents = True)
+        module = repo / "tests" / "test_x.py"
+        module.write_text('"""Header."""\n\ndef f():\n    return 1\n', encoding = "utf-8")
+        base = subprocess.run(["git", "-C", str(repo), "init", "-q"], capture_output = True, text = True)
+
+        if base.returncode != 0:
+            pytest.skip(f"git init unavailable: {base.stderr.strip()}")
+
+        for key, value in (("core.hooksPath", "/dev/null"), ("user.email", "gate@example.invalid"), ("user.name", "gate")):
+            subprocess.run(["git", "-C", str(repo), "config", key, value], check = True, capture_output = True)
+
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check = True, capture_output = True)
+
+        # The docstring that OPENS in hunk 1 and CLOSES in the file's line 7;
+        # hunk 2 adds code after the block.
+        module.write_text('"""Header.\n\nA changed line that reds this test.\n"""\n\ndef f():\n    return 2\n', encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "change"], check = True, capture_output = True)
+        diff = subprocess.run(["git", "-C", str(repo), "diff", "-U0", "--no-color", "HEAD~1", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout
+        read = comment_gate.check_diff(diff, root = repo, rev = "HEAD")
+        blind = comment_gate.check_diff(diff, root = None, rev = None)
+        assert [claim.render() for claim in read.claims] == ["tests/test_x.py:3: A changed line that reds this test."], (read.claims, read.problems)
+        assert not blind.ok, "without the file text the same diff cannot be judged"
