@@ -26,6 +26,7 @@ report.
 """
 
 from __future__ import annotations
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -581,7 +582,7 @@ class test_docstrings:
     shows the lines it changed, so a ``\"\"\"`` that CLOSES a docstring reads as
     one that OPENS it whenever the closing line is a line the walker never fed
     it — and every following line is then judged as prose. hikari's
-    artifact-retire branch (``49e96e0d``) is the standing corpus: its
+    artifact-retire branch (``a7c20c3b`` against ``master``) is the standing corpus: its
     ``packages/wasm/component_descriptor_test.py`` opened a docstring in hunk 1
     and closed it in hunk 2 (``+start=42``), so hunk 3 (``+start=363``) ran with
     the state open and its code lines were prefixed as comment text. The
@@ -691,6 +692,66 @@ def _module_docstring_file() -> str:
 
     return "\n".join(parts) + "\n"
 
+def test_the_new_side_revision_is_taken_from_the_lane_that_names_it(tmp_path):
+    """`--range A..B` must read B's text, not HEAD's.
+
+    The walker computes the docstring state from the NEW side, so a wrong
+    revision is worse than none: it certifies a classification taken from
+    another commit. `--staged` describes the index (no commit); a range names
+    its own NEW side; `--base` describes HEAD.
+    """
+    repo, _diff = _repo_with_change(tmp_path, '"""A."""\n', '"""B."""\n')
+
+    def lane(**overrides):
+        options = {"git_root": str(repo), "base": None, "range": None}
+        options.update(overrides)
+
+        return argparse.Namespace(**options)
+
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+    parent = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD~1"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+    assert comment_gate._git_revision(lane(range = "HEAD~1..HEAD"), staged = False) == head
+    assert comment_gate._git_revision(lane(range = f"{parent}...{head}"), staged = False) == head
+    assert comment_gate._git_revision(lane(base = "origin/master"), staged = False) == head
+    assert comment_gate._git_revision(lane(), staged = True) is None
+    assert comment_gate._git_revision(lane(range = "HEAD..no-such-rev"), staged = False) is None
+
+def test_a_range_reads_its_own_new_side_which_head_cannot_stand_in_for(tmp_path):
+    """Reading HEAD's text for `--range A..B` produces a refusal the range does not have.
+
+    The range's NEW side closes its docstring; HEAD (a later commit) leaves one
+    open before the same region. Certified against HEAD, the gate reports "the
+    docstring ... is never closed" for a diff whose own text has no such thing —
+    a refusal about a commit the caller never asked about.
+
+    Measured: the range's own side gives scanned=0 and no docstring note;
+    HEAD's text gives a never-closed note. That is why the revision is taken
+    from the lane (`--range` -> B, `--base` -> HEAD, `--staged` -> none).
+    """
+    closed = '"""Header.\nprose line.\n"""\n\n\ndef f():\n    # Reverting this reds the suite\n    return 1\n'
+    opened = '"""Header.\n\n"""\n\nDOC = """opens and stays open\n\ndef f():\n    # Reverting this reds the suite\n    return 3\n'
+    repo = tmp_path / "repo"
+    module = repo / "tests" / "test_x.py"
+    module.parent.mkdir(parents = True)
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check = True, capture_output = True)
+
+    for key, value in (("core.hooksPath", "/dev/null"), ("user.email", "gate@example.invalid"), ("user.name", "gate")):
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check = True, capture_output = True)
+
+    for text, message in ((closed, "base"), (closed.replace("return 1", "return 2"), "range-new-side"), (opened, "head")):
+        module.write_text(text, encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check = True, capture_output = True)
+
+    def revspec(spec: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), "rev-parse", spec], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+
+    diff = subprocess.run(["git", "-C", str(repo), "diff", "-U0", "--no-color", "HEAD~2..HEAD~1"], check = True, capture_output = True, encoding = "utf-8").stdout
+    from_range = comment_gate.check_diff(diff, root = repo, rev = revspec("HEAD~1"))
+    from_head = comment_gate.check_diff(diff, root = repo, rev = revspec("HEAD"))
+    assert not any("never closed" in problem for problem in from_range.problems), from_range.problems
+    assert any("never closed" in problem for problem in from_head.problems), from_head.problems
+
 def _hunk_starts(diff: str) -> list[int]:
     """The NEW-side start line of every hunk in ``diff``."""
     starts: list[int] = []
@@ -776,6 +837,43 @@ class test_docstring_state_reads_the_whole_file:
         # hunk start — never a number counted in this file.
         message = "Reverting the return reds this test and nothing else would notice."
         assert [(claim.line, claim.text) for claim in report.claims] == [(starts[0], f"# {message}")], (starts, report.claims)
+
+    def test_a_triple_quote_inside_a_string_literal_opens_no_block(self, tmp_path):
+        """The fail-open in the other direction: a QUOTED delimiter is data.
+
+        A test file that asserts about docstring delimiters spells them inside
+        a string — ``re.search(r"(\'\'\'|\"\"\")[^\n]*", SHIM)``. Reading that
+        as an opener left a block open for the rest of the file, so every later
+        line was judged as prose and the gate refused the file with "the
+        docstring ... is never closed". Measured on this repository's own
+        ``tests/test_pyshim.py`` (line 53), which is a valid Python module whose
+        last line is code.
+
+        Both delimiters, both quoting styles, and the escaped form the real
+        file uses must all read as data; a genuine opener on the same line
+        shape must still open.
+        """
+        before = "x = 1\n\n\ndef t():\n" + '    assert not re.search(r"(\'\'\'|\\"\\"\\")[^\\n]*", S)\n' + "    # placeholder\n"
+        after = before.replace("# placeholder", "# Reverting this reds the suite")
+        repo, diff = _repo_with_change(tmp_path, before, after)
+        report = comment_gate.check_diff(diff, root = repo, rev = "HEAD")
+        # The file really does close every quote, so nothing may be refused for
+        # want of a closer — that refusal is the bug this pins.
+        assert not any("never closed" in problem for problem in report.problems), report.problems
+        # And the comment claim in the same file is still found and judged.
+        assert [claim.line for claim in report.claims] == [len(before.splitlines())], (report.claims, before)
+
+    def test_a_triple_quote_inside_a_string_literal_is_not_an_opener(self):
+        """The unit shape of the same rule, both delimiters and both quote kinds."""
+        triple_double = '"' * 3
+        triple_single = "'" * 3
+        # data, never an opener
+        assert comment_gate._doc_open_at('assert not re.search(r"(' + triple_single + '|", S)') == ""
+        assert comment_gate._doc_open_at("x = 'a " + triple_double + " b'") == ""
+        assert comment_gate._doc_open_at('x = "' + triple_single + '"') == ""
+        # a real opener of the same shape still opens
+        assert comment_gate._doc_open_at('    ' + triple_double + 'Return the name.' + triple_double) == triple_double
+        assert comment_gate._doc_open_at('PURE = ' + triple_double + 'pkg') == triple_double
 
     def test_an_unterminated_docstring_in_the_file_still_refuses(self, tmp_path):
         """The fail-closed half survives the whole-file read.

@@ -349,9 +349,29 @@ def scan_comment_block(lines: Sequence[str], path: str, line_numbers: Sequence[i
         if anchored(window):
             continue
 
-        claims.append(claim(path = path, line = line_numbers[index], text = text.strip(), terms = terms))
+        claims.append(claim(path = path, line = line_numbers[index], text = _claim_text(text), terms = terms))
 
     return claims, hits
+
+def _claim_text(line: str) -> str:
+    """A claim's text with the walker's own markers removed.
+
+    Both sentinels are internal: :data:`CONTEXT_MARK` marks a line that is
+    GEOMETRY only, and :data:`DOC_CONTINUATION` marks a prose line with no
+    opener of its own. A claim can be built from a line carrying either (a docstring continuation
+    nested in a context run carries BOTH, and in the order ``\\x01\\x00``), and
+    the markers then reach the reader through ``render()`` — a raw NUL in a
+    report is unreadable in a terminal and invisible in a log (measured: a
+    docstring continuation claim rendered as ``tests/x.py:2: \\x00Reverting``).
+    Stripping repeats until neither prefix is left, so the order they arrive in
+    does not matter.
+    """
+    text = line.strip()
+
+    for _ in range(2):
+        text = text.removeprefix(DOC_CONTINUATION).removeprefix(CONTEXT_MARK).strip()
+
+    return text
 
 def _comment_blocks(lines: Sequence[str], numbers: Sequence[int]) -> list[tuple[list[str], list[int]]]:
     """Group the comment lines of one file into contiguous blocks."""
@@ -414,13 +434,16 @@ def scan_diff(diff: str, contents: Mapping[str, Sequence[str]] | None = None) ->
     only the lines it changed, so a walker that advances the docstring state
     over hunk lines alone never sees the lines BETWEEN hunks — and a ``\"\"\"``
     that CLOSES a docstring then reads as one that OPENS it. Measured on
-    hikari's artifact-retire diff (``49e96e0d``): a closing ``\"\"\"`` in the
-    second hunk of ``packages/wasm/component_descriptor_test.py`` was read as an
-    opener, which marked 8 more lines of that file as docstring prose than the
-    file really has. ``contents`` is therefore the whole NEW-side file per
-    changed path, and the state machine walks it: unshown lines only advance the
-    state, shown ones are also classified. :func:`check_diff` fills ``contents``
-    from git.
+    hikari's artifact-retire branch (``a7c20c3b`` against ``master``): a closing
+    ``\"\"\"`` in the second hunk of ``packages/wasm/component_descriptor_test.py``
+    was read as an opener, which marked 8 more lines of that file as docstring
+    prose than the file really has. (The commit first believed to be the
+    corpus, ``49e96e0d``, touches one file and 18 lines — it is not it; the
+    28482-line diff's 90-file name set matches ``a7c20c3b`` exactly.)
+
+    ``contents`` is therefore the whole NEW-side file per changed path, and the
+    state machine walks it: unshown lines only advance the state, shown ones are
+    also classified. :func:`check_diff` fills ``contents`` from git.
 
     When ``contents`` is absent for a file — a ``--diff`` from somewhere with no
     checkout behind it, or a file git cannot produce — the walk has only the
@@ -768,6 +791,15 @@ def _doc_open_at(line: str) -> str:
     if (opener is None) or ("#" in text[:opener.start()]):
         return ""
 
+    # A triple quote INSIDE a string literal does not open a block — it is the
+    # literal's CONTENT. ``re.search(r"(\\'\\'\\'|\\"\\"\\")[^\\n]*", SHIM)`` holds both
+    # delimiters as data, and reading them as openers left a block open for the
+    # rest of the file, so every later line was judged as prose and the gate
+    # refused a file whose only sin is naming the delimiters (measured on this
+    # repository's own ``tests/test_pyshim.py``: one such line).
+    if _inside_string_literal(text, opener.start()):
+        return ""
+
     # A quote right after a character that could END a string literal is the
     # tail of that literal (`path = "...x"` then `"""` on the next line), not
     # the start of a block. Right after a letter it IS the start of one — that
@@ -781,6 +813,39 @@ def _doc_open_at(line: str) -> str:
             return ""
 
     return opener.group(1)
+
+def _inside_string_literal(text: str, at: int) -> bool:
+    """True when ``text[at]`` sits inside a single-quoted string literal.
+
+    A small scanner rather than a regex: the question is "how many string
+    literals opened before this offset and never closed", and that needs the
+    quote CHARACTER to be tracked (``'a " b'`` opens and closes on ``'``). Only
+    the shapes this walker has to get right are handled — a backslash escapes
+    the next character, and a quote of the OTHER kind is data.
+    """
+    quote = ""
+    index = 0
+
+    while index < at:
+        char = text[index]
+
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+
+            if char == quote:
+                quote = ""
+
+            index += 1
+            continue
+
+        if char in ("\"", "'"):
+            quote = char
+
+        index += 1
+
+    return bool(quote)
 
 def _doc_state(line: str, opened: str, quote: str) -> tuple[str, str]:
     """Advance the docstring block state by one line; ``(opened, quote)``.
@@ -932,16 +997,31 @@ def _new_side_contents(diff: str, *, root: str | Path | None, rev: str | None) -
 def _git_revision(args: argparse.Namespace, *, staged: bool) -> str | None:
     """The commit whose NEW side the CLI's diff describes (``None`` = unknown).
 
-    ``--staged`` describes the INDEX, not a commit, so there is no revision to
-    ask for; the caller then passes ``None`` and the walker refuses if a block
-    is left open rather than guessing.
+    Each lane names its own NEW side, and a wrong answer is worse than none: the
+    walker would compute the docstring state from ANOTHER commit's text and
+    certify a classification the patch does not have.
+
+    * ``--staged`` describes the INDEX, which is not a commit — there is nothing
+      to ask for, so ``None`` (the walker then refuses if a block is left open).
+    * ``--range A..B`` (also ``A...B``) describes ``B``.
+    * ``--base X`` describes ``HEAD``.
     """
 
     if staged:
         return None
 
+    spec = "HEAD"
+
+    if args.range:
+        # `A..B` and `A...B` both end with the NEW side; a bare `A` would mean
+        # `A..HEAD` to git, but the CLI spells the range explicitly.
+        spec = args.range.split("...", 1)[1] if "..." in args.range else args.range.split("..", 1)[1] if ".." in args.range else "HEAD"
+
+        if not spec:
+            return None
+
     try:
-        probe = subprocess.run(["git", "-C", str(args.git_root or "."), "rev-parse", "HEAD"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
+        probe = subprocess.run(["git", "-C", str(args.git_root or "."), "rev-parse", "--verify", f"{spec}^{{commit}}"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
     except OSError:
         return None
 
