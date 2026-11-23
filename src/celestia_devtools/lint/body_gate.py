@@ -498,6 +498,16 @@ _CODE_TOKEN = re.compile(r"`[^`\n]+`|\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\.[A-Za-z0-
 #: A measured outcome: a counter word or a run word next to a figure or a flag.
 _OUTCOME = re.compile(r"\b\d[\d,]*\s*(?:passed|failed|red|green|crash|error|warning|hits?)\b|\b(?:exit|rc)\b\s*[=:]?\s*-?\d", re.IGNORECASE)
 
+#: What makes a span a code NAME rather than a word or a path: a call, an
+#: underscore, a flag, a camelCase identifier, a dotted member (`a.b.c`).
+_SPAN_CODE = re.compile(r"[\w.]+\(|_|--?[a-z][\w-]*|[a-z][A-Z]|^[a-z]+(?:\.[a-z][\w]*)+$")
+#: A tool named WITH its version (``` `vite 8.2` ```): the tool is the subject.
+_TOOL_VERSION = re.compile(r"[A-Za-z][\w-]*\s+\d+(?:\.\d+)*")
+
+#: Figures written as arrows or ranges (`2 → 0 → 2`, `16→17`) are a COUNT
+#: SEQUENCE — a change in a counter — not a measured quantity.
+_SEQUENCE = re.compile(r"\d+(?:\s*(?:→|->|=>)\s*\d+)+")
+
 def names_a_thing(line: str) -> bool:
     """True when ``line`` NAMES a code thing instead of claiming an outcome.
 
@@ -529,8 +539,15 @@ def names_a_thing(line: str) -> bool:
     # (`docs/en/x.md`): it is a reference to a place, not the thing described.
     for match in _SPAN.finditer(line):
         span = match.group(0).strip("`")
+        before = line[: match.start()]
+        after = _RESULT_MARKER.sub(" ", line[match.end():])
+        subject = (re.search(r"[A-Za-z\u4e00-\u9fff]", before) is None) and (re.search(r"[A-Za-z\u4e00-\u9fff]", after) is None)
 
-        if re.search(r"[A-Za-z_]", span):
+        # A span NAMES code when it is an identifier, a call or a flag — not a
+        # bare path (a citation) and not a plain English phrase (emphasis).
+        names_code = bool(_SPAN_CODE.search(span)) or bool(_TOOL_VERSION.fullmatch(span))
+
+        if subject or names_code:
             return True
 
     return False
@@ -564,7 +581,7 @@ def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     if terms:
         kinds.append("behaviour")
 
-    if (not kinds) and unquoted_digits(line):
+    if (not kinds) and unquoted_digits(_SEQUENCE.sub(" ", line)):
         kinds.append("unquoted digit")
 
     return tuple(kinds), terms
@@ -603,7 +620,12 @@ def is_captured_verdict(line: str) -> bool:
     as one).
     """
 
-    return is_table_row(line) and (bool(_ROW_VERDICT.search(line)) or bool(re.search(r"\brc\s*=\s*-?\d+", line)))
+    if not is_table_row(line):
+        return False
+
+    # The verdict has to CLOSE the row (`| run | 3 green |`); a word found
+    # anywhere in a prose cell is not a captured outcome (round 6).
+    return row_is_verdict(line) or bool(re.search(r"\brc\s*=\s*-?\d+\s*$", line.strip().rstrip("|").strip()))
 
 def row_is_verdict(line: str) -> bool:
     """True when a table row CLOSES with a verdict cell (``| 3 red |``).
@@ -657,9 +679,18 @@ def is_captured_cell(line: str) -> bool:
     cells = [cell.strip().strip("*`_ ") for cell in line.strip().strip("|").split("|")]
 
     numeric = bool(cells) and all(re.fullmatch(r"-?\d[\d,.]*", cell) for cell in cells)
+
+    # A row of label | reading | reading… is a metrics row: after the first
+    # label cell, every cell is empty, a number (with an optional unit) or a
+    # `#ref`. A prose cell (`9 of 10 builds break`, `waiver PR`) is not a
+    # reading, so that row stays prose and its table cannot become a blanket
+    # exemption.
+    measured = bool(cells) and (len(cells) > 1) and all((not cell) or bool(_METRIC_CELL.fullmatch(cell)) for cell in cells[1:])
+
+    # A cell that is only a reading with its unit (`9041 bytes`, `220×220`).
     reading = any(re.fullmatch(r"-?\d[\d,.]*\s*(?:bytes|px|KB|MB|GB|fps|ms)", cell, re.IGNORECASE) or re.search(r"\d+\s*[×x]\s*\d+", cell) for cell in cells)
 
-    return numeric or reading
+    return numeric or measured or reading
 
 def is_table_verdict(line: str) -> bool:
     """True when ``line`` is a table row that closes with a verdict cell."""
@@ -668,6 +699,9 @@ def is_table_verdict(line: str) -> bool:
 #: Prose that marks a command's OWN result (`→ rc=0`, `: 0`, `-> pass`): the
 #: leftover after stripping a command span may be this and nothing else.
 _RESULT_MARKER = re.compile(r"\brc\s*=\s*-?\d+|\bexit\s*\d+|→|->|=>|\d+|[:;,.=|`\s]")
+
+#: A metrics-table cell: a bare number (with an optional unit) or a `#ref`.
+_METRIC_CELL = re.compile(r"-?\d+(?:\.\d+)?\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
 
 #: A backtick span. Extraction runs FIRST and satisfaction is tested per span:
 #: asking a regex to certify "this span holds a word" with lookaheads inside the
@@ -703,6 +737,16 @@ _ENGLISH_EMPHASIS = re.compile(r"(?i)" + _EMPHASIS_WORDS + r"\s+(?:green|red|hon
 _TWO_WORD_COMMAND = re.compile(r"^[a-z][a-z0-9_-]*\s+[a-z][\w-]*$")
 #: Code markers that make a single token a name rather than a word.
 _CODE_MARKER = re.compile(r"--|_|\(|::|/|=")
+
+#: A bare path reference (``` `docs/en/x.md` ```): a CITATION, not the line's
+#: subject and not its evidence (round 6).
+_CITATION = re.compile(r"^[\w.-]+(?:/[\w.-]+)+$|^[\w-]+\.[A-Za-z0-9]{1,6}$|^[A-Za-z][\w-]*\s+\d+(?:\.\d+)*$")
+
+def is_citation(span: str) -> bool:
+    """True when the span is a bare path / filename rather than a code name."""
+    text = span.strip()
+
+    return bool(_CITATION.fullmatch(text)) and (not _SPAN_CODE.search(text))
 
 def span_is_source(span: str) -> bool:
     """True when a span names something a reader can look up or re-run.
@@ -822,7 +866,7 @@ def has_anchor(line: str) -> bool:
     for word in DISCLAIMERS:
         text = re.sub(re.escape(word), " " * len(word), text, flags = re.IGNORECASE)
 
-    spans = code_spans(text)
+    spans = tuple(span for span in code_spans(text) if not is_citation(span))
     rest = _SPAN.sub(" ", text)
 
     # A line's own code tokens name its SUBJECT — "`pr_gate.py` now runs 6
@@ -834,7 +878,12 @@ def has_anchor(line: str) -> bool:
     if (re.search(r"[A-Za-z\u4e00-\u9fff]", leftover) is None) and any(span_is_source(span) for span in spans):
         return True
 
-    return _marker_hit(text)
+    # A bare path in backticks is a CITATION (round 6): it is blanked so the
+    # path marker cannot fire on it, while `file:line` and the other markers
+    # keep working from the same text.
+    cited = _SPAN.sub(lambda match: " " if is_citation(match.group(0).strip("`")) else match.group(0), text)
+
+    return _marker_hit(cited)
 
 def pastes_quoted_output(line: str) -> bool:
     """True when ``line`` carries a quoted quantity (``` `16 passed (16)` ```).
@@ -905,15 +954,20 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
     if row.tabular:
         same_table = [part for part in lines if part.section == row.section]
 
-        # A row whose LAST cell is a verdict (`| drop the guard | 3 red |`) or a
-        # row holding a run outcome anywhere in a wide telemetry shape makes
-        # the whole table captured output.
+        # A table is captured output only when it is CAPTURED: a row whose
+        # last cell is a verdict (`| drop the guard | 3 red |`) or a wide
+        # telemetry row. One verdict row does not license the prose rows beside
+        # it (round 6: `| suite | 3 green |` excused `| login | 9041 bytes |`).
         if any(row_is_verdict(part.text) or is_outcome_row(part.text) for part in same_table):
-            return True
+            return any(is_captured_cell(part.text) for part in same_table if part.number == row.number) or bool(row_is_verdict(row.text) or is_outcome_row(row.text))
 
     # A fenced line one row away (the opener just above, the closer just below,
-    # or the capture itself) is the evidence the sentence is talking about.
-    if any(abs(part.number - row.number) <= 1 for part in evidence):
+    # or the capture itself) is the evidence a figure is talking about — but a
+    # BEHAVIOUR claim is not established by an unrelated command's output
+    # (`node -v` does not prove "the retry never fires twice", round 6).
+    nearby_fence = any(abs(part.number - row.number) <= 1 for part in evidence)
+
+    if nearby_fence and (not behaviour_terms(row.text)):
         return True
 
     for part in candidates:

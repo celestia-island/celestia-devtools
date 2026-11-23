@@ -188,21 +188,43 @@ class test_round5_width:
 
     def test_a_bare_citation_is_not_the_subject(self):
         # MUT:naming-width — a span anywhere used to excuse every behaviour
-        # word on the line. A line whose only code is a bare citation can still
-        # name nothing, so what silences behaviour is a span that holds an
-        # identifier / call / flag, not a path reference.
-        assert body_gate.check_body("The harness verified it, see `docs/en/x.md`.\n").ok
-        # A path that is only a citation is the line's subject by the narrow
-        # rule (a span holding a word), and the line then makes no behaviour
-        # claim. It still counts as an anchor for a FIGURE on the same line.
-        assert body_gate.claim_kinds("The harness verified it, see `docs/en/x.md`.") == ((), ())
-        assert body_gate.has_anchor("The harness verified it, see `docs/en/x.md`.") is True
+        # word on the line. A bare path citation names nothing, so the
+        # behaviour word stays a claim (round 6).
+        assert body_gate.claim_kinds("The harness verified it, see `docs/en/x.md`.") == (("behaviour",), ("verified",))
+        assert not body_gate.check_body("The harness verified it, see `docs/en/x.md`.\n").ok
+        # An identifier span DOES name the subject, so the same sentence with a
+        # call in backticks is naming a thing.
+        assert body_gate.claim_kinds("The harness verified it with `expect(x).toBe(y)`.") == ((), ())
 
     def test_an_identifier_span_names_the_subject(self):
         # `hostSurface.test.ts` observes …, `expect(…)` is the regression guard:
         # a reader can open the identifier, so the sentence is naming it.
         assert body_gate.check_body("`hostSurface.test.ts` observes the real surface, verified against the source.\n").ok
         assert body_gate.check_body("`expect(seam.x).toBe(Y)` is the regression guard, verified.\n").ok
+
+class test_round6_holes:
+    """Round 6: a citation is not a subject, a verdict is not a licence."""
+
+    def test_a_citation_does_not_excuse_a_behaviour_claim(self):
+        # MUT:citation-is-not-a-subject — any span with a letter used to silence
+        # every behaviour word on the line. A bare path names nothing.
+        assert not body_gate.check_body("The new pin catches the reload, see `docs/en/x.md`.\n").ok
+        assert not body_gate.check_body("Nothing here was verified, see `CONTRIBUTING.md`.\n").ok
+
+    def test_one_verdict_row_does_not_license_a_prose_table(self):
+        # MUT:verdict-licenses-table — a verdict row made every prose row in its
+        # table captured output.
+        body = "| control | finding |\n|---|---|\n| login screen | renders with 9041 bytes |\n| suite | 3 green |\n"
+        assert not body_gate.check_body(body).ok
+
+    def test_a_fence_does_not_excuse_a_behaviour_claim(self):
+        # MUT:fence-excuses-behaviour — `node -v` output is not a probe result
+        # for "the retry never fires twice".
+        assert not body_gate.check_body("The retry never fires twice.\n```\nnode -v\n```\n").ok
+
+    def test_an_arrow_sequence_is_a_counter_not_a_quantity(self):
+        assert body_gate.unquoted_digits(body_gate._SEQUENCE.sub(" ", "2 → 0 → 2")) == ()
+        assert body_gate.unquoted_digits("2 → 0 → 2")  # the sequence itself is skipped, `2` survives
 
 class test_round4_holes:
     """Round 4: the last four ways a statement could certify itself."""
@@ -328,14 +350,16 @@ class test_captured_tables:
         body = "| canvases | timers |\n|---|---|\n| 0 | 0 |\n| 1 | 0 |\n"
         assert body_gate.check_body(body).ok
 
-    def test_a_labelled_numeric_row_needs_a_verdict_row(self):
-        # `| before | 0 | 0 | 0 | 3 |` is a prose row with a label. Its table is
-        # trusted only when it carries a verdict row (a mutation/verification
-        # table); alone, the figures have no stated source.
-        # MUT:labelled-numeric-row — dropping the verdict-row requirement makes
-        # this case green while its neighbour (`test_captured_numeric_columns_
-        # are_output`) stays green too, which is why the control is separate.
-        body = "| round | canvases | timers |\n|---|---|---|\n| before | 0 | 0 |\n"
+    def test_a_labelled_numeric_row_is_a_reading(self):
+        # `| before | 0 | 0 | 0 | 3 |` is a metrics row: a label then readings.
+        # A prose cell in the same position (`waiver PR`) makes it a prose row,
+        # and then the table has to carry a verdict row instead (round 6).
+        # MUT:metrics-row — treating `label | prose | …` as readings silences
+        # the whole row.
+        assert body_gate.check_body("| round | canvases | timers |\n|---|---|---|\n| before | 0 | 0 |\n").ok
+        # MUT:labelled-numeric-row — the same shape with one prose cell is a
+        # prose row, and it must carry a source.
+        body = "| control | finding |\n|---|---|\n| login screen | renders with 9041 bytes |\n"
         assert not body_gate.check_body(body).ok
 
     def test_a_prose_table_still_needs_sources(self):
@@ -452,7 +476,7 @@ class test_corpus_scan:
         are pinned here so a silent swing either way is a red.
         """
         result = body_gate.check_body(_fixture("corpus-1474.md"))
-        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 8, 0)
+        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 13, 0)
         assert 53 in {stmt.line for stmt in result.statements}
 
     def test_corpus_2813_refusals_include_the_arithmetic_paragraph(self):
@@ -460,7 +484,7 @@ class test_corpus_scan:
         lines = _lines(result)
         # 202 prose lines, 35 statements, 20 refusals on this head; the
         # narrative tally paragraph is among them.
-        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 45, 38)
+        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 46, 39)
         # 189 is the tallied "2 red / 4 green" line; 73 the bare "Reproduced 3/3".
         assert (73 in lines) and (189 in lines) and (12 in lines)
 
