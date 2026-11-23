@@ -12,13 +12,21 @@ branch must turn them red.
 import inspect
 import json
 import re
+import pytest
 from celestia_devtools.vcs.pr_gate import _gate, body_problems, check_pr, title_problems
 from celestia_devtools.vcs import pr_gate as pr_gate_module
 from celestia_devtools.vcs.pr_gate import comment_waiver as pr_gate_comment_waiver
 
 GOOD_TITLE = "✨ Make the workspace alias a required localized name with a preferred report language."
 GOOD_RECORD = "verify: rounds=4 clean=3 S0=0 S1=0 S2=0 S3=6 gates=5 hardcap=no budget=ok post-cap=0 c3=3"
-GOOD_BODY = f"…\n\n{GOOD_RECORD}\n"
+#: A body that is clean for EVERY gate in the chain: real prose (so the body
+#: gate has something to scan and finds nothing unsourced) plus a clean record.
+#: The previous fixture was a bare "…", which the body gate rightly refuses —
+#: MUT:body-fixture — so a caller that wants the body gate satisfied uses this.
+#: Prose only. A body that also carries the verify record is `GOOD_BODY +
+#: GOOD_RECORD`, so a caller that supplies a DIFFERENT record cannot end up
+#: with two (the record check refuses that) — the reason this is split.
+GOOD_BODY = "Add the thing and update the docs.\n"
 STRUCTURAL_BODY = "verify: doc_lint=0 rounds=1 clean=1 gates=1 s0=0 s1=0 s2=0 s3=0 hardcap=no"
 
 class test_title:
@@ -198,7 +206,7 @@ class test_body:
 
 class test_check_pr:
     def _pr(self, **overrides):
-        payload = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+        payload = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
         payload.update(overrides)
         return payload
 
@@ -297,7 +305,7 @@ class _FakeRunner:
 
 class test_merge_path:
     def _pr(self):
-        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
 
     def test_check_passes_on_a_clean_pr(self, capsys):
         runner = _FakeRunner([(200, self._pr())])
@@ -354,7 +362,7 @@ class test_merge_path:
 
 class test_round2_regressions:
     def test_missing_base_is_refused(self):
-        problems = check_pr({"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "a" * 40}}, expect_head = "a" * 40)
+        problems = check_pr({"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}}, expect_head = "a" * 40)
         assert any("no base branch" in p for p in problems)
 
     def test_decorated_record_matches_the_authority(self):
@@ -372,7 +380,7 @@ class test_round2_regressions:
         assert any("max(4, c3+1)" in p for p in body_problems(looser))
 
     def _pr(self):
-        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
 
     def test_empty_commit_message_is_unreadable_not_a_crash(self, capsys):
         runner = _FakeRunner([(200, self._pr()), (200, {"merged": True, "sha": "c" * 40}), (200, {"sha": "c" * 40, "commit": {}})])
@@ -436,7 +444,7 @@ class test_merge_write_shape:
     """The gate's ONLY write action must be pinned (round-2 S2)."""
 
     def _pr(self):
-        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
 
     def test_squash_request_shape(self):
         runner = _RecordingRunner([(200, self._pr()), (200, {"merged": True, "sha": "c" * 40}), (200, {"commit": {"message": f"{GOOD_TITLE} (#7)"}})])
@@ -450,14 +458,14 @@ class test_merge_write_shape:
         assert payload == {"merge_method": "squash", "sha": "a" * 40}, payload
 
     def test_draft_pr_refused(self):
-        problems = check_pr({"state": "open", "mergeable": True, "draft": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}, expect_head = "a" * 40)
+        problems = check_pr({"state": "open", "mergeable": True, "draft": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}, expect_head = "a" * 40)
         assert any("draft" in p for p in problems)
 
 class test_round4_regressions:
     """Closure-round-A findings."""
 
     def _pr(self):
-        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "b" * 40}, "base": {"ref": "master"}}
+        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "b" * 40}, "base": {"ref": "master"}}
 
     def test_empty_expect_head_is_refused_not_ignored(self):
         # The exact failure the gate exists to prevent: an empty pin must not
@@ -554,7 +562,7 @@ class test_post_check_push:
     """A push landing between the GET and the PUT must not merge."""
 
     def _pr(self):
-        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+        return {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
 
     def test_moved_head_is_a_409_not_a_silent_merge(self, capsys):
         runner = _RecordingRunner([(200, self._pr()), (409, {"message": "Head branch was modified. Review and try the merge again."})])
@@ -872,7 +880,7 @@ class test_waivable_split:
         assert (waivable == []) and (len(blocking) == 1)
 
 class test_waiver_merge_path:
-    def _pr(self, *, title = GOOD_TITLE, head = "a" * 40, body = C3_ZERO_RECORD):
+    def _pr(self, *, title = GOOD_TITLE, head = "a" * 40, body = GOOD_BODY + "\n" + C3_ZERO_RECORD):
         return {"state": "open", "mergeable": True, "title": title, "body": body, "head": {"sha": head}, "base": {"ref": "master"}}
 
     def _waiver(self, tmp_path, *, head = None, name = "pr-merge-waiver-r-1.md", **kwargs):
@@ -933,7 +941,7 @@ class test_waiver_merge_path:
         assert (rc == 1) and (len(runner.calls) == 1)
 
     def test_a_clean_record_still_passes_without_a_waiver(self):
-        runner = _FakeRunner([(200, self._pr(body = GOOD_RECORD))])
+        runner = _FakeRunner([(200, self._pr(body = GOOD_BODY + GOOD_RECORD))])
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner) == 0
 
     def test_cli_accepts_the_waiver_flag(self, tmp_path, monkeypatch, capsys):
@@ -1027,8 +1035,8 @@ class diff_runner(_FakeRunner):
 def _diff_for(patch: str, filename: str = "packages/vue/src/useHighlight.test.ts") -> str:
     return f"diff --git a/{filename} b/{filename}\n--- a/{filename}\n+++ b/{filename}\n{patch}"
 
-def _comment_pr(patch: str, filename: str = "packages/vue/src/useHighlight.test.ts", body: str = GOOD_RECORD, **overrides):
-    pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+def _comment_pr(patch: str, filename: str = "packages/vue/src/useHighlight.test.ts", body: str | None = None, **overrides):
+    pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body if body is not None else GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
     pr.update(overrides)
     return pr, _diff_for(patch, filename)
 
@@ -1160,7 +1168,7 @@ class test_comment_gate_waiver:
         assert "split_waivable(gated)" not in payload
 
     def test_body_entry_excuses_and_is_announced(self, capsys):
-        body = GOOD_RECORD + "\ncomment-gate-waiver: the probe ids live in the linked issue, not the file\n"
+        body = GOOD_BODY + GOOD_RECORD + "\ncomment-gate-waiver: the probe ids live in the linked issue, not the file\n"
         pr, diff = _comment_pr(COMMENT_CLAIM_PATCH, body = body)
         runner = diff_runner(pr, diff)
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner) == 0
@@ -1169,7 +1177,7 @@ class test_comment_gate_waiver:
         assert "suppressed 2 comment-gate refusal(s)" in out
 
     def test_body_entry_does_not_excuse_a_bad_title(self, capsys):
-        body = GOOD_RECORD + "\ncomment-gate-waiver: the probe ids live in the linked issue, not the file\n"
+        body = GOOD_BODY + GOOD_RECORD + "\ncomment-gate-waiver: the probe ids live in the linked issue, not the file\n"
         pr, diff = _comment_pr(COMMENT_CLAIM_PATCH, body = body, title = "probe-x (#2758)")
         runner = diff_runner(pr, diff)
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner) == 1
@@ -1311,14 +1319,95 @@ def _artifact_workspace(tmp_path, monkeypatch, *, artifact_version = "0.1.0", wi
     assert artifact_drift is not None
     return tmp_path
 
-def _artifact_pr(files, body = GOOD_RECORD, **overrides):
+def _artifact_pr(files, body: str | None = None, **overrides):
     """A PR payload whose file list is ``files`` (the diff is irrelevant here)."""
-    pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+    pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body if body is not None else GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
     pr.update(overrides)
     # A neutral claim-free patch: these tests are about the ARTIFACT gate, so the
     # comment gate must have nothing to say (a claim here would refuse first).
     neutral = _diff_for("@@ -1,0 +1,3 @@\n+// MUT: neutral-fixture\n+// measured: the fixture claim the MUT line above anchors\n+expect(1).toBe(1);\n", filename = "packages/vue/src/useHighlight.test.ts")
     return pr, neutral, files
+
+# The PR-body prose gate rides the SAME family: refusals in `gated` (never in
+# the waiver split), its own body token, and a loud skip when the body states
+# nothing. These pin the plumbing; the scan itself is tested in
+# `tests/test_body_gate.py`.
+BODY_UNSOURCED = "The suite went from 12 failed to 0 over the cut.\n"
+BODY_ANCHORED = "The suite went from `12 failed` to `0` over the cut (`vite build` → rc=0).\n"
+
+class test_body_gate_plumbing:
+    def _gate(self, body, *, runner = None, **kwargs):
+        pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
+        # An ANCHORED test-comment claim, so the comment gate is satisfied and
+        # the body gate is the only thing under test here.
+        diff = _diff_for(COMMENT_ANCHORED_PATCH)
+        return _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = runner or diff_runner(pr, diff), **kwargs)
+
+    def test_an_unsourced_quantity_refuses_the_merge(self, capsys):
+        rc = self._gate(GOOD_BODY + GOOD_RECORD + "\n" + BODY_UNSOURCED)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert f"{pr_gate_module.BODY_GATE_CATEGORY}: body:" in err
+        assert "MERGE REFUSED" in err
+
+    def test_an_anchored_body_passes(self, capsys):
+        assert self._gate(GOOD_BODY + GOOD_RECORD + "\n" + BODY_ANCHORED) == 0
+        assert "gate passed" in capsys.readouterr().out
+
+    def test_a_body_with_no_statement_is_a_loud_skip(self, capsys):
+        assert self._gate("Add the thing.\n" + GOOD_RECORD) == 0
+        assert f"{pr_gate_module.BODY_GATE_CATEGORY}: no quantity or behaviour statement" in capsys.readouterr().out
+
+    def test_an_empty_body_refuses_even_with_a_clean_record(self, capsys):
+        # A record with no prose around it is not a body: the record check
+        # accepts it and the body gate refuses it.
+        assert self._gate(GOOD_RECORD) == 1
+        assert "zero prose lines in the body" in capsys.readouterr().err
+
+    def test_the_signed_waiver_does_not_excuse_a_body_claim(self, tmp_path, capsys):
+        alerts = tmp_path / "_alerts"
+        alerts.mkdir()
+        waiver = alerts / "pr-merge-waiver-r-1.md"
+        waiver.write_text("pr: 1\nhead: " + ("a" * 40) + "\n" + "basis: " + ("x" * 60) + "\n" + "c3-not-fabricated: yes\nsigned: lead 2026-11-23\n", encoding = "utf-8")
+        rc = self._gate(GOOD_BODY + GOOD_RECORD + "\n" + BODY_UNSOURCED, waiver = waiver)
+        assert rc == 1
+        out, err = capsys.readouterr()
+        assert "nothing (waiver unused)" in out
+        assert f"{pr_gate_module.BODY_GATE_CATEGORY}: body:" in err
+
+    def test_the_body_entry_excuses_and_is_announced(self, capsys):
+        body = GOOD_BODY + GOOD_RECORD + "\n" + BODY_UNSOURCED + "body-gate-waiver: the figures live in the linked run log, page two\n"
+        rc = self._gate(body)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert f"{pr_gate_module.BODY_GATE_CATEGORY}-waiver (PR body)" in out
+        assert "suppressed 1 body-gate refusal(s)" in out
+
+    def test_the_body_entry_needs_a_reason(self, capsys):
+        body = GOOD_BODY + GOOD_RECORD + "\n" + BODY_UNSOURCED + "body-gate-waiver: ok\n"
+        assert self._gate(body) == 1
+        assert "below the 20-character floor" in capsys.readouterr().err
+
+    def test_the_body_category_is_never_waivable(self):
+        assert pr_gate_module.split_waivable([f"{pr_gate_module.BODY_GATE_CATEGORY}: body:1 (quantity): x"])[1] == []
+
+    def test_a_refusal_carrying_the_category_stays_blocking_under_a_widened_regex(self, monkeypatch):
+        # Same attack as the comment gate's: widen the regex, and the classifier
+        # still refuses — the exclusion lives in the callee.
+        monkeypatch.setattr(pr_gate_module, "_WAIVABLE_C3_RE", re.compile(r"^(?:verify record c3=(?P<c3>\d+) < 3|body-gate: )"))
+        blocking, waivable = pr_gate_module.split_waivable(["body-gate: body:1 (quantity): x", "verify record c3=0 < 3"])
+        assert blocking == ["body-gate: body:1 (quantity): x"]
+        assert waivable == ["verify record c3=0 < 3"]
+
+    def test_break_glass_flag_skips_the_gate_loudly(self, capsys):
+        assert self._gate(GOOD_BODY + GOOD_RECORD + "\n" + BODY_UNSOURCED, body_gate = False) == 0
+        assert f"{pr_gate_module.BODY_GATE_CATEGORY}: SKIPPED by --no-body-gate" in capsys.readouterr().out
+
+    def test_the_cli_declares_the_flag(self):
+        with pytest.raises(SystemExit) as info:
+            pr_gate_module.main(["check", "--help"])
+
+        assert info.value.code == 0
 
 class test_artifact_gate_plumbing:
     def test_a_pr_touching_neither_root_is_a_loud_skip(self, tmp_path, monkeypatch, capsys):
@@ -1372,7 +1461,7 @@ class test_artifact_gate_waiver:
 
     def test_body_entry_excuses_and_is_announced(self, tmp_path, monkeypatch, capsys):
         _artifact_workspace(tmp_path, monkeypatch, wit_version = "0.2.0")
-        body = GOOD_RECORD + "\nartifact-gate-waiver: the bindings ship from a separate release train\n"
+        body = GOOD_BODY + GOOD_RECORD + "\nartifact-gate-waiver: the bindings ship from a separate release train\n"
         pr, diff, files = _artifact_pr([ARTIFACT_WIT_PATH], body = body)
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff, files = files)) == 0
         out = capsys.readouterr().out
@@ -1382,7 +1471,7 @@ class test_artifact_gate_waiver:
     def test_the_two_gate_waivers_are_independent(self, tmp_path, monkeypatch, capsys):
         """Waiving the artifact gate must not waive the comment gate."""
         _artifact_workspace(tmp_path, monkeypatch)
-        body = GOOD_RECORD + "\nartifact-gate-waiver: the bindings ship from a separate release train\n"
+        body = GOOD_BODY + GOOD_RECORD + "\nartifact-gate-waiver: the bindings ship from a separate release train\n"
         pr, diff = _comment_pr(COMMENT_CLAIM_PATCH, body = body)
         assert _gate("o/r", 1, "a" * 40, allow_cjk = False, do_merge = False, runner = diff_runner(pr, diff)) == 1
         assert "comment-gate: packages/vue/src/useHighlight.test.ts:1" in capsys.readouterr().err
