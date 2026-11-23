@@ -13,10 +13,10 @@ Every case here is a mechanical control against a real corpus, checked in under
   ``#2813`` mutation tally (``1 failed / 5 passed``) is refused in its own
   paragraph; the ``#2813`` prose figures (``10`` / ``12`` / ``11``) are refused
   where no run output appears; ``#2821``'s round arithmetic has exactly one
-  source (the run in ``§G5 ④``) and is refused outside it. Each one measured
-  against the live body, not invented for the test (see
-  ``test_corpus_scan_*``: the counts are pinned so a silent change in either
-  direction shows up as a red);
+  source (the run in ``§G5 ④``) and is refused outside it. Each fixture is the
+  live body verbatim, copied from the published text rather than written for
+  the test (see ``test_corpus_scan_*``: the counts are pinned so a silent
+  change in either direction shows up as a red);
 * **known positives** — three merged devtools bodies whose prose states
   nothing quantitative (the loud-skip lane) and the ``#1474`` body, which is
   the largest real body that this gate passed, pinned as a whole-file case;
@@ -57,8 +57,8 @@ class test_positive_controls:
         Round 1 refused this body's one paragraph — it names ``just``,
         ``allow-duplicate-variables`` and ``.just/`` and describes the failure
         without a command. Round 2 made the distinction explicit: a sentence
-        carrying a code token and no measured outcome is NAMING a thing, not
-        asserting a run, so it is not a claim (see :func:`names_a_thing`).
+        that carries a code name and states no outcome describes the code
+        (see :func:`names_a_thing`). MUT:naming-vs-outcome pins it.
         """
         assert body_gate.check_body(_fixture("pr-304.md")).ok
         assert not body_gate.check_body("The suite went from 12 failed to 0 over the cut.\n").ok
@@ -112,7 +112,7 @@ class test_negative_controls:
         """Verbatim from shittim-chest #2813's body — the false "1 failed / 5 passed".
 
         The paragraph restates a mutation verdict while every actual run output
-        is in a different section; the narrative around it does not carry the
+        sits in a different section; the narrative around it carries no
         command. The gate refuses it on its own line.
         """
         body = _fixture("negative-2813-mutation-tally.md")
