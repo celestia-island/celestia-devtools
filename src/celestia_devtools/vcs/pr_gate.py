@@ -58,6 +58,21 @@ Checks (any failure → rc 1, merge refused):
     lane applies (``clean >= 1``, ``gates >= 1``, ``S0 == S1 == 0``; no rounds
     floor).
 
+5.  The PR body passes :mod:`celestia_devtools.lint.body_gate` — every quantity
+    and behaviour claim in its prose names a recomputable source (``MUT:<id>``,
+    a ``file:line``, an inline-code span shaped like a command / flag / call /
+    identifier / path, ``#PR``, an ``evidence:`` line, a URL, a checksum, a
+    reading row of a readings table) or an explicit disclaimer
+    (``未复算`` / ``unverified`` / ``not established`` / ``inference``). A body
+    whose prose states nothing is a LOUD SKIP on stdout; an EMPTY body is a
+    refusal (a probe or a truncated payload, not a description). Neither the
+    signed ``--waiver`` file nor ``--no-body-gate`` is needed to pass an honest
+    body; the only exception is the PR-body ``body-gate-waiver: <reason>``
+    entry, read by the same parser as ``comment-gate-waiver:`` under its own
+    token. Three gates, one family, and their refusals all stay out of the
+    waiver split: the comment gate (test-file comments), this body gate (PR
+    prose), and the artifact gate (WIT vs bindings).
+
 Merge (``merge`` subcommand): checks run and, only if they pass, the squash is
 issued **without an explicit subject** so the server derives ``<title> (#N)``
 from the validated title.  The merge commit's subject is then read back:
@@ -308,6 +323,11 @@ COMMENT_WAIVER_REASON_MIN = 20
 #: The category the comment-gate refusal carries internally, so the printed
 #: suppression list names WHAT was waived and a reader can grep it.
 COMMENT_GATE_CATEGORY = "comment-gate"
+#: The PR-BODY prose gate (``celestia_devtools.lint.body_gate``) rides the same
+#: family: its category is held out of the waiver split exactly like the
+#: comment gate's, its exception token is its own, and its refusals are
+#: announced rather than folded into the record check.
+BODY_GATE_CATEGORY = "body-gate"
 #: An indented markdown code block. The verify record refuses the same shape for
 #: the same reason: it is a template someone copied, not a decision. The rule is
 #: the RECORD's own: any tab in the lead, or a lead of four or more characters
@@ -466,18 +486,25 @@ def read_waiver(path: str | Path, *, repo: str, pr: int, head: str, prefix: str 
 def split_waivable(problems: list[str]) -> tuple[list[str], list[str]]:
     """Split ``(blocking, waivable)``; the only waivable refusal is ``c3<3``.
 
-    A refusal carrying the comment-gate category is NEVER waivable, whatever
-    ``_WAIVABLE_C3_RE`` happens to say. That check lives HERE rather than at the
-    call site on purpose: review rounds 3 and 4 each broke the guarantee by
-    editing the CALLER (widen the regex, move one statement, and the signed
-    ``--waiver`` file suppressed an unanchored claim). A property that survives
-    a refactor of its caller has to be implemented in the callee.
+    A refusal carrying the comment-gate OR the body-gate category is NEVER
+    waivable, whatever ``_WAIVABLE_C3_RE`` happens to say. That check lives HERE
+    rather than at the call site on purpose: review rounds 3 and 4 each broke
+    the guarantee by editing the CALLER (widen the regex, move one statement,
+    and the signed ``--waiver`` file suppressed an unanchored claim). A property
+    that survives a refactor of its caller has to be implemented in the callee.
+
+    The category clauses are deliberate belt-and-braces: with an unwidened
+    regex the generic ``else`` blocks such a refusal anyway, so removing ONLY
+    the clause an outside observer cannot see it — the visible consequence is
+    the widened regex (a gate refusal shaped like a waivable string), which is
+    what ``test_the_body_category_is_never_waivable`` and the round-3 report
+    exercise. The clause also carries the intent for the next reader.
     """
     blocking: list[str] = []
     waivable: list[str] = []
 
     for problem in problems:
-        if problem.startswith(COMMENT_GATE_CATEGORY):
+        if problem.startswith(COMMENT_GATE_CATEGORY) or problem.startswith(BODY_GATE_CATEGORY):
             blocking.append(problem)
         elif _WAIVABLE_C3_RE.match(problem):
             waivable.append(problem)
@@ -539,6 +566,16 @@ def comment_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     one-entry discipline.
     """
     return _gate_waiver(body, "comment-gate-waiver")
+
+def body_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
+    """Read the PR-body body-gate exception; ``(grant, problems)``.
+
+    The SAME parser as ``comment-gate-waiver:`` (:func:`_gate_waiver`) under its
+    own token: one entry, prose only, the same 20-character reason floor, so the
+    two channels cannot drift into different rules. One token per gate keeps
+    waiving one from silently waiving the other.
+    """
+    return _gate_waiver(body, "body-gate-waiver")
 
 def _gate_waiver(body: str, token: str) -> tuple[comment_grant | None, list[str]]:
     """Read one gate's PR-body exception; ``(grant, problems)``.
@@ -610,7 +647,7 @@ def body_problems(body: str) -> list[str]:
     # The comment-gate exception is validated here so a malformed one is
     # refused at merge time — before anything runs the comment gate — instead of
     # being discovered as "the gate still says no" with no explanation.
-    for grant_fn in (comment_waiver, artifact_waiver):
+    for grant_fn in (comment_waiver, artifact_waiver, body_waiver):
         _grant, waiver_problems = grant_fn(body)
         problems.extend(waiver_problems)
 
@@ -931,6 +968,31 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
         f"{COMMENT_GATE_CATEGORY}: {problem}" for problem in report.problems
     ]
 
+def body_gate_problems(body: str, *, runner = None) -> list[str]:
+    """Quantities and behaviour claims in this PR's body that name no source.
+
+    The scan lives in :mod:`celestia_devtools.lint.body_gate`; this function
+    owns only the merge-chain contract — the category prefix that keeps the
+    refusals out of the waiver split, and the LOUD SKIP for a body that states
+    nothing (an ordinary description must not be turned into a red, and a
+    silent pass would make the green line mean nothing).
+
+    The body is the one the merge payload carries: no second fetch, so the
+    text judged here is the text that will be merged.
+    """
+    # py-style-ok: no-block-imports: lazy, the same contract as the comment gate.
+    from celestia_devtools.lint import body_gate
+
+    if not (body or "").strip():
+        return [f"{BODY_GATE_CATEGORY}: the PR body is empty — an empty body is either a probe or a truncated payload; write the body"]
+
+    result = body_gate.check_body(body)
+
+    if result.skipped:
+        print(f"⏭️  {BODY_GATE_CATEGORY}: {result.skipped}")
+
+    return [f"{BODY_GATE_CATEGORY}: {stmt.render()}" for stmt in result.findings] + [f"{BODY_GATE_CATEGORY}: {problem}" for problem in result.problems]
+
 def _diff_paths(diff_text: str) -> list[str]:
     """The new-side paths a unified diff touches."""
     pattern = re.compile(r"^diff --git a/(?P<old>.+?) b/(?P<new>.+)$")
@@ -1047,7 +1109,7 @@ def artifact_waiver(body: str) -> tuple[comment_grant | None, list[str]]:
     """
     return _gate_waiver(body, "artifact-gate-waiver")
 
-def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_merge: bool, base: str = DEFAULT_BASE, runner = None, waiver: str | Path | None = None, comment_gate: bool = True, artifact_drift: bool = True) -> int:
+def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_merge: bool, base: str = DEFAULT_BASE, runner = None, waiver: str | Path | None = None, comment_gate: bool = True, artifact_drift: bool = True, body_gate: bool = True) -> int:
     status, data, stderr = gh_api(f"repos/{repo}/pulls/{pr}", runner = runner)
 
     if status != 200:
@@ -1071,7 +1133,7 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
             return 1
 
     problems = check_pr(data, expect_head, allow_cjk = allow_cjk, base = base)
-    body_grant, _body_gate_problems = comment_waiver(data.get("body") or "")
+    comment_body_grant, _comment_waiver_problems = comment_waiver(data.get("body") or "")
     artifact_grant, _artifact_waiver_problems = artifact_waiver(data.get("body") or "")
     # The comment gate runs BEFORE the waiver split, and its refusals are held
     # apart from `problems` rather than merged into them. Merging first would
@@ -1086,12 +1148,33 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
         payload_head = (data.get("head") or {}).get("sha") or ""
         gated = comment_gate_problems(repo, pr, payload_head, runner = runner)
 
-        if gated and (body_grant is not None):
-            print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {body_grant.entry!r} — " f"reason: {body_grant.reason}")
+        if gated and (comment_body_grant is not None):
+            print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {comment_body_grant.entry!r} — " f"reason: {comment_body_grant.reason}")
             print(f"   suppressed {len(gated)} {COMMENT_GATE_CATEGORY} refusal(s); " "the signed --waiver file never covers this gate")
             gated = []
-    elif body_grant is not None:
+    elif comment_body_grant is not None:
         print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-comment-gate)")
+
+    # The body gate is the third member of the family: it reads the SAME body
+    # the merge payload carries, its refusals land in `gated` (never in the
+    # list `split_waivable` sees), and the PR-body `body-gate-waiver:` entry is
+    # its only exception — the signed `--waiver` file cannot reach it either.
+    body_grant, _body_waiver_problems = body_waiver(data.get("body") or "")
+
+    if body_gate:
+        payload_body = data.get("body") or ""
+        body_problems_found = body_gate_problems(payload_body, runner = runner)
+
+        if body_problems_found and (body_grant is not None):
+            print(f"🔓 {BODY_GATE_CATEGORY}-waiver (PR body): {body_grant.entry!r} — reason: {body_grant.reason}")
+            print(f"   suppressed {len(body_problems_found)} {BODY_GATE_CATEGORY} refusal(s); the signed --waiver file never covers this gate")
+        else:
+            gated.extend(body_problems_found)
+    else:
+        if body_grant is not None:
+            print(f"🔓 {BODY_GATE_CATEGORY}-waiver declared but the gate was skipped (--no-body-gate)")
+        else:
+            print(f"⏭️  {BODY_GATE_CATEGORY}: SKIPPED by --no-body-gate on #{pr} — no PR-body prose check ran")
 
     if grant is not None:
         problems, suppressed = split_waivable(problems)
@@ -1211,12 +1294,13 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--expect-head", required = True, default = None, help = "head SHA verified by the review rounds (prefix ok)")
         sp.add_argument("--allow-cjk", action = "store_true", help = "repo allows CJK summaries (easy-hydro family)")
         sp.add_argument("--base", default = DEFAULT_BASE, help = "branch the gate may merge into")
-        sp.add_argument("--waiver", default = None, metavar = "PATH", help = "signed recorded-exception file " "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the " "`verify record c3=<n> < 3` refusal, every other check still runs " "— it does NOT cover the comment gate")
+        sp.add_argument("--waiver", default = None, metavar = "PATH", help = "signed recorded-exception file " "(_alerts/pr-merge-waiver-<repo>-<pr>.md); suppresses ONLY the " "`verify record c3=<n> < 3` refusal, every other check still runs " "— it does NOT cover the comment gate or the body gate")
         sp.add_argument("--no-comment-gate", dest = "comment_gate", action = "store_false", help = "skip the behaviour-claim comment gate (break-glass: the ONLY " "supported exception is the PR-body " "`comment-gate-waiver: <reason>` entry, which needs no flag)")
         sp.add_argument("--no-artifact-gate", dest = "artifact_drift", action = "store_false", help = "skip the WIT-vs-bindings drift gate (the ONLY supported exception is the PR-body `artifact-gate-waiver: <reason>` entry, which needs no flag)")
+        sp.add_argument("--no-body-gate", dest = "body_gate", action = "store_false", help = "skip the PR-body prose gate (break-glass: the ONLY supported exception is the PR-body `body-gate-waiver: <reason>` entry, which needs no flag)")
 
     args = parser.parse_args(argv)
-    return _gate(args.repo, args.pr, args.expect_head, allow_cjk = args.allow_cjk, do_merge = args.cmd == "merge", base = args.base, waiver = args.waiver, comment_gate = args.comment_gate, artifact_drift = args.artifact_drift)
+    return _gate(args.repo, args.pr, args.expect_head, allow_cjk = args.allow_cjk, do_merge = args.cmd == "merge", base = args.base, waiver = args.waiver, comment_gate = args.comment_gate, artifact_drift = args.artifact_drift, body_gate = args.body_gate)
 
 if __name__ == "__main__":
     raise SystemExit(main())
