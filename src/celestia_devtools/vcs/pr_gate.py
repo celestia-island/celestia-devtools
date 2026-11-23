@@ -1151,33 +1151,42 @@ def _fetch_head(root: str, head: str, branch: str) -> tuple[bool, str]:
     return False, "fetching it did not work (" + "; ".join(tried) + ")"
 
 def _remote_refspec(root: str) -> str:
-    """``remote.origin.fetch`` as the message should show it."""
+    """EVERY ``remote.origin.fetch`` entry, newline-joined, as the message shows it.
+
+    ``--get-all``, not ``--get``: the setting is multi-valued (git accepts one
+    refspec per ``git config`` entry) and ``--get`` returns only the LAST one. A
+    checkout configured with two narrow refspecs would then be judged on
+    whichever happened to be written last — and a single narrow entry followed by
+    a wildcard one would read as "fetches everything" when it does not.
+    """
 
     try:
-        probe = subprocess.run(["git", "-C", root, "config", "--get", "remote.origin.fetch"], capture_output = True, check = False, text = True)
+        probe = subprocess.run(["git", "-C", root, "config", "--get-all", "remote.origin.fetch"], capture_output = True, check = False, text = True)
     except (OSError, ValueError):
         return "unknown"
 
-    return (probe.stdout or "").strip() or "unset"
+    entries = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+
+    return "\n".join(entries) or "unset"
 
 def _refspec_brings_branches(refspec: str) -> bool:
     """True when every one of this refspec's SOURCES covers all branches.
 
-    Git's ``remote.origin.fetch`` is a multi-valued setting, so ``refspec`` is
-    the config value verbatim: one entry per line, each ``[+]<src>[:<dst>]``.
+    ``remote.origin.fetch`` is a multi-valued setting: git accepts one refspec
+    per ``git config`` entry, so the caller reads them all (``--get-all``) and
+    joins them with newlines. Each line is ``[+]<src>[:<dst>]``.
 
-    The judgement is on the SOURCE side and by equality, because both weaker
-    readings were measured wrong:
+    The judgement is on the SOURCE side and by equality. A substring test for
+    ``refs/heads/*`` reads a legitimate narrow pattern such as
+    ``refs/heads/*-release:refs/remotes/origin/*-release`` as the full wildcard,
+    and the advice then says "this fetch brings every branch, the failure must
+    be something else" for a checkout that plainly does not — suppressing the one
+    command that would have fixed it.
 
-    * searching for ``refs/heads/*`` ANYWHERE in the string accepts
-      ``+refs/heads/master:refs/remotes/origin/*`` — the shape
-      ``--single-branch --branch master`` and mirror-style setups produce — whose
-      DESTINATION is a wildcard while it fetches exactly one branch. That made
-      the advice say "this fetch brings every branch, the failure must be
-      something else" for a checkout that plainly does not, and it suppressed
-      the one command that would have fixed it.
-    * a substring test also accepts ``refs/heads/*-release:...``, a legitimate
-      narrow pattern.
+    A wildcard DESTINATION paired with a narrow source (``master:…/origin/*``)
+    needs no mention: **git rejects it outright** ("invalid refspec"), since a
+    wildcard refspec must carry the wildcard on both sides — required since
+    2008 (git ``b2a5627``), so no build in use can produce that config.
 
     An unset entry, and "we could not read the config", both mean "no narrowing
     evidence": git's default is the full wildcard, so the advice must not claim

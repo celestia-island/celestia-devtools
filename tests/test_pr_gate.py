@@ -13,7 +13,6 @@ import inspect
 import json
 import re
 import subprocess
-from pathlib import Path
 from celestia_devtools.vcs.pr_gate import _gate, body_problems, check_pr, title_problems
 from celestia_devtools.vcs import pr_gate as pr_gate_module
 from celestia_devtools.vcs.pr_gate import comment_waiver as pr_gate_comment_waiver
@@ -1419,6 +1418,34 @@ def test_a_narrow_release_pattern_is_not_a_wildcard():
     assert not pr_gate_module._refspec_brings_branches("+refs/heads/*-release:refs/remotes/origin/*-release")
     assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/*")
     assert pr_gate_module._refspec_brings_branches("+refs/heads/*:refs/remotes/origin/*")
+
+def test_every_fetch_refspec_is_read_not_only_the_last(tmp_path):
+    """`--get` returns one value; the setting is multi-valued.
+
+    A checkout can carry several `remote.origin.fetch` entries. Reading only the
+    last one judges the checkout on whichever was written last — and a narrow
+    entry followed by a wildcard one then reads as "fetches everything" when it
+    does not. `--get-all` is what makes the judgement cover what git will
+    actually fetch.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+        subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True)
+
+    (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(tmp_path / "nowhere.git")], check = True, capture_output = True)
+    # Two narrow entries: `--get` would return only the second.
+    subprocess.run(["git", "-C", str(repo), "config", "--add", "remote.origin.fetch", "+refs/heads/master:refs/remotes/origin/master"], check = True, capture_output = True)
+    subprocess.run(["git", "-C", str(repo), "config", "--add", "remote.origin.fetch", "+refs/heads/release:refs/remotes/origin/release"], check = True, capture_output = True)
+    entries = pr_gate_module._remote_refspec(str(repo))
+    assert ("master" in entries) and ("release" in entries), entries
+    assert not pr_gate_module._refspec_brings_branches(entries), entries
+    # And the mixed shape that must NOT read as a full wildcard.
+    assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/master\n+refs/heads/*:refs/remotes/origin/*")
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):
