@@ -13,6 +13,8 @@ run_port, and generate-config emits Windows-correct binary paths.
 from __future__ import annotations
 import sys
 from pathlib import Path
+
+import pytest
 from celestia_devtools.env import daemon
 
 # Each service's actual listen knob (verified against each repo's source):
@@ -37,6 +39,51 @@ class test_service_defs:
 
     def test_expected_services_present(self):
         assert set(daemon.SERVICE_DEFS) >= {"shittim-chest", "entelecheia", "arona"}
+
+    def test_build_cmd_names_a_package_and_a_bin(self):
+        """Every `build_cmd` is `cargo build -p <package> [--bin <bin>] --release`,
+        and the `-p` / `--bin` values are not the pre-rename vocabulary. This is
+        the structural half; `test_build_cmd_packages_resolve` asks cargo when
+        the sibling checkouts are present."""
+        for repo, svc in daemon.SERVICE_DEFS.items():
+            cmd = svc["build_cmd"]
+            assert cmd[:3] == ["cargo", "build", "-p"], (repo, cmd)
+            pkg = cmd[3]
+            assert pkg and not pkg.startswith("-"), (repo, cmd)
+            assert pkg == svc.get("package", pkg), (repo, "package key must match -p")
+            assert pkg not in {"core", "shittim_chest"}, (repo, f"stale package name {pkg!r}")
+            if "--bin" in cmd:
+                b = cmd[cmd.index("--bin") + 1]
+                assert b == svc["bin"], (repo, "--bin must equal the bin the daemon runs")
+            assert "--release" in cmd, (repo, cmd)
+
+    def test_build_cmd_packages_resolve(self):
+        """When the sibling checkouts exist next to this one, every `-p` package
+        must resolve in that repo — asking cargo, not a string table. A rename
+        that misses this file (shittim-chest#2514 did) fails here with cargo's
+        own message. Skips when the checkouts are absent (CI has none)."""
+        import shutil
+        import subprocess
+
+        if shutil.which("cargo") is None:
+            pytest.skip("cargo not on PATH")
+        checked = 0
+        for repo, svc in daemon.SERVICE_DEFS.items():
+            d = daemon._find_sibling_dir(repo)
+            if d is None:
+                continue
+            pkg = svc["build_cmd"][3]
+            r = subprocess.run(
+                ["cargo", "pkgid", "-p", pkg, "--offline"],
+                cwd=d, capture_output=True, text=True,
+                env={**__import__("os").environ, "CARGO_TERM_COLOR": "never"},
+            )
+            assert r.returncode == 0, (
+                f"{repo}: `cargo build -p {pkg}` would fail:\n{r.stderr.strip()}"
+            )
+            checked += 1
+        if checked == 0:
+            pytest.skip("no sibling checkouts next to this repo")
 
 class test_generate_config:
     def _fake_layout(self, tmp_path: Path) -> Path:
