@@ -558,7 +558,13 @@ def scan_diff(diff: str, contents: Mapping[str, Sequence[str]] | None = None) ->
             problems.append(f"{path}: the docstring opened near line {total} is never closed in the file — refusing to judge lines whose comment/code classification would be a guess")
 
         if unplaceable is not None:
-            problems.append(f"{path}: line {unplaceable} is not shown by the patch and the file behind it was not supplied — the docstring state there is unknowable, so refusing to judge the rest of the file")
+            # Two cases reach here, and the message has to say which: no file
+            # text was available at all, or the text ran out before this line
+            # (a short `contents` from a caller, or a file git could not
+            # produce). Both leave the state unknowable, so both refuse.
+            source = "the file behind it was not supplied" if whole is None else f"the supplied file text ends at line {len(whole)}"
+
+            problems.append(f"{path}: line {unplaceable} is not shown by the patch and {source} — the docstring state there is unknowable, so refusing to judge the rest of the file")
 
         return inside, problems
 
