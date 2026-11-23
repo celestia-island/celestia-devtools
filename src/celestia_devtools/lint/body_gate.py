@@ -241,6 +241,8 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
     notes: list[str] = []
     evidence: list[_line] = []
     dropped: list[int] = []
+    hidden: list[tuple[int, str]] = []
+    fences_notes: list[str] = []
     fence: str | None = None
     in_comment = False
 
@@ -274,11 +276,16 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
         if "<!--" in text:
             before, _, after = text.partition("<!--")
             span, closed, trailing = after.partition("-->")
-            # A directive inside the comment is KEPT so it is scanned and
-            # printed (`body-gate-ok` must never be a silent pass); the rest of
-            # the comment is dropped.
+            # A directive inside the comment is REPORTED (so it is never a
+            # silent pass) but does not exempt: an invisible position must not
+            # grant an invisible exemption (round 2 of the narrowed build).
             comment = DIRECTIVE.search(span)
-            text = before + (comment.group(0) if comment else "") + trailing
+            inline = comment.group(0) if comment is not None else ""
+
+            if comment is not None:
+                hidden.append((number, inline))
+
+            text = before + ("<!-- " + inline + " -->" if inline else "") + trailing
 
             if not closed:
                 in_comment = True
@@ -337,7 +344,10 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
         previous_blank = False
         index += 1
 
+    hidden_note = (f"note: an inline HTML comment on line {hidden[0][0]} carries a body-gate-ok directive — it is reported here and does not exempt anything, because a hidden directive must not grant a hidden pass",) if hidden else ()
+
     omitted = ("the body's only prose was indented or quoted, so nothing could be scanned — an indented block is a template, not a description",) if (not lines) and dropped else ()
+    notes = [*notes, *hidden_note]
 
     return lines, notes, evidence, omitted
 
@@ -434,7 +444,10 @@ def directive_reason(line: str) -> str | None:
     if match is None:
         return None
 
-    return line[match.start("reason"):].translate(_INVISIBLE).strip()
+    reason = line[match.start("reason"):].translate(_INVISIBLE).strip()
+
+    # Trim what the line ends with: an HTML comment's close, markdown emphasis.
+    return reason.rstrip("->").strip()
 
 def is_reading_row(line: str) -> bool:
     """True when a table row is a label followed by readings.
@@ -556,7 +569,7 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
 
         reason = directive_reason(part.text)
 
-        if (reason is not None) and (len(reason) >= DIRECTIVE_REASON_MIN):
+        if (reason is not None) and (len(reason) >= DIRECTIVE_REASON_MIN) and (not _hidden_directive(part.text)):
             return True
 
         if (position == index) and pastes_figure(part.text):
@@ -574,6 +587,10 @@ def pastes_figure(line: str) -> bool:
 
     return any((start <= part.start()) and (part.end() <= end) for part in QUANTITY.finditer(line) for start, end in spans)
 
+def _hidden_directive(line: str) -> bool:
+    """True when ``line`` carries a directive that came from an HTML comment."""
+    return bool(re.search(r"<!--[^>]*body-gate-ok:", line, re.IGNORECASE))
+
 def check_body(body: str) -> report:
     """The gate's verdict over one PR body string."""
     stripped_body = (body or "").strip()
@@ -588,8 +605,8 @@ def check_body(body: str) -> report:
 
         return report(scanned_lines = 0, statements = (), findings = (), problems = (*notes, *omitted, nothing_scan))
 
-    statements, scanned, scan_notes = scan_body(stripped_body)
-    problems = [*notes, *scan_notes]
+    statements, scanned, _scan_lines = scan_body(stripped_body)
+    problems = list(notes)
     directives = tuple((row.number, directive_reason(row.text) or "") for row in lines if directive_reason(row.text) is not None)
     findings = [stmt for stmt in statements if not sourced(lines, _index_of(lines, stmt), evidence)]
 

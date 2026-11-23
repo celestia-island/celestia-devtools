@@ -109,13 +109,18 @@ class test_the_directive:
         assert "body-gate-ok" in capsys.readouterr().out
 
 class test_the_directive_is_never_silent:
-    def test_a_directive_in_an_html_comment_is_still_printed(self):
-        # MUT:directive-printed — silently accepting a hidden directive is the
-        # silent pass the printed channel exists to prevent.
+    def test_a_directive_in_an_html_comment_is_reported_not_honoured(self):
+        # MUT:directive-printed — a hidden directive must be neither silent nor
+        # an invisible exemption: it is printed AND the claim is still refused.
         body = "It printed 120 passed. <!-- body-gate-ok: the log is elsewhere, page two -->\n"
         result = body_gate.check_body(body)
-        assert result.ok
+        assert not result.ok
         assert result.directives and (len(result.directives[0][1]) >= body_gate.DIRECTIVE_REASON_MIN)
+        assert any("does not exempt" in problem for problem in result.problems)
+
+    def test_a_hidden_directive_does_not_reach_a_neighbour(self):
+        body = "The suite went from 12 failed to 0.\n<!-- body-gate-ok: the log lives in the linked issue page two -->\n"
+        assert not body_gate.check_body(body).ok
 
 class test_scope_exclusions:
     """Fenced, quoted, indented, heading and record shapes are out of scope."""

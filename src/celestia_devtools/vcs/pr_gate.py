@@ -60,10 +60,9 @@ Checks (any failure → rc 1, merge refused):
 
 5.  The PR body passes :mod:`celestia_devtools.lint.body_gate` — every quantity
     and behaviour claim in its prose names a recomputable source (``MUT:<id>``,
-    a ``file:line``, a code span that NAMES a command / identifier (a bare
-    path in backticks is a citation, not a source), ``#PR``, an ``evidence:``
-    line, a URL, a checksum, an outcome row or a metrics row of a captured
-    table) or an explicit disclaimer
+    a ``file:line``, an inline-code span shaped like a command / flag / call /
+    identifier / path, ``#PR``, an ``evidence:`` line, a URL, a checksum, a
+    reading row of a readings table) or an explicit disclaimer
     (``未复算`` / ``unverified`` / ``not established`` / ``inference``). A body
     whose prose states nothing is a LOUD SKIP on stdout; an EMPTY body is a
     refusal (a probe or a truncated payload, not a description). Neither the
