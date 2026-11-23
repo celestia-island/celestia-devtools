@@ -66,7 +66,9 @@ every line was excluded are **refused** (rc 1).
 the same parser as ``comment-gate-waiver:`` and announced on stdout.
 
 *CLI:* ``lint-pr-body [--body FILE | --pr N --repo OWNER/NAME] [--quiet]``,
-also reachable as ``celestia-devtools lint-pr-body``.
+also reachable as ``celestia-devtools lint-pr-body``. The merge chain calls
+:func:`check_body` directly and always prints the directive and skip lines; it
+does not forward ``--quiet``, so nothing is ever silenced inside a merge.
 Exit codes: 0 clean or loud skip, 1 unsourced statements, 2 usage or an
 unreadable body.
 """
