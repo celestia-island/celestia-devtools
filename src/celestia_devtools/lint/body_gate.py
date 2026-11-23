@@ -25,11 +25,11 @@ meaning, so nothing here can be talked into agreeing with itself.
   language: ``N passed``, ``N/N``, ``rc=N``, ``N files``, ``N failed``, ``N 处``,
   percentages, durations, counts. A bare integer with no unit is NOT a
   quantity; the next class is what covers the bare numbers that still need a
-  source. A quantity that IS an inline-code span (``` `120 passed` ```) is a
-  quotation of the run, not prose, so it is not a claim (:func:`unquoted_output`).
+  source. A figure written inside backticks is still a claim: a quoted figure
+  is the claim repeated, not its source.
 * **a sentence that names a thing is not a claim** (:func:`names_a_thing`): a
   line carrying a code token (an inline-code span, a flag, a path, a filename)
-  and no measured outcome describes the code — ``\`format-markdown\` exits 1 on
+  and no measured outcome describes the code — `` `format-markdown` exits 1 on
   frame glyphs`` is naming the tool; "the suite went from 12 failed to 0" is
   asserting a run, and is judged. Review round 2 found the difference deciding
   whether an honest body was refused.
@@ -464,34 +464,10 @@ def unquoted_digits(text: str) -> tuple[str, ...]:
 
     return tuple(found)
 
-def unquoted_output(line: str) -> bool:
-    """True when every quantity on ``line`` is quoted from its run.
-
-    ``1 failed / 5 passed`` is prose; ``` `1 failed / 5 passed` ``` is a
-    quotation of what the test runner printed, and a quotation is the output
-    itself. The distinction is mechanical, and it is what lets a body paste a
-    tally beside the command that produced it without the gate demanding a
-    second source for the same figures.
-    """
-    spans = [match.span() for match in re.finditer(r"`[^`\n]+`", line)]
-    quantities = [match.span() for match in QUANTITY.finditer(line)]
-
-    if not quantities:
-        return False
-
-    def is_a_span(span: tuple[int, int]) -> bool:
-        # The figure has to BE the span (surrounding space / punctuation is
-        # fine). A number inside a longer quoted phrase — `` exits 1 on … `` —
-        # is prose quoting the phrase, not the run's output.
-        return any((inner_start <= span[0]) and (span[1] <= inner_end) and (not re.search(r"[A-Za-z]", line[inner_start:span[0]])) and (not re.search(r"[A-Za-z]", line[span[1]:inner_end])) for inner_start, inner_end in spans)
-
-    return all(is_a_span(span) for span in quantities)
-
-#: A code token: an identifier, a flag, a call, a path, a filename — or a
+#: A code token: an identifier, a flag, a call, a path, a filename, or a
 #: sentence that NAMES one. A line carrying one is naming a thing, not
-#: asserting an outcome about it (``\`format-markdown\` exits 1 on …`` describes
-#: the tool; "The suite went from 12 failed to 0" asserts a run). Review round
-#: 2 found the difference deciding whether an honest body was refused.
+#: asserting an outcome about it (`` `format-markdown` exits 1 on … `` describes
+#: the tool; "The suite went from 12 failed to 0" asserts a run).
 _CODE_TOKEN = re.compile(r"`[^`\n]+`|\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\.[A-Za-z0-9]{1,6}\b\s*(?=[`(]|$)|\b\w+\s+--?[a-z][\w-]+")
 #: A measured outcome: a counter word or a run word next to a figure or a flag.
 _OUTCOME = re.compile(r"\b\d[\d,]*\s*(?:passed|failed|red|green|crash|error|warning|hits?)\b|\b(?:exit|rc)\b\s*[=:]?\s*-?\d", re.IGNORECASE)
@@ -506,9 +482,8 @@ def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     terms = behaviour_terms(line)
     naming = names_a_thing(line)
 
-    # A figure quoted from its run is prose too: a quotation is not a claim
-    # (it is the output), and treating it as one would demand a second source
-    # for the same characters. See `unquoted_output`.
+    # A figure in backticks is a claim like any other: the span repeats the
+    # figure, it does not name the command that produced it (round 2).
     if naming:
         # Naming a thing is not asserting a fact about it (see `_CODE_TOKEN`).
         return (), ()

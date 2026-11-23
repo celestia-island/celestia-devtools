@@ -21,8 +21,8 @@ GOOD_TITLE = "✨ Make the workspace alias a required localized name with a pref
 GOOD_RECORD = "verify: rounds=4 clean=3 S0=0 S1=0 S2=0 S3=6 gates=5 hardcap=no budget=ok post-cap=0 c3=3"
 #: A body that is clean for EVERY gate in the chain: real prose (so the body
 #: gate has something to scan and finds nothing unsourced) plus a clean record.
-#: The previous fixture was a bare "…", which the body gate rightly refuses —
-#: MUT:body-fixture — so a caller that wants the body gate satisfied uses this.
+#: The ellipsis form also passes the body gate (loud-skip lane), so this shape
+#: is a fixture choice, not a control.
 #: Prose only. A body that also carries the verify record is `GOOD_BODY +
 #: GOOD_RECORD`, so a caller that supplies a DIFFERENT record cannot end up
 #: with two (the record check refuses that) — the reason this is split.
@@ -1390,7 +1390,28 @@ class test_body_gate_plumbing:
         assert "below the 20-character floor" in capsys.readouterr().err
 
     def test_the_body_category_is_never_waivable(self):
+        # The category clause is belt-and-braces (the generic `else` already
+        # blocks it); what a caller can OBSERVE is the widened-regex attack, so
+        # this case pins both halves: the plain classifier, and the classifier
+        # with the regex widened to swallow the body-gate shape.
         assert pr_gate_module.split_waivable([f"{pr_gate_module.BODY_GATE_CATEGORY}: body:1 (quantity): x"])[1] == []
+        doc = inspect.getsource(pr_gate_module.split_waivable)
+        assert "BODY_GATE_CATEGORY" in doc
+
+        original = pr_gate_module._WAIVABLE_C3_RE
+
+        try:
+            pr_gate_module._WAIVABLE_C3_RE = re.compile(r"^(?:verify record c3=(?P<c3>\d+) < 3|body-gate: )")
+            blocking, waivable = pr_gate_module.split_waivable(
+                [f"{pr_gate_module.BODY_GATE_CATEGORY}: body:1 (quantity): x", "verify record c3=0 < 3"]
+            )
+        finally:
+            pr_gate_module._WAIVABLE_C3_RE = original
+
+        # The body-gate refusal stays blocking; the c3 refusal is still the one
+        # thing a widened regex legitimately classifies as waivable.
+        assert blocking == [f"{pr_gate_module.BODY_GATE_CATEGORY}: body:1 (quantity): x"]
+        assert waivable == ["verify record c3=0 < 3"]
 
     def test_a_refusal_carrying_the_category_stays_blocking_under_a_widened_regex(self, monkeypatch):
         # Same attack as the comment gate's: widen the regex, and the classifier

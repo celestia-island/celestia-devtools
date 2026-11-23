@@ -485,12 +485,19 @@ def read_waiver(path: str | Path, *, repo: str, pr: int, head: str, prefix: str 
 def split_waivable(problems: list[str]) -> tuple[list[str], list[str]]:
     """Split ``(blocking, waivable)``; the only waivable refusal is ``c3<3``.
 
-    A refusal carrying the comment-gate category is NEVER waivable, whatever
-    ``_WAIVABLE_C3_RE`` happens to say. That check lives HERE rather than at the
-    call site on purpose: review rounds 3 and 4 each broke the guarantee by
-    editing the CALLER (widen the regex, move one statement, and the signed
-    ``--waiver`` file suppressed an unanchored claim). A property that survives
-    a refactor of its caller has to be implemented in the callee.
+    A refusal carrying the comment-gate OR the body-gate category is NEVER
+    waivable, whatever ``_WAIVABLE_C3_RE`` happens to say. That check lives HERE
+    rather than at the call site on purpose: review rounds 3 and 4 each broke
+    the guarantee by editing the CALLER (widen the regex, move one statement,
+    and the signed ``--waiver`` file suppressed an unanchored claim). A property
+    that survives a refactor of its caller has to be implemented in the callee.
+
+    The category clauses are deliberate belt-and-braces: with an unwidened
+    regex the generic ``else`` blocks such a refusal anyway, so removing ONLY
+    the clause an outside observer cannot see it — the visible consequence is
+    the widened regex (a gate refusal shaped like a waivable string), which is
+    what ``test_the_body_category_is_never_waivable`` and the round-3 report
+    exercise. The clause also carries the intent for the next reader.
     """
     blocking: list[str] = []
     waivable: list[str] = []
