@@ -999,7 +999,12 @@ def _new_side_contents(diff: str, *, root: str | Path | None, rev: str | None) -
 
         try:
             probe = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
-        except OSError:
+        except (OSError, ValueError):
+            # ``ValueError`` is what subprocess raises for an argument carrying a
+            # NUL — not ``OSError`` — and ``rev`` can come from an API payload.
+            # A file that cannot be read leaves NO entry, so the walker reports
+            # that it could not establish the state instead of raising out of
+            # the merge gate.
             continue
 
         if probe.returncode == 0:

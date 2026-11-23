@@ -1202,9 +1202,13 @@ def test_an_unusable_head_string_does_not_crash_the_resolver(tmp_path, monkeypat
     monkeypatch.chdir(repo)
     root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = True)
     assert root is None, root
-    assert any("cannot be resolved" in problem for problem in problems), problems
+    assert any("could not be fetched" in problem for problem in problems), problems
+    # The unusable head reaches the reader escaped, never as raw bytes.
+    assert all("\x00" not in problem for problem in problems), problems
+    # Not required: no refusal, and no root either — the scanner is called with
+    # `root=None` and judges the hunks, which is complete for a non-Python diff.
     root, problems = pr_gate_module._comment_gate_root("HEAD\x00tail", required = False)
-    assert root == str(repo.resolve()), root
+    assert root is None, root
     assert problems == [], problems
 
 def test_the_resolver_ignores_the_artifact_gates_variable(tmp_path, monkeypatch):
@@ -1234,6 +1238,60 @@ def test_the_resolver_ignores_the_artifact_gates_variable(tmp_path, monkeypatch)
         root, problems = pr_gate_module._comment_gate_root(head, required = True)
         assert root == str(repo.resolve()), (value, root)
         assert problems == [], (value, problems)
+
+def test_a_checkout_that_lacks_the_head_fetches_it_before_refusing(tmp_path, monkeypatch):
+    """The normal state, not an operator error: a CI clone with a narrow refspec.
+
+    Several repositories in this family set `remote.origin.fetch` to the trunk
+    only, so `git fetch origin` never brings a pull-request branch. The merge
+    gate's own clone is in exactly that state for any PR it did not create. The
+    resolver therefore fetches the head itself — by BRANCH when the payload
+    supplied `head.ref` (always allowed), and only then refuses.
+
+    Built as two repositories over the filesystem so no network is involved.
+    """
+
+    def git(repo, *argv):
+        return subprocess.run(["git", "-C", str(repo), *argv], check = True, capture_output = True, encoding = "utf-8")
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+
+    subprocess.run(["git", "init", "-q", "--bare", str(upstream)], check = True, capture_output = True)
+
+    work = tmp_path / "work"
+    work.mkdir()
+
+    for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g"), ("checkout", "-q", "-b", "master")):
+        git(work, *argv)
+
+    # A trunk commit first, so the clone has something to check out.
+    (work / "trunk.txt").write_text("t\n", encoding = "utf-8")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "trunk")
+    git(work, "remote", "add", "origin", str(upstream))
+    git(work, "push", "-q", "origin", "master")
+    # Then the PR branch, whose head the clone will NOT have.
+    git(work, "checkout", "-q", "-b", "feature/x")
+    (work / "f.py").write_text("x = 1\n", encoding = "utf-8")
+    git(work, "add", "-A")
+    git(work, "commit", "-qm", "feature")
+    head = git(work, "rev-parse", "HEAD").stdout.strip()
+    git(work, "push", "-q", "origin", "feature/x")
+
+    # The clone the merge gate runs in: initialized EMPTY and given the narrow
+    # refspec several repositories here use, so the PR branch is genuinely absent.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    git(clone, "init", "-q")
+    git(clone, "remote", "add", "origin", str(upstream))
+    git(clone, "config", "remote.origin.fetch", "+refs/heads/master:refs/remotes/origin/master")
+    git(clone, "fetch", "-q", "origin", "master")
+    assert subprocess.run(["git", "-C", str(clone), "cat-file", "-e", f"{head}^{{commit}}"], capture_output = True).returncode != 0, "the fixture must start WITHOUT the head"
+    monkeypatch.chdir(clone)
+    root, problems = pr_gate_module._comment_gate_root(head, required = True, branch = "feature/x")
+    assert problems == [], problems
+    assert root is not None, "the resolver must fetch the head instead of refusing"
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):
