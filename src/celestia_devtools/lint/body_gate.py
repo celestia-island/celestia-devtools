@@ -178,14 +178,12 @@ DIRECTIVE = re.compile(r"body-gate-ok:[ \t]*(?P<reason>.*)$", re.IGNORECASE)
 _COMMIT = re.compile(r"(?<![\w])[0-9a-f]{7,40}(?![\w])", re.IGNORECASE)
 _CHECKSUM_WORD = re.compile(r"\bsha-?(?:1|256|512)\b|\bmd5\b", re.IGNORECASE)
 #: A `file:line` reference: a dotted filename, a colon, a line number.
-#: A test pointer: a module and the test that pins the claim (`a.py::test_b`,
-#: `x.test.ts`, `y_test.rs`). It is a SPAN-level source — a sentence may cite a
-#: test, but citing one does not evidence what the sentence says about it (a
-#: bare `(x.test.ts)` was standing in for "the path was never exercised").
 #: A test pointer that names a CASE (`a.py::test_b`) or carries a line
 #: (`x.test.ts:88`) is line-level evidence: it opens at a specific assertion.
-#: A bare test FILE name (`x.test.ts`) is span-level only — citing a file says
-#: the file exists, not that the sentence's claim about behaviour holds.
+#: A bare test FILE name (`x.test.ts`, `test.ts`, `y_test.rs`) is NOT a source
+#: at any level — citing a file says the file exists, nothing about what the
+#: sentence claims. That is refused EXPLICITLY by :func:`span_is_source`; the
+#: span-shape regex alone would let `test.ts` through its other alternatives.
 _TEST_REF = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|rs)::[\w:.-]+|[\w./-]+\.(?:test|spec)\.[a-z]+\s*:\s*\d+|[\w./-]+_test\.(?:py|rs)\s*:\s*\d+")
 
 _FILE_LINE = re.compile(r"[\w./-]+\.(?:rs|ts|tsx|js|jsx|py|md|toml|yml|yaml|json|sql|wit|vue|sh|just|lock|txt)\s*:\s*\d+")
@@ -432,9 +430,23 @@ def code_spans(text: str) -> tuple[str, ...]:
     """The inline-code spans of ``text``, without their backticks."""
     return tuple(match.group(0).strip("`") for match in _SPAN.finditer(text))
 
+#: A BARE test file name: a module called `x.test.ts` / `test.ts` / `y_test.rs`
+#: with no `::case` and no `:line`. Citing it names a file, not a place where an
+#: assertion lives, so it evidences nothing.
+_BARE_TEST_NAME = re.compile(r"^(?:[\w./-]*\.)?(?:test|spec)(?:\.\w+)?$|^[\w./-]*(?:\.(?:test|spec)|_test)\.\w+$")
+
 def span_is_source(span: str) -> bool:
-    """True when a span is shaped like a command, flag, call, identifier or path."""
+    """True when a span is shaped like a command, flag, call, identifier or path.
+
+    A bare test file name is refused first and explicitly: the shape regex has
+    alternatives (a flag-like word, an underscored identifier) that would
+    otherwise let `test.ts` or `y_test.rs` through, and the point of the rule is
+    that a file name cannot source a claim about behaviour.
+    """
     text = span.strip()
+
+    if _BARE_TEST_NAME.fullmatch(text):
+        return False
 
     return bool(_SPAN_SOURCE.search(text)) or (bool(re.search(r"\.\w{1,6}$", text)) and (len(text) >= 4))
 

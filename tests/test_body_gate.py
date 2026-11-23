@@ -134,6 +134,20 @@ class test_span_evidence:
 
         assert body_gate.check_body("The armed path was never exercised (`x.test.ts:88`).\n").ok
 
+    def test_a_bare_test_file_name_sources_nothing(self):
+        # MUT:bare-test-name — `span_is_source`'s shape regex has alternatives
+        # (a flag-like word, an underscored identifier) that let `test.ts` and
+        # `y_test.rs` through; the refusal is explicit, and this case has no
+        # behaviour word, so only the span branch can decide it.
+        for name in ["test.ts", "spec.ts", "x.test.ts", "y_test.rs"]:
+            assert not body_gate.span_is_source(name), name
+
+        assert not body_gate.check_body("See `test.ts` for coverage (12 checks).\n").ok
+        assert not body_gate.check_body("See `y_test.rs` for coverage (12 checks).\n").ok
+        # A case pointer or a line opens at an assertion and does source it.
+        assert body_gate.check_body("See `x.test.ts:88` for coverage (12 checks).\n").ok
+        assert body_gate.check_body("See `a.py::test_b` for coverage (12 checks).\n").ok
+
     def test_a_version_still_names_its_line(self):
         assert body_gate.check_body("`just` >= 1.36 makes duplicate definitions a hard parse error.\n").ok
 
