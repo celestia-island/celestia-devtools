@@ -18,8 +18,8 @@ Controls, each with the mutation that proves it bites:
 
 * :func:`test_a_source_satisfies` / :func:`test_a_disclaimer_satisfies` — the
   rule fires on a known body and the source/disclaimer stops it;
-* :func:`test_the_corpus_rows` — the published bodies, verbatim, with the
-  measured counts pinned so a silent swing either way is a red;
+* :func:`test_the_corpus_rows` — the published bodies, verbatim, with their
+  counts pinned (MUT:corpus-pin — a change on either side reds it);
 * :func:`test_a_table_of_readings_is_captured` / :func:`test_a_prose_table_is_
   judged` — the table boundary from both sides;
 * :func:`test_the_directive_needs_a_reason` — the escape hatch is not a mute
