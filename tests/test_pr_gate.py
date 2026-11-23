@@ -1438,14 +1438,19 @@ def test_every_fetch_refspec_is_read_not_only_the_last(tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(tmp_path / "nowhere.git")], check = True, capture_output = True)
+    # `remote add` writes the default wildcard refspec itself; clear it so the
+    # fixture is exactly the two narrow entries this case is about.
+    subprocess.run(["git", "-C", str(repo), "config", "--unset-all", "remote.origin.fetch"], check = True, capture_output = True)
     # Two narrow entries: `--get` would return only the second.
     subprocess.run(["git", "-C", str(repo), "config", "--add", "remote.origin.fetch", "+refs/heads/master:refs/remotes/origin/master"], check = True, capture_output = True)
     subprocess.run(["git", "-C", str(repo), "config", "--add", "remote.origin.fetch", "+refs/heads/release:refs/remotes/origin/release"], check = True, capture_output = True)
     entries = pr_gate_module._remote_refspec(str(repo))
     assert ("master" in entries) and ("release" in entries), entries
     assert not pr_gate_module._refspec_brings_branches(entries), entries
-    # And the mixed shape that must NOT read as a full wildcard.
-    assert not pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/master\n+refs/heads/*:refs/remotes/origin/*")
+    # Multiple refspecs fetch INDEPENDENTLY: one wildcard source covers every
+    # branch, so the mixed shape DOES bring them all. Asserting the opposite
+    # pinned a bug against git's own semantics (round 11).
+    assert pr_gate_module._refspec_brings_branches("+refs/heads/master:refs/remotes/origin/master\n+refs/heads/*:refs/remotes/origin/*")
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):

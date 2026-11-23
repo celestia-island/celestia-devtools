@@ -1170,7 +1170,7 @@ def _remote_refspec(root: str) -> str:
     return "\n".join(entries) or "unset"
 
 def _refspec_brings_branches(refspec: str) -> bool:
-    """True when every one of this refspec's SOURCES covers all branches.
+    """True when these refspecs together fetch EVERY branch.
 
     ``remote.origin.fetch`` is a multi-valued setting: git accepts one refspec
     per ``git config`` entry, so the caller reads them all (``--get-all``) and
@@ -1201,13 +1201,9 @@ def _refspec_brings_branches(refspec: str) -> bool:
     if not entries:
         return True
 
-    for entry in entries:
-        source = entry.removeprefix("+").split(":", 1)[0]
-
-        if source != "refs/heads/*":
-            return False
-
-    return True
+    # ANY wildcard source is enough: multiple refspecs fetch independently, so
+    # one of them covering every branch means every branch comes down.
+    return any(entry.removeprefix("+").split(":", 1)[0] == "refs/heads/*" for entry in entries)
 
 def _fetch_command(head: str, branch: str) -> str:
     """The command that would make this checkout able to judge the PR.
