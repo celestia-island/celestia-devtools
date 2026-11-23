@@ -930,7 +930,17 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
     # the same way the other gates resolve theirs, and a tree that cannot name
     # the commit leaves the pair empty so the scanner falls back to its honest
     # hunk-only refusal instead of inventing a state.
-    root = _comment_gate_root()
+    # Only Python files need the file text (a JS/TS comment cannot span hunks),
+    # so a checkout that lacks this PR's head is a refusal only when such a file
+    # is actually in the diff — a TS-only PR must not be blocked by it.
+    needs_file_text = any(path.endswith(".py") for path in _diff_paths(diff_text) if comment_gate.is_test_path(path))
+    root, root_problems = _comment_gate_root(head, required = needs_file_text)
+
+    if root is None:
+        # Nothing to refuse about (no checkout) leaves the scanner's own
+        # hunk-only refusal in charge; a refusal the resolver produced is final.
+        return root_problems or []
+
     report = comment_gate.check_diff(diff_text, root = root, rev = head)
     # BOTH halves of the verdict, not just the claims: the scanner also refuses
     # "zero scanned comment lines" and "zero vocabulary hits", and those are its
@@ -941,31 +951,61 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
         f"{COMMENT_GATE_CATEGORY}: {problem}" for problem in report.problems
     ]
 
-def _comment_gate_root() -> str | None:
-    """The checkout the comment gate reads file text from (``None`` = no tree).
+def _comment_gate_root(head: str, *, required: bool) -> tuple[str | None, list[str]]:
+    """The checkout the comment gate reads file text from; ``(root, problems)``.
 
     The scanner needs the NEW-side file text to compute a Python file's
-    docstring state (a hunk shows only the changed lines). ``CELESTIA_ARTIFACT_ROOT``
-    is honoured when it names a repository, and the cwd is the next candidate;
-    anything else is ``None``, which the scanner treats as "no text" and refuses
-    on rather than guessing.
+    docstring state (a hunk shows only the changed lines), and that text has to
+    be the one the PR's ``head`` names.
+
+    ``CELESTIA_ARTIFACT_ROOT`` is deliberately NOT consulted. It has one owner —
+    :func:`artifact_drift_problems` — and it names a *hikari-shaped tree*
+    (anything with ``packages/wasm``), which is not necessarily a git checkout:
+    its own tests point it at a plain directory. Reading it here made the two
+    gates disagree about the same variable, and an operator who set it for the
+    artifact gate would have been silently affecting this one.
+
+    So the checkout is the repository this merge is running in, found by asking
+    git from the cwd (and then its parent directories, for a caller that invokes
+    the gate from a subdirectory). A repository that does not contain ``head``
+    CANNOT stand in: its file text is another commit's, which would erase every
+    "state unknowable" refusal and leave the gate quietly green on files it
+    never read. That is a refusal, not a fallback to the hunk-only walk — the
+    walk would then refuse on ordinary diffs instead (round 4's S0).
+
+    ``required`` says whether the diff holds a file whose state needs the text
+    (only Python can: a JS/TS comment cannot span hunk boundaries). Without it a
+    checkout that lacks ``head`` is simply not used — ``(None, [])`` — and the
+    scanner falls back to its honest hunk-only refusal.
+
+    Returns ``(None, [])`` when there is nothing to refuse about (no repository
+    at all): the scanner then falls back to its honest hunk-only refusal.
     """
-    # py-style-ok: no-block-imports: kept lazy with the other gate imports in this file
-    import os
+    try:
+        probe = subprocess.run(["git", "-C", str(Path.cwd()), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
+    except OSError:
+        return None, []
 
-    for candidate in (os.environ.get("CELESTIA_ARTIFACT_ROOT"), str(Path.cwd())):
-        if not candidate:
-            continue
+    if probe.returncode != 0:
+        return None, []
 
-        try:
-            probe = subprocess.run(["git", "-C", candidate, "rev-parse", "--git-dir"], capture_output = True, check = False)
-        except OSError:
-            continue
+    root = (probe.stdout or "").strip()
 
-        if probe.returncode == 0:
-            return candidate
+    if not root:
+        return None, []
 
-    return None
+    if not head:
+        return root, []
+
+    try:
+        has_head = subprocess.run(["git", "-C", root, "cat-file", "-e", f"{head}^{{commit}}"], capture_output = True, check = False)
+    except OSError:
+        return root, []
+
+    if (has_head.returncode != 0) and required:
+        return None, [f"{COMMENT_GATE_CATEGORY}: the checkout at {root} does not contain the PR head {head}, and this diff has a Python test file whose docstring state needs that commit's text — refusing rather than judging another commit's (fetch and re-run, or waive explicitly with `comment-gate-waiver:` in the body)"]
+
+    return root, []
 
 def _diff_paths(diff_text: str) -> list[str]:
     """The new-side paths a unified diff touches."""

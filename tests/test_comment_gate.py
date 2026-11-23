@@ -773,6 +773,10 @@ def test_a_claim_never_carries_the_walkers_own_markers():
     assert control, "the fixture must carry both markers"
     assert comment_gate._claim_text(marked) == "Reverting the filter reds this test."
     assert comment_gate._claim_text(comment_gate.DOC_CONTINUATION + marked) == "Reverting the filter reds this test."
+    # The other arrival order too: a context line whose text starts with the doc
+    # marker. One pass in the wrong order leaves a marker behind (measured), so
+    # this pins the loop rather than trusting "it is order-independent".
+    assert comment_gate._claim_text(comment_gate.CONTEXT_MARK + comment_gate.DOC_CONTINUATION + "x") == "x"
 
     for entry in claims:
         assert not any(ord(char) < 32 for char in entry.text), entry.text

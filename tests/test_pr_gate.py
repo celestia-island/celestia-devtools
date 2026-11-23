@@ -1079,20 +1079,74 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "heads"], check = True, capture_output = True)
         head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
-        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(repo))
+        # The gate resolves its checkout from the working DIRECTORY (not from
+        # `CELESTIA_ARTIFACT_ROOT`, which belongs to the artifact gate), so the
+        # case runs from the throwaway repository it built.
+        monkeypatch.chdir(repo)
 
         for patch, filename in ((_FAR_HUNK_TS, "packages/vue/src/far.test.ts"), (_FAR_HUNK_PY, "tests/test_far.py")):
             pr, diff = _comment_pr(patch, filename = filename)
             problems = pr_gate_module.comment_gate_problems("o/r", 1, head, runner = diff_runner(pr, diff))
             assert not any("is not shown by the patch" in problem for problem in problems), (filename, problems)
 
-    def test_an_unanchored_claim_far_down_the_file_is_still_caught(self, monkeypatch):
-        """The control: refusing stopped, judging did not."""
-        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(Path.cwd()))
+    def test_an_unanchored_claim_far_down_the_file_is_still_caught(self):
+        """The control: refusing stopped, judging did not.
+
+        A TS file, so the "checkout must contain the PR head" rule does not
+        apply (a JS/TS comment cannot span hunks, so no file text is needed) —
+        which is exactly why a stub head is honest here. The Python equivalent
+        of this case is `test_a_hunk_starting_past_line_one_is_judged_not_refused`,
+        which uses a real repository and that repository's real head.
+        """
         patch = "@@ -200,0 +200,2 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n"
         pr, diff = _comment_pr(patch, filename = "packages/vue/src/far.test.ts")
         problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
         assert any(("useHighlight" not in problem) and ("far.test.ts:200" in problem) for problem in problems), problems
+
+    def test_a_checkout_without_the_pr_head_is_refused_for_python(self, tmp_path, monkeypatch):
+        """Round 4's fail-open: a tree that lacks ``head`` would certify another commit's text.
+
+        Reading file text from a checkout that does not contain the PR head
+        silently erases every "state unknowable" refusal — the gate goes green
+        on files it never read. For a diff holding a Python test file (the only
+        kind whose state needs the text) that is a refusal, never a fallback.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+            subprocess.run(command, check = True, capture_output = True)
+
+        (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        monkeypatch.chdir(repo)
+        patch = "@@ -200,0 +200,2 @@\n+# measured: this pin catches the reload\n+x = 1\n"
+        pr, diff = _comment_pr(patch, filename = "tests/test_far.py")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert any("does not contain the PR head" in problem for problem in problems), problems
+
+    def test_a_directory_that_is_not_a_checkout_leaves_the_hunk_only_walk(self, tmp_path, monkeypatch):
+        """No repository at all: no invented text, and the scanner's own refusal stands."""
+        monkeypatch.chdir(tmp_path)
+        assert pr_gate_module._comment_gate_root("a" * 40, required = True) == (None, [])
+
+    def test_the_pr_head_is_taken_from_the_working_checkout(self, tmp_path, monkeypatch):
+        """The happy path of the resolver: cwd's toplevel, and its own head resolves."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        for command in (["git", "-C", str(repo), "init", "-q"], ["git", "-C", str(repo), "config", "core.hooksPath", "/dev/null"], ["git", "-C", str(repo), "config", "user.email", "g@example.invalid"], ["git", "-C", str(repo), "config", "user.name", "g"]):
+            subprocess.run(command, check = True, capture_output = True)
+
+        (repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+        monkeypatch.chdir(repo)
+        root, problems = pr_gate_module._comment_gate_root(head, required = True)
+        assert problems == [], problems
+        assert root == str(repo.resolve()), root
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):

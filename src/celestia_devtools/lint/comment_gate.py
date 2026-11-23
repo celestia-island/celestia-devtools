@@ -366,8 +366,9 @@ def _claim_text(line: str) -> str:
     The loop runs twice, once per marker: each pass removes whichever of the
     two is on the front, so order-independence is a side effect of covering
     both markers rather than a separate promise — a single pass that dropped
-    either one left a control character in the report and the suite stayed
-    green (round-3 mutation, now pinned).
+    either one left a control character in the report. Deleting either strip,
+    and running one pass in the other order, all red
+    ``test_a_claim_never_carries_the_walkers_own_markers``.
     """
     text = line.strip()
 
