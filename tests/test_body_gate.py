@@ -108,6 +108,15 @@ class test_the_directive:
         assert body_gate.main(["--body", str(target)]) == 0
         assert "body-gate-ok" in capsys.readouterr().out
 
+class test_the_directive_is_never_silent:
+    def test_a_directive_in_an_html_comment_is_still_printed(self):
+        # MUT:directive-printed — silently accepting a hidden directive is the
+        # silent pass the printed channel exists to prevent.
+        body = "It printed 120 passed. <!-- body-gate-ok: the log is elsewhere, page two -->\n"
+        result = body_gate.check_body(body)
+        assert result.ok
+        assert result.directives and (len(result.directives[0][1]) >= body_gate.DIRECTIVE_REASON_MIN)
+
 class test_scope_exclusions:
     """Fenced, quoted, indented, heading and record shapes are out of scope."""
 
@@ -149,7 +158,7 @@ class test_vocabulary:
     def test_the_behaviour_list_is_the_comment_gates_list(self):
         assert body_gate.BEHAVIOUR_TERMS is comment_gate.BEHAVIOUR_TERMS
 
-    @pytest.mark.parametrize("line", ["120 passed", "16/16", "rc=0", "6 files", "2.9s", "85%", "same sha256", "4 处", "三个测试"])
+    @pytest.mark.parametrize("line", ["120 passed", "16/16", "rc=0", "6 files", "2.9s", "3.3 MB", "174 bytes", "85%", "same sha256", "4 处", "三个测试"])
     def test_quantity_shapes(self, line):
         assert body_gate.QUANTITY.search(line), line
 
@@ -157,7 +166,7 @@ class test_vocabulary:
     def test_prose_figure_shapes(self, line):
         assert body_gate.prose_figures(line), line
 
-    @pytest.mark.parametrize("line", ["220×220", "0.55.463", "8/310", "3.3 MB", "exits 1", "这一行", "§3"])
+    @pytest.mark.parametrize("line", ["220×220", "0.55.463", "8/310", "exits 1", "这一行", "§3"])
     def test_excluded_figure_shapes(self, line):
         assert body_gate.prose_figures(line) == (), line
 

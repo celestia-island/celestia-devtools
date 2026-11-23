@@ -102,8 +102,8 @@ QUANTITY_PATTERNS: tuple[str, ...] = (  # py-style-ok: single-line-statement: on
     r"\b(?:rc|exit(?:\s*code)?)\s*[=:]\s*-?\d+",
     # 16 files / 2 crashed / 6 tests / 4 components
     r"\b\d[\d,]*\s*(?:files?|tests?|cases?|runs?|rounds?|pins?|calls?|lines?|crash(?:es)?|faults?|components?|screenshots?|probes?)\b",
-    # 2.9s / 120 ms / 0.42 seconds
-    r"\b\d[\d,]*(?:\.\d+)?\s*(?:ms|µs|us|ns|s|sec|secs|seconds?|min|mins|minutes?|hours?)\b",
+    # 2.9s / 120 ms / 0.42 seconds / 3.3 MB / 174 bytes / 1.2 MiB
+    r"\b\d[\d,]*(?:\.\d+)?\s*(?:ms|µs|us|ns|s|sec|secs|seconds?|min|mins|minutes?|hours?|bytes?|B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)\b",
     # 85% / 12.5 %
     r"\d[\d,]*(?:\.\d+)?\s*%",
     # `same sha256` / `md5 equal` — a checksum quoted as a claim
@@ -271,8 +271,12 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
 
         if "<!--" in text:
             before, _, after = text.partition("<!--")
-            _span, closed, trailing = after.partition("-->")
-            text = before + trailing
+            span, closed, trailing = after.partition("-->")
+            # A directive inside the comment is KEPT so it is scanned and
+            # printed (`body-gate-ok` must never be a silent pass); the rest of
+            # the comment is dropped.
+            comment = DIRECTIVE.search(span)
+            text = before + (comment.group(0) if comment else "") + trailing
 
             if not closed:
                 in_comment = True
