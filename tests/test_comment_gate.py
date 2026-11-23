@@ -630,14 +630,9 @@ class test_docstrings:
         (``401: payload = never_reds_alone()``). With the pass: scanned=0,
         claims=0 — the line is code and the gate says nothing about it.
         """
-        diff = _two_hunks(
-            "+keep one\n+keep two\n",
-            2,
-            400,
-            "+    payload = never_reds_alone()\n",
-            1,
-        )
-        whole = ["keep one", "keep two", '"""Opened between the hunks.', "    still prose", '"""'] + [""] * 395 + ["    payload = never_reds_alone()"]
+        diff = _two_hunks("+keep one\n+keep two\n", 2, 400, "+    payload = never_reds_alone()\n", 1)
+        prefix = ["keep one", "keep two", '"""Opened between the hunks.', "    still prose", '"""']
+        whole = prefix + ([""] * 395) + ["    payload = never_reds_alone()"]
         claims, _hits, scanned, notes = comment_gate.scan_diff(diff, contents = {"tests/test_x.py": whole})
         assert (scanned, claims) == (0, []), (scanned, [claim.render() for claim in claims], notes)
 
