@@ -8,118 +8,72 @@ rounds kept refuting. The comment gate (``celestia_devtools.lint.comment_gate``,
 devtools #306) covers behaviour claims in *test-file comments*; PR-body prose —
 where the figures and the causal sentences live — had no mechanical check at
 all. The failure named by the operators themselves: *when a number does not add
-up, invent a reason instead of writing "cause not established"*. A discipline
-that depends on remembering is not a gate.
+up, invent a reason instead of writing "cause not established"*.
 
 *Boundary - what this is NOT:* it cannot judge whether a claim is **true**. A
-verdict needs the reference semantics, and a text scan has none (the blind spot
-``doc_lint`` documents about itself; a guess would manufacture false greens).
-It checks one mechanical proxy instead: **wherever the body states a quantity
-or claims behaviour, that statement must be able to point at something a reader
-can recompute**, or say out loud that it was not recomputed. Nothing here reads
-meaning, so nothing here can be talked into agreeing with itself.
+verdict needs the reference semantics, and a text scan has none. It checks one
+mechanical proxy: **wherever the body states a quantity or claims behaviour,
+that statement must point at something a reader can recompute**, or say out
+loud that it was not recomputed.
 
-*What counts as a claim*
+*Scope - deliberately SMALL.* An earlier revision of this gate tried to decide,
+for every sentence, whether a code token made the sentence "naming a thing"
+rather than claiming it, whether a table was a capture, whether a hash was a
+subject — and five independent review rounds found eleven free passes inside
+that question, every one of them a new facet of the same wording. That is not a
+gate that converges; it is a rule whose surface cannot be enumerated. This
+version keeps the three judgements a reviewer can check by reading it:
 
-* **quantitative** — a number carrying a unit or a counter word, in either
-  language: ``N passed``, ``N/N``, ``rc=N``, ``N files``, ``N failed``, ``N 处``,
-  percentages, durations, counts. A bare integer with no unit is NOT a
-  quantity; the next class is what covers the bare numbers that still need a
-  source. A figure written inside backticks is still a claim: a quoted figure
-  is the claim repeated, not its source.
-* **a sentence that names a thing is not a claim** (:func:`names_a_thing`): a
-  line carrying a code token (an inline-code span, a flag, a path, a filename)
-  and no measured outcome describes the code — `` `format-markdown` exits 1 on
-  frame glyphs`` is naming the tool; "the suite went from 12 failed to 0" is
-  asserting a run, and is judged. Review round 2 found the difference deciding
-  whether an honest body was refused.
-* **behavioural** — the comment gate's own vocabulary, imported unmodified
-  (:data:`BEHAVIOUR_TERMS`: ``measured`` / ``verified`` / ``reds`` /
-  ``does NOT`` / ``catches`` / ``only when`` / ``never`` / ``抓住`` / ``抓不住`` /
-  ``只在`` / ``只有…时才``). One list, one source: a term added there is in
-  force here and the two gates cannot drift.
-* **unquoted digit** — a number written as prose instead of quoted from the
-  output that produced it (``3 of 4``, ``two reviewers``, ``三处``). It is its
-  own class because that is the organically measured shape of the incidents:
-  the waiver bodies state an arithmetic relation between run outputs and quote
-  the output for every figure EXCEPT the one carrying the wrong claim. A scan
-  that skips numbers-without-units skips exactly those. Excluded by
-  construction (each measured on the corpus): a heading line, CJK pronoun and
-  ordinal forms (``这一行`` / ``第一版`` / ``唯一``), a dimension (``220×220``), a
-  component version (``0.55.463``), a figure glued to its unit or a ratio
-  (``3.3 MB`` / ``8/310``), and a ``§`` reference — see
-  :func:`unquoted_digits`.
+1. **a quantity must carry a source** — a number with a unit / counter word, a
+   ratio, an ``rc=``, a percentage, a duration, or a bare prose figure
+   (``3 of 4``, ``2 → 0 → 2``);
+2. **a behaviour claim must carry a source** — the comment gate's own
+   vocabulary, imported unmodified (:data:`BEHAVIOUR_TERMS`);
+3. **a captured table is a table of readings** — a row whose first cell is a
+   label and whose remaining cells are numbers / ``#ref`` / empty
+   (:func:`is_reading_row`).
 
-*A statement is satisfied by* one of three things, each looked for on the
-statement's own line and the line above or below it:
+and one escape hatch the author can use honestly. Every other prose shape —
+a table that mixes prose into its rows, a sentence that names a commit or a
+file, a bare figure next to a command on the previous line — is covered by the
+**explicit directive** ``body-gate-ok: <reason>`` on the statement's own line,
+whose reason is held to the same 20-character floor as the PR-body waiver and
+whose use is printed by the gate. That is the honest trade this version makes:
+the three rules above are mechanical, and the rest is the author stating, in
+public, that they did it deliberately.
 
-* **an anchor** — ``MUT:<id>`` / ``mutate:<slug>`` (the comment gate's own
-  pattern, imported), an ``evidence:`` marker, a ``#PR`` reference, a URL, a
-  commit SHA, a checksum word (``sha256`` / ``md5``), a ``file:line``
-  reference, a path with a directory in it (:func:`path_is_source` rejects the
-  prose connectors ``and/or`` / ``n/a`` and date pairs), or an inline-code span
-  that names something (a filename, a two-word command, a flag, a call, a
-  camelCase identifier — :func:`span_is_source`);
-* **a disclaimer** — ``未复算`` / ``未验证`` / ``未测量`` / ``原因未查明`` /
-  ``unverified`` / ``not established`` / ``not re-run`` / ``not measured`` /
-  ``inference`` / ``inferred`` / ``not reproduced``. Saying "I did not
-  recompute this" is a valid answer; writing a cause you cannot check is not,
-  and that is the entire disease;
-* **a captured table** — a statement INSIDE a markdown table is satisfied when
-  the table is CAPTURED: it opens with a header row of words
-  (:func:`table_has_header`) or holds a verdict row whose LAST cell is
-  ``3 red`` / ``4 green`` (:func:`row_is_verdict`), and its own row is a
-  metrics row (a label then readings, :data:`_METRIC_CELL`) or a row of
-  captured cells. A grid of numbers with no header, a prose line saying
-  ``rc=0`` and a row whose last cell is a sentence are all judged as prose, so
-  a table cannot become a blanket exemption.
+*A source* (:data:`ANCHORS`) is one of: ``MUT:<id>`` / ``mutate:<slug>`` (the
+comment gate's own pattern, imported), an ``evidence:`` marker, a ``#PR``
+reference, a URL, a commit hash (7+ hex with at least one digit) or the
+checksum words ``sha256`` / ``sha1`` / ``md5``, a ``file:line`` reference to a
+dotted filename, or an inline-code span shaped like a command / flag / call /
+identifier / multi-segment path. The source may sit on the statement's own
+line, the line above or the line below.
 
-The window is one line up and one line down on purpose. This gate runs against
-real bodies, and a correct body very often puts the sentence first and the
-point last (``5. Restated from the raw counts: …`` / ``` `before` = 10 in round
-1 ```). Every real false claim in the waiver corpus sits at most one line from
-its narrative context, so a wider window buys no recall here and costs
-precision; the window is the tightening that carries, and its reach is not
-ours to widen on a hunch.
+*A disclaimer* (:data:`DISCLAIMERS`) says out loud that the figure was not
+recomputed (``未复算`` / ``unverified`` / ``not established`` / ``inference`` /
+…). Saying "I did not recompute this" is a valid answer; writing a cause you
+cannot check is not, and that is the entire disease.
 
-*Scope — deliberately narrow:*
+*Out of scope:* fenced blocks, indented blocks, block quotes, HTML comments,
+headings, the gate entry lines, the ``verify:`` record line, and lines carrying
+the directive. A body whose prose states nothing is a **loud skip** (rc 0, the
+skip printed); an empty body, a body that is only its record, and a body whose
+every line was excluded are **refused** (rc 1).
 
-* **PR body prose only.** Excluded from the scan: fenced blocks (a command or a
-  captured output is the evidence itself — a claim BESIDE a fence is satisfied
-  by it), indented code blocks, block quotes (the template shape the verify
-  record already refuses), HTML comments, headings (a title is not a claim),
-  the gate entry lines (``body-gate-waiver:`` / ``comment-gate-waiver:`` /
-  ``artifact-gate-waiver:``) and the ``verify:`` record line (machine state,
-  not prose). A body whose prose states nothing is a **loud skip**: it is
-  announced on stdout, the verdict is rc=0, and the skip is a printed line
-  rather than a silent green. The rationale is measured, not assumed: an
-  ordinary description ("load the Mermaid component through the host client,
-  tests updated") states no quantity and makes no behaviour claim, and a gate
-  that reds it would be switched off within a week — the noise-death argument
-  the artifact gate's design records.
-* **A body with no prose at all is refused** (rc≠0). That is NOT a skip: an
-  empty body is either a probe or a truncated payload, a body that is only its
-  ``verify:`` record is not a description, and a body whose every line is
-  fenced or quoted had nothing to scan. No reason to believe anything about
-  the change appears anywhere in those. The refusal lives in
-  :func:`check_body`, so the merge gate inherits it.
-
-*Waiver:* ``--waiver`` does not cover this gate — that channel suppresses
-exactly one refusal (``verify record c3 < 3``), and a channel whose purpose is
-"the description was shaky" would be self-defeating here. The only exception is
+*Waiver:* ``--waiver`` does not cover this gate. The only exception is
 ``body-gate-waiver: <reason>`` in the PR body, read by the merge gate through
-the SAME parser as ``comment-gate-waiver:`` (``pr_gate._gate_waiver``: one
-entry, prose only, no fence / indent, a 20-character floor) and announced on
-stdout. It is never a silent pass, and it never reaches this module.
+the same parser as ``comment-gate-waiver:`` and announced on stdout.
 
 *CLI:* ``lint-pr-body [--body FILE | --pr N --repo OWNER/NAME] [--quiet]``,
 also reachable as ``celestia-devtools lint-pr-body``.
 Exit codes: 0 clean or loud skip, 1 unsourced statements, 2 usage or an
-unreadable body (a body that cannot be read must never read as clean).
+unreadable body.
 """
 
 from __future__ import annotations
 import argparse
+import html
 import re
 import subprocess
 import sys
@@ -135,57 +89,47 @@ EXIT_FINDINGS = 1
 EXIT_USAGE = 2
 
 #: The behavioural vocabulary is the comment gate's list, imported rather than
-#: copied. A copy would be a second place to edit and a guaranteed drift.
+#: copied: one list, one owner, and the two gates cannot drift.
 BEHAVIOUR_TERMS: tuple[str, ...] = comment_gate.BEHAVIOUR_TERMS
 
-#: Quantities: a number WITH its unit or counter word, in both languages. Each
-#: alternative is independent; the tuple exists so a reader can see the whole
-#: surface in one place and tests can pin it.
+#: Quantities: a number WITH its unit or counter word, in both languages.
 QUANTITY_PATTERNS: tuple[str, ...] = (  # py-style-ok: single-line-statement: one data table, one entry per line
-    # 120 passed / 149 passed (16) / 12 failed / 3 green / 2 red
+    # 120 passed / 12 failed / 3 green / 2 red
     r"\b\d[\d,]*\s*(?:passed|failed|skipped|green|red|checks?|assertions?|findings?|rows?|claims?)\b",
     # 16/16, 3/4, 46/46
     r"(?<![\d/§])\d[\d,]*\s*/\s*\d[\d,]*(?![\d/])",
     # rc=0 / exit 0 / exit code 1
     r"\b(?:rc|exit(?:\s*code)?)\s*[=:]\s*-?\d+",
-    # 16 files / 2 crashes / 6 tests / 4 components
-    r"\b\d[\d,]*\s*(?:files?|tests?|cases?|runs?|rounds?|pins?|calls?|lines?|chars?|crash(?:es)?|faults?|components?|screenshots?|probes?)\b",
-    # 2.9s / 120 ms / 0.42 seconds / 119 s
+    # 16 files / 2 crashed / 6 tests / 4 components
+    r"\b\d[\d,]*\s*(?:files?|tests?|cases?|runs?|rounds?|pins?|calls?|lines?|crash(?:es)?|faults?|components?|screenshots?|probes?)\b",
+    # 2.9s / 120 ms / 0.42 seconds
     r"\b\d[\d,]*(?:\.\d+)?\s*(?:ms|µs|us|ns|s|sec|secs|seconds?|min|mins|minutes?|hours?)\b",
     # 85% / 12.5 %
     r"\d[\d,]*(?:\.\d+)?\s*%",
-    # checksums quoted as a claim ("same sha256", "md5 equal")
+    # `same sha256` / `md5 equal` — a checksum quoted as a claim
     r"\bsha-?(?:1|256|512)\b|\bmd5\b",
-    # 4 处 / 3 个文件 / 6 行 / 2 次 / 5 个 crate / 16 个
-    r"\d[\d,]*\s*(?:处|次|个|行|条|项|例|件|组|份|字|笔|步|轮|个文件|章|节)",
-    # 三个测试: a CJK numeral before a counter word is the same claim.
-    # Two characters minimum: a lone 一/二/三/十 is a pronoun or an ordinal far
-    # more often than a count (一是…/二是…/最后一项), measured on the corpus.
-    r"(?:[一二两三四五六七八九]|十[一二三四五六七八九]?|二十|三十)(?:处|次|个|行|条|项|例|件|组|份|步|轮)",
-    # 2 crashed / 6 failed — one ASCII digit beside a CJK counter.
-    r"\d[\d,]*\s*(?:crash|fail)"
+    # 4 处 / 3 个文件 / 6 行 / 2 次
+    r"\d[\d,]*\s*(?:处|次|个|行|条|项|例|件|组|份|字|笔|步|轮|章|节)",
+    # 三个测试 / 五轮
+    r"(?:[一二两三四五六七八九]|十[一二三四五六七八九]?|二十|三十)(?:处|次|个|行|条|项|例|件|组|份|步|轮)"
 )
 QUANTITY = re.compile("|".join(f"(?:{pattern})" for pattern in QUANTITY_PATTERNS), re.IGNORECASE)
 
-#: A number written as prose. See the module docstring: this class is what
-#: covers the waiver corpus' prose figures, so it is the scan's recall centre.
-#: A candidate is a space-delimited number token outside a word, a path, a
-#: version or a section reference. Exclusions that need look-ahead (a figure
-#: glued to its unit, a dimension, a ratio) live in :func:`unquoted_digits`.
-UNQUOTED_DIGIT = re.compile(r"(?<![A-Za-z0-9_.§/~-])\d+(?:[,.]\d+)*")
+#: A bare prose figure: a number in a sentence (`3 of 4`, `10 in round 1`,
+#: `2 → 0 → 2`). The exclusions live in :func:`prose_figures`.
+PROSE_FIGURE = re.compile(r"(?<![A-Za-z0-9_.§/~-])\d+(?:[,.]\d+)*")
 
-#: Words that take a bare number as an OBJECT (`exits 1`, `line 12`, `version
-#: 0.7`): a count of code objects, not a measured quantity.
-_HOST_WORD = re.compile(r"(?i)^(?:exits?|lines?|steps?|modes?|items?|index|pages?|issues?|pr|parts?|phases?|levels?|tiers?|versions?|no\.)$")
-
-#: CJK numeral forms that are quantifiers, pronouns or ordinals rather than
-#: counts: 这一行 / 那一处 / 第一版 / 唯一 / 一番 / 一下 / 每三个.
+#: Figures that are not prose claims even bare: a version (`0.7.0`, `>= 1.36`),
+#: a section or PR reference (`§3`, `#2813`), a dimension (`220×220`), a ratio
+#: (`8/310`), a unit-glued figure (`3.3 MB`, `48400 px`), an object count
+#: (`exits 1`, `line 12`) and a CJK pronoun / ordinal (`这一行`, `第一版`).
+_VERSION = re.compile(r"^\d+(?:\.\d+)+$")
 _CJK_PRONOUN = re.compile(r"[这那每某唯一第一二三四五六七八九十][一二三四五六七八九十]?")
 _CJK_ORDINAL = re.compile(r"第[一二三四五六七八九十\d]+")
+_HOST_WORD = re.compile(r"(?i)^(?:exits?|lines?|steps?|modes?|items?|index|pages?|issues?|pr|parts?|phases?|levels?|tiers?|versions?|no\.)$")
 
 #: The disclaimer vocabulary: saying out loud that a figure was not recomputed
-#: (or that its cause was not established) is a VALID answer — precisely the
-#: discipline the waiver corpus was missing.
+#: (or that its cause was not established) is a VALID answer.
 DISCLAIMERS: tuple[str, ...] = (  # py-style-ok: single-line-statement: one data table, one entry per line
     "未复算",
     "未验证",
@@ -205,47 +149,45 @@ DISCLAIMERS: tuple[str, ...] = (  # py-style-ok: single-line-statement: one data
     "unconfirmed"
 )
 
-#: Where a claim can point for its source. One list, used by one test.
-MARKERS: tuple[re.Pattern[str], ...] = (  # py-style-ok: single-line-statement: one data table, one entry per line
-    # MUT:<id> / mutate:<slug> — the comment gate's own pattern, imported so
-    # the two gates cannot disagree about what a mutation reference looks like.
-    comment_gate._EXPLICIT_ANCHOR,
-    re.compile(r"\bevidence\s*:", re.IGNORECASE),
-    re.compile(r"(?<![\w#])#\d+\b"),
-    re.compile(r"https?://\S+"),
-    re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE),
-    re.compile(r"\bsha-?(?:1|256|512)\b|\bmd5\b", re.IGNORECASE),
-    # file:line / file:line-line — the reader opens that line.
-    re.compile(r"[\w./-]+\.(?:rs|ts|tsx|js|jsx|py|md|toml|yml|yaml|json|sql|wit|vue|sh|just|lock)\s*:\s*\d+"),
-    # A path with a directory. The marker is the exact SHAPE; which shapes
-    # count as provenance is `path_is_source`, because prose connectors
-    # (`and/or`, `before/after`, `n/a`) and date pairs (`2026-11-15/16`) also
-    # look like `a/b` and certified whole lines until review round 2.
-    re.compile(r"(?<![\w./~-])(?:[\w-]+/)+[\w.-]*[\w-]|(?<![\w./~-])[\w-]+/[\w.-]*[\w-]")
-)
+#: The directive: a statement the author deliberately makes with no source. The
+#: reason is part of the pattern, held to :data:`DIRECTIVE_REASON_MIN`, and the
+#: gate prints every line it exempts.
+DIRECTIVE_REASON_MIN = 20
+DIRECTIVE = re.compile(r"body-gate-ok:[ \t]*(?P<reason>.*)$", re.IGNORECASE)
 
-#: A markdown table row: the cells decide whether the row is a verdict row.
+#: A commit hash (7+ hex, at least one digit) or a named checksum. An all-letter
+#: run is a word (`defaced`), not a hash.
+_COMMIT = re.compile(r"(?<![\w])[0-9a-f]{7,40}(?![\w])", re.IGNORECASE)
+_CHECKSUM_WORD = re.compile(r"\bsha-?(?:1|256|512)\b|\bmd5\b", re.IGNORECASE)
+#: A `file:line` reference: a dotted filename, a colon, a line number.
+_FILE_LINE = re.compile(r"[\w./-]+\.(?:rs|ts|tsx|js|jsx|py|md|toml|yml|yaml|json|sql|wit|vue|sh|just|lock|txt)\s*:\s*\d+")
+_EVIDENCE = re.compile(r"\bevidence\s*:", re.IGNORECASE)
+_PR_REF = re.compile(r"(?<![\w#])#\d+\b")
+_URL = re.compile(r"https?://\S+")
+
+#: An inline-code span shaped like something a reader can act on: a flag, a
+#: call, an identifier, a filename, a multi-segment path, a value assignment.
+_SPAN = re.compile(r"`[^`\n]+`")
+#: A span is a SOURCE when its contents look like a thing to run or open: a
+#: flag, a call, an underscored or camelCase identifier, a path, a filename, a
+#: value assignment, or a short all-lowercase word pair (`vite build`).
+_SPAN_SOURCE = re.compile(r"--?[a-z][\w-]*|\w+\(|\w_\w|[a-z][A-Z]|[/:.]\w|=\S|^[a-z][a-z0-9_-]*\s+[a-z][\w-]*$")
+
+#: The marker set, in the order the docstring lists it.
+ANCHORS: tuple[str, ...] = ("MUT", "evidence", "#PR", "URL", "SHA", "file:line", "span")
+
+#: A markdown table row and its delimiter row.
 _ROW = re.compile(r"^\s*\|.*\|[ \t]*$")
-#: A table's delimiter row (`|---|---|`), which is structure rather than a row.
 _ROW_SEPARATOR = re.compile(r"^\s*\|\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|\s*$")
-_ROW_VERDICT = comment_gate._ROW_VERDICT
 
-#: The gate's own entry lines: an exception statement is not a claim, and the
-#: number in its reason must not need a source of its own. Anchored at the line
-#: start (the exemption's own shape) so a sentence that merely mentions the
-#: token is still scanned.
+#: The gate's own entry lines (an exception statement is not prose), anchored at
+#: the line start so a sentence that merely mentions the token is still scanned.
 _WAIVER_ENTRY = re.compile(r"^[\s*>#]*[*_`]*(?:body|comment|artifact)-gate-waiver[*_`]*\s*[:：]", re.IGNORECASE)
-
-#: The verify record line. Its fields are machine state owned by the record
-#: checker (`rounds=6` / `c3=3`), and the trailing prose on that line is part
-#: of the record's shape, not a claim about the change.
+#: The verify record line: machine state owned by the record checker.
 _RECORD_LINE = re.compile(r"^[ \t>#*_+.\-`]*(?:\d+[.)][ \t]+)?[*_ \t#>.`-]*(?:verify|合计)[ \t*_`]*\**[ \t]*[:：]", re.IGNORECASE)
-
-#: A fenced block opener: ``` or ~~~ with an optional info string.
+#: A fenced block opener.
 _FENCE = re.compile(r"^(`{3,}|~{3,})")
-
-#: Zero-width characters a disclaimer could hide behind (the comment gate's
-#: filter, reused rather than re-derived).
+#: Zero-width characters a directive reason could hide behind.
 _INVISIBLE = comment_gate._INVISIBLE
 
 @dataclass(frozen = True)
@@ -270,6 +212,7 @@ class report:
     statements: tuple[statement, ...]
     findings: tuple[statement, ...]
     problems: tuple[str, ...]
+    directives: tuple[tuple[int, str], ...] = ()
     skipped: str | None = None
 
     @property
@@ -278,112 +221,88 @@ class report:
 
 @dataclass(frozen = True)
 class _line:
-    """One line of the body that is subject to the claim scan.
-
-    ``section`` is the index of the "prose paragraph" the line belongs to (a
-    blank line or a heading starts a new one) and ``tabular`` marks a line that
-    sits inside a markdown table (a table's opening row and its delimiter).
-    """
+    """One line of the body that is subject to the claim scan."""
 
     number: int
     text: str
     section: int = 0
-    tabular: bool = False
-
-    def with_section(self, section: int, *, tabular: bool) -> "_line":
-        """This line, re-labelled by the paragraph walker."""
-        return _line(number = self.number, text = self.text, section = section, tabular = tabular)
 
 def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, ...]]:
     """The lines of ``body`` subject to the claim scan, plus notes + fence lines.
 
-    Excluded in order: fenced blocks (an UNCLOSED fence swallows the rest — the
-    conservative reading the record checker takes), indented code blocks, block
-    quotes, HTML comments, headings, gate entry lines and the verify record
-    line. Every exclusion is a *shape that reads as a template or a capture*,
-    never a judgement about content.
+    Excluded, each for a shape that reads as a template or a capture: fenced
+    blocks (an unclosed fence swallows the rest — the conservative reading),
+    indented blocks, block quotes, HTML comments (a closed one hides only
+    itself), headings, the gate entry lines and the verify record line.
     """
     lines: list[_line] = []
     notes: list[str] = []
+    evidence: list[_line] = []
+    dropped: list[int] = []
     fence: str | None = None
     in_comment = False
-    # FENCE lines are EVIDENCE, not prose: never scanned as a claim, but their
-    # PRESENCE beside a claim is what "the output below" means for a reader, so
-    # they are tracked as evidence positions (see `sourced`).
-    evidence: list[_line] = []
-    #: Lines excluded as indented / quoted / heading. They are not scanned, and
-    #: a body whose ONLY content was excluded must not read as "no statements"
-    #: (that lane is a skip): `check_body` refuses when every prose line that is
-    #: not a heading was dropped (review round 2, finding 5).
-    dropped: list[int] = []
 
     for number, raw in enumerate(body.splitlines(), start = 1):
-        stripped = raw.strip()
-        opener = _FENCE.match(stripped)
+        opener = _FENCE.match(raw.strip())
 
         if fence is not None:
-            evidence.append(_line(number = number, text = raw, section = -1, tabular = False))
+            evidence.append(_line(number = number, text = raw))
 
-            if (opener is not None) and (opener.group(1)[0] == fence) and (set(stripped) == {fence}):
+            if (opener is not None) and (opener.group(1)[0] == fence) and (set(raw.strip()) == {fence}):
                 fence = None
 
             continue
 
         if opener is not None:
             fence = opener.group(1)[0]
-            evidence.append(_line(number = number, text = raw, section = -1, tabular = False))
+            evidence.append(_line(number = number, text = raw))
             continue
 
+        text = raw
+
         if in_comment:
-            _, closed, trailing = stripped.partition("-->")
+            _before, closed, trailing = text.partition("-->")
 
             if not closed:
                 continue
 
             in_comment = False
-            stripped = trailing.strip()
+            text = trailing
 
-        if "<!--" in stripped:
-            before, _, after = stripped.partition("<!--")
+        if "<!--" in text:
+            before, _, after = text.partition("<!--")
             _span, closed, trailing = after.partition("-->")
-            stripped = (before + trailing).strip()
+            text = before + trailing
 
             if not closed:
                 in_comment = True
 
-            if not stripped:
-                continue
+        if not text.strip():
+            lines.append(_line(number = number, text = ""))
+            continue
 
-        lead = raw[: len(raw) - len(raw.lstrip())]
+        lead = text[: len(text) - len(text.lstrip())]
+        stripped = text.strip()
         in_table_row = _ROW.match(stripped) is not None
 
-        # A row's leading spaces are markdown alignment inside the cell, not an
-        # indented code block: only a line that is NOT a table row can be one.
-        indented = (not in_table_row) and (("\t" in lead) or (len(lead) >= 4))
+        if (not in_table_row) and (("\t" in lead) or (len(lead) >= 4)):
+            dropped.append(number)
+            continue
 
-        if indented or stripped.startswith(">") or stripped.startswith("#"):
+        if stripped.startswith(">") or stripped.startswith("#"):
             dropped.append(number)
             continue
 
         if _WAIVER_ENTRY.match(stripped) or _RECORD_LINE.match(raw):
-            # An exemption ENTRY is not prose. A sentence that merely MENTIONS
-            # the token stays in the scan — the old "any line containing the
-            # token" test was a one-line, unannounced hole (review round 2).
             continue
 
-        lines.append(_line(number = number, text = raw))
+        lines.append(_line(number = number, text = text))
 
     if fence is not None:
         notes.append("the body ends inside an unclosed code fence — everything after the opener was treated as code (the conservative reading of a truncated body)")
 
-    # Paragraph and table labelling. A "section" is a run of prose lines not
-    # interrupted by a blank line, a heading or a table block; a "table block"
-    # is a run of `|` lines that contains a delimiter row. Measured: a captured
-    # table is an evidence block (its cells are the output), so its rows are
-    # re-labelled as one table and never judged as prose statements; a run of
-    # pipe lines WITHOUT a delimiter row is not markdown table syntax, and stays
-    # prose — that is the negative control for this rule.
-    labelled: list[_line] = []
+    # Paragraph labelling: a blank line, a heading or a table block starts the
+    # next one. The table block is one unit so its rows are judged together.
     section = 0
     previous_blank = True
     index = 0
@@ -393,28 +312,16 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
         stripped = row.text.strip()
 
         if _ROW.match(stripped):
-            start = index
-
             while (index < len(lines)) and _ROW.match(lines[index].text.strip()):
                 index += 1
 
-            block = lines[start: index]
-            is_table = any(_ROW_SEPARATOR.match(part.text.strip()) for part in block)
-
-            if is_table:
-                section += 1
-                labelled.extend(part.with_section(section, tabular = True) for part in block)
-                previous_blank = False
-                continue
-
-            labelled.extend(part.with_section(section, tabular = False) for part in block)
+            section += 1
             previous_blank = False
             continue
 
         if not stripped:
             section += 1
             previous_blank = True
-            labelled.append(row.with_section(section, tabular = False))
             index += 1
             continue
 
@@ -422,66 +329,47 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
             section += 1
 
         previous_blank = False
-        labelled.append(row.with_section(section, tabular = False))
         index += 1
 
     omitted = ("the body's only prose was indented or quoted, so nothing could be scanned — an indented block is a template, not a description",) if (not lines) and dropped else ()
 
-    return labelled, notes, evidence, omitted
+    return lines, notes, evidence, omitted
 
 def behaviour_terms(text: str) -> tuple[str, ...]:
     """The behavioural vocabulary ``text`` hits (the comment gate's own test)."""
     return comment_gate.behaviour_terms(text)
 
-def unquoted_digits(text: str) -> tuple[str, ...]:
-    """Bare prose numbers in ``text`` — the scan's recall centre.
+def prose_figures(text: str) -> tuple[str, ...]:
+    """Bare prose figures in ``text`` — the numbers a sentence asserts.
 
-    A candidate is a space-delimited number token outside a word, a version, a
-    path or a section reference. Excluded, each for a measured reason (the
-    exclusions were derived from the waiver corpus, not imagined):
-
-    * ``§`` / ``#`` / ``-`` / ``/`` right before it — a section reference, a PR
-      reference, a negative number or a ratio already matched as a quantity;
-    * a CJK pronoun or ordinal word before it — ``这一行`` / ``第一版`` /
-      ``每三个``;
-    * a CJK word character directly before it with prose after it — the digit
-      is part of a name, not a count;
-    * a figure glued to its unit, a ratio, a dimension or a CJK counter
-      (``3.3 MB`` / ``8/310`` / ``220×220`` / ``9行``) — those are the quantity
-      patterns' job, and this class is about prose arithmetic.
+    Excluded (each is a *label* rather than a measurement): a version
+    (`0.7.0`, or any figure right after a comparison operator), a section or PR
+    reference (`§3`, `#2813`), a dimension or ratio (`220×220`, `8/310`), a
+    figure glued to its unit (`3.3 MB`, `48400 px`), an object count
+    (`exits 1`, `line 12`) and a CJK pronoun / ordinal (`这一行`, `第一版`).
     """
     found: list[str] = []
 
-    for match in UNQUOTED_DIGIT.finditer(text):
+    for match in PROSE_FIGURE.finditer(text):
         before = text[: match.start()]
         number = match.group(0)
-        tail = before[-1:]
         following = text[match.end():]
-
-        # A figure glued to a unit (`3.3 MB`), a ratio or a dimension (`8/310`,
-        # `220×220`) or followed by a unit word (`48400 px`) belongs to the
-        # quantity patterns, not to prose arithmetic. An ARROW (`2->0->2`,
-        # `2 => 0`) continues the tally: the figure before it is a count.
-        glued = re.match(r"^\s?(?:%|[×*]|\d+\s*[×*]|/\s*\d|[A-Za-z]{1,6}\b(?![\s,.;:)]|$))", following) is not None
-        arrow = re.match(r"^\s?(?:→|->|=>)", following) is not None
-
-        if glued and (not arrow):
-            continue
-
-        if (following[:1] != " ") and (not re.match(r"^[\u4e00-\u9fff]", following)) and (not arrow):
-            continue
-
-        if tail in ("§", "-", "—", "(", "[", "/", ">", "≥", "<", "≤", "="):
-            continue
-
         word_before = before.rstrip().split(" ")[-1] if before.strip() else ""
+        tail = before[-1:]
 
-        # A comparison (`>= 1.36`) is a version bound, not a measurement; a
-        # version (`0.7.0`) and a unit word's object (`exits 1`) are not either.
+        if re.match(r"^\s?(?:%|[×*]|/\s*\d|[A-Za-z]{1,6}\b(?![\s,.;:)]|$))", following) and (not re.match(r"^\s?(?:→|->|=>)", following)):
+            continue
+
+        if (following[:1] != " ") and (not re.match(r"^[\u4e00-\u9fff]", following)) and (not re.match(r"^\s?(?:→|->|=>)", following)):
+            continue
+
+        if tail and (tail in "§-—([/<>≥≤="):
+            continue
+
         if before.rstrip().endswith((">=", "<=", ">", "<", "=")):
             continue
 
-        if re.fullmatch(r"\d+(?:\.\d+)+", number) or _HOST_WORD.match(word_before):
+        if _VERSION.match(number) or _HOST_WORD.match(word_before):
             continue
 
         if _CJK_PRONOUN.match(tail) or _CJK_ORDINAL.match(before[-3:] + number):
@@ -494,499 +382,112 @@ def unquoted_digits(text: str) -> tuple[str, ...]:
 
     return tuple(found)
 
-#: A code token: an identifier, a flag, a call, a path, a filename, or a
-#: sentence that NAMES one. A line carrying one is naming a thing, not
-#: asserting an outcome about it (`` `format-markdown` exits 1 on … `` describes
-#: the tool; "The suite went from 12 failed to 0" asserts a run).
-_CODE_TOKEN = re.compile(r"`[^`\n]+`|\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\.[A-Za-z0-9]{1,6}\b\s*(?=[`(]|$)|\b\w+\s+--?[a-z][\w-]+")
-#: A measured outcome: a counter word or a run word next to a figure or a flag.
-_OUTCOME = re.compile(r"\b\d[\d,]*\s*(?:passed|failed|red|green|crash|error|warning|hits?)\b|\b(?:exit|rc)\b\s*[=:]?\s*-?\d", re.IGNORECASE)
+def code_spans(text: str) -> tuple[str, ...]:
+    """The inline-code spans of ``text``, without their backticks."""
+    return tuple(match.group(0).strip("`") for match in _SPAN.finditer(text))
 
-#: What makes a span a code NAME rather than a word or a path: a call, an
-#: underscore, a flag, a camelCase identifier, a dotted member (`a.b.c`).
-_SPAN_CODE = re.compile(r"[\w.]+\(|_|--?[a-z][\w-]*|[a-z][A-Z]|^[a-z]+(?:\.[a-z][\w]*)+$")
-#: A tool named WITH its version (``` `vite 8.2` ```): the tool is the subject.
-_TOOL_VERSION = re.compile(r"[A-Za-z][\w-]*\s+\d+(?:\.\d+)*")
+def span_is_source(span: str) -> bool:
+    """True when a span is shaped like a command, flag, call, identifier or path."""
+    text = span.strip()
 
-#: A figure sequence in a tally (`2 → 0 → 2`, `2->0->2`): every figure in it is
-#: a count, so `unquoted_digits` keeps them instead of reading the arrow as a
-#: unit. (Round 7 excluded the sequence from the scan, which made a wired
-#: counter tally invisible; round 8 restored the claim and the ASCII arrows.)
-_SEQUENCE = re.compile(r"\d+(?:\s*(?:→|->|=>)\s*\d+)+")
+    return bool(_SPAN_SOURCE.search(text)) or (bool(re.search(r"\.\w{1,6}$", text)) and (len(text) >= 4))
 
-def names_a_thing(line: str) -> bool:
-    """True when ``line`` NAMES a code thing instead of claiming an outcome.
+def has_quote(text: str) -> bool:
+    """True when ``text`` carries an inline-code span at all."""
+    return bool(_SPAN.search(text))
 
-    Two shapes count, and both need the naming to be the line's subject rather
-    than a citation:
+def is_source(line: str) -> bool:
+    """True when ``line`` carries one of :data:`ANCHORS`."""
+    lowered = line.lower()
 
-    * an un-backticked code token — an underscored identifier or a ``--flag`` —
-      anywhere on the line;
-    * a code span whose content is an identifier, a call or a flag — an
-      ``expect(…)``, a ``createSurface``, a ``settings.allow-scripts`` — anywhere
-      on the line: a reader can open it, and it is the line's subject;
-    * a span that OPENS the line with only punctuation or a result marker after
-      it (``` `format-markdown` exits 1 on … ```), even when the span is a
-      bare word.
+    for word in DISCLAIMERS:
+        lowered = lowered.replace(word, " " * len(word))
 
-    and none may sit beside a measured outcome (`` `vite build` printed 12
-    failed `` is a claim about a run). A bare PATH citation mid-sentence
-    (`` the harness, see `docs/en/x.md` ``) silences nothing: round 5 measured
-    one path making any "verified" on the line pass.
-    """
-
-    if _OUTCOME.search(line):
-        return False
-
-    if re.search(r"\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\s+--?[a-z][\w-]+", _SPAN.sub(" ", line)):
+    if comment_gate._EXPLICIT_ANCHOR.search(lowered):
         return True
 
-    # A span is a citation, not a subject, when it is a bare PATH
-    # (`docs/en/x.md`): it is a reference to a place, not the thing described.
-    for match in _SPAN.finditer(line):
-        span = match.group(0).strip("`")
-        before = line[: match.start()]
-        after = _RESULT_MARKER.sub(" ", line[match.end():])
-        subject = (re.search(r"[A-Za-z\u4e00-\u9fff]", before) is None) and (re.search(r"[A-Za-z\u4e00-\u9fff]", after) is None)
+    if _EVIDENCE.search(lowered) or _PR_REF.search(lowered) or _URL.search(lowered):
+        return True
 
-        # A span NAMES code when it is an identifier, a call or a flag — not a
-        # bare path (a citation) and not a plain English phrase (emphasis).
-        names_code = bool(_SPAN_CODE.search(span)) or bool(_TOOL_VERSION.fullmatch(span))
+    if _CHECKSUM_WORD.search(lowered) or _FILE_LINE.search(lowered):
+        return True
 
-        if subject or names_code:
-            return True
+    if any(re.search(r"\d", match.group(0)) for match in _COMMIT.finditer(lowered)):
+        return True
 
-    return False
+    return any(span_is_source(span) for span in code_spans(lowered))
 
-def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim.
-
-    Two rules, and they are independent:
-
-    * **a figure is a claim** — a quantity carrying its unit or a counter word,
-      unless EVERY quantity on the line is a code span (``` `16 passed (16)` ```
-      is the run's output pasted, not prose), and any bare prose figure;
-    * **naming a thing makes no BEHAVIOUR claim** (:func:`names_a_thing`) — a
-      line carrying a code token and no measured outcome describes the code.
-      It does not excuse a figure: `` \`pr_gate.py\` now runs 6 gates `` names
-      the module and states a count, and only the count is judged.
-    """
-    kinds: list[str] = []
-    terms = behaviour_terms(line)
-    naming = names_a_thing(line)
-    spans = [(match.start(), match.end()) for match in _SPAN.finditer(line)]
-    quantities = list(QUANTITY.finditer(line))
-    quoted = bool(quantities) and all(any((start <= part.start()) and (part.end() <= end) for start, end in spans) for part in quantities)
-
-    if terms and naming:
-        terms = ()
-
-    if quantities and (not quoted):
-        kinds.append("quantity")
-
-    if terms:
-        kinds.append("behaviour")
-
-    if (not kinds) and unquoted_digits(line):
-        kinds.append("unquoted digit")
-
-    return tuple(kinds), terms
-
-def has_disclaimer(line: str) -> bool:
+def disclaims(line: str) -> bool:
     """True when ``line`` says out loud that the figure was not recomputed."""
     return any(word in line.translate(_INVISIBLE).lower() for word in DISCLAIMERS)
 
-def is_table_row(line: str) -> bool:
-    """True when ``line`` is a markdown table row."""
-    return bool(_ROW.match(line))
+def directive_reason(line: str) -> str | None:
+    """The reason a ``body-gate-ok:`` directive carries, or ``None``."""
+    match = DIRECTIVE.search(line)
 
-def is_outcome_row(line: str) -> bool:
-    """True when ``line`` is a full-width row holding a run OUTCOME word.
+    if match is None:
+        return None
 
-    ``pass`` / ``fail`` / ``red`` / ``green`` are the gate vocabulary, but only
-    when the row is not a claimed-behaviour cell of a 2/3-column table: a
-    distribution table (``| QR | ... | already caught ... |``) is describing
-    the code, not quoting a run. A full-width row (5+ cells) is the telemetry
-    shape (``| before | 0 | 0 | 0 | 3 |``), and that is treated as a captured
-    output — its numbers are the evidence, so they are not prose claims.
+    return line[match.start("reason"):].translate(_INVISIBLE).strip()
+
+def is_reading_row(line: str) -> bool:
+    """True when a table row is a label followed by readings.
+
+    The first cell may be a word (the row's label); every following cell must be
+    empty, a number with an optional unit, or a `#ref`. A prose cell
+    (``9 of 10 builds break``, ``waiver PR``) makes the row prose — which is the
+    only table shape this gate certifies.
     """
 
-    if not is_table_row(line) or not _ROW_VERDICT.search(line):
-        return False
-
-    cells = len(line.strip().strip("|").split("|"))
-    return cells >= 5
-
-def is_captured_verdict(line: str) -> bool:
-    """True when ``line`` is a TABLE row holding a run outcome or an ``rc=0``.
-
-    Deliberately table-only: a prose line such as ``Status: rc=0 on the last
-    run.`` is a claim about a run, not the run's output, so it must not be read
-    as captured evidence (review round 2 measured the prose form being treated
-    as one).
-    """
-
-    if not is_table_row(line):
-        return False
-
-    # The verdict has to CLOSE the row (`| run | 3 green |`); a word found
-    # anywhere in a prose cell is not a captured outcome (round 6).
-    return row_is_verdict(line) or bool(re.search(r"\brc\s*=\s*-?\d+\s*$", line.strip().rstrip("|").strip()))
-
-def row_is_verdict(line: str) -> bool:
-    """True when a table row CLOSES with a verdict cell (``| 3 red |``).
-
-    The comment gate's row rule, applied to a body table: the verdict has to be
-    the last cell, so a row that merely says the word ``green`` somewhere in its
-    prose does not count (review round 2 measured a whole-line search turning
-    ``Adding a token to an unchanged list reddens this line`` into a verdict).
-    """
-
-    if not is_table_row(line):
+    if not _ROW.match(line):
         return False
 
     cells = [cell.strip().strip("*`_ ") for cell in line.strip().strip("|").split("|")]
 
-    if not cells:
+    if len(cells) < 2:
         return False
 
-    # The last cell must BE the verdict, not contain the word: `likely to fail`
-    # is prose (round 4).
-    return bool(re.fullmatch(r"(?i:(?:\d+\s*(?:red|green)|red|green|stays green|pass|passes|failed|fails|killed|survived))|(?:红|绿)", cells[-1]))
+    return all((not cell) or bool(_READING_CELL.fullmatch(cell)) for cell in cells[1:])
 
-def is_captured_cell(line: str) -> bool:
-    """True when a table row's cells are captured output rather than prose.
+#: A reading: a number with an optional unit, or a `#ref`, or an em dash.
+_READING_CELL = re.compile(r"-?\d+(?:[.,]\d+)*\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
 
-    Three shapes, each measured:
+def table_bounds(lines: Sequence[_line], index: int) -> tuple[int, int] | None:
+    """The ``[first, last]`` envelope of the table block holding ``index``."""
 
-    * a run-outcome word (``pass`` / ``fail`` / ``red`` / ``green`` / ``rc=0``);
-    * EVERY cell is nothing but a number (``| 0 | 0 | 0 | 3 |``): a numeric row
-      is the reading itself. One numeric cell among prose ones (``| before | 0
-      occurrences | yes |``) is NOT enough, and neither is a row whose first
-      cell is a word (``| before | 0 | 0 | 0 | 3 |``) — that one is a prose
-      row with a label, so its table must carry a verdict row to be trusted
-      (that is how shittim-chest #2821's telemetry table passes, and why its
-      out-of-table restatement does not);
-    * a cell that is a bare reading with its unit (``9041 bytes`` /
-      ``220×220``): a cell holding only the measurement, no sentence around it.
+    if not _ROW.match(lines[index].text.strip()):
+        return None
 
-    A prose cell (``| wrapper evaluation fails | 0 bytes — blank page | 1 |``
-    is mixed, so it stays prose by the first rule) still has to carry a source:
-    this helper is deliberately narrow, and ``test_a_prose_table_still_needs_
-    sources`` is the negative control that keeps it narrow.
-    """
+    low = index
+    high = index
 
-    if is_captured_verdict(line) or row_is_verdict(line):
-        return True
+    while (low > 0) and _ROW.match(lines[low - 1].text.strip()):
+        low -= 1
 
-    if not is_table_row(line):
-        return False
+    while ((high + 1) < len(lines)) and _ROW.match(lines[high + 1].text.strip()):
+        high += 1
 
-    cells = [cell.strip().strip("*`_ ") for cell in line.strip().strip("|").split("|")]
-
-    numeric = bool(cells) and all(re.fullmatch(r"-?\d[\d,.]*", cell) for cell in cells)
-
-    # A row of label | reading | reading… is a metrics row: after the first
-    # label cell, every cell is empty, a number (with an optional unit) or a
-    # `#ref`. A prose cell (`9 of 10 builds break`, `waiver PR`) is not a
-    # reading, so that row stays prose and its table cannot become a blanket
-    # exemption.
-    measured = bool(cells) and (len(cells) > 1) and all((not cell) or bool(_METRIC_CELL.fullmatch(cell)) for cell in cells[1:])
-
-    # A cell that is only a reading with its unit (`9041 bytes`, `220×220`).
-    reading = any(re.fullmatch(r"-?\d[\d,.]*\s*(?:bytes|px|KB|MB|GB|fps|ms)", cell, re.IGNORECASE) or re.search(r"\d+\s*[×x]\s*\d+", cell) for cell in cells)
-
-    return numeric or measured or reading
-
-def is_table_verdict(line: str) -> bool:
-    """True when ``line`` is a table row that closes with a verdict cell."""
-    return is_table_row(line) and bool(_ROW_VERDICT.search(line))
-
-#: Prose that marks a command's OWN result (`→ rc=0`, `: 0`, `-> pass`): the
-#: leftover after stripping a command span may be this and nothing else.
-_RESULT_MARKER = re.compile(r"\brc\s*=\s*-?\d+|\bexit\s*\d+|→|->|=>|\d+|[:;,.=|`\s]")
-
-#: A commit hash quoted as a value.
-_SHA = re.compile(r"(?<![\w])[0-9a-fA-F]{7,40}(?![\w])")
-#: The forms where a hash IS the substance: stands alone, or follows a label
-#: (`sha:`, `commit:`, `head:`, `@`). Anything else names the commit.
-_SHA_QUOTED = re.compile(r"\bsha-?(?:1|256|512)?\s*[:=]\s*$|\b(?:commit|head|revision)\s*(?:is|=|:)\s*$|@$|\s$", re.IGNORECASE)
-#: Labels that merely NAME a state, not a hash (`Status: <hash>`) — a hash after
-#: one of these is the line's subject, not the thing quoted.
-_SHA_LABEL_FALSE = re.compile(r"\b(?:status|state|now|still|then)\s*[:=]\s*$", re.IGNORECASE)
-
-def _unbacktick_hash(text: str) -> str:
-    """``text`` with every bare hash replaced; a ``` `hash` ``` stays quoted.
-
-    A hash in backticks is quoted FROM something (a log, a review round): that
-    is a reference, and it may anchor. Only the bare form has to prove it is
-    the subject.
-    """
-
-    return re.sub(r"`([0-9a-fA-F]{7,40})`", lambda match: match.group(1), text)
-
-def _keep_hash_value(match) -> str:
-    """The hash, if the text before it says the hash is the value quoted."""
-    before = match.string[: match.start()]
-
-    # `\s$` means "the hash is a separate token, not glued to prose"; a line
-    # that OPENS with a hash is not a reference to it.
-    quoted = (match.start() != 0) and (_SHA_QUOTED.search(before) is not None) and (_SHA_LABEL_FALSE.search(before) is None)
-
-    return match.group(0) if quoted else " " * len(match.group(0))
-
-#: A metrics-table cell: a bare number (with an optional unit) or a `#ref`.
-_METRIC_CELL = re.compile(r"-?\d+(?:\.\d+)?\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
-
-#: A backtick span. Extraction runs FIRST and satisfaction is tested per span:
-#: asking a regex to certify "this span holds a word" with lookaheads inside the
-#: span match reached across the closing backtick into the next span (measured
-#: against a real body: ``` `12→14→11` … `before` ``` certified the first span
-#: because the second one held a letter). A two-pass read cannot do that.
-_SPAN = re.compile(r"`[^`\n]+`")
-#: A span is a SOURCE when it holds a word: an identifier, a command, a value
-#: name. A span holding only figures or arrows is the claim itself quoted.
-_SPAN_WORD = re.compile(r"[A-Za-z_]")
-#: What a runnable / openable span looks like: a path, a filename, a command
-#: line, a flag, or an identifier with a call. Anything else in backticks — a
-#: word, a phrase, a phrase with an article — is emphasis, and emphasis is not
-#: a source (review round 2: `not-a-command` certified a figure on its line).
-_SPAN_SHAPE = re.compile(r"/|\.[A-Za-z0-9]{1,6}$|--?[a-z][\w-]*|\w\(|\w_\w|=|::|\b[a-z][a-z0-9]+(?:[A-Z][\w]*)+")
-
-def code_spans(line: str) -> tuple[str, ...]:
-    """The inline-code spans of ``line``, without their backticks."""
-    return tuple(match.group(0).strip("`") for match in _SPAN.finditer(line))
-
-#: A figure inside a span (``120 passed``, ``3/4``, ``rc=0``). A span carrying
-#: one quotes the claim instead of naming its source: the source of a number is
-#: the command or the line that produced it, never the number repeated in
-#: backticks (review round 2 measured that self-certification).
-_SPAN_FIGURE = re.compile(r"\d")
-
-#: A filename with an extension (``api.rs:463``, ``useHighlight.ts``).
-_FILENAME = re.compile(r"^[\w./:-]*[^\s/]\.[A-Za-z0-9][\w]*\s*(?::\s*\d+)?$")
-#: Two English words in backticks (`gate green`): emphasis, not a command.
-_EMPHASIS_WORDS = r"(?:stays?|gate|the|all|is|green|red|passes?|fails?|this|that|here)"
-_ENGLISH_EMPHASIS = re.compile(r"(?i)" + _EMPHASIS_WORDS + r"\s+(?:green|red|honest|correct|true|false|done|good|bad|slow|fast)")
-#: A two-word command (``vite build``, ``cargo check``).
-_TWO_WORD_COMMAND = re.compile(r"^[a-z][a-z0-9_-]*\s+[a-z][\w-]*$")
-#: Code markers that make a single token a name rather than a word.
-_CODE_MARKER = re.compile(r"--|_|\(|::|/|=")
-
-#: A bare path reference (``` `docs/en/x.md` ```): a CITATION, not the line's
-#: subject and not its evidence (round 6).
-_CITATION = re.compile(r"^[\w.-]+(?:/[\w.-]+)+$|^[\w-]+\.[A-Za-z0-9]{1,6}$|^[A-Za-z][\w-]*\s+\d+(?:\.\d+)*$")
-
-def is_citation(span: str) -> bool:
-    """True when the span is a bare path / filename rather than a code name."""
-    text = span.strip()
-
-    return bool(_CITATION.fullmatch(text)) and (not _SPAN_CODE.search(text))
-
-def span_is_source(span: str) -> bool:
-    """True when a span names something a reader can look up or re-run.
-
-    Four shapes, and nothing else: a filename, a two-word command, a token
-    carrying a code marker (a flag, an underscore, a call, a path, an
-    assignment), or a camelCase identifier. A word, a phrase, or a
-    hyphenated English phrase (``` `before` ```, ``` `gate green` ```,
-    ``` `not-a-command` ```) is emphasis — and a span holding a figure is the
-    claim itself quoted.
-    """
-    text = span.strip()
-
-    if not _SPAN_WORD.search(text) or _SPAN_FIGURE.search(text):
-        return False
-
-    if _FILENAME.match(text):
-        return True
-
-    if " " in text:
-        # A phrase carrying a code marker is a command (`cargo check
-        # --all-targets`); a bare two-word lowercase pair is one too (`vite
-        # build`) unless it is two English words with no marker (`gate green`).
-        if _CODE_MARKER.search(text):
-            return True
-
-        return bool(_TWO_WORD_COMMAND.match(text)) and (_ENGLISH_EMPHASIS.fullmatch(text) is None)
-
-    if not _SPAN_SHAPE.search(text):
-        return False
-
-    if _CODE_MARKER.search(text):
-        return True
-
-    return (len(text) >= 4) and (re.search(r"[A-Z]", text[1:]) is not None)
-
-#: A date pair inside a path shape (``2026-11-15/16``) and a measurement word.
-_DATE_TAIL = re.compile(r"^(?:\d{2}|\d{1,2})$")
-#: Single-slash shapes that are prose, not paths: a two-word connector / an
-#: abbreviation / a unit ratio. Measured on the corpus (``and/or`` certified a
-#: whole sentence and ``2026-11-15/16`` a whole paragraph).
-_CONNECTOR = re.compile(r"^(?:and|or|n|w|no|yes|on|off|in|out|per|to|vs|w)$", re.IGNORECASE)
-_DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-?\d{0,2}$")
-#: Directory names that make a bare `dir/name` pair a path even without dots.
-_SOURCE_DIRS = frozenset({"docs", "src", "tests", "test", "tools", "scripts", "packages", "package", "crates", "config", "conf", "fixtures", "res", "resources", "assets", "examples", "benches", "internal", "public", "static", "lib", "bin"})
-
-def path_is_source(match: str) -> bool:
-    """True when a `dir/name` shape names something a reader can open.
-
-    A run of three or more segments is a path (``packages/vue/src``). A single
-    pair is a path only when neither piece is a prose connector, an
-    abbreviation or a date — those are `and/or`, `n/a`, `2026-11-15/16`.
-    """
-    segments = match.strip("/").split("/")
-
-    # A run of three or more segments is a path (`packages/vue/src`): prose does
-    # not spell one, and `and/or` has two pieces, not three.
-    if len(segments) >= 3:
-        return bool(re.search(r"[A-Za-z]", segments[-1])) and (len(segments[-1]) >= 2)
-
-    if len(segments) != 2:
-        return False
-
-    left, right = segments
-
-    if _CONNECTOR.match(left) or _CONNECTOR.match(right):
-        return False
-
-    if _DATE_PREFIX.match(left) and _DATE_TAIL.match(right):
-        return False
-
-    # BOTH pieces have to look like a name. `before/after` are two English
-    # words; `wasm/wasm_test.rs` and `docs/en/x.md` are directory plus filename.
-    def filename(piece: str) -> bool:
-        return bool("." in piece) or bool(re.search(r"\d", piece)) or ("_" in piece)
-
-    # The LEFT piece is a directory name: a common source directory, or a
-    # dotted / numbered / underscored name. A bare English word (`before`) or a
-    # bare camel word (`rustfmt`) is not a directory.
-    named_left = (len(left) >= 3) and ((left in _SOURCE_DIRS) or filename(left))
-    bare_left = (len(left) >= 3) and (not filename(left))
-    # (`filename` covers dots, digits and underscores; a bare word still is not
-    # a directory.)
-    named_right = (len(right) >= 3) and (filename(right) or (right in _SOURCE_DIRS))
-
-    return bool(named_left and named_right) or (bool(bare_left) and bool(named_right))
-
-def _marker_hit(text: str) -> bool:
-    """True when one of :data:`MARKERS` matches in a shape that is a source."""
-
-    for pattern in MARKERS:
-        for match in pattern.finditer(text):
-            group = match.group(0)
-
-            if re.fullmatch(r"[0-9a-fA-F]{7,40}", group) and (not re.search(r"\d", group)) and (not re.search(r"\bsha|\bcommit|\bhead\b", text, re.IGNORECASE)):
-                continue
-
-            if ("/" in group) and (group.count("/") >= 1):
-                # The path marker is the only one whose matches need a verdict.
-                if "\u4e00" <= group[0] <= "\u9fff":
-                    return True
-
-                if path_is_source(group) or (group.count("/") >= 2):
-                    return True
-
-                continue
-
-            return True
-
-    return False
-
-def has_anchor(line: str) -> bool:
-    """True when ``line`` names a recomputable source for a statement."""
-    # A disclaimer is never a source: "not verified" must not certify anything.
-    text = line
-
-    for word in DISCLAIMERS:
-        text = re.sub(re.escape(word), " " * len(word), text, flags = re.IGNORECASE)
-
-    spans = tuple(span for span in code_spans(text) if not is_citation(span))
-    rest = _SPAN.sub(" ", text)
-
-    # A line's own code tokens name its SUBJECT — "`pr_gate.py` now runs 6
-    # gates" names the module and states a count, and the module is not the
-    # run. A span sources a line only when the leftover text is a result marker
-    # (` → rc=0`), and a span carrying a figure is never a source.
-    leftover = _RESULT_MARKER.sub(" ", rest)
-
-    if (re.search(r"[A-Za-z\u4e00-\u9fff]", leftover) is None) and any(span_is_source(span) for span in spans):
-        return True
-
-    # A commit SHA is the line's SUBJECT, not its evidence (round 7): "this
-    # commit 41b88015 takes the 2 leaked timers away" names a commit and claims
-    # something else. It anchors a line only when the line is ABOUT a hash — a
-    # line that is nothing but hex, or one that also names a source.
-    # A commit hash is a NAME unless it is the thing quoted: a bare hash, a
-    # `sha:<hash>` / `commit: <hash>` / `head: <hash>` value, a `@<hash>` pin, or
-    # the body of a `diff`/`blame` line. Any other occurrence is a subject.
-    text = _SHA.sub(_keep_hash_value, _unbacktick_hash(text))
-
-    # A bare path in backticks is a CITATION (round 6): it is blanked so the
-    # path marker cannot fire on it, while `file:line` and the other markers
-    # keep working from the same text.
-    cited = _SPAN.sub(lambda match: " " if is_citation(match.group(0).strip("`")) else match.group(0), text)
-
-    return _marker_hit(cited)
-
-def pastes_quoted_output(line: str) -> bool:
-    """True when ``line`` carries a quoted quantity (``` `16 passed (16)` ```).
-
-    A quotation on the same line is the run's output pasted beside the prose
-    that talks about it: ``` kept the frozen 16/16 green … `16 passed (16)` ```
-    is one sentence whose evidence is its own quotation.
-    """
-    spans = [match.span() for match in _SPAN.finditer(line)]
-
-    return any((start <= part.start()) and (part.end() <= end) for part in QUANTITY.finditer(line) for start, end in spans)
-
-def satisfies(line: str) -> bool:
-    """The whole one-line test: a disclaimer, an anchor, an outcome row or a pasted output."""
-    return has_disclaimer(line) or is_outcome_row(line) or has_anchor(line) or pastes_quoted_output(line)
-
-def table_has_header(lines: Sequence[_line], section: int) -> bool:
-    """True when the table in ``section`` opens with a header row of words.
-
-    A metrics table is declared by its header (`| repo | PR | prose lines |`);
-    a headerless grid of numbers is a list of figures with no declared columns
-    and is judged as prose (round 7).
-    """
-
-    same_table = [part for part in lines if (part.section == section) and part.tabular]
-
-    if len(same_table) < 2:
-        return False
-
-    head = same_table[0].text.strip().strip("|").split("|")
-    body = same_table[1].text.strip().strip("|").split("|")
-
-    if not (len(head) > 1) or (len(body) != len(head)):
-        return False
-
-    # A header row is words in EVERY column; `| label | 1 | 2 |` is a data row
-    # whose first cell happens to be a word.
-    return all(re.search(r"[A-Za-z\u4e00-\u9fff]", cell) for cell in head)
+    return low, high
 
 def scan_body(body: str) -> tuple[list[statement], int, list[str]]:
-    """Every claim line of ``body``: ``(statements, scanned_lines, notes)``.
-
-    A line inside a markdown TABLE (``tabular``) that holds a run outcome word
-    (``pass`` / ``fail`` / ``red`` / ``green`` / ``rc=0``) is captured output —
-    the table is the evidence block — so it is not a prose statement. Every
-    other line of a table is judged like any other prose, which is what keeps
-    this rule from becoming "tables are exempt".
-    """
-    rows, notes, _evidence, _omitted = prosaic(body)
-    lines = rows
+    """Every claim line of ``body``: ``(statements, scanned_lines, notes)``."""
+    lines, notes, _evidence, _omitted = prosaic(body)
     statements: list[statement] = []
 
-    headerless = {part.section for part in lines if part.tabular and (not table_has_header(lines, part.section))}
+    for index, row in enumerate(lines):
+        bounds = table_bounds(lines, index)
 
-    for row in lines:
-        # A table WITHOUT a header row is not a captured metrics block: its rows
-        # are prose (round 7), so they are not skipped.
-        if row.tabular and (row.section not in headerless) and is_captured_cell(row.text):
-            continue
+        if bounds is not None:
+            low, high = bounds
+            table = lines[low: high + 1]
+
+            # A table made of reading rows is captured output: its cells are
+            # the numbers a run printed.
+            if all(is_reading_row(part.text) or _ROW_SEPARATOR.match(part.text.strip()) for part in table):
+                continue
+
+            if is_reading_row(row.text):
+                continue
 
         kinds, terms = claim_kinds(row.text)
 
@@ -995,71 +496,77 @@ def scan_body(body: str) -> tuple[list[statement], int, list[str]]:
 
     return statements, len(lines), notes
 
+#: A code token on the line: an inline-code span, an underscored identifier, a
+#: flag, or a sentence that NAMES one. A line that describes code is a
+#: description, not a claim (devtools #304 names `just`, `allow-duplicate-
+#: variables` and `.just/` and states no measured outcome).
+_CODE_TOKEN = re.compile(r"`[^`\n]+`|\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\s+--?[a-z][\w-]+")
+#: A measured outcome: a counter word or a run word next to a figure or a flag.
+_OUTCOME = re.compile(r"\b\d[\d,]*\s*(?:passed|failed|red|green|crash|error|warning|hits?)\b|\b(?:exit|rc)\b\s*[=:]?\s*-?\d", re.IGNORECASE)
+
+def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim."""
+    kinds: list[str] = []
+    terms = behaviour_terms(line)
+
+    if bool(_CODE_TOKEN.search(line)) and (not _OUTCOME.search(line)):
+        return (), ()
+
+    if QUANTITY.search(line) or prose_figures(line):
+        kinds.append("quantity")
+
+    if terms:
+        kinds.append("behaviour")
+
+    return tuple(kinds), terms
+
 def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) -> bool:
-    """True when the statement at ``index`` is satisfied by nearby evidence.
+    """True when the statement at ``index`` may stand.
 
-    Three windows, all of them local:
+    The window is the statement's own line, the line above and the line below;
+    inside it, any of these suffices:
 
-    * **the statement's own window** — the line above, itself, the line below;
-    * **its paragraph** — inside the same prose section, the line above and the
-      line below (a paragraph is what a reader perceives as one thought; the
-      line window above already covers the common case and this covers the
-      wrapped one);
-    * **its table** — a statement inside a markdown table is satisfied when the
-      table holds a verdict row (its LAST cell is ``3 red`` / ``4 green`` /
-      ``passes``, see :func:`row_is_verdict`) or a captured telemetry row: that
-      table is the run's output, and the row is a cell of it.
-
-    A captured table's claim-looking cells are filtered out in
-    :func:`scan_body`; this function is what keeps the prose tables honest.
+    * a **source** (:func:`is_source`) — an anchor, a ``MUT:`` id, a command in
+      backticks, a ``file:line``, a ``#PR``, a URL, a commit hash;
+    * a **disclaimer** (:func:`disclaims`) — "not recomputed", said out loud;
+    * the statement's own **directive** (``body-gate-ok: <reason>`` with a real
+      reason) — the author's explicit, printed decision to make the claim
+      without a source;
+    * a **capture**: a pasted quoted figure on the same line, or a fenced block
+      one line away (a figure beside the command that printed it).
     """
-    candidates = [lines[position] for position in (index - 1, index, index + 1) if 0 <= position < len(lines)]
     row = lines[index]
+    low = max(0, index - 1)
+    high = min(len(lines) - 1, index + 1)
 
-    for position in (index - 1, index + 1):
-        if (0 <= position < len(lines)) and (lines[position].section == row.section):
-            candidate = lines[position]
+    for position in range(low, high + 1):
+        part = lines[position]
 
-            if candidate.tabular == row.tabular:
-                candidates.append(candidate)
+        if (position != index) and not part.text.strip():
+            continue
 
-    if row.tabular:
-        same_table = [part for part in lines if part.section == row.section]
-        header = same_table[0].text if same_table else ""
-
-        # An all-numbers table with no header row is not a metrics capture
-        # (round 7: `| fable | 999 | 4242 |` passed with no run behind it).
-        has_header = bool(re.search(r"[A-Za-z\u4e00-\u9fff]", (header.strip().strip("|").split("|") or [""])[0]))
-
-        # A table is captured output only when it is CAPTURED: a row whose
-        # last cell is a verdict (`| drop the guard | 3 red |`) or a wide
-        # telemetry row. One verdict row does not license the prose rows beside
-        # it (round 6: `| suite | 3 green |` excused `| login | 9041 bytes |`).
-        if (not has_header) and (not any(row_is_verdict(part.text) for part in same_table)):
-            return False
-
-        if any(row_is_verdict(part.text) or is_outcome_row(part.text) for part in same_table):
-            return any(is_captured_cell(part.text) for part in same_table if part.number == row.number) or bool(row_is_verdict(row.text) or is_outcome_row(row.text))
-
-    # A fenced line one row away (the opener just above, the closer just below,
-    # or the capture itself) is the evidence a figure is talking about — but a
-    # BEHAVIOUR claim is not established by an unrelated command's output
-    # (`node -v` does not prove "the retry never fires twice", round 6).
-    nearby_fence = any(abs(part.number - row.number) <= 1 for part in evidence)
-
-    if nearby_fence and (not behaviour_terms(row.text)):
-        return True
-
-    for part in candidates:
-        # The statement's OWN line may end in a disclaimer ("… — not verified").
-        # A neighbour line may be a disclaimer or an anchor. Both reach: writing
-        # the sentence first and the point on the next line is ordinary PR
-        # prose, and neither can fabricate a claim — a NEIGHBOUR's disclaimer
-        # excuses the figure it is talking about, while an anchor is a source.
-        if satisfies(part.text):
+        if is_source(part.text) or disclaims(part.text):
             return True
 
-    return False
+        reason = directive_reason(part.text)
+
+        if (reason is not None) and (len(reason) >= DIRECTIVE_REASON_MIN):
+            return True
+
+        if (position == index) and pastes_figure(part.text):
+            return True
+
+    return any(abs(part.number - row.number) <= 1 for part in evidence)
+
+def pastes_figure(line: str) -> bool:
+    """True when ``line`` carries a quoted figure (`` `120 passed` ``).
+
+    A pasted figure is the run's output beside the prose talking about it; the
+    quotation is the evidence, so the line may stand on it.
+    """
+    spans = [match.span() for match in _SPAN.finditer(line)]
+
+    return any((start <= part.start()) and (part.end() <= end) for part in QUANTITY.finditer(line) for start, end in spans)
 
 def check_body(body: str) -> report:
     """The gate's verdict over one PR body string."""
@@ -1071,23 +578,19 @@ def check_body(body: str) -> report:
     lines, notes, evidence, omitted = prosaic(stripped_body)
 
     if not lines:
-        # Every line was structurally excluded (all fenced, all quoted, all
-        # headings, only gate entries). That is not "nothing to judge": it is a
-        # body whose prose could not be read at all, and a green verdict over it
-        # would certify a scan that never happened.
-        nothing_scan = "zero prose lines in the body — everything is the verify record, a fence, a quote, an indent or a heading; a green verdict over it would certify a scan that never happened"
+        nothing_scan = "zero prose lines in the body — everything is the verify record, a fence, a quote, an indent or a heading; a green verdict over it would certify a scan that was empty"
 
         return report(scanned_lines = 0, statements = (), findings = (), problems = (*notes, *omitted, nothing_scan))
 
     statements, scanned, scan_notes = scan_body(stripped_body)
     problems = [*notes, *scan_notes]
-
+    directives = tuple((row.number, directive_reason(row.text) or "") for row in lines if directive_reason(row.text) is not None)
     findings = [stmt for stmt in statements if not sourced(lines, _index_of(lines, stmt), evidence)]
 
     if not statements:
-        return report(scanned_lines = scanned, statements = (), findings = tuple(findings), problems = tuple(problems), skipped = f"no quantity or behaviour statement in {scanned} prose line(s) — nothing to judge")
+        return report(scanned_lines = scanned, statements = (), findings = (), problems = tuple(problems), directives = directives, skipped = f"no quantity or behaviour statement in {scanned} prose line(s) — nothing to judge")
 
-    return report(scanned_lines = scanned, statements = tuple(statements), findings = tuple(findings), problems = tuple(problems))
+    return report(scanned_lines = scanned, statements = tuple(statements), findings = tuple(findings), problems = tuple(problems), directives = directives)
 
 def _index_of(lines: Sequence[_line], stmt: statement) -> int:
     """The position of ``stmt`` in ``lines`` (built in the same order)."""
@@ -1103,20 +606,13 @@ def missing_for(stmt: statement) -> str:
     parts: list[str] = []
 
     if "quantity" in stmt.kinds:
-        parts.append("the command or output the number came from (`file:line`, `#PR`, `evidence:`, or the COMMAND in backticks)")
+        parts.append("the command or output the number came from (`file:line`, `#PR`, `evidence:`, `MUT:<id>`, or the COMMAND in backticks)")
 
     if "behaviour" in stmt.kinds:
-        parts.append("a mutation id or a probe result (`MUT:<id>`, a verification-table row)")
+        parts.append("a mutation id or a probe result (`MUT:<id>`, `evidence:`, a `file:line`)")
 
-    if "unquoted digit" in stmt.kinds:
-        parts.append("that figure quoted from the run that produced it")
-
-    # A span holding the figure itself never certifies it (see `span_is_source`),
-    # so the advice must name the shapes that DO count.
     parts.append("or the disclaimer 未复算 / unverified / not established / inference")
-
-    if code_spans(stmt.text) and any(_SPAN_FIGURE.search(span) for span in code_spans(stmt.text)):
-        parts.append("(a quoted figure is the claim, not its source: quote the COMMAND, or open the `file:line` it came from)")
+    parts.append(f"or the directive `body-gate-ok: <reason>` (≥{DIRECTIVE_REASON_MIN} characters, printed when used)")
 
     return "; ".join(parts)
 
@@ -1188,6 +684,10 @@ def read_pr_body(repo: str | None, pr: int) -> tuple[str | None, list[str]]:
 def report_and_exit(result: report, label: str, *, quiet: bool) -> int:
     """Print one verdict and return its exit code (shared with the merge gate)."""
 
+    for line, reason in result.directives:
+        if len(reason) >= DIRECTIVE_REASON_MIN:
+            print(f"🔓 body-gate-ok (body:{line}): {reason}")
+
     for finding in result.findings:
         print(f"❌ {finding.render()}")
         print(f"   body:{finding.line}: needs {missing_for(finding)}", file = sys.stderr)
@@ -1202,7 +702,7 @@ def report_and_exit(result: report, label: str, *, quiet: bool) -> int:
     if not quiet and (result.skipped is not None):
         print(f"⏭️  body-gate: {result.skipped} ({label})")
     elif not quiet:
-        print(f"✅ body-gate: {len(result.statements)} statement(s) over {result.scanned_lines} prose line(s), all sourced or disclaimed ({label})")
+        print(f"✅ body-gate: {len(result.statements)} statement(s) over {result.scanned_lines} prose line(s), all sourced, disclaimed or directed ({label})")
 
     return EXIT_OK
 
