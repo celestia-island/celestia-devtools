@@ -203,7 +203,7 @@ _SPAN = re.compile(r"`[^`\n]+`")
 #: lowercase words with no article. That is the line the lead drew: `a b` and
 #: `the thing` are prose, and a span that cannot be told from prose is not a
 #: source.
-_SPAN_SOURCE = re.compile(r"--?[a-z][\w-]*|\w+\(|\w_\w|[a-z][A-Z]|\w{2,}/\w|\.\w{1,6}$|:\d|=\S|^(?!(?:the|a|an|of|to|and|or|is|was) )[a-z][a-z0-9_-]*(?:\s+[a-z][\w-]*){1,2}$")
+_SPAN_SOURCE = re.compile(r"--?[a-z][\w-]*|\w+\(|\w_\w|[a-z][A-Z]|\w{2,}/\w|(?<!_test)(?<!\.test)(?<!\.spec)\.\w{1,6}$|:\d|=\S|^(?!(?:the|a|an|of|to|and|or|is|was) )[a-z][a-z0-9_-]*(?:\s+[a-z][\w-]*){1,2}$")
 
 #: The marker set, in the order the docstring lists it.
 ANCHORS: tuple[str, ...] = ("MUT", "evidence", "#PR", "URL", "SHA", "file:line", "span")
@@ -485,15 +485,17 @@ def is_source(line: str) -> bool:
         return True
 
     # A span names its subject; it does not evidence a claim ABOUT that subject.
-    # The vocabulary is the comment gate's own list, matched by its own
-    # function — not a copy: a hand-transcribed 9-word regex dropped `doesn't`,
-    # `only when` and all four CJK entries, and review caught the body claiming
-    # "the same list" while the code held a subset.
+    # The vocabulary is the comment gate's list, reached through this module's
+    # two-hop delegation (`body_gate.behaviour_terms` returns
+    # `comment_gate.behaviour_terms(text)`) rather than a copy: a
+    # hand-transcribed 9-word regex dropped `doesn't`, `only when` and all four
+    # CJK entries, and review caught the body claiming "the same list" while the
+    # code held a subset.
     if behaviour_terms(text):
         return False
 
     for span in code_spans(text):
-        if span_is_source(span) or _TEST_REF.fullmatch(span.strip()):
+        if span_is_source(span):
             return True
 
     return False

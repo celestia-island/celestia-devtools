@@ -1078,6 +1078,7 @@ class test_comment_gate_plumbing:
     def test_truncated_diff_refuses_instead_of_certifying_part(self, capsys):
         # GitHub cuts a big diff and appends a marker line. A gate that scanned
         # the visible part would report green over evidence it never saw.
+        # MUT:truncated-diff — this case reds if the marker is ignored.
         pr, diff = _comment_pr(COMMENT_CLAIM_PATCH)
         truncated = "diff --git a/src/only.ts b/src/only.ts\n--- a/src/only.ts\n+++ b/src/only.ts\n@@ -1,0 +1,1 @@\n+// neutral\n[truncated 7 lines]"
         runner = diff_runner(pr, truncated)
@@ -1420,6 +1421,17 @@ class test_body_gate_plumbing:
         blocking, waivable = pr_gate_module.split_waivable(["body-gate: body:1 (quantity): x", "verify record c3=0 < 3"])
         assert blocking == ["body-gate: body:1 (quantity): x"]
         assert waivable == ["verify record c3=0 < 3"]
+
+    def test_the_merge_lane_prints_every_directive(self, capsys):
+        # MUT:directive-printed-merge — dropping the `result.directives` loop in
+        # `body_gate_problems` made a `body-gate-ok:` exemption a silent pass
+        # inside the very merge it guards; MUT:directive-printed-merge pins it.
+        body = "It printed 120 passed. body-gate-ok: the raw log lives in the linked issue, page two"
+        assert pr_gate_module.body_gate_problems(body) == []
+        out = capsys.readouterr().out
+        assert "🔓" in out
+        assert "body-gate-ok (PR body:1)" in out
+        assert "the raw log lives in the linked issue, page two" in out
 
     def test_break_glass_flag_skips_the_gate_loudly(self, capsys):
         assert self._gate(GOOD_BODY + GOOD_RECORD + "\n" + BODY_UNSOURCED, body_gate = False) == 0

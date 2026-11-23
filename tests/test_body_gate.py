@@ -108,10 +108,23 @@ class test_span_evidence:
 
     def test_the_span_rule_uses_the_comment_gates_own_vocabulary(self):
         # MUT:span-attribution — a hand-transcribed subset of BEHAVIOUR_TERMS
-        # (the first cut kept 9 of 15 entries) lets `doesn't` / `only when` /
-        # the CJK terms pass with only a span as evidence.
-        for text in ["The gate doesn't flag `x` output.", "The gate reds only when the fixture carries `y` output.", "只有 `z` 出现时才红。", "这条规则抓不住 `w` 那种写法。"]:
+        # (the first cut kept 9 of 15) must fail here. Each sentence carries an
+        # attribution word AND a span that IS a source (`vite build` is a
+        # command shape), so only the full list can refuse it; the first cut of
+        # this test used ` `x` `, which is not a source, and passed either way.
+        for text in ["The gate doesn't flag `vite build` output.", "这条规则抓不住 `setup.py` 那种写法。", "这个只在 `config.toml` 里出现。", "只有 `vite build` 时才红。"]:
             assert not body_gate.check_body(text + "\n").ok, text
+
+    def test_the_vocabulary_is_reached_through_the_comment_gate(self, monkeypatch):
+        # MUT:span-attribution — the delegation is what keeps the two gates on
+        # one list; a local copy would ignore the sentinel.
+        sentinel = ("does not",)
+
+        def fake(_text):
+            return sentinel
+
+        monkeypatch.setattr(comment_gate, "behaviour_terms", fake)
+        assert body_gate.behaviour_terms("anything") == sentinel
 
     def test_citing_a_test_file_does_not_evidence_a_behaviour_claim(self):
         # MUT:test-ref-span — a bare `(x.test.ts)` proves the file exists, not
