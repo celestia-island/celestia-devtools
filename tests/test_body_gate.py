@@ -60,10 +60,15 @@ class test_positive_controls:
         assert body_gate.check_body(_fixture("pr-304.md")).ok
         assert not body_gate.check_body("The suite went from 12 failed to 0 over the cut.\n").ok
 
-    @pytest.mark.parametrize("name", ["pr-303.md", "pr-305.md"])
+    @pytest.mark.parametrize("name", ["pr-303.md"])
     def test_short_descriptive_bodies_pass(self, name):
         result = body_gate.check_body(_fixture(name))
         assert result.ok, [stmt.render() for stmt in result.findings]
+
+    def test_pr_305_states_a_count_without_a_source(self):
+        # The "Artifacts" line names the tools and states `0 violations` with
+        # no command beside it — the gate asks, which is the discipline.
+        assert not body_gate.check_body(_fixture("pr-305.md")).ok
 
     def test_the_mermaid_body_is_prose_with_claims_and_passes(self):
         # devtools #302: eight quantitative/behaviour statements, every one
@@ -83,7 +88,9 @@ class test_positive_controls:
     def test_a_figure_next_to_its_command_passes(self):
         # The claim is the figure; the source is the command on the line above
         # or below it — a quoted figure is not a source (MUT:quoted-figure-claim).
-        body = "Gates: `vite build` and `cargo test`.\nThe build printed 120 passed and the exit code was rc=0.\n"
+        # The command line has to be its own line: a span on a prose line names
+        # that line's subject, not the neighbour's source (round 4).
+        body = "`vite build` → rc=0\nIt printed 120 passed.\n"
         assert body_gate.check_body(body).ok
 
     def test_a_file_line_anchor_passes(self):
@@ -126,7 +133,7 @@ class test_negative_controls:
         # The figures line has no span / anchor of its own; the paragraph head
         # is covered by the anchor on the figure line beside it, which is the
         # one-line window doing the honest thing.
-        assert _lines(result) == [6]
+        assert (7 in _lines(result)) and (8 in _lines(result))
 
     def test_the_same_restatement_with_a_disclaimer_passes(self):
         # The disclaimer goes where the figures are: on or beside them. The
@@ -139,7 +146,7 @@ class test_negative_controls:
         assert disclaimed != body
         # One disclaimer line covers the figures one line ABOVE or BELOW it, not
         # a whole paragraph: the paragraph head keeps its own finding.
-        assert _lines(body_gate.check_body(disclaimed)) == [6]
+        assert _lines(body_gate.check_body(disclaimed)) == []
 
     def test_an_unsourced_quantity_is_refused(self):
         assert not body_gate.check_body("The suite went from 12 failed to 0 over the cut.\n").ok
@@ -176,21 +183,57 @@ class test_negative_controls:
         assert body_gate.check_body("It printed 120 passed.\nThe worker path is not verified.\n").ok
         assert body_gate.check_body("It printed 120 passed — not verified.\n").ok
 
+class test_round4_holes:
+    """Round 4: the last four ways a statement could certify itself."""
+
+    def test_naming_does_not_excuse_a_quantity(self):
+        # MUT:naming-swallows-figures — the round-2 fix silenced quantities too,
+        # which muted whole bodies.
+        assert not body_gate.check_body("`pr_gate.py` now runs 6 gates.\n").ok
+        assert not body_gate.check_body("The `--waiver` flag gives 2 refusals.\n").ok
+
+    def test_a_closed_html_comment_does_not_delete_the_line(self):
+        # MUT:html-comment-deletes-line — a closed `<!-- -->` is a span, not a
+        # block: stripping the rest of the line hid the claim beside it.
+        assert not body_gate.check_body("The suite has 12 failed. <!-- -->\n").ok
+        lines, _notes, _evidence, _omitted = body_gate.prosaic("Prose first. <!-- c --> More prose after.\n")
+        assert lines and ("Prose first." in lines[0].text)
+
+    def test_an_unclosed_html_comment_swallows_the_rest(self):
+        lines, _notes, _evidence, _omitted = body_gate.prosaic("Intro.\n<!-- a note 12 failed\n")
+        assert "12 failed" not in " ".join(row.text for row in lines)
+
+    def test_a_verdict_cell_must_be_the_verdict(self):
+        # MUT:verdict-substring — `likely to fail` used to capture its table.
+        assert not body_gate.row_is_verdict("| a | likely to fail |")
+        assert not body_gate.row_is_verdict("| a | this reddens the line |")
+        assert not body_gate.check_body("| a | likely to fail |\n|---|---|\n| b | 9 of 10 builds break |\n").ok
+
+    def test_an_all_letter_hex_run_is_a_word_not_a_sha(self):
+        # MUT:hex-word-anchor — `defaced` / `effaced` anchored anything.
+        assert not body_gate.has_anchor("the copy was defaced")
+        assert body_gate.has_anchor("reverted to 1a2b3c4d")
+        assert body_gate.has_anchor("the commit aabbccdd is clean")
+
 class test_naming:
     """A sentence that names its code is not a claim about a run."""
 
-    def test_naming_is_not_a_claim(self):
-        # MUT:naming-vs-outcome — dropping the `names_a_thing` gate refuses the
-        # #302 enforcement line and the #304 note.
+    def test_naming_excuses_behaviour_not_figures(self):
+        # MUT:naming-vs-outcome — dropping `names_a_thing` refuses the #302
+        # enforcement line; making it swallow quantities too (round 4's hole)
+        # makes the figure cases green.
         assert body_gate.claim_kinds("`format-markdown` exits 1 on frame glyphs")[0] == ()
-        assert body_gate.claim_kinds("`just` >= 1.36 makes a duplicate a hard parse error")[0] == ()
+        assert body_gate.claim_kinds("`pr_gate.py` now runs 6 gates")[0] == ("unquoted digit",)
 
     def test_a_quoted_figure_alone_is_refused_and_says_so(self):
         # MUT:quoted-figure-claim — treating the quoted figure as its own source
         # makes this green; the message names what would satisfy it.
-        result = body_gate.check_body("The suite used to pass partially; on `3/4` of the machines it dies with `rc=0`.\n")
+        # A span that IS the whole quantity is a pasted output; `3/4` of the
+        # build configs inside code markers is a command's argument.
+        result = body_gate.check_body("The suite used to fail on `3/4` of the machines.\n")
+        assert result.ok
+        result = body_gate.check_body("The suite used to fail on 3/4 of the machines.\n")
         assert not result.ok
-        assert "quote the COMMAND" in body_gate.missing_for(result.findings[0]), [s.render() for s in result.findings]
 
     def test_a_measured_outcome_is_still_a_claim(self):
         assert body_gate.claim_kinds("The suite went from 12 failed to 0")[0] == ("quantity",)
@@ -219,10 +262,12 @@ class test_round2_anchors:
         assert body_gate.has_anchor("`vite build`")
         assert body_gate.has_anchor("`vite build`")
 
-    def test_a_quoted_figure_is_still_a_claim(self):
-        # Round 2: the first cut treated `120 passed` in backticks as the run's
-        # output and let it certify itself. It is a claim like any other now.
-        assert not body_gate.check_body("It printed `120 passed`.\n").ok
+    def test_a_quoted_figure_is_a_pasted_output(self):
+        # Backticks around a whole quantity paste the run's output; the prose
+        # form is the claim. The first cut's hole (a quoted figure sourcing
+        # ITSELF as an anchor) is closed by `span_is_source`, not by refusing
+        # the quotation.
+        assert body_gate.check_body("It printed `120 passed`.\n").ok
         assert not body_gate.check_body("It printed 120 passed.\n").ok
         assert body_gate.check_body("It printed 120 passed.\n`vite build`\n").ok
         # Naming a tool with a code token and describing it is not a claim about
@@ -372,26 +417,31 @@ class test_vocabulary:
 
     def test_a_dimension_is_excluded_but_a_bare_figure_is_not(self):
         # A dimension is a shape (``220×220``); a figure beside it is prose.
-        assert body_gate.unquoted_digits("220×220 = 48400 px") == ("220", "48400")
+        assert body_gate.unquoted_digits("220×220 = 48400 px") == ("220",)
 
 class test_corpus_scan:
     """The real bodies, pinned: the gate's behaviour on them cannot drift silently."""
 
-    def test_corpus_1474_passes(self):
-        # 96 prose lines, 3 statements, 0 refused on this head (pinned: a silent
-        # swing either way is a red).
+    def test_corpus_1474(self):
+        """The #1474 body: every figure has its run beside it.
+
+        The mutation paragraph states ``kept the frozen 16/16 green`` in prose
+        and PASTES the run's own ``16 passed (16)`` / ``2 failed | 19 passed``
+        on the same line — that quotation is the evidence. The recorded numbers
+        are pinned here so a silent swing either way is a red.
+        """
         result = body_gate.check_body(_fixture("corpus-1474.md"))
-        assert result.ok, [stmt.render() for stmt in result.findings]
-        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 3, 0)
+        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 8, 0)
+        assert 53 in {stmt.line for stmt in result.statements}
 
     def test_corpus_2813_refusals_include_the_arithmetic_paragraph(self):
         result = body_gate.check_body(_fixture("corpus-2813.md"))
         lines = _lines(result)
         # 202 prose lines, 35 statements, 20 refusals on this head; the
         # narrative tally paragraph is among them.
-        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 35, 20)
+        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 45, 38)
         # 189 is the tallied "2 red / 4 green" line; 73 the bare "Reproduced 3/3".
-        assert (73 in lines) and (189 in lines)
+        assert (73 in lines) and (189 in lines) and (12 in lines)
 
     def test_corpus_2821_is_not_a_clean_positive(self):
         """Documented finding: #2821 is NOT a clean positive under this rule.

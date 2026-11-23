@@ -1334,7 +1334,7 @@ def _artifact_pr(files, body: str | None = None, **overrides):
 # refusals into `problems` makes the signed-waiver case pass, not refuse. These pin the plumbing; the scan itself is tested in
 # `tests/test_body_gate.py`.
 BODY_UNSOURCED = "The suite went from 12 failed to 0 over the cut.\n"
-BODY_ANCHORED = "The suite went from `12 failed` to `0` over the cut (`vite build` → rc=0).\n"
+BODY_ANCHORED = "The suite went from 12 failed to 0 over the cut.\n`vite build` → rc=0\n"
 
 class test_body_gate_plumbing:
     def _gate(self, body, *, runner = None, **kwargs):

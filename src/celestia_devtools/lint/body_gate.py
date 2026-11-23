@@ -174,6 +174,10 @@ QUANTITY = re.compile("|".join(f"(?:{pattern})" for pattern in QUANTITY_PATTERNS
 #: glued to its unit, a dimension, a ratio) live in :func:`unquoted_digits`.
 UNQUOTED_DIGIT = re.compile(r"(?<![A-Za-z0-9_.§/~-])\d+(?:[,.]\d+)*")
 
+#: Words that take a bare number as an OBJECT (`exits 1`, `line 12`, `version
+#: 0.7`): a count of code objects, not a measured quantity.
+_HOST_WORD = re.compile(r"(?i)^(?:exits?|lines?|steps?|modes?|items?|index|pages?|issues?|pr|parts?|phases?|levels?|tiers?|versions?|no\.)$")
+
 #: CJK numeral forms that are quantifiers, pronouns or ordinals rather than
 #: counts: 这一行 / 那一处 / 第一版 / 唯一 / 一番 / 一下 / 每三个.
 _CJK_PRONOUN = re.compile(r"[这那每某唯一第一二三四五六七八九十][一二三四五六七八九十]?")
@@ -330,16 +334,25 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
             evidence.append(_line(number = number, text = raw, section = -1, tabular = False))
             continue
 
-        if "<!--" in stripped:
-            in_comment = "-->" not in stripped.split("<!--", 1)[1]
-
-            continue
-
         if in_comment:
-            if "-->" in stripped:
-                in_comment = False
+            _, closed, trailing = stripped.partition("-->")
 
-            continue
+            if not closed:
+                continue
+
+            in_comment = False
+            stripped = trailing.strip()
+
+        if "<!--" in stripped:
+            before, _, after = stripped.partition("<!--")
+            _span, closed, trailing = after.partition("-->")
+            stripped = (before + trailing).strip()
+
+            if not closed:
+                in_comment = True
+
+            if not stripped:
+                continue
 
         lead = raw[: len(raw) - len(raw.lstrip())]
         in_table_row = _ROW.match(stripped) is not None
@@ -445,13 +458,26 @@ def unquoted_digits(text: str) -> tuple[str, ...]:
         tail = before[-1:]
         following = text[match.end():]
 
-        if re.match(r"^\s?%", following) or re.match(r"^\s?(?:[×*]|\d+\s*[×*]|/\s*\d)", following):
+        # A figure glued to a unit (`3.3 MB`), a ratio or a dimension (`8/310`,
+        # `220×220`) or followed by a unit word (`48400 px`) belongs to the
+        # quantity patterns, not to prose arithmetic.
+        if re.match(r"^\s?(?:%|[×*]|\d+\s*[×*]|/\s*\d|[A-Za-z]{1,6}\b(?![\s,.;:)]|$))", following):
             continue
 
         if (following[:1] != " ") and (not re.match(r"^[\u4e00-\u9fff]", following)):
             continue
 
-        if tail in ("§", "-", "—", "(", "[", "/"):
+        if tail in ("§", "-", "—", "(", "[", "/", ">", "≥", "<", "≤", "="):
+            continue
+
+        word_before = before.rstrip().split(" ")[-1] if before.strip() else ""
+
+        # A comparison (`>= 1.36`) is a version bound, not a measurement; a
+        # version (`0.7.0`) and a unit word's object (`exits 1`) are not either.
+        if before.rstrip().endswith((">=", "<=", ">", "<", "=")):
+            continue
+
+        if re.fullmatch(r"\d+(?:\.\d+)+", number) or _HOST_WORD.match(word_before):
             continue
 
         if _CJK_PRONOUN.match(tail) or _CJK_ORDINAL.match(before[-3:] + number):
@@ -477,18 +503,29 @@ def names_a_thing(line: str) -> bool:
     return bool(_CODE_TOKEN.search(line)) and (not _OUTCOME.search(line))
 
 def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim."""
+    """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim.
+
+    Two rules, and they are independent:
+
+    * **a figure is a claim** — a quantity carrying its unit or a counter word,
+      unless EVERY quantity on the line is a code span (``` `16 passed (16)` ```
+      is the run's output pasted, not prose), and any bare prose figure;
+    * **naming a thing makes no BEHAVIOUR claim** (:func:`names_a_thing`) — a
+      line carrying a code token and no measured outcome describes the code.
+      It does not excuse a figure: `` \`pr_gate.py\` now runs 6 gates `` names
+      the module and states a count, and only the count is judged.
+    """
     kinds: list[str] = []
     terms = behaviour_terms(line)
     naming = names_a_thing(line)
+    spans = [(match.start(), match.end()) for match in _SPAN.finditer(line)]
+    quantities = list(QUANTITY.finditer(line))
+    quoted = bool(quantities) and all(any((start <= part.start()) and (part.end() <= end) for start, end in spans) for part in quantities)
 
-    # A figure in backticks is a claim like any other: the span repeats the
-    # figure, it does not name the command that produced it (round 2).
-    if naming:
-        # Naming a thing is not asserting a fact about it (see `_CODE_TOKEN`).
-        return (), ()
+    if terms and naming:
+        terms = ()
 
-    if QUANTITY.search(line):
+    if quantities and (not quoted):
         kinds.append("quantity")
 
     if terms:
@@ -549,7 +586,12 @@ def row_is_verdict(line: str) -> bool:
 
     cells = [cell.strip().strip("*`_ ") for cell in line.strip().strip("|").split("|")]
 
-    return bool(cells) and bool(re.fullmatch(r"(?i:.*(?:red|reds|green|stays green|pass|passes|failed|fail|fails|kill|killed|survive|survived|crash|crash(?:es)?|\d+\s*(?:red|green)))|(?:红|绿)", cells[-1]))
+    if not cells:
+        return False
+
+    # The last cell must BE the verdict, not contain the word: `likely to fail`
+    # is prose (round 4).
+    return bool(re.fullmatch(r"(?i:(?:\d+\s*(?:red|green)|red|green|stays green|pass|passes|failed|fails|killed|survived))|(?:红|绿)", cells[-1]))
 
 def is_captured_cell(line: str) -> bool:
     """True when a table row's cells are captured output rather than prose.
@@ -589,6 +631,10 @@ def is_captured_cell(line: str) -> bool:
 def is_table_verdict(line: str) -> bool:
     """True when ``line`` is a table row that closes with a verdict cell."""
     return is_table_row(line) and bool(_ROW_VERDICT.search(line))
+
+#: Prose that marks a command's OWN result (`→ rc=0`, `: 0`, `-> pass`): the
+#: leftover after stripping a command span may be this and nothing else.
+_RESULT_MARKER = re.compile(r"\brc\s*=\s*-?\d+|\bexit\s*\d+|→|->|=>|\d+|[:;,.=|`\s]")
 
 #: A backtick span. Extraction runs FIRST and satisfaction is tested per span:
 #: asking a regex to certify "this span holds a word" with lookaheads inside the
@@ -718,6 +764,9 @@ def _marker_hit(text: str) -> bool:
         for match in pattern.finditer(text):
             group = match.group(0)
 
+            if re.fullmatch(r"[0-9a-fA-F]{7,40}", group) and (not re.search(r"\d", group)) and (not re.search(r"\bsha|\bcommit|\bhead\b", text, re.IGNORECASE)):
+                continue
+
             if ("/" in group) and (group.count("/") >= 1):
                 # The path marker is the only one whose matches need a verdict.
                 if "\u4e00" <= group[0] <= "\u9fff":
@@ -740,18 +789,34 @@ def has_anchor(line: str) -> bool:
     for word in DISCLAIMERS:
         text = re.sub(re.escape(word), " " * len(word), text, flags = re.IGNORECASE)
 
-    if any(span_is_source(span) for span in code_spans(text)):
+    spans = code_spans(text)
+    rest = _SPAN.sub(" ", text)
+
+    # A line's own code tokens name its SUBJECT — "`pr_gate.py` now runs 6
+    # gates" names the module and states a count, and the module is not the
+    # run. A span sources a line only when the leftover text is a result marker
+    # (` → rc=0`), and a span carrying a figure is never a source.
+    leftover = _RESULT_MARKER.sub(" ", rest)
+
+    if (re.search(r"[A-Za-z\u4e00-\u9fff]", leftover) is None) and any(span_is_source(span) for span in spans):
         return True
 
-    if _marker_hit(text):
-        return True
+    return _marker_hit(text)
 
-    # A path outside backticks too: the marker runs on the code-stripped text.
-    return _marker_hit(comment_gate._strip_comment_prefix(text)) if False else _marker_hit(_SPAN.sub(" ", text))
+def pastes_quoted_output(line: str) -> bool:
+    """True when ``line`` carries a quoted quantity (``` `16 passed (16)` ```).
+
+    A quotation on the same line is the run's output pasted beside the prose
+    that talks about it: ``` kept the frozen 16/16 green … `16 passed (16)` ```
+    is one sentence whose evidence is its own quotation.
+    """
+    spans = [match.span() for match in _SPAN.finditer(line)]
+
+    return any((start <= part.start()) and (part.end() <= end) for part in QUANTITY.finditer(line) for start, end in spans)
 
 def satisfies(line: str) -> bool:
-    """The whole one-line test: a disclaimer, an anchor, or a captured outcome row."""
-    return has_disclaimer(line) or is_outcome_row(line) or has_anchor(line)
+    """The whole one-line test: a disclaimer, an anchor, an outcome row or a pasted output."""
+    return has_disclaimer(line) or is_outcome_row(line) or has_anchor(line) or pastes_quoted_output(line)
 
 def scan_body(body: str) -> tuple[list[statement], int, list[str]]:
     """Every claim line of ``body``: ``(statements, scanned_lines, notes)``.
