@@ -68,7 +68,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -389,7 +389,7 @@ def scan_file(path: str, text: str) -> tuple[list[claim], int]:
 
     return claims, hits
 
-def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
+def scan_diff(diff: str, contents: Mapping[str, Sequence[str]] | None = None) -> tuple[list[claim], int, int, list[str]]:
     """Scan a unified diff; return ``(claims, hits, scanned_comment_lines, notes)``.
 
     Only ``+`` lines of test files are candidates — the gate judges what *this
@@ -422,13 +422,18 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
     state, shown ones are also classified. :func:`check_diff` fills ``contents``
     from git.
 
-    When ``contents`` is absent for a file, the walk falls back to the hunk
-    only — and a block state that is still OPEN when the last hunk of that file
-    ends is reported as a note (the gate refuses) rather than silently marking
-    every following line as prose. That is the other half of the same defect:
-    an unterminated ``\"\"\"`` used to turn real code into comment text for the
-    rest of the file, and a code line can then be refused as an anchorless
-    claim — a fail-OPEN in a gate whose whole job is to refuse.
+    When ``contents`` is absent for a file — a ``--diff`` from somewhere with no
+    checkout behind it, or a file git cannot produce — the walk has only the
+    shown lines, and the two gaps it cannot bridge are reported as notes (the
+    gate refuses): a line with no text at all, and a block still open at the
+    last shown line. That is the other half of the same defect: an unterminated
+    ``\"\"\"`` used to turn real code into comment text for the rest of the file,
+    and a code line can then be refused as an anchorless claim — a fail-OPEN in
+    a gate whose whole job is to refuse.
+
+    ``contents`` is what makes that refusal narrow: with the whole new side
+    known, "this hunk starts at line 25" is not a reason to refuse — only a
+    block that really never closes in the FILE is.
     """
     claims: list[claim] = []
     hits = 0
@@ -465,6 +470,7 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
     inside_docstrings: dict[str, set[int]] = {}
     #: Each file's shown lines, kept for the after-the-walk docstring pass.
     per_file_shown: dict[str, dict[int, str]] = {}
+    contents = contents or {}
 
     def close_file() -> None:
         nonlocal sections, current_path, last_file_line, in_hunk
@@ -483,9 +489,9 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         in_hunk = False
 
     def add(file_line: int, line: str) -> None:
-        """Append one SHOWN line to the current section (\`\`line\`\` is the file text).
+        """Append one SHOWN line to the current section (``line`` is the file text).
 
-        The parameter is not called \`\`text\`\`: a name that shadows a value the
+        The parameter is not called ``text``: a name that shadows a value the
         caller still needs turns a wrong answer into a silent one (this closure
         and its caller share one scope, and an earlier revision re-bound the
         caller's own local — found by tracing the state machine line by line).
@@ -505,25 +511,35 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
         """File lines that sit INSIDE a Python docstring, for one file.
 
         The state can only be computed from the file's lines in order, so this
-        runs ONCE PER FILE over every line the PATCH SHOWS — not once per hunk,
-        which is what made a closing ``\"\"\"`` read as an opening one (hikari's
-        artifact-retire). Lines the patch does not show are a known limit, not
-        a guess: the walk stops at the first of them and reports it, because
-        both answers for it are wrong (calling the block closed ignores a
-        docstring that really exists; calling it open invents one).
+        runs ONCE PER FILE over every line the file HAS: ``shown`` supplies the
+        ones the patch shows and ``contents`` the rest. Walking the hunks alone
+        never sees the lines between them, and a ``\"\"\"`` that CLOSES a
+        docstring then reads as one that OPENS it (hikari's artifact-retire: 8
+        lines marked as prose that are code).
 
-        Returns ``(lines_inside, problems)``; a non-empty ``problems`` makes the
-        caller refuse rather than certify a classification it cannot justify.
+        Without ``contents`` the walk covers the shown lines only, and the two
+        gaps it can no longer bridge are reported as ``problems`` — a line with
+        no text at all, and a block still open at the last shown line. Both make
+        every later line's classification a guess, and the caller refuses rather
+        than guessing. WITH ``contents`` neither is possible: the walk has every
+        line, so nothing is reported for "the patch does not show line N" (the
+        shape that made the hunk-only version refuse almost every real diff).
+
+        Returns ``(lines_inside, problems)``.
         """
+        whole = contents.get(path) or None
         opened = ""
         quote = ""
         inside: set[int] = set()
         problems: list[str] = []
         unplaceable: int | None = None
-        total = max([0, *(shown or {})])
+        total = max([0, *(shown or {}), *(range(1, len(whole) + 1) if whole else [])])
 
         for number in range(1, total + 1):
             line = (shown or {}).get(number)
+
+            if line is None:
+                line = whole[number - 1] if (whole is not None) and ((number - 1) < len(whole)) else None
 
             if line is None:
                 if unplaceable is None:
@@ -542,7 +558,7 @@ def scan_diff(diff: str) -> tuple[list[claim], int, int, list[str]]:
             problems.append(f"{path}: the docstring opened near line {total} is never closed in the file — refusing to judge lines whose comment/code classification would be a guess")
 
         if unplaceable is not None:
-            problems.append(f"{path}: line {unplaceable} is not shown by the patch — the docstring state there is unknowable, so refusing to judge the rest of the file")
+            problems.append(f"{path}: line {unplaceable} is not shown by the patch and the file behind it was not supplied — the docstring state there is unknowable, so refusing to judge the rest of the file")
 
         return inside, problems
 
@@ -845,6 +861,89 @@ def _git_env() -> dict[str, str]:
     env["GIT_OPTIONAL_LOCKS"] = "0"
     return env
 
+def _diff_new_paths(diff: str) -> list[str]:
+    """The NEW-side path of every file the diff touches, in order, deduplicated."""
+    paths: list[str] = []
+    current: str | None = None
+
+    for raw in diff.splitlines():
+        header = _FILE_HEADER.match(raw)
+
+        if header:
+            current = header.group("new")
+
+            if (current not in paths) and (current != "/dev/null"):
+                paths.append(current)
+
+            continue
+
+        label = _NEW_FILE.match(raw)
+
+        if label and (current is not None):
+            # A new file spells its path only here (`a/` is ``/dev/null``).
+            current = label.group("path")
+
+            if current not in paths:
+                paths.append(current)
+
+    return paths
+
+def _new_side_contents(diff: str, *, root: str | Path | None, rev: str | None) -> dict[str, list[str]]:
+    """The NEW-side file text of every test file the diff touches (``git show``).
+
+    Only files the gate actually judges are read, and only when both ``root``
+    and ``rev`` are given. A file git cannot produce leaves NO entry, and the
+    walker then reports that it could not establish the docstring state instead
+    of guessing — silently walking the hunk alone is the defect this closes: a
+    hunk-local ``\"\"\"`` reads as an opener because the lines between hunks were
+    never seen.
+
+    This is what makes the gate's verdict independent of hunk boundaries. A
+    diff the caller can point at a checkout and a revision gets every line of
+    the file, so "the patch does not show line 25" stops being a reason to
+    refuse: only a block that really never closes in the file is.
+    """
+
+    if (root is None) or (rev is None):
+        return {}
+
+    contents: dict[str, list[str]] = {}
+
+    for path in _diff_new_paths(diff):
+        if not is_test_path(path):
+            continue
+
+        try:
+            probe = subprocess.run(["git", "-C", str(root), "show", f"{rev}:{path}"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
+        except OSError:
+            continue
+
+        if probe.returncode == 0:
+            contents[path] = probe.stdout.splitlines()
+
+    return contents
+
+def _git_revision(args: argparse.Namespace, *, staged: bool) -> str | None:
+    """The commit whose NEW side the CLI's diff describes (``None`` = unknown).
+
+    ``--staged`` describes the INDEX, not a commit, so there is no revision to
+    ask for; the caller then passes ``None`` and the walker refuses if a block
+    is left open rather than guessing.
+    """
+
+    if staged:
+        return None
+
+    try:
+        probe = subprocess.run(["git", "-C", str(args.git_root or "."), "rev-parse", "HEAD"], capture_output = True, encoding = "utf-8", errors = "replace", check = False, env = _git_env())
+    except OSError:
+        return None
+
+    if probe.returncode != 0:
+        return None
+
+    return probe.stdout.strip() or None
+
 def _collect_diff(workspace: str | Path, base: str | None, rev_range: str | None, staged: bool, git_root: str | Path | None) -> tuple[str | None, list[str]]:
     """Run ``git diff``; ``(diff_text, problems)``. Never raises."""
     cmd = ["git"]
@@ -878,9 +977,21 @@ def _collect_diff(workspace: str | Path, base: str | None, rev_range: str | None
 
     return probe.stdout, []
 
-def check_diff(diff: str) -> report:
-    """The gate's verdict over one unified diff."""
-    claims, hits, scanned, notes = scan_diff(diff)
+def check_diff(diff: str, *, root: str | Path | None = None, rev: str | None = None) -> report:
+    """The gate's verdict over one unified diff.
+
+    ``scan_diff`` classifies a line by whether it sits inside a Python
+    docstring, and that state lives in the WHOLE file: the lines a hunk does
+    not show are exactly where a block opens or closes. ``root`` is the
+    checkout and ``rev`` the commit whose NEW side the diff describes; when
+    both are given their contents are read and handed to the walker.
+
+    Both default to ``None``, which keeps the hunk-only walk for a diff from
+    somewhere that has no checkout behind it — the walker then refuses if the
+    hunk leaves a block open rather than guessing. A file git cannot produce
+    is NOT silently degraded to that walk: it refuses and names the line.
+    """
+    claims, hits, scanned, notes = scan_diff(diff, contents = _new_side_contents(diff, root = root, rev = rev))
     problems = list(notes)
 
     if scanned == 0:
@@ -956,7 +1067,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"❌ comment-gate: unreadable diff {args.diff} ({exc})", file = sys.stderr)
             return EXIT_USAGE
 
-        report = check_diff(diff_text)
+        # ``--diff`` names no revision, so the file text cannot be read: the
+        # walker keeps the shown lines and refuses only if a block is left open.
+        report = check_diff(diff_text, root = args.git_root, rev = None)
         label = args.diff
     elif args.file:
         report = check_files(args.file)
@@ -974,7 +1087,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             return EXIT_USAGE
 
-        report = check_diff(diff_text)
+        report = check_diff(diff_text, root = args.git_root or ".", rev = _git_revision(args, staged = args.staged))
         label = args.range or ("index" if args.staged else (args.base or "origin/master") + "...HEAD")
 
     for claim in report.claims:

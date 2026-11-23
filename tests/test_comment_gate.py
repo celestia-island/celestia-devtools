@@ -644,3 +644,155 @@ class test_docstrings:
         diff = _py_diff('+"""One hunk, self-contained.\n+    and this one reds\n+"""\n', count = 3)
         report = comment_gate.check_diff(diff)
         assert [claim.line for claim in report.claims] == [2]
+
+#: A throwaway repository whose two commits the gate reads with real ``git``.
+#:
+#: Every line number in the cases below comes from ``git diff`` — none is
+#: written down here. The shape being pinned lives in the FILES (where a
+#: docstring opens and closes), and the patch is whatever git says it is, which
+#: is the only form that can tell "reads the file" from "walks the hunks".
+def _repo_with_change(tmp_path: Path, before: str, after: str, *, path: str = "tests/test_x.py") -> tuple[Path, str]:
+    """Commit ``before``, then ``after``; return ``(repo, diff of the two)``.
+
+    ``core.hooksPath`` is pinned empty: a throwaway repository under ``/tmp`` is
+    still inside the workspace's hook scope, and the commit is not what these
+    cases are about.
+    """
+    repo = tmp_path / "repo"
+    module = repo / path
+    module.parent.mkdir(parents = True, exist_ok = True)
+    base = subprocess.run(["git", "-C", str(repo), "init", "-q"], capture_output = True, text = True)
+
+    if base.returncode != 0:
+        pytest.skip(f"git init unavailable: {base.stderr.strip()}")
+
+    for key, value in (("core.hooksPath", "/dev/null"), ("user.email", "gate@example.invalid"), ("user.name", "gate")):
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check = True, capture_output = True)
+
+    for text, message in ((before, "base"), (after, "change")):
+        module.write_text(text, encoding = "utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check = True, capture_output = True)
+
+    diff = subprocess.run(["git", "-C", str(repo), "diff", "-U0", "--no-color", "HEAD~1", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout
+
+    return repo, diff
+
+#: A module docstring, a function, a run of constants the patch never needs to
+#: show, and then the one comment it changes. The text is assembled from parts
+#: rather than written as one literal so this module's own source does not
+#: itself contain a Python file whose docstrings a reader would have to count:
+#: the cases read the hunk header out of the diff git produced.
+_CONSTANTS = "\n".join(f"LINE_{index:02d} = {index}" for index in range(1, 21))
+
+def _module_docstring_file() -> str:
+    """The fixture file text: one element per line."""
+    parts = ['"""Module docstring."""', "", "import os", "", "", "def helper(name: str) -> str:", '    """Return the name."""', "    return name", "", "", _CONSTANTS, "", "", "def test_the_behaviour():", "    # MUT:helper-returns-name -- dropping the return leaves the helper None", '    assert helper("x") == "x"']
+
+    return "\n".join(parts) + "\n"
+
+def _hunk_starts(diff: str) -> list[int]:
+    """The NEW-side start line of every hunk in ``diff``."""
+    starts: list[int] = []
+
+    for raw in diff.splitlines():
+        if raw.startswith("@@"):
+            starts.append(int(raw.split("+")[1].split(",")[0].split(" ")[0]))
+
+    return starts
+
+class test_docstring_state_reads_the_whole_file:
+    """The gate must judge a file by the FILE, not by the lines a patch shows.
+
+    #310's walker advanced the docstring state over HUNK lines only. A patch
+    shows what it changed, so a ``\"\"\"`` that CLOSES a docstring in a line the
+    patch never shows reads as one that OPENS it, and every following line is
+    judged as prose. hikari's artifact-retire branch is the standing corpus:
+    the gate marked 8 more lines of ``packages/wasm/component_descriptor_test.py``
+    as prose than the file has, and — because a code line read as prose can be
+    refused as an anchorless claim — it refused to merge that PR at all.
+
+    **No case here hand-computes a line number.** Each one writes two versions
+    of a real file into a throwaway repository, asks git for the diff, and
+    asserts on what the gate does with it. The earlier revision of this fix
+    shipped fixtures with hand-written hunk headers and hand-counted payload
+    lines; four of them were wrong in the same way the code was, so they
+    agreed with each other and proved nothing.
+    """
+
+    def test_a_docstring_that_closes_between_hunks_keeps_the_file_in_scope(self, tmp_path):
+        """A block opened ABOVE the patch and closed BELOW hunk 1 is prose — and ends there.
+
+        The file opens a module docstring, and the patch edits one sentence
+        INSIDE it (hunk 1) and one code line far below (hunk 2). Neither hunk
+        shows the opening or the closing quote: they sit in lines the patch
+        never touches, which is the ordinary shape of an edit.
+
+        What the gate must do is judge the whole file: the edited sentence is
+        prose, so it keeps claim candidacy, and it is reported (it names
+        behaviour — ``reds`` — with no mutation anchor in reach). A walker that
+        sees only the hunks never learns the docstring opened at line 1, so it
+        reads hunk 1 as code and scans NOTHING — silently dropping the one
+        comment the change adds.
+
+        Measured: with the file text, scanned=1, hits=1, and the claim is the
+        edited sentence; without it, scanned=0 and a note about line 1.
+        """
+        before = '"""Module docstring.\n\n\nA sentence that reds nothing at all.\n\nSpans several lines so the quotes are\nnowhere near what the patch touches.\n"""\n\n' + _CONSTANTS + "\n\n\ndef test_a():\n    assert 1 == 1\n    payload = never_reds_alone\n"
+        after = before.replace("A sentence that reds nothing at all.", "A sentence that reds nothing at all, revised.").replace("    assert 1 == 1\n", "    assert 2 == 2\n")
+        repo, diff = _repo_with_change(tmp_path, before, after)
+        starts = _hunk_starts(diff)
+        assert len(starts) == 2, diff
+        read = comment_gate.check_diff(diff, root = repo, rev = "HEAD")
+        blind = comment_gate.check_diff(diff)
+        assert read.scanned_lines == 1, read
+        # The claim is the edited SENTENCE, on the line git says hunk 1 starts
+        # on — the file's own line numbers, never a count written down here.
+        # ``.text`` carries the continuation marker the docstring walk puts on a
+        # prose line with no opener of its own, so ``.strip()`` reads the claim.
+        assert [(claim.line, claim.text.removeprefix(comment_gate.DOC_CONTINUATION).strip()) for claim in read.claims] == [(starts[0], "A sentence that reds nothing at all, revised.")], (starts, read.claims)
+        assert blind.scanned_lines == 0, blind
+
+    def test_a_first_hunk_that_starts_late_is_judged_not_refused(self, tmp_path):
+        """THE anti-over-refusal pin: a file whose first hunk starts past line 1.
+
+        A module docstring at the top of the file, twenty lines of constants,
+        and then the only thing the patch changes. Almost every real edit has
+        this shape, and a hunk-only walk refuses every one of them with "line 1
+        is not shown by the patch" — which is how an earlier revision of this
+        fix would have blocked nearly every PR.
+
+        The gate must JUDGE this diff: the docstring claim inside the hunk is
+        reported (it is prose with no mutation anchor), and nothing is refused
+        for want of the lines above it.
+        """
+        after = _module_docstring_file().replace("    # MUT:helper-returns-name -- dropping the return leaves the helper None\n", "    # Reverting the return reds this test and nothing else would notice.\n")
+        repo, diff = _repo_with_change(tmp_path, _module_docstring_file(), after)
+        starts = _hunk_starts(diff)
+        assert starts and (min(starts) > 1), f"the case needs a first hunk past line 1: {starts}"
+        report = comment_gate.check_diff(diff, root = repo, rev = "HEAD")
+        assert not any("not shown by the patch" in problem for problem in report.problems), report.problems
+        # The claim's line comes from the patch itself: one comment line, at the
+        # hunk start — never a number counted in this file.
+        message = "Reverting the return reds this test and nothing else would notice."
+        assert [(claim.line, claim.text) for claim in report.claims] == [(starts[0], f"# {message}")], (starts, report.claims)
+
+    def test_an_unterminated_docstring_in_the_file_still_refuses(self, tmp_path):
+        """The fail-closed half survives the whole-file read.
+
+        The FILE really leaves its triple quote open. Reading the whole file
+        does not make that knowable — it makes it certain — so the gate refuses
+        and names the file, and the code line after the opener is judged on its
+        own classification rather than silently becoming prose.
+        """
+        before = '"""Closed header."""\n\n\ndef f():\n    return 1\n'
+        after = '"""Header that is never closed.\n\n\ndef f():\n    x = "never"\n    return 1\n'
+        repo, diff = _repo_with_change(tmp_path, before, after)
+        report = comment_gate.check_diff(diff, root = repo, rev = "HEAD")
+        assert not report.ok, report
+        # The note is a PROBLEM of its own, not the anchorless-claim listing —
+        # which quotes the offender's text and so also contains "never closed"
+        # (a filter on that phrase alone passed with the note deleted; measured).
+        notes = [problem for problem in report.problems if "is never closed in the file" in problem]
+        assert notes, report.problems
+        assert notes[0].startswith("tests/test_x.py:"), notes
