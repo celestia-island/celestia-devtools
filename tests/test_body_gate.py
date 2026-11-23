@@ -48,28 +48,22 @@ def _lines(result) -> list[int]:
 class test_positive_controls:
     """Bodies that must pass: real merged PRs, plus the shapes the rule allows."""
 
-    def test_an_unanchored_behaviour_claim_is_refused(self):
-        """devtools #304 is a NEGATIVE, and a useful one.
+    def test_a_note_that_names_its_code_passes(self):
+        """devtools #304: the round-1 negative, and a round-2 correction.
 
-        It states the observed failure in prose (``just >= 1.36 makes duplicate
-        definitions a hard parse error … the moment ``.just/`` was staged
-        (observed on wowsp: just dev refused to start)``) with no command, no
-        ``file:line`` and no ``MUT:``. A maintainer can read that as history,
-        but this gate cannot check it — and saying so is the point. The
-        positive controls are #303 / #305 (which state nothing) and #302 (which
-        anchors every claim).
+        Round 1 refused this body's one paragraph — it names ``just``,
+        ``allow-duplicate-variables`` and ``.just/`` and describes the failure
+        without a command. Round 2 made the distinction explicit: a sentence
+        carrying a code token and no measured outcome is NAMING a thing, not
+        asserting a run, so it is not a claim (see :func:`names_a_thing`).
         """
-        result = body_gate.check_body(_fixture("pr-304.md"))
-        assert not result.ok
-        assert result.findings and (result.findings[0].kinds == ("behaviour",))
+        assert body_gate.check_body(_fixture("pr-304.md")).ok
+        assert not body_gate.check_body("The suite went from 12 failed to 0 over the cut.\n").ok
 
     @pytest.mark.parametrize("name", ["pr-303.md", "pr-305.md"])
-    def test_short_descriptive_bodies_pass_on_adjacent_evidence(self, name):
-        # #303 / #305 each make one claim and carry its command on the next
-        # line: a pass, with the claim visible in `statements` (not a skip).
+    def test_short_descriptive_bodies_pass(self, name):
         result = body_gate.check_body(_fixture(name))
         assert result.ok, [stmt.render() for stmt in result.findings]
-        assert result.statements
 
     def test_the_mermaid_body_is_prose_with_claims_and_passes(self):
         # devtools #302: eight quantitative/behaviour statements, every one
@@ -77,7 +71,7 @@ class test_positive_controls:
         # incentivise rather than punish.
         result = body_gate.check_body(_fixture("pr-302.md"))
         assert result.ok, [stmt.render() for stmt in result.findings]
-        assert len(result.statements) >= 5
+        assert len(result.statements) >= 3
 
     def test_a_disclaimed_figure_passes(self):
         # The disclaimer must be on the figure's own line or the line beside
@@ -87,7 +81,9 @@ class test_positive_controls:
         assert body_gate.check_body("The DOM count moved from 10 to 12 between rounds (inference).\n").ok
 
     def test_a_figure_next_to_its_command_passes(self):
-        body = "Gates:\n\n```\nvite build → rc=0\n```\n\nThe build printed `120 passed` and the exit code was `rc=0`.\n"
+        # The claim is the figure; the source is the command on the line above
+        # or below it — a quoted figure is not a source (MUT:quoted-figure-claim).
+        body = "Gates: `vite build` and `cargo test`.\nThe build printed 120 passed and the exit code was rc=0.\n"
         assert body_gate.check_body(body).ok
 
     def test_a_file_line_anchor_passes(self):
@@ -127,7 +123,10 @@ class test_negative_controls:
         body = _fixture("negative-2821-dom-counts.md")
         result = body_gate.check_body(body)
         assert not result.ok
-        assert _lines(result) == [6, 7, 8]
+        # The figures line has no span / anchor of its own; the paragraph head
+        # is covered by the anchor on the figure line beside it, which is the
+        # one-line window doing the honest thing.
+        assert _lines(result) == [6]
 
     def test_the_same_restatement_with_a_disclaimer_passes(self):
         # The disclaimer goes where the figures are: on or beside them. The
@@ -176,6 +175,80 @@ class test_negative_controls:
         """
         assert body_gate.check_body("It printed 120 passed.\nThe worker path is not verified.\n").ok
         assert body_gate.check_body("It printed 120 passed — not verified.\n").ok
+
+class test_naming:
+    """A sentence that names its code is not a claim about a run."""
+
+    def test_naming_is_not_a_claim(self):
+        # MUT:naming-vs-outcome — dropping the `names_a_thing` gate refuses the
+        # #302 enforcement line and the #304 note.
+        assert body_gate.claim_kinds("`format-markdown` exits 1 on frame glyphs")[0] == ()
+        assert body_gate.claim_kinds("`just` >= 1.36 makes a duplicate a hard parse error")[0] == ()
+
+    def test_a_quoted_figure_alone_is_refused_and_says_so(self):
+        # MUT:quoted-figure-claim — treating the quoted figure as its own source
+        # makes this green; the message names what would satisfy it.
+        result = body_gate.check_body("The suite used to pass partially; on `3/4` of the machines it dies with `rc=0`.\n")
+        assert not result.ok
+        assert "quote the COMMAND" in body_gate.missing_for(result.findings[0]), [s.render() for s in result.findings]
+
+    def test_a_measured_outcome_is_still_a_claim(self):
+        assert body_gate.claim_kinds("The suite went from 12 failed to 0")[0] == ("quantity",)
+        assert body_gate.claim_kinds("`vite build` printed 12 failed")[0] == ("quantity",)
+
+class test_round2_anchors:
+    """Review round 2: the anchors that were free passes, and stay refused."""
+
+    @pytest.mark.parametrize("line", ["x and/or y", "x N/A y", "before/after", "yes/no", "on/off", "2026-11-15/16"])
+    def test_prose_connectors_are_not_paths(self, line):
+        # `a/b` used to be a path: one connector certified every figure on its
+        # line. MUT:free-pass-path — widening `path_is_source` back to any
+        # `word/word` makes this red.
+        assert not body_gate.has_anchor(line), line
+
+    @pytest.mark.parametrize("line", ["see packages/vue/src/useHighlight.ts:50-57", "docs/en/x.md", "docs/zh-Hans/system/web.md", "in wasm/wasm_test.rs", "`api.rs:463`"])
+    def test_real_paths_are_sources(self, line):
+        assert body_gate.has_anchor(line), line
+
+    def test_a_span_must_be_a_thing_not_a_word(self):
+        # Three free passes: a phrase in backticks certifying a figure, the
+        # figure itself in backticks, and a number inside a longer quote.
+        # MUT:free-pass-span — dropping `_SPAN_SHAPE` makes these green.
+        assert not body_gate.has_anchor("`not-a-command`")
+        assert not body_gate.has_anchor("`gate green`")
+        assert body_gate.has_anchor("`vite build`")
+        assert body_gate.has_anchor("`vite build`")
+
+    def test_a_quoted_figure_is_still_a_claim(self):
+        # Round 2: the first cut treated `120 passed` in backticks as the run's
+        # output and let it certify itself. It is a claim like any other now.
+        assert not body_gate.check_body("It printed `120 passed`.\n").ok
+        assert not body_gate.check_body("It printed 120 passed.\n").ok
+        assert body_gate.check_body("It printed 120 passed.\n`vite build`\n").ok
+        # Naming a tool with a code token and describing it is not a claim about
+        # a run (devtools #302: `\`format-markdown\` exits 1 on …`).
+        # MUT:naming-vs-outcome — dropping `_OUTCOME` refuses the #302 line.
+        assert body_gate.check_body("`format-markdown` exits 1 on the frame glyphs.\n").ok
+        assert not body_gate.check_body("The suite went from 12 failed to 0.\n").ok
+
+    def test_a_prose_verdict_is_not_a_captured_row(self):
+        # `The gate is green after the fix.` is a claim about a run, not output.
+        # MUT:free-pass-verdict — a non-table test would make this green.
+        assert not body_gate.is_captured_cell("The gate is green after the fix.")
+        assert not body_gate.satisfies("The gate is green after the fix.")
+
+    def test_a_verdict_row_closes_with_the_verdict(self):
+        assert body_gate.row_is_verdict("| drop the guard | 3 red |")
+        assert not body_gate.row_is_verdict("| drop the guard | reddens this line |")
+        assert not body_gate.row_is_verdict("Adding a token reddens this line")
+
+    def test_mentioning_the_waiver_token_does_not_drop_the_line(self):
+        # MUT:free-pass-waiver-mention — an unanchored `body-gate-waiver` match
+        # would drop the line from the scan.
+        body = "Why: the ids live in the linked issue.\nWe did not use body-gate-waiver: because 120 passed\n"
+        lines, _notes, _evidence, _omitted = body_gate.prosaic(body)
+        assert any("120 passed" in row.text for row in lines)
+        assert not body_gate.check_body(body).ok
 
 class test_captured_tables:
     """A table that quotes a run is evidence; a prose table is not."""
@@ -231,18 +304,18 @@ class test_scope_exclusions:
         assert body_gate.check_body("## §3 — three statements that were not true\nBody text.\n").ok
 
     def test_a_block_quote_is_a_template(self):
-        lines, _notes, _evidence = body_gate.prosaic("Intro.\n\n> Tests 120 passed in the template\n")
+        lines, _notes, _evidence, _omitted = body_gate.prosaic("Intro.\n\n> Tests 120 passed in the template\n")
         assert "Tests 120" not in " ".join(row.text for row in lines)
 
     def test_an_indented_block_is_a_template(self):
-        lines, _notes, _evidence = body_gate.prosaic("Intro.\n\n    Tests 120 passed in the template\n")
+        lines, _notes, _evidence, _omitted = body_gate.prosaic("Intro.\n\n    Tests 120 passed in the template\n")
         assert "Tests 120" not in " ".join(row.text for row in lines)
 
     def test_the_gate_entry_lines_are_not_claims(self):
         # The exemption statement is excluded, and the surrounding prose still
         # scans: the reason's own numbers do not need sources of their own.
         body = "Why: the ids live in the linked issue.\nbody-gate-waiver: 3 of the 4 ids live in issue page two\n"
-        lines, _notes, _evidence = body_gate.prosaic(body)
+        lines, _notes, _evidence, _omitted = body_gate.prosaic(body)
         assert [row.text for row in lines if row.text.strip()] == ["Why: the ids live in the linked issue."]
         assert body_gate.check_body(body).findings == ()
 
@@ -305,17 +378,20 @@ class test_corpus_scan:
     """The real bodies, pinned: the gate's behaviour on them cannot drift silently."""
 
     def test_corpus_1474_passes(self):
+        # 96 prose lines, 3 statements, 0 refused on this head (pinned: a silent
+        # swing either way is a red).
         result = body_gate.check_body(_fixture("corpus-1474.md"))
         assert result.ok, [stmt.render() for stmt in result.findings]
-        assert result.statements, "the 1474 body states plenty; an empty scan would mean a broken extractor"
+        assert (result.scanned_lines, len(result.statements), len(result.findings)) == (96, 3, 0)
 
     def test_corpus_2813_refusals_include_the_arithmetic_paragraph(self):
         result = body_gate.check_body(_fixture("corpus-2813.md"))
         lines = _lines(result)
-        # The narrative restatement of the mutation tally (its only run output
-        # lives in the Evidence block above) and the prose figures elsewhere.
-        assert 189 in lines
-        assert len(lines) >= 5
+        # 202 prose lines, 35 statements, 20 refusals on this head; the
+        # narrative tally paragraph is among them.
+        assert (result.scanned_lines, len(result.statements), len(lines)) == (202, 35, 20)
+        # 189 is the tallied "2 red / 4 green" line; 73 the bare "Reproduced 3/3".
+        assert (73 in lines) and (189 in lines)
 
     def test_corpus_2821_is_not_a_clean_positive(self):
         """Documented finding: #2821 is NOT a clean positive under this rule.
@@ -336,7 +412,7 @@ class test_cli:
 
     def test_a_clean_file_exits_zero(self, tmp_path, capsys):
         target = tmp_path / "body.md"
-        target.write_text("It printed `120 passed`.\n", encoding = "utf-8")
+        target.write_text("It printed 120 passed.\n`vite build`\n", encoding = "utf-8")
         assert body_gate.main(["--body", str(target)]) == 0
         capsys.readouterr()
 
