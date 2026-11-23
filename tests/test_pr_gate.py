@@ -12,6 +12,8 @@ branch must turn them red.
 import inspect
 import json
 import re
+import subprocess
+from pathlib import Path
 from celestia_devtools.vcs.pr_gate import _gate, body_problems, check_pr, title_problems
 from celestia_devtools.vcs import pr_gate as pr_gate_module
 from celestia_devtools.vcs.pr_gate import comment_waiver as pr_gate_comment_waiver
@@ -1031,6 +1033,66 @@ def _comment_pr(patch: str, filename: str = "packages/vue/src/useHighlight.test.
     pr = {"state": "open", "mergeable": True, "title": GOOD_TITLE, "body": body, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}
     pr.update(overrides)
     return pr, _diff_for(patch, filename)
+
+#: A hunk that starts at line 200 — the shape almost every real PR has, and the
+#: one a hunk-only scan refuses with "line 1 is not shown by the patch".
+_FAR_HUNK_TS = "@@ -200,0 +200,3 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n+// MUT: reload-dropped\n"
+_FAR_HUNK_PY = "@@ -200,0 +200,3 @@\n+# measured: this pin catches the reload\n+x = 1\n+# MUT: reload-dropped\n"
+
+class test_comment_gate_reads_the_file_behind_the_diff:
+    """The merge chain must hand the scanner the checkout and the PR head.
+
+    Round 4 found the seam this class exists for: `comment_gate_problems` called
+    `check_diff(diff_text)` with no `root`/`rev`, so the scanner could not read
+    the file text — and a diff whose first hunk starts past line 1 was refused
+    with "line 1 is not shown by the patch". That refusal is language-agnostic
+    (it fires for `.ts` exactly as for `.py`), so on the merge chain it would
+    have refused almost every PR in the family.
+
+    25 existing tests call `check_diff` directly, which is why the hole was
+    invisible: they exercise the scanner, not the plumbing. These cases go
+    through `comment_gate_problems`, the function the merge gate actually calls.
+    """
+
+    def test_a_hunk_starting_past_line_one_is_judged_not_refused(self, tmp_path, monkeypatch):
+        """The S0 shape, through the plumbing the merge gate uses.
+
+        A real repository whose HEAD holds the test files, and the PR head is
+        that commit — exactly what production passes (`payload.head.sha`). The
+        fixture must be a REAL commit: with an unresolvable head the scanner
+        cannot read the file text and refuses, which is correct behaviour but
+        would make this case test nothing.
+        """
+        repo = tmp_path / "repo"
+        files = {"packages/vue/src/far.test.ts": "\n".join("x" for _ in range(220)) + "\n", "tests/test_far.py": "\n".join("x = 1" for _ in range(220)) + "\n"}
+
+        for path, text in files.items():
+            target = repo / path
+            target.parent.mkdir(parents = True, exist_ok = True)
+            target.write_text(text, encoding = "utf-8")
+
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check = True, capture_output = True)
+
+        for key, value in (("core.hooksPath", "/dev/null"), ("user.email", "gate@example.invalid"), ("user.name", "gate")):
+            subprocess.run(["git", "-C", str(repo), "config", key, value], check = True, capture_output = True)
+
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "heads"], check = True, capture_output = True)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check = True, capture_output = True, encoding = "utf-8").stdout.strip()
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(repo))
+
+        for patch, filename in ((_FAR_HUNK_TS, "packages/vue/src/far.test.ts"), (_FAR_HUNK_PY, "tests/test_far.py")):
+            pr, diff = _comment_pr(patch, filename = filename)
+            problems = pr_gate_module.comment_gate_problems("o/r", 1, head, runner = diff_runner(pr, diff))
+            assert not any("is not shown by the patch" in problem for problem in problems), (filename, problems)
+
+    def test_an_unanchored_claim_far_down_the_file_is_still_caught(self, monkeypatch):
+        """The control: refusing stopped, judging did not."""
+        monkeypatch.setenv("CELESTIA_ARTIFACT_ROOT", str(Path.cwd()))
+        patch = "@@ -200,0 +200,2 @@\n+// measured: this pin catches the reload\n+expect(1).toBe(1);\n"
+        pr, diff = _comment_pr(patch, filename = "packages/vue/src/far.test.ts")
+        problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert any(("useHighlight" not in problem) and ("far.test.ts:200" in problem) for problem in problems), problems
 
 class test_comment_gate_plumbing:
     def test_claim_in_an_added_comment_refuses(self, capsys):

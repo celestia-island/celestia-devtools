@@ -363,8 +363,11 @@ def _claim_text(line: str) -> str:
     the markers then reach the reader through ``render()`` — a raw NUL in a
     report is unreadable in a terminal and invisible in a log (measured: a
     docstring continuation claim rendered as ``tests/x.py:2: \\x00Reverting``).
-    Stripping repeats until neither prefix is left, so the order they arrive in
-    does not matter.
+    The loop runs twice, once per marker: each pass removes whichever of the
+    two is on the front, so order-independence is a side effect of covering
+    both markers rather than a separate promise — a single pass that dropped
+    either one left a control character in the report and the suite stayed
+    green (round-3 mutation, now pinned).
     """
     text = line.strip()
 
@@ -440,6 +443,15 @@ def scan_diff(diff: str, contents: Mapping[str, Sequence[str]] | None = None) ->
     prose than the file really has. (The commit first believed to be the
     corpus, ``49e96e0d``, touches one file and 18 lines — it is not it; the
     28482-line diff's 90-file name set matches ``a7c20c3b`` exactly.)
+
+    To rebuild that corpus after ``a7c20c3b`` merges (a ``origin/master...a7c20c3b``
+    comparison is then EMPTY, which reads as "the corpus is gone")::
+
+        git -C <hikari> diff a7c20c3b^..a7c20c3b > /tmp/artifact-retire.diff
+        # 28482 lines, 90 files, 4786045 bytes; the 8-lines-marked-as-prose
+        # defect is the second hunk of packages/wasm/component_descriptor_test.py
+
+    A merge-base spelling works too — ``git diff $(git merge-base a7c20c3b^ origin/master)..a7c20c3b``.
 
     ``contents`` is therefore the whole NEW-side file per changed path, and the
     state machine walks it: unshown lines only advance the state, shown ones are

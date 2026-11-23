@@ -921,7 +921,17 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
         print(f"⏭️  {COMMENT_GATE_CATEGORY}: no test-file changes in #{pr} — nothing to judge")
         return []
 
-    report = comment_gate.check_diff(diff_text)
+    # `root`/`rev` are what let the scanner read the file behind a diff: its
+    # docstring state lives in the WHOLE file, and a hunk shows only what
+    # changed. Without them every diff whose first hunk starts past line 1 is
+    # refused with "line 1 is not shown by the patch" — that is the shape that
+    # would refuse almost every PR in the family, TS or Python alike. `head` is
+    # this function's own argument (the PR head SHA); the checkout is resolved
+    # the same way the other gates resolve theirs, and a tree that cannot name
+    # the commit leaves the pair empty so the scanner falls back to its honest
+    # hunk-only refusal instead of inventing a state.
+    root = _comment_gate_root()
+    report = comment_gate.check_diff(diff_text, root = root, rev = head)
     # BOTH halves of the verdict, not just the claims: the scanner also refuses
     # "zero scanned comment lines" and "zero vocabulary hits", and those are its
     # defence against a mis-typed pattern reading as green. Forwarding only
@@ -930,6 +940,32 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
     return [f"{COMMENT_GATE_CATEGORY}: {claim.render()}" for claim in report.claims] + [
         f"{COMMENT_GATE_CATEGORY}: {problem}" for problem in report.problems
     ]
+
+def _comment_gate_root() -> str | None:
+    """The checkout the comment gate reads file text from (``None`` = no tree).
+
+    The scanner needs the NEW-side file text to compute a Python file's
+    docstring state (a hunk shows only the changed lines). ``CELESTIA_ARTIFACT_ROOT``
+    is honoured when it names a repository, and the cwd is the next candidate;
+    anything else is ``None``, which the scanner treats as "no text" and refuses
+    on rather than guessing.
+    """
+    # py-style-ok: no-block-imports: kept lazy with the other gate imports in this file
+    import os
+
+    for candidate in (os.environ.get("CELESTIA_ARTIFACT_ROOT"), str(Path.cwd())):
+        if not candidate:
+            continue
+
+        try:
+            probe = subprocess.run(["git", "-C", candidate, "rev-parse", "--git-dir"], capture_output = True, check = False)
+        except OSError:
+            continue
+
+        if probe.returncode == 0:
+            return candidate
+
+    return None
 
 def _diff_paths(diff_text: str) -> list[str]:
     """The new-side paths a unified diff touches."""
