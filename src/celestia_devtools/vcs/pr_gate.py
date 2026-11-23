@@ -988,6 +988,13 @@ def body_gate_problems(body: str, *, runner = None) -> list[str]:
 
     result = body_gate.check_body(body)
 
+    # The printed channel reaches the merge log too: an exemption the author
+    # claimed with `body-gate-ok:` must be visible in the run that merges, or
+    # the directive is a silent pass inside the very chain it guards.
+    for line, reason in result.directives:
+        if len(reason) >= body_gate.DIRECTIVE_REASON_MIN:
+            print(f"🔓 {BODY_GATE_CATEGORY}-ok (PR body:{line}): {reason}")
+
     if result.skipped:
         print(f"⏭️  {BODY_GATE_CATEGORY}: {result.skipped}")
 

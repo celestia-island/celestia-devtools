@@ -61,6 +61,10 @@ the directive. A body whose prose states nothing is a **loud skip** (rc 0, the
 skip printed); an empty body, a body that is only its record, and a body whose
 every line was excluded are **refused** (rc 1).
 
+*Printing:* every directive the gate honours is printed — by the CLI, and by
+the merge chain (:func:`celestia_devtools.vcs.pr_gate.body_gate_problems`
+forwards ``report.directives``), so an exemption is never reached silently.
+
 *Waiver:* ``--waiver`` does not cover this gate. The only exception is
 ``body-gate-waiver: <reason>`` in the PR body, read by the merge gate through
 the same parser as ``comment-gate-waiver:`` and announced on stdout.
@@ -174,6 +178,10 @@ DIRECTIVE = re.compile(r"body-gate-ok:[ \t]*(?P<reason>.*)$", re.IGNORECASE)
 _COMMIT = re.compile(r"(?<![\w])[0-9a-f]{7,40}(?![\w])", re.IGNORECASE)
 _CHECKSUM_WORD = re.compile(r"\bsha-?(?:1|256|512)\b|\bmd5\b", re.IGNORECASE)
 #: A `file:line` reference: a dotted filename, a colon, a line number.
+#: A test pointer: a module and the test that pins the claim (`a.py::test_b`,
+#: `x.test.ts`, `y_test.rs`). A line-level source: it names a place to open.
+_TEST_REF = re.compile(r"[\w./-]+\.(?:py|ts|tsx|js|jsx|rs)::[\w:.-]+|[\w./-]+\.(?:test|spec)\.[a-z]+|[\w./-]+_test\.(?:py|rs)")
+
 _FILE_LINE = re.compile(r"[\w./-]+\.(?:rs|ts|tsx|js|jsx|py|md|toml|yml|yaml|json|sql|wit|vue|sh|just|lock|txt)\s*:\s*\d+")
 _EVIDENCE = re.compile(r"\bevidence\s*:", re.IGNORECASE)
 _PR_REF = re.compile(r"(?<![\w#])#\d+\b")
@@ -185,7 +193,15 @@ _SPAN = re.compile(r"`[^`\n]+`")
 #: A span is a SOURCE when its contents look like a thing to run or open: a
 #: flag, a call, an underscored or camelCase identifier, a path, a filename, a
 #: value assignment, or a short all-lowercase word pair (`vite build`).
-_SPAN_SOURCE = re.compile(r"--?[a-z][\w-]*|\w+\(|\w_\w|[a-z][A-Z]|[/:.]\w|=\S|^[a-z][a-z0-9_-]*\s+[a-z][\w-]*$")
+#: …plus a short multi-word COMMAND (`vite build`, `cargo test`) — two or three
+#: lowercase words with no article. That is the line the lead drew: `a b` and
+#: `the thing` are prose, and a span that cannot be told from prose is not a
+#: source.
+#: A line that opens with a code span (an optional table pipe first): the span is
+#: the sentence's SUBJECT, so it cannot also be the evidence for it.
+_OPENS_WITH_SPAN = re.compile(r"^\s*\|?\s*`")
+
+_SPAN_SOURCE = re.compile(r"--?[a-z][\w-]*|\w+\(|\w_\w|[a-z][A-Z]|\w{2,}/\w|\.\w{1,6}$|:\d|=\S|^(?!(?:the|a|an|of|to|and|or|is|was) )[a-z][a-z0-9_-]*(?:\s+[a-z][\w-]*){1,2}$")
 
 #: The marker set, in the order the docstring lists it.
 ANCHORS: tuple[str, ...] = ("MUT", "evidence", "#PR", "URL", "SHA", "file:line", "span")
@@ -424,26 +440,58 @@ def has_quote(text: str) -> bool:
     """True when ``text`` carries an inline-code span at all."""
     return bool(_SPAN.search(text))
 
+#: Words that assert something ABOUT code rather than name it: a span beside
+#: one of these names the subject, so it cannot also be the evidence for what
+#: the sentence says about it. This is NOT a vocabulary of causes — it is the
+#: set of claim words the span rule needs, and the behaviour list itself
+#: (``BEHAVIOUR_TERMS``) supplies most of it.
+_ATTRIBUTION = re.compile(r"\b(?:never|always|catches|catch|reds|reddens|measured|verified|does not)\b", re.IGNORECASE)
+
 def is_source(line: str) -> bool:
-    """True when ``line`` carries one of :data:`ANCHORS`."""
-    lowered = line.lower()
+    """True when ``line`` carries one of :data:`ANCHORS`.
+
+    Two kinds of source, and the difference is the whole rule:
+
+    * **line sources** — a ``#PR``, a ``file:line``, ``MUT:`` / ``mutate:``, an
+      ``evidence:`` marker, a URL, a checksum word, or a commit hash with a
+      digit. Each points at a thing a reader can open, so where it sits on the
+      line does not matter.
+    * **span sources** — an inline-code span names the thing it quotes. It is
+      evidence for a FIGURE (``` `120 passed` ```) and for a claim about that
+      thing (``` `x.py:12` shows it ```), but it is NOT evidence for a claim
+      ABOUT the code it names: "… asserted `toEqual(QR_CAPABILITIES)` — it never
+      referenced it" quotes the call and then asserts the opposite, and the
+      quotation proves only that the call exists. So when the sentence carries
+      an attribution word (``never`` / ``always`` / ``catches`` / …) and no line
+      source, the spans do not count.
+    """
+    text = line.lower()
 
     for word in DISCLAIMERS:
-        lowered = lowered.replace(word, " " * len(word))
+        text = text.replace(word, " " * len(word))
 
-    if comment_gate._EXPLICIT_ANCHOR.search(lowered):
+    for pattern in (_EVIDENCE, _PR_REF, _URL, _CHECKSUM_WORD, _FILE_LINE, _TEST_REF, comment_gate._EXPLICIT_ANCHOR):
+        if pattern.search(text):
+            return True
+
+    for match in _COMMIT.finditer(text):
+        if re.search(r"[0-9]", match.group(0)):
+            return True
+
+    # A command line WITH its result (` `vite build` → rc=0 `) is a source in
+    # its own right: the arrow and the exit code are output, not a quotation.
+    if re.search(r"(?:\u2192|->|=>|\brc\s*=|\bexit\s+\d)", text):
         return True
 
-    if _EVIDENCE.search(lowered) or _PR_REF.search(lowered) or _URL.search(lowered):
-        return True
+    # A span names its subject; it does not evidence a claim ABOUT that subject.
+    if _ATTRIBUTION.search(text):
+        return False
 
-    if _CHECKSUM_WORD.search(lowered) or _FILE_LINE.search(lowered):
-        return True
+    for span in code_spans(text):
+        if span_is_source(span):
+            return True
 
-    if any(re.search(r"\d", match.group(0)) for match in _COMMIT.finditer(lowered)):
-        return True
-
-    return any(span_is_source(span) for span in code_spans(lowered))
+    return False
 
 def disclaims(line: str) -> bool:
     """True when ``line`` says out loud that the figure was not recomputed."""
@@ -532,21 +580,19 @@ def scan_body(body: str) -> tuple[list[statement], int, list[str]]:
 
     return statements, len(lines), notes
 
-#: A code token on the line: an inline-code span, an underscored identifier, a
-#: flag, or a sentence that NAMES one. A line that describes code is a
-#: description, not a claim (devtools #304 names `just`, `allow-duplicate-
-#: variables` and `.just/` and states no measured outcome).
-_CODE_TOKEN = re.compile(r"`[^`\n]+`|\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\s+--?[a-z][\w-]+")
-#: A measured outcome: a counter word or a run word next to a figure or a flag.
-_OUTCOME = re.compile(r"\b\d[\d,]*\s*(?:passed|failed|red|green|crash|error|warning|hits?)\b|\b(?:exit|rc)\b\s*[=:]?\s*-?\d", re.IGNORECASE)
-
 def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim."""
+    """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim.
+
+    A line is a claim when it carries the comment gate's behaviour vocabulary or
+    a figure. A code span does NOT make a sentence a description: ``` `x.test.tsx:88` ```
+    is one way to SOURCE a claim (it sits beside `MUT:`, `evidence:` and
+    `file:line` in :func:`is_source`), not a way to excuse it. That separation is
+    what closes the free pass review round 4 replayed: with a span exempting the
+    whole line, "the armed path was never exercised" stopped being a claim as
+    soon as any identifier sat beside it.
+    """
     kinds: list[str] = []
     terms = behaviour_terms(line)
-
-    if bool(_CODE_TOKEN.search(line)) and (not _OUTCOME.search(line)):
-        return (), ()
 
     if QUANTITY.search(line) or prose_figures(line):
         kinds.append("quantity")

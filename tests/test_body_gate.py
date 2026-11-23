@@ -68,13 +68,46 @@ class test_the_three_rules:
         assert body_gate.check_body("`vite build` → rc=0\nIt printed 120 passed.\n").ok
         assert not body_gate.check_body("It printed 120 passed.\n\n\n`vite build` → rc=0\n").ok
 
-    def test_a_line_that_names_code_is_not_a_claim(self):
-        # MUT:naming — devtools #304 names `just`, `allow-duplicate-variables`
-        # and `.just/` and asserts no outcome; refusing it costs an honest body.
+    def test_a_span_mid_sentence_sources_only_the_thing_it_names(self):
+        # MUT:span-subject — review round 4 replayed hikari #1476's body: a
+        # backticked `.toEqual(...)` appeared mid-sentence and sourced the whole
+        # claim. A span sources a FIGURE beside it; it does not make a claim
+        # about itself evidenced.
+        claim = "The file header claimed the frozen golden asserted `toEqual(QR_CAPABILITIES)` — it never referenced it."
+        result = body_gate.check_body(claim + "\n")
+        assert not result.ok
+        assert result.findings
+
+    def test_a_span_sources_a_claim_it_does_not_exempt_it(self):
+        # MUT:naming-exemption — the first cut let a span exempt the whole line.
+        # A span is one way to SOURCE a claim (beside MUT:, evidence:, file:line);
+        # the claim itself is still decided by the vocabulary and the figures.
+        assert body_gate.check_body("The armed path was never exercised (`x.test.tsx:88`).\n").ok
+        assert not body_gate.check_body("The armed path was never exercised (`a b`).\n").ok
+        assert not body_gate.check_body("The mock inverted the armed path so it always failed.\n").ok
+        # A line with no vocabulary and no figure is not a claim at all.
         assert body_gate.check_body("`just` >= 1.36 makes a duplicate a hard parse error.\n").ok
-        # A pasted figure beside the command that printed it is the run itself
-        # (the quotation is the evidence) — see `test_a_source_satisfies`.
-        assert body_gate.check_body("`vite build` printed `12 failed`.\n").ok
+
+class test_span_evidence:
+    """A span names its subject; MUT:span-attribution pins that it is no evidence."""
+
+    def test_a_quoted_call_does_not_evidence_an_attribution(self):
+        # MUT:span-attribution — hikari #1476 quotes `toEqual(...)` and then
+        # asserts it was never called; the quotation proves the call exists.
+        claim = "The header asserted `toEqual(QR_CAPABILITIES)` — it never referenced it."
+        assert not body_gate.check_body(claim + "\n").ok
+
+    def test_a_span_still_sources_a_figure_and_a_claim_about_its_thing(self):
+        assert body_gate.check_body("The suite printed `120 passed`.\n").ok
+        assert body_gate.check_body("The armed path ran (`x.test.tsx:88`).\n").ok
+        assert body_gate.check_body("The armed path was never skipped (`x.test.tsx:88`).\n").ok
+
+    def test_a_coverage_claim_without_a_source_is_refused(self):
+        assert not body_gate.check_body("The mock was inverted, so the armed path was never exercised.\n").ok
+        assert not body_gate.check_body("The fault fixture is always-failing, which is why the case passes.\n").ok
+
+    def test_a_version_still_names_its_line(self):
+        assert body_gate.check_body("`just` >= 1.36 makes duplicate definitions a hard parse error.\n").ok
 
 class test_tables:
     """A captured table is a table of readings, and nothing more."""
@@ -206,14 +239,15 @@ class test_vocabulary:
 class test_corpus:
     """The published bodies, pinned: the gate's behaviour cannot drift silently."""
 
-    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 8, 0), ("corpus-2813", 36, 20), ("corpus-2821", 8, 4)])
+    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 4), ("corpus-2813", 67, 32), ("corpus-2821", 20, 8)])
     def test_the_corpus_rows(self, name, sentences, refused):
         result = body_gate.check_body(_fixture(name + ".md"))
         assert (len(result.statements), len(result.findings)) == (sentences, refused)
 
     def test_the_2813_tally_paragraph_is_refused(self):
-        assert 189 in _lines(body_gate.check_body(_fixture("corpus-2813.md")))
-        assert 73 in _lines(body_gate.check_body(_fixture("corpus-2813.md")))
+        refused = _lines(body_gate.check_body(_fixture("corpus-2813.md")))
+        assert 73 in refused
+        assert any(186 <= line <= 220 for line in refused)
 
     def test_a_clean_body_passes(self):
         assert body_gate.check_body(_fixture("pr-302.md")).ok
@@ -223,7 +257,7 @@ class test_cli:
 
     def test_a_clean_file_exits_zero(self, tmp_path, capsys):
         target = tmp_path / "body.md"
-        target.write_text("It printed 120 passed.\n`vite build`\n", encoding = "utf-8")
+        target.write_text("It printed 120 passed.\n`vite build` → rc=0\n", encoding = "utf-8")
         assert body_gate.main(["--body", str(target)]) == 0
         capsys.readouterr()
 
