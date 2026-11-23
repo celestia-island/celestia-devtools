@@ -183,6 +183,27 @@ class test_negative_controls:
         assert body_gate.check_body("It printed 120 passed.\nThe worker path is not verified.\n").ok
         assert body_gate.check_body("It printed 120 passed — not verified.\n").ok
 
+class test_round5_width:
+    """Round 5: a citation is not the line's subject."""
+
+    def test_a_bare_citation_is_not_the_subject(self):
+        # MUT:naming-width — a span anywhere used to excuse every behaviour
+        # word on the line. A line whose only code is a bare citation can still
+        # name nothing, so what silences behaviour is a span that holds an
+        # identifier / call / flag, not a path reference.
+        assert body_gate.check_body("The harness verified it, see `docs/en/x.md`.\n").ok
+        # A path that is only a citation is the line's subject by the narrow
+        # rule (a span holding a word), and the line then makes no behaviour
+        # claim. It still counts as an anchor for a FIGURE on the same line.
+        assert body_gate.claim_kinds("The harness verified it, see `docs/en/x.md`.") == ((), ())
+        assert body_gate.has_anchor("The harness verified it, see `docs/en/x.md`.") is True
+
+    def test_an_identifier_span_names_the_subject(self):
+        # `hostSurface.test.ts` observes …, `expect(…)` is the regression guard:
+        # a reader can open the identifier, so the sentence is naming it.
+        assert body_gate.check_body("`hostSurface.test.ts` observes the real surface, verified against the source.\n").ok
+        assert body_gate.check_body("`expect(seam.x).toBe(Y)` is the regression guard, verified.\n").ok
+
 class test_round4_holes:
     """Round 4: the last four ways a statement could certify itself."""
 

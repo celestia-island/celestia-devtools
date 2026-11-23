@@ -499,8 +499,41 @@ _CODE_TOKEN = re.compile(r"`[^`\n]+`|\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\.[A-Za-z0-
 _OUTCOME = re.compile(r"\b\d[\d,]*\s*(?:passed|failed|red|green|crash|error|warning|hits?)\b|\b(?:exit|rc)\b\s*[=:]?\s*-?\d", re.IGNORECASE)
 
 def names_a_thing(line: str) -> bool:
-    """True when ``line`` names a code thing instead of claiming an outcome."""
-    return bool(_CODE_TOKEN.search(line)) and (not _OUTCOME.search(line))
+    """True when ``line`` NAMES a code thing instead of claiming an outcome.
+
+    Two shapes count, and both need the naming to be the line's subject rather
+    than a citation:
+
+    * an un-backticked code token — an underscored identifier or a ``--flag`` —
+      anywhere on the line;
+    * a code span whose content is an identifier, a call or a flag — an
+      ``expect(…)``, a ``createSurface``, a ``settings.allow-scripts`` — anywhere
+      on the line: a reader can open it, and it is the line's subject;
+    * a span that OPENS the line with only punctuation or a result marker after
+      it (``` `format-markdown` exits 1 on … ```), even when the span is a
+      bare word.
+
+    and none may sit beside a measured outcome (`` `vite build` printed 12
+    failed `` is a claim about a run). A bare PATH citation mid-sentence
+    (`` the harness, see `docs/en/x.md` ``) silences nothing: round 5 measured
+    one path making any "verified" on the line pass.
+    """
+
+    if _OUTCOME.search(line):
+        return False
+
+    if re.search(r"\b[a-z_]+(?:[_-][\w-]+)+\b|\b\w+\s+--?[a-z][\w-]+", _SPAN.sub(" ", line)):
+        return True
+
+    # A span is a citation, not a subject, when it is a bare PATH
+    # (`docs/en/x.md`): it is a reference to a place, not the thing described.
+    for match in _SPAN.finditer(line):
+        span = match.group(0).strip("`")
+
+        if re.search(r"[A-Za-z_]", span):
+            return True
+
+    return False
 
 def claim_kinds(line: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(kinds, terms)`` for one line of prose; empty ``kinds`` = no claim.
