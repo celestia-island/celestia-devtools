@@ -44,11 +44,13 @@ public, that they did it deliberately.
 
 *A source* (:data:`ANCHORS`) is one of: ``MUT:<id>`` / ``mutate:<slug>`` (the
 comment gate's own pattern, imported), an ``evidence:`` marker, a ``#PR``
-reference, a URL, a commit hash (7+ hex with at least one digit) or the
-checksum words ``sha256`` / ``sha1`` / ``md5``, a ``file:line`` reference to a
-dotted filename, or an inline-code span shaped like a command / flag / call /
-identifier / multi-segment path. The source may sit on the statement's own
-line, the line above or the line below.
+reference (**on a line that states nothing** — on a statement line a ``#PR``
+proves only that the PR exists, and the line needs another source), a URL, a
+commit hash (7+ hex with at least one digit) or the checksum words ``sha256`` /
+``sha1`` / ``md5``, a ``file:line`` reference to a dotted filename, or an
+inline-code span shaped like a command / flag / call / identifier /
+multi-segment path. The source may sit on the statement's own line, the line
+above or the line below.
 
 *A disclaimer* (:data:`DISCLAIMERS`) says out loud that the figure was not
 recomputed (``未复算`` / ``unverified`` / ``not established`` / ``inference`` /
@@ -141,6 +143,22 @@ DISCLAIMERS: tuple[str, ...] = (  # py-style-ok: single-line-statement: one data
     "未验证",
     "未测量",
     "未复现",
+    # The same four phrasings with the other two Chinese negators. Measured
+    # (debt ⑧): `没复算，输出 120 passed。` and `未经复算，输出 120 passed。` were
+    # REFUSED — the disclaimer exists, the matcher just did not know the word —
+    # while `尚未复算` already worked because it carries `未复算` as a substring.
+    # These are listed as DISCLAIMER phrases, not added to `_NEGATION_TAIL`: a
+    # negation entry would let `没` refute a disclaimer standing beside it
+    # (`没复算，unverified` says the same thing twice), and a bare `没` also
+    # matches inside `淹没` / `出没` / `吞没`.
+    "没复算",
+    "没验证",
+    "没测量",
+    "没复现",
+    "未经复算",
+    "未经验证",
+    "未经测量",
+    "未经复现",
     "原因未查明",
     "unverified",
     "not established",
@@ -258,7 +276,6 @@ class _line:
 
     number: int
     text: str
-    section: int = 0
 
 def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, ...]]:
     """The lines of ``body`` subject to the claim scan, plus notes + fence lines.
@@ -345,36 +362,6 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
     if fence is not None:
         notes.append("the body ends inside an unclosed code fence — everything after the opener was treated as code (the conservative reading of a truncated body)")
 
-    # Paragraph labelling: a blank line, a heading or a table block starts the
-    # next one. The table block is one unit so its rows are judged together.
-    section = 0
-    previous_blank = True
-    index = 0
-
-    while index < len(lines):
-        row = lines[index]
-        stripped = row.text.strip()
-
-        if _ROW.match(stripped):
-            while (index < len(lines)) and _ROW.match(lines[index].text.strip()):
-                index += 1
-
-            section += 1
-            previous_blank = False
-            continue
-
-        if not stripped:
-            section += 1
-            previous_blank = True
-            index += 1
-            continue
-
-        if previous_blank:
-            section += 1
-
-        previous_blank = False
-        index += 1
-
     hidden_note = (f"note: an inline HTML comment on line {hidden[0][0]} carries a body-gate-ok directive — it is reported here and does not exempt anything, because a hidden directive must not grant a hidden pass",) if hidden else ()
 
     omitted = ("the body's only prose was indented or quoted, so nothing could be scanned — an indented block is a template, not a description",) if (not lines) and dropped else ()
@@ -436,6 +423,24 @@ def code_spans(text: str) -> tuple[str, ...]:
 #: A BARE test file name: a module called `x.test.ts` / `test.ts` / `y_test.rs`
 #: with no `::case` and no `:line`. Citing it names a file, not a place where an
 #: assertion lives, so it evidences nothing.
+#:
+#: The pattern is not gated on the extension, so what it refuses is exactly the
+#: spellings below and not "every language's convention". Measured (debt ⑤) with
+#: `git ls-files | grep -cE '(^|/)<shape>$'` over the four repos that hold the
+#: gate's consumers — celestia-devtools, tairitsu, hikari, shittim-chest:
+#: `test_*.py` 100 / 2 / 1 / 3, `*.test.ts`+`*.test.tsx` 4 / 0 / 558 / 696,
+#: `*_test.py` 0 / 0 / 4 / 0, `*_test.rs` 0 / 6 / 1 / 2, `check_*.py` 0 / 4 / 2 / 5,
+#: `*.spec.ts`/`*.spec.tsx` 0 in all four (chest's `*.test.*` count drifts with its
+#: live tree: 694 at `e426b3c87`, 696 two hours later — re-count before relying
+#: on the last digit). Every one of those families is refused
+#: as a bare name, so the fail-open direction is empty for them.
+#:
+#: Two shapes match the pattern while not being test modules: `test.yml`, the
+#: workflow file `tairitsu` and `hikari` each keep at `.github/workflows/`. They
+#: are refused too — a bare workflow filename is no more a source than a bare
+#: test filename — so that is the fail-closed direction and it costs nothing
+#: real. The `check_*.py` gates are outside this family by design: a gate is not
+#: a test, and a bare gate name is the `#PR` case, not this one.
 _BARE_TEST_NAME = re.compile(r"(?:^|/)(?:test|spec)(?:[_-][\w-]+)?\.[A-Za-z0-9]+$|(?:^|/)(?:[\w-]+\.)*(?:test|spec)\.[A-Za-z0-9]+$|(?:^|/)[\w-]+_test\.[A-Za-z0-9]+$")
 
 def span_is_source(span: str) -> bool:
@@ -468,12 +473,12 @@ def has_quote(text: str) -> bool:
     """True when ``text`` carries an inline-code span at all."""
     return bool(_SPAN.search(text))
 
-def is_source(line: str) -> bool:
+def is_source(line: str, *, statement: bool = False) -> bool:
     """True when ``line`` carries one of :data:`ANCHORS`.
 
     Two kinds of source, and the difference is the whole rule:
 
-    * **line sources** — a ``#PR``, a ``file:line``, ``MUT:`` / ``mutate:``, an
+    * **line sources** — a ``file:line``, ``MUT:`` / ``mutate:``, an
       ``evidence:`` marker, a URL, a checksum word, or a commit hash with a
       digit. Each points at a thing a reader can open, so where it sits on the
       line does not matter.
@@ -485,6 +490,18 @@ def is_source(line: str) -> bool:
       quotation proves only that the call exists. So when the sentence carries
       an attribution word (``never`` / ``always`` / ``catches`` / …) and no line
       source, the spans do not count.
+
+    A ``#PR`` reference is a line source **only on a line that states
+    nothing** (``statement = False``): ``#2813`` proves the PR exists, not what
+    a sentence quantifies or claims about it, so on a statement line it
+    satisfies nothing and the line needs another source — a ``file:line``, a
+    command result with its exit code, a pasted capture, a disclaimer or a
+    directive. A markdown table of readings is NOT one of these
+    (:func:`is_reading_row` only stops a restatement from being prose; only a
+    quoted figure on the line, or a fenced block one line away, captures
+    output). A pure
+    reference line (``Filed upstream: hikari #1498.``) still counts: it is not
+    judged, and it points the reader at where the claim's evidence lives.
     """
     text = line.lower()
 
@@ -497,9 +514,18 @@ def is_source(line: str) -> bool:
     if _TEST_REF.search(text):
         return True
 
-    for pattern in (_EVIDENCE, _PR_REF, _URL, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
+    for pattern in (_EVIDENCE, _URL, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
         if pattern.search(text):
             return True
+
+    # A `#PR` reference sources a line that asserts nothing. On a STATEMENT
+    # line it is not a source: the reference proves the PR exists, while the
+    # line asserts a quantity or a behaviour the reader cannot recompute from
+    # that existence alone (the #315 review's live miss: `#2813` sourced the
+    # whole of "… 32 refusals"). `statement` is judged by the gate's own
+    # predicates in :func:`claim_kinds`, not by another word list.
+    if (not statement) and _PR_REF.search(text):
+        return True
 
     # A checksum WORD is a locator only when it is not itself negated, on
     # either side: "no sha256 anywhere" and "the sha256 is not shown" both name
@@ -609,17 +635,20 @@ def _negation_state(text: str, at: int, term: str) -> str:
     # A lone negation one mark away (`..., not, inference`) belongs to the same
     # refutation; a whole clause does not (`but not round 1, so ...`).
     prior_words = prior.split()
-    # A negation one mark away belongs to the same refutation when it stands
-    # alone (`..., not, inference`) or closes a short run (`that was not, an
-    # inference`). What rejects `but not round 1` is NOT this cap — it is the
-    # tail-word check below (its last word is `1`, not a negation).
+    # The prior run merges into the refutation when its LAST word is a negation
+    # — there is no length cap. What rejects `but not round 1` is exactly that
+    # last-word check (its last word is `1`, not a negation), not any cap: a
+    # run of any length that ends in a negation (`that was not`) is one
+    # refutation just the same.
     #
-    # The four-word cap is EMPIRICAL and unpinned: nothing proves four is right
-    # or five is wrong. It is not what rejects `but not round 1` — the tail-word
-    # check does (its last word is `1`, not a negation). Changing the number is
-    # invisible to the corpus and to the whole test file today; if a body
-    # arrives that needs a different cap, pin the boundary first, then change it.
-    lone = bool(prior_words) and (len(prior_words) <= 4) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
+    # The cap that used to sit here (four words) was unobservable ON THE CORPUS
+    # and is not unobservable in general: a long clause ending in a negation
+    # (`the run came from CI and I did not, an inference`) reads as DETACHED
+    # without the cap and as a disclaimer with it — review round 2 measured the
+    # difference. Removing it therefore narrows the escape hatch in one
+    # direction only (a line that used to pass is now refused), which is the
+    # direction this gate is allowed to err in.
+    lone = bool(prior_words) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
 
     own = text[low: high]
     own_before = own[: own.rfind(term)] if term in own else own
@@ -709,10 +738,36 @@ def is_reading_row(line: str) -> bool:
     if len(cells) < 2:
         return False
 
+    # The LABEL is examined too, and this is what stops a table of claims from
+    # certifying itself: `| the armed path is now always exercised | 120 passed |`
+    # is a behaviour claim in the label column beside a reading, and treating the
+    # row as captured output made the whole table a source (review round 2).
+    #
+    # The predicate IS the statement vocabulary, including its behaviour words —
+    # there is no narrower judge here. That is a real, acknowledged cost: a
+    # performance table whose labels are `always-on` / `never` / `measured`
+    # turns into prose under this rule (measured against master in review
+    # round 3), while `caught` — not in the vocabulary — keeps its table
+    # reading. The false-rejection direction is the one this gate is allowed to
+    # err in, and 165 real merged bodies produced no such flip; if a real
+    # corpus ever pays this cost, the fix is a narrower judge, not silence.
+    if claim_kinds(cells[0])[0]:
+        return False
+
     return all((not cell) or bool(_READING_CELL.fullmatch(cell)) for cell in cells[1:])
 
 #: A reading: a number with an optional unit, or a `#ref`, or an em dash.
-_READING_CELL = re.compile(r"-?\d+(?:[.,]\d+)*\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
+_READING_NUMBER = r"-?\d+(?:[.,]\d+)*"
+_READING_UNIT = r"%|ms|s|MiB|GiB|KiB|KB|MB|GB|px|B"
+#: The count noun a runner prints after its number (`-3 passed`, `1,204 passed`).
+#: Deliberately the runners' own vocabulary, not English: a cell saying
+#: `3 passed and 5 failed` stays prose because the conjunction is left over.
+_READING_TAIL = r"passed|failed|skipped|xfailed|xpassed|tests?|errors?|warnings?"
+#: A reading: a number with an optional unit and optional count noun, an
+#: approximate one (`about 9 KB`), a `#ref`, or an em dash. The approximation
+#: prefix cannot stand alone — `about the build` is prose, so a number is
+#: required right after it.
+_READING_CELL = re.compile(rf"(?:(?:about|approximately|roughly|~|\u2248)\s*)?(?:{_READING_NUMBER}(?:\s*(?:{_READING_UNIT}))?(?:\s+(?:{_READING_TAIL}))?|#\d+)|\u2014|-")  # py-style-ok: single-line-statement: one alternation table
 
 def table_bounds(lines: Sequence[_line], index: int) -> tuple[int, int] | None:
     """The ``[first, last]`` envelope of the table block holding ``index``."""
@@ -787,7 +842,13 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
     inside it, any of these suffices:
 
     * a **source** (:func:`is_source`) — an anchor, a ``MUT:`` id, a command in
-      backticks, a ``file:line``, a ``#PR``, a URL, a commit hash;
+      backticks, a ``file:line``, a URL, a commit hash. A ``#PR`` qualifies only
+      on a line that states nothing *besides* naming a PR: the references are
+      erased before the line's statement verdict is taken (round 2, S1 — a PR
+      number followed by a word made its own line a quantity statement, so
+      `See #2813 for the reproduction.` could not source itself), and a line
+      that IS a claim cannot lend its reference to a neighbour either — a
+      reference to a PR proves the PR exists, not the neighbour's figures;
     * a **disclaimer** (:func:`disclaims`) — "not recomputed", said out loud;
     * the statement's own **directive** (``body-gate-ok: <reason>`` with a real
       reason) — the author's explicit, printed decision to make the claim
@@ -805,7 +866,14 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
         if (position != index) and not part.text.strip():
             continue
 
-        if is_source(part.text) or disclaims(part.text):
+        # The `#PR` verdict must not be decided BY the PR number itself: `PROSE_FIGURE`
+        # only skips a `#NNN` that punctuation follows, so `See #2813 for the
+        # reproduction.` read as a quantity statement and its own reference could
+        # not source it (review round 2: 4 merged bodies newly refused, and PR #315's
+        # own body flipped to refused). Erasing the references first makes the
+        # question what it was meant to be: does the line state anything BESIDES
+        # naming a PR?
+        if is_source(part.text, statement = bool(claim_kinds(_PR_REF.sub(" ", part.text))[0])) or disclaims(part.text):
             return True
 
         reason = directive_reason(part.text)

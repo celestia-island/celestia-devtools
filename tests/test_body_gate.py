@@ -63,6 +63,21 @@ class test_the_three_rules:
         assert body_gate.check_body("The count moved from 10 to 12 — not re-run.\n").ok
         assert body_gate.check_body("The count moved from 10 to 12（未复算）。\n").ok
 
+    def test_every_chinese_negator_spelling_of_a_disclaimer_satisfies(self):
+        # MUT:disclaimer-negator-forms — reverting the eight added phrases makes
+        # the two `没`/`未经` cases refused again. Measured (debt ⑧): those two
+        # were FALSE REJECTIONS — the author did disclaim, the matcher did not
+        # know the word. `尚未复算` worked all along because it carries `未复算`
+        # as a substring, so a four-phrase table looked complete when it was not.
+        for phrase in ("没复算", "没验证", "没测量", "没复现", "未经复算", "未经验证", "未经测量", "未经复现"):
+            assert body_gate.check_body(f"{phrase}，输出 120 passed。\n").ok, phrase
+
+        # The other direction: the same words are NOT substring-anywhere matches.
+        # A bare `没` inside an ordinary verb must not turn a claim into a
+        # disclaimer, and a line with no disclaimer is still refused.
+        for line in ("淹没在日志里，输出 120 passed。", "出没于日志，输出 120 passed。", "输出 120 passed。"):
+            assert not body_gate.check_body(line + "\n").ok, line
+
     def test_a_nearby_source_satisfies(self):
         # MUT:window-one-line — widening or shortening the window changes these.
         assert body_gate.check_body("`vite build` → rc=0\nIt printed 120 passed.\n").ok
@@ -179,6 +194,22 @@ class test_tables:
         # label column and no header is prose (MUT:reading-row-label).
         assert body_gate.is_reading_row("| before | 0 | 0 | 0 | 3 |")
         assert not body_gate.is_reading_row("| control | renders with 9041 bytes |")
+
+    def test_a_runner_s_own_count_is_a_reading(self):
+        # MUT:reading-count-noun — reverting the count-noun tail makes the four
+        # `passed`/`failed` cells prose again. Measured (debt ⑨): `120 passed`
+        # was refused as a reading, not only the signed `-3 passed` the debt
+        # entry named — the cell pattern required the number to be the whole
+        # cell, so every runner line in a PR body's tally table was prose.
+        for cell in ("-3 passed", "1,204 passed", "0 failed", "12 skipped", "2 errors", "~5 tests", "about 9 KB"):
+            assert body_gate.is_reading_row(f"| row | {cell} |"), cell
+
+        # The other direction, because widening a reading cell widens what the
+        # gate accepts as CAPTURED OUTPUT: an approximation prefix with no
+        # number, a conjunction of two counts, and an English sentence that
+        # starts with a count all stay prose.
+        for cell in ("about the build", "3 passed and 5 failed", "5 tests fail on master", "9 of 10 builds break"):
+            assert not body_gate.is_reading_row(f"| row | {cell} |"), cell
 
 class test_the_directive:
     """``body-gate-ok:`` is the printed, argument-bearing escape hatch."""
@@ -396,6 +427,58 @@ class test_corpus:
         refused = _lines(body_gate.check_body(_fixture("corpus-2813.md")))
         assert 73 in refused
         assert any(186 <= line <= 220 for line in refused)
+
+    def test_a_pr_reference_sources_only_a_line_that_states_nothing(self):
+        # MUT:pr-ref-statement-arm — reverting `is_source` to treat `#PR` as a
+        # line source on EVERY line makes the two negatives pass again. The
+        # live miss this pins (devtools #315, review round 3): a body wrote
+        # "#2813" and "32 refusals" on one line and the reference sourced the
+        # count, because a `#PR` proves the PR exists and nothing about what
+        # the line asserts.
+        result = body_gate.check_body(_fixture("pr-ref-on-a-statement-line.md"))
+        refused = _lines(result)
+
+        assert refused == [3, 5], refused
+
+        # The positive controls in the same file: a statement line still passes
+        # when its figure has a source of its own, and a pure reference line
+        # (`Filed upstream: hikari #1498.`) is not judged at all.
+        assert 9 not in refused, "a file:line beside the reference must still source it"
+        assert 11 not in refused, "a command with its result must still source it"
+        assert 13 not in refused, "a reference-only line states nothing, so it is not refused"
+
+    def test_a_pure_reference_line_sources_itself(self):
+        # MUT:pr-ref-erased-before-verdict — judging the line's statement-ness
+        # WITHOUT erasing its `#PR` first makes every one of these refused again
+        # (review round 2, S1). `PROSE_FIGURE` skips a `#NNN` only when
+        # punctuation follows it, so `See #2813 for the reproduction.` read as a
+        # quantity statement and then could not be sourced by its own reference.
+        # Measured on 26 merged bodies: 4 lines were newly refused, and the body
+        # of PR #315 — the change that introduced this rule — flipped to refused.
+        pure_references = ("See #2813 for the reproduction.", "Follow-up to #317 (recorded there as \"not fixed\").", "Filed upstream: hikari #1498.", "Merging #1 was blocked by the comment gate itself:")
+
+        for line in pure_references:
+            assert body_gate.check_body(line + "\n").ok, line
+
+        # The other direction is unchanged: a line that states something BESIDES
+        # naming a PR still needs its own source.
+        assert not body_gate.check_body("Reproduced on #2813: the gate refused 32 statements.\n").ok
+        assert not body_gate.check_body("Fixed the sampler race in #2813, which closed 4 findings.\n").ok
+
+    def test_a_table_of_claims_is_not_captured_output(self):
+        # MUT:reading-row-label-examined — reverting the label check makes the
+        # whole table a capture again, so both claims pass (review round 2, S2).
+        # Widening a reading cell to accept a runner's count (`120 passed`) also
+        # widened this: `| the armed path is now always exercised | 120 passed |`
+        # reads as a reading row unless the LABEL is examined, and a table of
+        # readings is a source.
+        body = "| claim | figure |\n|---|---|\n| the armed path is now always exercised | 120 passed |\n"
+        assert not body_gate.check_body(body).ok
+
+        # A real reading table still certifies: its labels state nothing.
+        assert body_gate.is_reading_row("| suite | 120 passed |")
+        assert body_gate.is_reading_row("| before | 0 | 0 | 0 | 3 |")
+        assert body_gate.is_reading_row("| delta | -3 |")
 
     def test_a_restatement_with_a_table_beside_it_passes(self):
         # `dom-arithmetic.md`: three sentences restating the telemetry table
