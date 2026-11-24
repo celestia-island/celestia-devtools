@@ -617,13 +617,14 @@ class test_docstrings:
 
     def test_an_unclosed_docstring_refuses_instead_of_marking_code_as_prose(self):
         """A block that never closes is refused, not read as prose to EOF.
+        MUT: unclosed-docstring-refusal -- deleting the never-closed refusal in docstring_span reds this test, the never-closed note list comes back empty.
 
         An unterminated triple quote leaves the block open forever, so every
         line after it reads as prose - including ``x = "never"`` inside a
         function body, which the gate then refuses as an anchorless claim.
         Either half of that is a wrong answer: the line is code, and the honest
         verdict is that this gate cannot classify anything after the opener.
-
+        MUT: unclosed-docstring-refusal -- deleting the never-closed refusal in docstring_span reds this test, the note list goes empty.
         Measured with the refusal removed: scanned=1, hits=0, claims=0 and no
         note (the payload line vanishes into "zero vocabulary hits"). With it:
         scanned=4, hits=1, claims=1 at line 4, plus the never-closed note.
@@ -718,6 +719,7 @@ def test_the_new_side_revision_is_taken_from_the_lane_that_names_it(tmp_path):
 
 def test_a_range_reads_its_own_new_side_which_head_cannot_stand_in_for(tmp_path):
     """Reading HEAD's text for `--range A..B` produces a refusal the range does not have.
+    MUT: head-text-never-closed-refusal -- deleting the never-closed refusal in docstring_span reds this test, the HEAD-text half of the pair loses its refusal.
 
     The range's NEW side closes its docstring; HEAD (a later commit) leaves one
     open before the same region. Certified against HEAD, the gate reports "the
@@ -727,6 +729,7 @@ def test_a_range_reads_its_own_new_side_which_head_cannot_stand_in_for(tmp_path)
     Measured: the range's own side gives scanned=0 and no docstring note;
     HEAD's text gives a never-closed note. That is why the revision is taken
     from the lane (`--range` -> B, `--base` -> HEAD, `--staged` -> none).
+    MUT: revision-reads-the-lane -- making _git_revision ignore --range and resolve HEAD reds test_the_new_side_revision_is_taken_from_the_lane_that_names_it.
     """
     closed = '"""Header.\nprose line.\n"""\n\n\ndef f():\n    # Reverting this reds the suite\n    return 1\n'
     opened = '"""Header.\n\n"""\n\nDOC = """opens and stays open\n\ndef f():\n    # Reverting this reds the suite\n    return 3\n'
@@ -754,14 +757,15 @@ def test_a_range_reads_its_own_new_side_which_head_cannot_stand_in_for(tmp_path)
 
 def test_a_claim_never_carries_the_walkers_own_markers():
     """A report line must be readable: the internal sentinels never reach it.
+    MUT: claim-text-strips-sentinels -- deleting either removeprefix in _claim_text reds this test, a sentinel reaches the rendered line.
 
     The walker marks a context line with ``CONTEXT_MARK`` (NUL) and a prose line
     with ``DOC_CONTINUATION`` (SOH); a docstring continuation inside a context
     run carries BOTH, in that order. ``claim.text`` is what a reader sees through
     ``render()``, so a raw control character there is unreadable in a terminal
     and invisible in a log. Measured before the fix: ``tests/x.py:2: \x00...``.
-
     The line below is deliberately built to carry both markers, so deleting
+    MUT: claim-text-strips-sentinels -- deleting either removeprefix in _claim_text reds this test, the double-marked line keeps a control character.
     either strip reds this case (the round-2 mutation that stripped only the
     doc marker SURVIVED the whole file — this is what pins it).
     """
@@ -776,6 +780,7 @@ def test_a_claim_never_carries_the_walkers_own_markers():
     # The other arrival order too: a context line whose text starts with the doc
     # marker. One pass in the wrong order leaves a marker behind (measured), so
     # this pins the loop rather than trusting "it is order-independent".
+    # MUT: claim-text-two-passes -- collapsing the strip loop to one pass leaves a marker behind and reds this test.
     assert comment_gate._claim_text(comment_gate.CONTEXT_MARK + comment_gate.DOC_CONTINUATION + "x") == "x"
 
     for entry in claims:
@@ -793,6 +798,7 @@ def test_an_unusable_revision_refuses_instead_of_raising(tmp_path):
 
     Measured with `except OSError` restored: this raises `ValueError`; with the
     guard it returns a refusal naming the file.
+    MUT: nul-valueerror-guard -- narrowing the except clause back to OSError in _new_side_contents reds this test, ValueError escapes as a crash.
     """
     repo, diff = _repo_with_change(tmp_path, '"""A."""\n\nx = 1\n', '"""A."""\n\nx = 2\n')
     report = comment_gate.check_diff(diff, root = repo, rev = "HEAD\x00tail")
@@ -815,6 +821,7 @@ class test_docstring_state_reads_the_whole_file:
     #310's walker advanced the docstring state over HUNK lines only. A patch
     shows what it changed, so a ``\"\"\"`` that CLOSES a docstring in a line the
     patch never shows reads as one that OPENS it, and every following line is
+    MUT: whole-file-docstring-state -- with the hunk-only walk restored, the closing quote in an unshown line reads as an opener and the following prose lines are misjudged.
     judged as prose. hikari's artifact-retire branch is the standing corpus:
     the gate marked 8 more lines of ``packages/wasm/component_descriptor_test.py``
     as prose than the file has, and — because a code line read as prose can be
@@ -840,11 +847,13 @@ class test_docstring_state_reads_the_whole_file:
         prose, so it keeps claim candidacy, and it is reported (it names
         behaviour — ``reds`` — with no mutation anchor in reach). A walker that
         sees only the hunks never learns the docstring opened at line 1, so it
+        MUT: whole-file-docstring-state -- reverting to the hunk-only walk reads hunk 1 as code and scans NOTHING, so the edited sentence is never reported.
         reads hunk 1 as code and scans NOTHING — silently dropping the one
         comment the change adds.
 
         Measured: with the file text, scanned=1, hits=1, and the claim is the
         edited sentence; without it, scanned=0 and a note about line 1.
+        MUT: whole-file-docstring-state -- dropping the git-show contents in check_diff reds this test, the read side falls back to the blind walk.
         """
         before = '"""Module docstring.\n\n\nA sentence that reds nothing at all.\n\nSpans several lines so the quotes are\nnowhere near what the patch touches.\n"""\n\n' + _CONSTANTS + "\n\n\ndef test_a():\n    assert 1 == 1\n    payload = never_reds_alone\n"
         after = before.replace("A sentence that reds nothing at all.", "A sentence that reds nothing at all, revised.").replace("    assert 1 == 1\n", "    assert 2 == 2\n")
@@ -895,10 +904,12 @@ class test_docstring_state_reads_the_whole_file:
         docstring ... is never closed". Measured on this repository's own
         ``tests/test_pyshim.py`` (line 53), which is a valid Python module whose
         last line is code.
+        MUT: quoted-delimiter-not-opener -- removing the _inside_string_literal guard in _doc_open_at reds this test, the file is then refused as never-closed.
 
         Both delimiters, both quoting styles, and the escaped form the real
         file uses must all read as data; a genuine opener on the same line
         shape must still open.
+        MUT: quoted-delimiter-not-opener -- removing the _inside_string_literal guard in _doc_open_at reds this test, quoted delimiters then open a never-closed block.
         """
         before = "x = 1\n\n\ndef t():\n" + '    assert not re.search(r"(\'\'\'|\\"\\"\\")[^\\n]*", S)\n' + "    # placeholder\n"
         after = before.replace("# placeholder", "# Reverting this reds the suite")
@@ -915,6 +926,7 @@ class test_docstring_state_reads_the_whole_file:
         triple_double = '"' * 3
         triple_single = "'" * 3
         # data, never an opener
+        # MUT: quoted-delimiter-unit-shapes -- removing the _inside_string_literal guard in _doc_open_at reds the three data-shape checks below.
         assert comment_gate._doc_open_at('assert not re.search(r"(' + triple_single + '|", S)') == ""
         assert comment_gate._doc_open_at("x = 'a " + triple_double + " b'") == ""
         assert comment_gate._doc_open_at('x = "' + triple_single + '"') == ""
@@ -929,6 +941,7 @@ class test_docstring_state_reads_the_whole_file:
         does not make that knowable — it makes it certain — so the gate refuses
         and names the file, and the code line after the opener is judged on its
         own classification rather than silently becoming prose.
+        MUT: whole-file-refusal-still-fails-closed -- deleting the never-closed note emission in docstring_span reds this test, the notes list goes empty.
         """
         before = '"""Closed header."""\n\n\ndef f():\n    return 1\n'
         after = '"""Header that is never closed.\n\n\ndef f():\n    x = "never"\n    return 1\n'
@@ -938,6 +951,7 @@ class test_docstring_state_reads_the_whole_file:
         # The note is a PROBLEM of its own, not the anchorless-claim listing —
         # which quotes the offender's text and so also contains "never closed"
         # (a filter on that phrase alone passed with the note deleted; measured).
+        # MUT: unterminated-note-own-problem -- deleting the never-closed note emission in docstring_span reds this test, the notes list goes empty.
         notes = [problem for problem in report.problems if "is never closed in the file" in problem]
         assert notes, report.problems
         assert notes[0].startswith("tests/test_x.py:"), notes
