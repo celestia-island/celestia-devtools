@@ -159,6 +159,9 @@ DISCLAIMERS: tuple[str, ...] = (  # py-style-ok: single-line-statement: one data
 #: reason is part of the pattern, held to :data:`DIRECTIVE_REASON_MIN`, and the
 #: gate prints every line it exempts.
 DIRECTIVE_REASON_MIN = 20
+#: …and a reason of dots, underscores or one repeated letter is not a reason:
+#: at least one letter or CJK character has to appear in it.
+DIRECTIVE_REASON_SUBSTANCE = re.compile(r"[A-Za-z\u4e00-\u9fff]")
 
 #: Zero production must fail, not read as "no claims".
 #:
@@ -494,8 +497,14 @@ def is_source(line: str) -> bool:
     if _TEST_REF.search(text):
         return True
 
-    for pattern in (_EVIDENCE, _PR_REF, _URL, _CHECKSUM_WORD, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
+    for pattern in (_EVIDENCE, _PR_REF, _URL, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
         if pattern.search(text):
+            return True
+
+    # A checksum WORD is a locator only when it is not itself negated: "no
+    # sha256 anywhere" names the absence, not a checksum a reader can check.
+    for match in _CHECKSUM_WORD.finditer(text):
+        if _NEGATION.search(text[max(0, match.start() - 12): match.start()]) is None:
             return True
 
     for match in _COMMIT.finditer(text):
@@ -523,9 +532,38 @@ def is_source(line: str) -> bool:
 
     return False
 
+#: A negation in front of a disclaimer word flips it: "Nothing here is
+#: unverified" and "未未复算" say the OPPOSITE of a disclaimer, and a substring
+#: test read both as one. The window is short because the negation has to attach
+#: to the word (`not` / `n't` / `no` / `never` / `不是` / `并非` / a doubled 未).
+_NEGATION = re.compile(r"(?:\bnot\b|n't\b|\bno\b|\bnothing\b|\bnone\b|\bnever\b|不是|并非|未$|无从)")
+
 def disclaims(line: str) -> bool:
-    """True when ``line`` says out loud that the figure was not recomputed."""
-    return any(word in line.translate(_INVISIBLE).lower() for word in DISCLAIMERS)
+    """True when ``line`` says out loud that the figure was not recomputed.
+
+    Only in a NON-negated context: a disclaimer word inside "nothing here is
+    unverified" is its own refutation, and treating it as a disclaimer turns
+    the escape hatch into an endorse-anything button.
+    """
+    text = line.translate(_INVISIBLE).lower()
+
+    for word in DISCLAIMERS:
+        start = 0
+
+        while True:
+            at = text.find(word, start)
+
+            if at < 0:
+                break
+
+            # 40 characters: "Nothing here is " sits 17 back from `unverified`,
+            # and a tighter window silently read a refutation as a disclaimer.
+            if _NEGATION.search(text[max(0, at - 40): at]) is None:
+                return True
+
+            start = at + len(word)
+
+    return False
 
 def directive_reason(line: str) -> str | None:
     """The reason a ``body-gate-ok:`` directive carries, or ``None``."""
@@ -540,7 +578,12 @@ def directive_reason(line: str) -> str | None:
     # close (` -->`) in its reason; a visible directive's reason is taken as
     # written (a `>` at the floor is the author's character, not our noise).
     if _hidden_directive(line):
-        return reason.rstrip("->").strip()
+        reason = reason.rstrip("->").strip()
+
+    # A reason of dots, underscores or one repeated character is not a reason:
+    # printing `🔓 body-gate-ok: ....` would make the exemption silent again.
+    if DIRECTIVE_REASON_SUBSTANCE.search(reason) is None:
+        return None
 
     return reason
 

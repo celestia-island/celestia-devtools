@@ -214,6 +214,39 @@ class test_the_directive_is_never_silent:
         body = "The suite went from 12 failed to 0.\n<!-- body-gate-ok: the log lives in the linked issue page two -->\n"
         assert not body_gate.check_body(body).ok
 
+class test_the_escape_hatches_are_not_buttons:
+    """A disclaimer and a directive are only valid in their honest form."""
+
+    def test_a_negated_disclaimer_is_not_a_disclaimer(self):
+        # MUT:negated-disclaimer — a substring test read "Nothing here is
+        # unverified" and "未未复算" as disclaimers; both say the opposite.
+        assert not body_gate.check_body("The suite printed 120 passed and 0 failed. Nothing here is unverified.\n").ok
+        assert not body_gate.check_body("测试跑了 120 passed，未未复算。\n").ok
+        assert body_gate.check_body("The suite printed 120 passed (unverified).\n").ok
+        assert body_gate.check_body("测试跑了 120 passed，未复算。\n").ok
+
+    def test_a_reason_without_substance_is_not_a_reason(self):
+        # MUT:directive-substance — 20 dots printed a `🔓` and exempted.
+        for filler in (".", "_"):
+            filler_block = filler * 20
+
+            assert not body_gate.check_body("It printed 120 passed. body-gate-ok: " + filler_block + "\n").ok
+
+        assert body_gate.check_body("It printed 120 passed. body-gate-ok: the log lives in the linked issue\n").ok
+
+    def test_a_negated_checksum_word_is_not_a_locator(self):
+        assert not body_gate.check_body("We printed 120 passed and no sha256 is shown.\n").ok
+        assert body_gate.check_body("We printed 120 passed; sha256 is in the log.\n").ok
+
+class test_a_number_only_row:
+    def test_a_single_cell_number_row_is_a_statement(self):
+        # A row that is nothing but a number has no label column, so it is not
+        # a readings row: it states a figure like any other line.
+        body = "Intro.\n\n| 42 |\n"
+        result = body_gate.check_body(body)
+        assert not result.ok
+        assert any("quantity" in stmt.kinds for stmt in result.findings)
+
 class test_scope_exclusions:
     """Fenced, quoted, indented, heading and record shapes are out of scope."""
 
@@ -292,7 +325,7 @@ class test_vocabulary:
 class test_corpus:
     """The published bodies, pinned: the gate's behaviour cannot drift silently."""
 
-    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 6), ("corpus-2813", 67, 32), ("corpus-2821", 20, 8)])
+    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 6), ("corpus-2813", 67, 32), ("corpus-2821", 20, 9)])
     def test_the_corpus_rows(self, name, sentences, refused):
         result = body_gate.check_body(_fixture(name + ".md"))
         assert (len(result.statements), len(result.findings)) == (sentences, refused)
@@ -301,6 +334,15 @@ class test_corpus:
         refused = _lines(body_gate.check_body(_fixture("corpus-2813.md")))
         assert 73 in refused
         assert any(186 <= line <= 220 for line in refused)
+
+    def test_a_restatement_with_a_table_beside_it_passes(self):
+        # `dom-arithmetic.md`: three sentences restating the telemetry table
+        # above them, and the table is one line away — a restatement is sourced
+        # by the capture it restates. (The file used to be named
+        # `negative-...` while passing; the name was the lie, not the body.)
+        result = body_gate.check_body(_fixture("dom-arithmetic.md"))
+        assert result.ok
+        assert len(result.statements) == 3
 
     def test_a_clean_body_passes(self):
         assert body_gate.check_body(_fixture("pr-302.md")).ok
