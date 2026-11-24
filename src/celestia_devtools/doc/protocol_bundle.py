@@ -57,6 +57,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from celestia_devtools.repo.locate import sibling_candidates
 
 ORG_GIT_BASE = "https://github.com/celestia-island"
 DOCS_REPO = "docs.celestia.world"
@@ -104,11 +105,12 @@ def resolve_docs_root(repo_root: Path, docs_root: Path | None = None) -> Path | 
 
             _stderr("warn", f"{var}={c} is not a docs checkout")
 
-    # 2. sibling layout (org dev layout: /mnt/codespace/<repo> siblings)
-    sib = repo_root.parent / DOCS_REPO
-
-    if _docs_ok(sib):
-        return sib.resolve()
+    # 2. sibling layout (org dev layout: /mnt/codespace/<repo> siblings).
+    #    Same shapes as the crate locator: a `_worktree/<repo>/<slug>` tree's
+    #    siblings live under the codespace root, not beside the worktree.
+    for sib in sibling_candidates(repo_root, DOCS_REPO):
+        if _docs_ok(sib):
+            return sib.resolve()
 
     # 3. last resort: shallow clone into the repo's gitignored target/ dir
     clone = repo_root / TARGET_DIR / CLONE_SUBDIR
