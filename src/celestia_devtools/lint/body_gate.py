@@ -428,9 +428,11 @@ def code_spans(text: str) -> tuple[str, ...]:
 #: spellings below and not "every language's convention". Measured (debt ⑤) with
 #: `git ls-files | grep -cE '(^|/)<shape>$'` over the four repos that hold the
 #: gate's consumers — celestia-devtools, tairitsu, hikari, shittim-chest:
-#: `test_*.py` 100 / 2 / 1 / 3, `*.test.ts`+`*.test.tsx` 4 / 0 / 558 / 694,
+#: `test_*.py` 100 / 2 / 1 / 3, `*.test.ts`+`*.test.tsx` 4 / 0 / 558 / 696,
 #: `*_test.py` 0 / 0 / 4 / 0, `*_test.rs` 0 / 6 / 1 / 2, `check_*.py` 0 / 4 / 2 / 5,
-#: `*.spec.ts`/`*.spec.tsx` 0 in all four. Every one of those families is refused
+#: `*.spec.ts`/`*.spec.tsx` 0 in all four (chest's `*.test.*` count drifts with its
+#: live tree: 694 at `e426b3c87`, 696 two hours later — re-count before relying
+#: on the last digit). Every one of those families is refused
 #: as a bare name, so the fail-open direction is empty for them.
 #:
 #: Two shapes match the pattern while not being test modules: `test.yml`, the
@@ -492,8 +494,12 @@ def is_source(line: str, *, statement: bool = False) -> bool:
     A ``#PR`` reference is a line source **only on a line that states
     nothing** (``statement = False``): ``#2813`` proves the PR exists, not what
     a sentence quantifies or claims about it, so on a statement line it
-    satisfies nothing and the line needs another source — a reading table, a
-    ``file:line``, a command result, a disclaimer or a directive. A pure
+    satisfies nothing and the line needs another source — a ``file:line``, a
+    command result with its exit code, a pasted capture, a disclaimer or a
+    directive. A markdown table of readings is NOT one of these
+    (:func:`is_reading_row` only stops a restatement from being prose; only a
+    quoted figure on the line, or a fenced block one line away, captures
+    output). A pure
     reference line (``Filed upstream: hikari #1498.``) still counts: it is not
     judged, and it points the reader at where the claim's evidence lives.
     """
@@ -735,9 +741,16 @@ def is_reading_row(line: str) -> bool:
     # The LABEL is examined too, and this is what stops a table of claims from
     # certifying itself: `| the armed path is now always exercised | 120 passed |`
     # is a behaviour claim in the label column beside a reading, and treating the
-    # row as captured output made the whole table a source (review round 2). A
-    # label states nothing — `suite`, `before`, `delta` — so the gate's own
-    # predicates decide it, not a word list.
+    # row as captured output made the whole table a source (review round 2).
+    #
+    # The predicate IS the statement vocabulary, including its behaviour words —
+    # there is no narrower judge here. That is a real, acknowledged cost: a
+    # performance table whose labels are `always-on` / `never` / `measured`
+    # turns into prose under this rule (measured against master in review
+    # round 3), while `caught` — not in the vocabulary — keeps its table
+    # reading. The false-rejection direction is the one this gate is allowed to
+    # err in, and 165 real merged bodies produced no such flip; if a real
+    # corpus ever pays this cost, the fix is a narrower judge, not silence.
     if claim_kinds(cells[0])[0]:
         return False
 
