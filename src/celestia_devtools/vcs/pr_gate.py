@@ -113,6 +113,7 @@ commit was reviewed is not evidence, so there is no "head-less check" mode.
 
 from __future__ import annotations
 import argparse
+import os
 import json
 import re
 import shlex
@@ -121,6 +122,11 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+#: The workspace root a ``--repo OWNER/NAME`` hint is resolved against: the family
+#: keeps one checkout per repository directly under this directory (``AGENTS.md``
+#: [[worktree]]). Overridable so tests can point it at a throwaway tree.
+_WORKSPACE_ROOT = Path(os.environ.get("CELESTIA_WORKSPACE_ROOT", "/mnt/codespace"))
 
 # ── PR-specific title extensions (on top of commit_msg.lint) ────────────────
 
@@ -972,7 +978,7 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, branch: str = "", ru
     # so a checkout that lacks this PR's head is a refusal only when such a file
     # is actually in the diff — a TS-only PR must not be blocked by it.
     needs_file_text = any(_needs_file_text(path) for path in _diff_paths(diff_text))
-    root, root_problems = _comment_gate_root(head, required = needs_file_text, branch = branch)
+    root, root_problems = _comment_gate_root(head, required = needs_file_text, branch = branch, repo_hint = repo)
 
     if root_problems:
         # A resolver refusal is final.
@@ -1044,7 +1050,27 @@ def _needs_file_text(path: str) -> bool:
 
     return suffix.endswith(".py") or suffix.endswith(".pyi")
 
-def _comment_gate_root(head: str, *, required: bool, branch: str = "") -> tuple[str | None, list[str]]:
+def _git_toplevel(candidate: Path) -> str | None:
+    """The repository root ``candidate`` lives in, or ``None`` if it is not one.
+
+    A machine without git on ``PATH`` is an environment problem, not a
+    repository that happens to lack a commit — that case raises, and the
+    resolver's caller turns it into the refusal naming the environment.
+    """
+
+    try:
+        probe = subprocess.run(["git", "-C", str(candidate), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
+    except FileNotFoundError:
+        # git missing from PATH — raise the precise type so the resolver's
+        # environment-refusal keeps saying "not found on PATH" (round 8).
+        raise
+
+    if probe.returncode != 0:
+        return None
+
+    return (probe.stdout or "").strip()
+
+def _comment_gate_root(head: str, *, required: bool, branch: str = "", repo_hint: str = "") -> tuple[str | None, list[str]]:
     """The checkout the comment gate reads file text from; ``(root, problems)``.
 
     The scanner needs the NEW-side file text to compute a Python file's
@@ -1058,8 +1084,15 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "") -> tuple[
     gates disagree about the same variable, and an operator who set it for the
     artifact gate would have been silently affecting this one.
 
-    The checkout is the repository this merge runs in, found by asking git from
-    the cwd (git walks up by itself, so a caller in a subdirectory resolves).
+    The checkout is resolved from the ``--repo`` hint FIRST: the workspace keeps
+    one checkout per repository under :data:`_WORKSPACE_ROOT`, so
+    ``celestia-island/tairitsu`` names ``_WORKSPACE_ROOT/tairitsu`` directly. This
+    is what lets an operator run the gate from the workspace root — a place that
+    is not a repository at all — instead of having to ``cd`` into the target
+    checkout first (running it from the wrong directory used to refuse every
+    Python-bearing PR with "no git checkout here"). When the hint names nothing,
+    or names a path that is not a checkout, the caller's cwd is probed exactly as
+    before (git walks up by itself, so a caller in a subdirectory still resolves).
     A repository that does not contain ``head`` CANNOT stand in: its file text
     is another commit's, which would erase every "state unknowable" refusal and
     leave the gate green on files it never read.
@@ -1078,25 +1111,51 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "") -> tuple[
     Without it a missing head is not an error for this gate.
     """
 
-    try:
-        probe = subprocess.run(["git", "-C", str(Path.cwd()), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
-    except FileNotFoundError:
-        # No checkout can exist without git, and the caller's refusal has to say
-        # which of the two it is: a machine without git is an environment problem,
-        # not a repository that happens to lack a commit.
-        if required:
-            return None, [f"{COMMENT_GATE_CATEGORY}: git could not be run here (not found on PATH), so this diff's file text cannot be read — refusing rather than certifying a docstring state it never read"]
+    candidates: list[Path] = []
 
-        return None, []
-    except (OSError, ValueError):
-        return None, []
+    name = repo_hint.rsplit("/", 1)[-1].strip()
 
-    if probe.returncode != 0:
-        return None, []
+    if name:
+        candidates.append(_WORKSPACE_ROOT / name)
 
-    root = (probe.stdout or "").strip()
+    candidates.append(Path.cwd())
+
+    root = None
+
+    for candidate in candidates:
+        try:
+            probe = _git_toplevel(candidate)
+        except EnvironmentError as error:
+            # git missing from PATH is an environment problem, not a repository
+            # that happens to lack a commit — the refusal names the environment
+            # (round 8's S1: it must not blame the checkout or its refspec).
+            # EnvironmentError IS OSError's alias, so a PermissionError on the
+            # candidate lands here too; name the underlying error rather than
+            # claiming "not found on PATH" when that is not what happened.
+            # FileNotFoundError keeps the round-8 wording exactly; any other
+            # OSError (a PermissionError on the candidate, say) names itself.
+            detail = "not found on PATH" if isinstance(error, FileNotFoundError) else str(error)
+
+            if required:
+                return None, [f"{COMMENT_GATE_CATEGORY}: git could not be run here ({detail}), so this diff's file text cannot be read — refusing rather than certifying a docstring state it never read"]
+
+            return None, []
+
+        if probe is None:
+            continue
+
+        root = probe
+
+        if root:
+            break
 
     if not root:
+        looked = f"(tried {repo_hint} under {_WORKSPACE_ROOT} and the cwd)" if name else "(cwd is not inside a repository)"
+
+        if required:
+            message = f"{COMMENT_GATE_CATEGORY}: cannot read the file text — no git checkout here {looked} — the docstring state behind this diff is unknowable, refusing rather than guessing"
+            return None, [message]
+
         return None, []
 
     if not head:
