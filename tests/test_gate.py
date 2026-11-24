@@ -167,10 +167,10 @@ class test_resolve_modes:
 
 class test_graph_builders:
     def test_rust_order(self, tmp_path):
-        assert [s.name for s in build_rust_graph(tmp_path)] == ["credential-scan", "fmt", "clippy", "check", "deny", "lint-commits"]
+        assert [s.name for s in build_rust_graph(tmp_path)] == ["credential-scan", "fmt", "string-lit", "clippy", "check", "deny", "lint-commits"]
 
     def test_rust_order_with_coverage(self, tmp_path):
-        assert [s.name for s in build_rust_graph(tmp_path, coverage = True)] == ["credential-scan", "fmt", "clippy", "check", "deny", "coverage", "lint-commits"]
+        assert [s.name for s in build_rust_graph(tmp_path, coverage = True)] == ["credential-scan", "fmt", "string-lit", "clippy", "check", "deny", "coverage", "lint-commits"]
 
     def test_web_order(self, tmp_path):
         assert [s.name for s in build_web_graph(tmp_path)] == ["credential-scan", "install", "lint", "build", "test", "lint-commits"]

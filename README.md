@@ -320,6 +320,7 @@ ops-controlled supply line advanced by the mirror sync) must never override it.
 | `celestia-devtools ts-policy coverage` | Which in-scope source files never enter the compiler's program? |
 | `celestia-devtools ts-policy probe` | What would turning on one strictness flag cost today? |
 | `celestia-devtools ts-surface emit-scan` | Scan a package's emitted declaration surface for escapes |
+| `celestia-devtools string-lit-gate` | Fail a Rust source whose runtime string carries a newline the source never wrote (see below) |
 | `celestia-devtools py-style check .` | Check Python sources against the custom style rules (see below) |
 | `celestia-devtools py-style fix .` | Apply the safe auto-fixes in place (`--dry-run` previews) |
 | `celestia-devtools cpp-style check .` | Check C and C++ sources against the custom style rules (see below) |
@@ -391,6 +392,49 @@ on box-drawing frame glyphs outside Mermaid and terminal-output fences, so an
 ASCII frame diagram cannot enter the tree — structural diagrams are fenced
 Mermaid blocks (see `docs/en/diagram-policy.md`). Directory trees and
 console/terminal/text output depictions stay legal.
+
+## Rust String-Literal Gate
+
+A 2026-11-24 review round told an implementer to "collapse the runs of spaces" in four
+user-facing RPC error strings. The implementer inverted the operation: the `\`
+line-continuation became a **real newline plus the indentation**, so the runtime strings
+gained a bare `"\n    "` in the middle of a sentence. It merged — `cargo fmt` reformats
+code and never touches a literal's interior, clippy has no lint for it, and all 1176 tests
+stayed green. A delta review found it by comparing bytes.
+
+`celestia-devtools string-lit-gate` makes that class mechanical:
+
+```bash
+celestia-devtools string-lit-gate                # scan the repository root
+celestia-devtools string-lit-gate crates src     # explicit paths
+celestia-devtools string-lit-gate --newline      # class A only (literal newlines)
+celestia-devtools string-lit-gate --trailing     # class B only (line-end whitespace)
+celestia-devtools string-lit-gate --json
+celestia-devtools string-lit-gate --selftest
+```
+
+- **class A — a real newline in a plain string literal.** `"…"` / `b"…"` whose text spans
+  lines without `\` continuations. Raw strings (`r"…"`, `r#"…"#`, `br#…#`, `cr#…#`) are
+  never reported: there the newline is an explicit choice. The rule is not "any spanning
+  literal" — that would report 919 legitimate `\`-continued literals in the org corpus on
+  day one — it is "a literal whose MIDDLE newlines are unescaped", which is exactly the
+  shipped defect and misses nothing that renders one line.
+- **class B — a trailing space or tab at end of line.** fmt normalises code lines and never
+  a literal's interior; this class catches everything it leaves, including the whitespace
+  a half-finished "collapse the spaces" edit leaves behind. Blank lines and the interior of
+  raw strings are exempt: they carry no formatting meaning.
+- **Exemption:** `// string-lit-gate: allow <reason>` on the line (class B) or on the line
+  that opens the literal (class A). The marker shows up in the diff, so a waiver is always
+  review-visible.
+- **Exit codes:** 0 clean, 1 findings, 2 usage error — a mistyped path, or a scan that saw
+  no `.rs` file at all, never reads as clean. `--selftest` runs the checker against its own
+  positive control, negative control, waiver anchor and terminal gate.
+
+`vendored` trees (`vendor/`, `third_party/`, `external/`) and build output (`target/`) are
+skipped: a finding there is upstream's code, not the repository's to fix.
+
+The gate runs on the Rust lane (`celestia-devtools gate rust`) right after `fmt`, and its
+own controls run in this repository's `just lint` via `--selftest`.
 
 ## Local Gate
 
