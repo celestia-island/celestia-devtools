@@ -1117,6 +1117,7 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         silently erases every "state unknowable" refusal — the gate goes green
         on files it never read. For a diff holding a Python test file (the only
         kind whose state needs the text) that is a refusal, never a fallback.
+        MUT: no-head-checkout-refuses -- passing `required = False` instead of `required = needs_file_text` to _comment_gate_root reds this test, the resolver's "does not contain that commit" refusal is never produced.
         """
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -1182,6 +1183,7 @@ def test_only_python_shapes_need_the_file_text():
     blocked by the "checkout must contain the PR head" rule. A Python file can,
     in every spelling — including the case-insensitive and stub-file forms a
     case-sensitive `.endswith('.py')` used to skip.
+    MUT: needs-file-text-py-only -- narrowing the path test back to a case-sensitive `.endswith('.py')` reds this truth table, TEST_X.PY and types.pyi go unjudged.
     """
 
     for path in ("tests/test_x.py", "tests/TEST_X.PY", "tests/types.pyi", "tests\\test_x.py"):
@@ -1211,6 +1213,7 @@ def test_an_unusable_head_string_does_not_crash_the_resolver(tmp_path, monkeypat
     assert root is None, root
     assert any("carries a NUL byte" in problem for problem in problems), problems
     # The unusable head reaches the reader escaped, never as raw bytes.
+    # MUT: nul-head-never-raw -- echoing the raw head inside the NUL refusal message reds this test, the no-raw-bytes check below fails.
     assert all("\x00" not in problem for problem in problems), problems
     # Not required: no refusal, and no root either — the scanner is called with
     # `root=None` and judges the hunks, which is complete for a non-Python diff.
@@ -1254,6 +1257,7 @@ def test_a_checkout_that_lacks_the_head_fetches_it_before_refusing(tmp_path, mon
     gate's own clone is in exactly that state for any PR it did not create. The
     resolver therefore fetches the head itself — by BRANCH when the payload
     supplied `head.ref` (always allowed), and only then refuses.
+    MUT: fetch-before-refuse -- skipping the _fetch_head step in _comment_gate_root reds this test, the resolver refuses instead of fetching.
 
     Built as two repositories over the filesystem so no network is involved.
     """
@@ -1435,6 +1439,7 @@ def test_every_fetch_refspec_is_read_not_only_the_last(tmp_path):
     entry followed by a wildcard one then reads as "fetches everything" when it
     does not. `--get-all` is what makes the judgement cover what git will
     actually fetch.
+    MUT: get-all-refspecs -- changing _remote_refspec back to --get reds this test, the master entry is dropped out of the judgement.
     """
     repo = tmp_path / "repo"
     repo.mkdir()
