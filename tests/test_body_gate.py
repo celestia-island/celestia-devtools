@@ -152,6 +152,13 @@ class test_span_evidence:
         assert not body_gate.check_body("See `x.test.ts` for coverage (12 checks).\n").ok
         assert body_gate.check_body("See `x.test.ts:88` for coverage (12 checks).\n").ok
 
+    def test_a_term_that_carries_its_own_negation_is_a_disclaimer(self):
+        # `— not re-run.` is the honest form of the escape hatch; this pins the
+        # BEHAVIOUR (the early return that serves it can be deleted with no
+        # verdict change, so it is not claimed as a mutant guard).
+        for term in ["not re-run.", "not established.", "not measured.", "not verified."]:
+            assert body_gate.disclaims("It printed 120 passed — " + term), term
+
     def test_a_version_still_names_its_line(self):
         assert body_gate.check_body("`just` >= 1.36 makes duplicate definitions a hard parse error.\n").ok
 

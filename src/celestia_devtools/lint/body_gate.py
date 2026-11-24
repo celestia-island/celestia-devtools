@@ -559,102 +559,78 @@ NONE = "none"
 def _negation_state(text: str, at: int, term: str) -> str:
     """How the clause around the disclaimer starting at ``at`` uses negation.
 
-    ``ATTACHED`` — the negation touches the term (`not an inference`,
-    `未未复算`): the term is refuted. ``DETACHED`` — a negation sits in the same
-    punctuation-delimited clause but does not touch the term (`not, inference`):
-    the author wrote the negation AND the term, and in natural language the only
-    reading is that the term is refuted, so it is not a disclaimer either.
-    ``NONE`` — no negation in the clause.
+    ``ATTACHED`` — a same-script negation touches the term (`not an inference`,
+    `未未复算`, `并非 inference`): the term is refuted. ``DETACHED`` — the same
+    negation sits in the term's own punctuation-delimited stretch without
+    touching it (`not, inference`): the author wrote both, and the reading is
+    that the term is refuted. ``NONE`` — no negation shares the stretch.
 
-    Cross-language is not a negation: an English `not` in front of a CJK term
-    (and the reverse) belongs to a different clause by construction, because the
-    writing system changed — `This was not 未复算` says the Chinese disclaimer
-    out loud.
+    One scan, not two: an earlier version also walked back over the marks before
+    the term, which duplicated this reach and meant either copy could be broken
+    while the pins stayed green.
+
+    An English negation does not reach a CJK term (`This was not 未复算` says the
+    Chinese disclaimer out loud); a CJK negation does reach an English one,
+    because `并非 inference` is how that refutation is written.
     """
-    head = text[: at]
+    text = text.lower()
 
-    if term.startswith("未") and head.rstrip().endswith("未"):
-        return ATTACHED
-
-    # A term that carries its own negation (`not re-run`, `not established`,
-    # `not measured`, `not verified`) IS a disclaimer regardless of what else
-    # the clause says: "— not re-run." is the honest form of the escape hatch.
     if _NEGATION_TAIL.search(term) is not None:
+        # The term carries its own negation (`not re-run`, `not established`):
+        # that IS the disclaimer, whatever else the stretch says. (Deleting this
+        # early return changes no verdict — the stretch scan finds the negation
+        # on the term itself and would otherwise have to special-case it — so it
+        # is an optimisation, not a rule, and no pin claims otherwise.)
         return NONE
 
-    # The punctuation-delimited stretch around the term: the reader's clause,
-    # which includes the term itself — otherwise the term's own clause is " "
-    # after the punctuation that precedes it.
-    whole = text
+    if term.startswith("未") and text[: at].rstrip().endswith("未"):
+        return ATTACHED
+
     low = at
     high = at + len(term)
 
-    while (low > 0) and (not _SCOPE_BREAK.match(whole[low - 1])):
+    while (low > 0) and (not _SCOPE_BREAK.match(text[low - 1])):
         low -= 1
 
-    while (high < len(whole)) and (not _SCOPE_BREAK.match(whole[high])):
+    while (high < len(text)) and (not _SCOPE_BREAK.match(text[high])):
         high += 1
 
-    clause = whole[low: high]
+    # The reader's stretch is the term's own punctuation-delimited run plus the
+    # run immediately before it: `120 passed, not, inference` puts the negation
+    # one mark away, and the punctuation is what makes it detached rather than
+    # attached — both are refutations.
+    prior_end = max(0, low - 1)
+    prior_start = prior_end
 
-    # Walk back over the two words that touch the term.
-    before = clause[: clause.find(term)] if term in clause else clause
-    words: list[str] = []
-    index = len(before) - 1
+    while (prior_start > 0) and (not _SCOPE_BREAK.match(text[prior_start - 1])):
+        prior_start -= 1
 
-    while (len(words) < 2) and (index >= 0):
-        if before[index].isspace():
-            index -= 1
-            continue
+    prior = text[prior_start: prior_end].strip()
+    # A lone negation one mark away (`..., not, inference`) belongs to the same
+    # refutation; a whole clause does not (`but not round 1, so ...`).
+    prior_words = prior.split()
+    # A negation one mark away belongs to the same refutation, whether it stands
+    # alone (`..., not, inference`) or closes a short run (`that was not, an
+    # inference`); a longer clause does not (`but not round 1, so ...`).
+    lone = bool(prior_words) and (len(prior_words) <= 4) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
 
-        end = index
-
-        while (index >= 0) and (not before[index].isspace()):
-            index -= 1
-
-        words.insert(0, before[index + 1: end + 1])
-
-    tail = " ".join(words)
-
-    # The negation must sit in the same writing system as the term: an English
-    # `not` cannot refute a Chinese disclaimer, and vice versa.
-    negation = _NEGATION_TAIL.search(tail)
+    window = text[prior_start: high] if lone else text[low: high]
+    stretch = window[: window.rfind(term)] if term in window else window
     term_is_cjk = bool(_CJK.search(term))
-    negation_is_cjk = bool(_CJK.search(negation.group(0))) if negation else False
-    # A CJK negation can attach to an English term (`并非 inference`); an
-    # English negation cannot attach to a CJK term (`not 未复算` is a different
-    # clause by construction).
-    attached = bool(negation) and ((term_is_cjk == negation_is_cjk) or negation_is_cjk)
 
-    if attached:
-        return ATTACHED
+    # The words that touch the term: their negation is ATTACHED.
+    words = stretch.split()
 
-    # A negation in the clause, or in the clause immediately before it, still
-    # means the author wrote the negation next to this term and broke it with
-    # punctuation: `120 passed, not, inference` refutes the term.
-    for match in _NEGATION_TAIL.finditer(clause):
-        if bool(_CJK.search(term)) == bool(_CJK.search(match.group(0))):
-            return DETACHED
+    for word in reversed(words[-2:]):
+        match = _NEGATION_TAIL.search(word)
+        word_is_cjk = bool(_CJK.search(word))
 
-    # A detached negation counts only when the two are ADJACENT modulo one
-    # punctuation mark: `..., not, inference` is the refutation; a negation a
-    # whole clause away (`but not round 1, so it was an inference`) is not.
-    before_term = whole[: low].rstrip()
-    marks = 0
+        if (match is not None) and ((term_is_cjk == word_is_cjk) or word_is_cjk):
+            return ATTACHED
 
-    while (before_term) and (before_term[-1] in ",.!?;:—，。；：、（)）"):
-        before_term = before_term[:-1].rstrip()
-        marks += 1
-
-    words_between = before_term.split()
-
-    if (marks > 0) and words_between:
-        last = words_between[-1]
-        negation = _NEGATION_TAIL.fullmatch(last)
-
-        same_script = bool(_CJK.search(term)) == bool(_CJK.search(last))
-
-        if (negation is not None) and same_script:
+    # The same stretch, without touching: DETACHED.
+    for match in _NEGATION_TAIL.finditer(stretch):
+        if term_is_cjk == bool(_CJK.search(match.group(0))):
             return DETACHED
 
     return NONE
