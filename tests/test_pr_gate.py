@@ -1201,13 +1201,13 @@ class test_comment_gate_reads_the_file_behind_the_diff:
 
     def test_the_hint_wins_when_the_cwd_is_also_a_checkout(self, tmp_path, monkeypatch):
         """The ORDER is a contract: the hint candidate is probed FIRST.
-        MUT: hint-first-order -- swapping the candidates so cwd is probed first lands the resolver on the cwd repo, fails the head check, and refuses instead of judging.
 
         Both candidates are real checkouts here. The hint's checkout holds the
         head; the cwd's does not — so the resolver's choice is observable: with
         hint-first (the documented order) it resolves to the hint's checkout
         and the gate judges; with cwd-first it would land on the cwd repo,
         fail the head check, and refuse instead. Unwiring the order reds this.
+        MUT: hint-first-order -- swapping the candidates so cwd is probed first reds this test.
         """
         hinted = tmp_path / "hinted"
         hinted.mkdir()
@@ -1234,6 +1234,7 @@ class test_comment_gate_reads_the_file_behind_the_diff:
 
         root, problems = pr_gate_module._comment_gate_root(head, required = True, branch = "", repo_hint = "celestia-island/hinted")
         assert problems == [], problems
+        # MUT: hint-first-order -- swapping the candidates so cwd is probed first lands the resolver on the cwd repo, fails the head check, and refuses instead of judging.
         assert root == str(hinted.resolve()), root
 
     def test_a_repo_hint_falls_back_to_the_cwd_when_the_hint_is_elsewhere(self, tmp_path, monkeypatch):
@@ -1257,13 +1258,13 @@ class test_comment_gate_reads_the_file_behind_the_diff:
 
     def test_comment_gate_problems_hands_the_repo_hint_to_the_resolver(self, monkeypatch):
         """The wiring pin for `repo_hint = repo` at the call site.
-        MUT: repo-hint-wiring -- removing repo_hint from the comment_gate_problems call site makes the resolver see an empty hint and reds this test.
 
         The resolver's own resolution behaviour is covered by the three
         repo-hint tests above; THIS pin covers the one line that carries the
         caller's `--repo` into it. Unwiring the call site makes the resolver
         see an empty hint — i.e. exactly the cwd-only behaviour that refused
         every workspace-root invocation before the fix — and this test reds.
+        MUT: repo-hint-wiring -- removing repo_hint from the call site reds this test.
         """
         seen: dict = {}
 
@@ -1275,6 +1276,7 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         monkeypatch.setattr(pr_gate_module, "_comment_gate_root", spy)
         pr, diff = _comment_pr(_FAR_HUNK_PY, filename = "tests/test_far.py")
         pr_gate_module.comment_gate_problems("celestia-island/tairitsu", 1, "a" * 40, runner = diff_runner(pr, diff))
+        # MUT: repo-hint-wiring -- removing repo_hint from the call site makes the resolver see an empty hint and this assertion reds.
         assert seen.get("repo_hint") == "celestia-island/tairitsu", seen
 
     def test_no_checkout_with_only_a_ts_diff_does_not_refuse(self, tmp_path, monkeypatch):
