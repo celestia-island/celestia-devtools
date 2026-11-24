@@ -65,8 +65,6 @@ let raw = r"a
 b";
 let hashed = r#"say "hi"
 and bye"#;
-let byte_str = b"x
-y";
 let sql = "SELECT a
   FROM t";
 let md = "# title
@@ -169,6 +167,29 @@ class test_waiver_anchor:
         text = '"line one // string-lit: allow' + NL + 'line two";' + NL
         assert [(item.line, item.kind) for item in _scan(text)] == [(1, gate.NEWLINE)]
 
+class test_origin_quote_exemption:
+    """The origin-quote lane excuses another document's text, not every file."""
+
+    def test_a_bare_quote_at_file_start_is_not_exempt(self):
+        # A literal at the file's first byte has no preceding character, so its
+        # quote is indistinguishable from an ordinary one-line string's and the
+        # exemption must not fire. (This is the waiver probe's shape: it read as
+        # embedded and its newline vanished.)
+        text = '"line one' + NL + 'line two";' + NL
+        assert [(item.line, item.kind) for item in _scan(text)] == [(1, gate.NEWLINE)]
+
+    def test_a_bare_quote_at_a_line_start_is_not_exempt(self):
+        # The same at a line start: the preceding character is the line break,
+        # not a quote.
+        text = 'let x = 1;' + NL + '"line one' + NL + 'line two";' + NL
+        assert [(item.line, item.kind) for item in _scan(text)] == [(2, gate.NEWLINE)]
+
+    def test_a_quote_preceded_by_an_apostrophe_stays_exempt(self):
+        # The genuine shape the lane exists for: a real character before the
+        # quote (another document's quoting), so the body is that text.
+        text = "let quoted = '" + NL + "line one" + NL + "line two';" + NL
+        assert _scan(text) == []
+
 class test_terminal_gate:
     """A scan that saw nothing must refuse rather than report clean."""
 
@@ -198,6 +219,75 @@ class test_discovery_and_classes:
         only_trailing, _, _ = gate.check_paths([str(tmp_path)], newline = False, trailing = True)
         assert [item.kind for item in only_newline] == [gate.NEWLINE]
         assert [item.kind for item in only_trailing] == [gate.TRAILING]
+
+    def test_raw_closer_survives_hash_in_content(self, tmp_path):
+        # Round-2 S0: the closer is '"' + EXACTLY the opener's hashes, NOT
+        # followed by another hash. Content holding `"##` is NOT a closer:
+        # `r#"x "## y … z"#;` runs as one raw string to its real `"#`.
+        #
+        # A bare `text.find('"#')` closed at the middle `"##`, resumed the scan
+        # INSIDE the literal, and line 2's `z"#;` plus the next `let b` quote
+        # became a phantom spanning literal that swallowed the real one — the
+        # desync this rule fixes. Verified differentially: this probe yields
+        # `[(3, newline)]` under the hash-guarded closer and `[]` under
+        # `find`, so the assertion fails ONLY through the rule.
+        probe = tmp_path / "raw-hash.rs"
+        probe.write_text('let a = r#"x "## y\nz"#;\nlet b = "one\n    two";', encoding = "utf-8")
+        findings, scanned, _ = gate.check_paths([str(probe)])
+        assert scanned == 1
+        assert [(item.line, item.kind) for item in findings] == [(3, gate.NEWLINE)], findings
+
+    def test_raw_closer_ignores_content_hash_pair(self, tmp_path):
+        # The negative side of the same rule: a `"#` inside the content (one
+        # hash, not the opener's count doubled) is still NOT a closer, and no
+        # finding may appear — the raw string simply runs to its real end.
+        probe = tmp_path / "raw-one-hash.rs"
+        probe.write_text('let a = r#"say "#hi\nok"#;\n', encoding = "utf-8")
+        findings, scanned, _ = gate.check_paths([str(probe)])
+        assert scanned == 1
+        assert findings == [], findings
+
+    def test_crlf_text_is_normalized_at_the_entry_point(self):
+        # The ENTRY-POINT side of the CRLF rule: `scan_text` receives text, and a
+        # caller that hands it raw CRLF (a grouped read, an editor buffer) must
+        # get the same answers as the file lane. This is the ONLY shape that can
+        # reach the normalization: `check_paths` reads with `read_text`, which
+        # already applies universal newlines, so a fixture written to disk proves
+        # nothing about this line (measured: deleting the normalization leaves a
+        # on-disk CRLF fixture green).
+        text = 'let z = 1;  \r\nlet s = "aaa ' + BS + BS + '\r\nbbb";\r\n'
+        findings = _scan(text)
+        assert sorted(item.kind for item in findings) == sorted([gate.NEWLINE, gate.TRAILING]), findings
+        assert sorted(item.line for item in findings) == [1, 2], findings
+
+    def test_crlf_files_are_normalized(self, tmp_path):
+        # Round-2 S2: a `\r` left in place hid line-endings (trailing-space
+        # misses on every line) and broke the `\`-continuation read (class-A
+        # misfires). One CRLF file pins BOTH directions at once:
+        #
+        # * line 1 ``let z = 1;`` + two spaces — the trailing space a `\r`
+        #   in place made invisible to the end-of-line walk (class B);
+        # * line 2 ``"aaa \\`` — `\\` is an ESCAPED BACKSLASH, not a
+        #   continuation, so the newline after it reaches the runtime value
+        #   (class A). With `\r` unnormalized the `\` was read as a
+        #   continuation and this finding disappeared.
+        probe = tmp_path / "crlf.rs"
+        probe.write_bytes(
+            b"let z = 1;  \r\nlet s = \"aaa \\\\\r\nbbb\";\r\n"
+        )
+        findings, scanned, _ = gate.check_paths([str(probe)])
+        assert sorted(item.kind for item in findings) == sorted([gate.NEWLINE, gate.TRAILING]), findings
+        assert sorted(item.line for item in findings) == [1, 2], findings
+
+    def test_multiline_byte_string_is_reported(self, tmp_path):
+        # Round-2 S3: a byte string carrying a real newline is the same
+        # defect one type over (the runtime bytes carry \n) — it must not
+        # vanish into the embedded-document lane.
+        probe = tmp_path / "bytes.rs"
+        probe.write_text('let b = b"one\ntwo";', encoding = "utf-8")
+        findings, scanned, _ = gate.check_paths([str(probe)])
+        assert scanned == 1
+        assert [item.kind for item in findings] == [gate.NEWLINE]
 
     def test_vendored_trees_are_skipped(self, tmp_path):
         vendored = tmp_path / "vendor" / "upstream"
