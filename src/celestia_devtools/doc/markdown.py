@@ -239,7 +239,15 @@ def postprocess_lines(lines: Sequence[str]) -> List[str]:
 
     for index, raw_line in enumerate(lines):
         line = raw_line.rstrip()
-        line = fix_heading_spacing(line)
+
+        # Heading normalization is prose-only and must never reach lines inside a code
+        # fence: `#print axioms`, `#!/usr/bin/env` and `#include` are code, and inserting
+        # the space after `#` breaks them. Externally authored Lean/shell/C snippets hit
+        # this constantly; this repository's own corpus happened not to, which is why the
+        # defect stayed latent. Fence interiors pass through untouched.
+        if not in_fence:
+            line = fix_heading_spacing(line)
+
         stripped = line.strip()
         previous = result[-1] if result else None
 
