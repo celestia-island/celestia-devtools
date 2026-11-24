@@ -609,15 +609,16 @@ def _negation_state(text: str, at: int, term: str) -> str:
     # A lone negation one mark away (`..., not, inference`) belongs to the same
     # refutation; a whole clause does not (`but not round 1, so ...`).
     prior_words = prior.split()
-    # A negation one mark away belongs to the same refutation, whether it stands
+    # A negation one mark away belongs to the same refutation when it stands
     # alone (`..., not, inference`) or closes a short run (`that was not, an
-    # inference`); a longer clause does not (`but not round 1, so ...`).
+    # inference`). What rejects `but not round 1` is NOT this cap — it is the
+    # tail-word check below (its last word is `1`, not a negation).
     #
-    # The four-word cap is EMPIRICAL, not derived: it was tuned to admit
-    # `that was not,` (3 words) and reject `but not round 1, so it was` at the
-    # same time, and nothing proves five is the first wrong value. If a body
-    # arrives where five words should merge, change the number and take the
-    # corpus regression with it.
+    # The four-word cap is EMPIRICAL and unpinned: nothing proves four is right
+    # or five is wrong. It is not what rejects `but not round 1` — the tail-word
+    # check does (its last word is `1`, not a negation). Changing the number is
+    # invisible to the corpus and to the whole test file today; if a body
+    # arrives that needs a different cap, pin the boundary first, then change it.
     lone = bool(prior_words) and (len(prior_words) <= 4) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
 
     own = text[low: high]
