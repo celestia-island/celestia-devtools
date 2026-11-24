@@ -93,14 +93,22 @@ class test_service_defs:
             checked += 1
 
         if checked == 0:
+            # Under the workspace layout a missing sibling is a broken
+            # environment, not a skip: that is exactly the state the first cut
+            # of this test silently lived in. Only a checkout with no
+            # `_worktree` ancestor and no siblings (CI) may skip.
+            if any(anc.parent.name == "_worktree" for anc in Path(__file__).resolve().parents):
+                pytest.fail("under a _worktree/<repo>/<slug> checkout but no sibling resolved — the gates would run this pin as a skip")
+
             pytest.skip("no sibling checkouts next to this repo")
 
-def _sibling_checkout(repo: str) -> Path | None:
-    """The checkout of `repo` as a sibling, found from this file rather than the
-    cwd: inside `_worktree/<this-repo>/<slug>` the siblings live two levels up;
-    otherwise the CLI's own rule (`cwd.parent / repo`) applies."""
+def _sibling_checkout(repo: str, here: Path | None = None) -> Path | None:
+    """The checkout of `repo` as a sibling, found from `here` (this file by
+    default) rather than the cwd: inside `_worktree/<this-repo>/<slug>` the
+    siblings live two levels up; otherwise the CLI's own rule
+    (`cwd.parent / repo`) applies."""
 
-    for anc in Path(__file__).resolve().parents:
+    for anc in (here or Path(__file__)).resolve().parents:
         if anc.parent.name == "_worktree":
             d = anc.parent.parent / repo
 
@@ -108,6 +116,38 @@ def _sibling_checkout(repo: str) -> Path | None:
                 return d
 
     return daemon._find_sibling_dir(repo)
+
+class test_sibling_checkout:
+    def test_resolves_from_worktree_layout_via_file_not_cwd(self, tmp_path, monkeypatch):
+        """Inside `_worktree/<this-repo>/<slug>` the siblings live two levels
+        up. Found from the anchor file, so an unrelated cwd cannot hide them."""
+        here = tmp_path / "_worktree" / "celestia-devtools" / "some-slug" / "tests" / "test_daemon.py"
+        here.parent.mkdir(parents = True)
+        here.write_text("", encoding = "utf-8")
+
+        for repo in ("shittim-chest", "entelecheia"):
+            (tmp_path / repo).mkdir()
+            (tmp_path / repo / "Cargo.toml").write_text("[package]\n", encoding = "utf-8")
+
+        elsewhere = tmp_path / "elsewhere" / "deeper"
+        elsewhere.mkdir(parents = True)
+        monkeypatch.chdir(elsewhere)
+        assert _sibling_checkout("shittim-chest", here) == (tmp_path / "shittim-chest").resolve()
+        assert _sibling_checkout("entelecheia", here) == (tmp_path / "entelecheia").resolve()
+        assert _sibling_checkout("no-such-repo", here) is None
+
+    def test_falls_back_to_cwd_rule_outside_worktree(self, tmp_path, monkeypatch):
+        """A plain checkout (main checkout, CI) has no `_worktree` ancestor:
+        the CLI's own `cwd.parent / repo` rule applies, and nothing resolves
+        when no sibling exists."""
+        here = tmp_path / "celestia-devtools" / "tests" / "test_daemon.py"
+        here.parent.mkdir(parents = True)
+        here.write_text("", encoding = "utf-8")
+        (tmp_path / "arona").mkdir()
+        (tmp_path / "arona" / "Cargo.toml").write_text("[package]\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path / "celestia-devtools")
+        assert _sibling_checkout("arona", here) == (tmp_path / "arona").resolve()
+        assert _sibling_checkout("shittim-chest", here) is None
 
 class test_generate_config:
     def _fake_layout(self, tmp_path: Path) -> Path:
