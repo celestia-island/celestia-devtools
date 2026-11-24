@@ -612,14 +612,23 @@ def _negation_state(text: str, at: int, term: str) -> str:
     # A negation one mark away belongs to the same refutation, whether it stands
     # alone (`..., not, inference`) or closes a short run (`that was not, an
     # inference`); a longer clause does not (`but not round 1, so ...`).
+    #
+    # The four-word cap is EMPIRICAL, not derived: it was tuned to admit
+    # `that was not,` (3 words) and reject `but not round 1, so it was` at the
+    # same time, and nothing proves five is the first wrong value. If a body
+    # arrives where five words should merge, change the number and take the
+    # corpus regression with it.
     lone = bool(prior_words) and (len(prior_words) <= 4) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
 
-    window = text[prior_start: high] if lone else text[low: high]
-    stretch = window[: window.rfind(term)] if term in window else window
+    own = text[low: high]
+    own_before = own[: own.rfind(term)] if term in own else own
+    merged = text[prior_start: high] if lone else own
+    stretch = merged[: merged.rfind(term)] if term in merged else merged
     term_is_cjk = bool(_CJK.search(term))
 
-    # The words that touch the term: their negation is ATTACHED.
-    words = stretch.split()
+    # ATTACHED only looks at the words that really touch the term — a negation
+    # across a punctuation mark is DETACHED, never attached.
+    words = own_before.split()
 
     for word in reversed(words[-2:]):
         match = _NEGATION_TAIL.search(word)

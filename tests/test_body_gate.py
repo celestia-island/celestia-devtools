@@ -221,6 +221,12 @@ class test_the_directive_is_never_silent:
         body = "The suite went from 12 failed to 0.\n<!-- body-gate-ok: the log lives in the linked issue page two -->\n"
         assert not body_gate.check_body(body).ok
 
+def _state(text: str) -> str:
+    """The negation state of the disclaimer term inside ``text``."""
+    term = next(word for word in body_gate.DISCLAIMERS if word in text)
+
+    return body_gate._negation_state(text, text.find(term), term)
+
 class test_the_escape_hatches_are_not_buttons:
     """A disclaimer and a directive are only valid in their honest form."""
 
@@ -257,13 +263,24 @@ class test_the_escape_hatches_are_not_buttons:
         # disclaimer; without the script test it did (a false refusal).
         assert body_gate.disclaims("This was not 未复算。")
 
-    def test_a_negation_split_off_by_punctuation_still_refutes(self):
-        # MUT:negation-detached — `not, inference` says the same thing as
-        # `not inference`; treating the split form as a disclaimer is a false
-        # pass (it let an unsourced figure through).
-        assert not body_gate.disclaims("that was not an inference")
-        assert not body_gate.disclaims("that was not, an inference")
-        assert not body_gate.disclaims("x not, y inference")
+    def test_each_negation_branch_is_reached_by_its_own_case(self):
+        # MUT:negation-arms — every case states the branch it must reach, so a
+        # test cannot claim coverage of a path it never walks (an earlier
+        # version had three DETACHED-looking assertions that all took the
+        # ATTACHED path, and the merge case was filed under ATTACHED because the
+        # touched-word scan read the merged window).
+        attached = _state("that was not an inference")
+        attached_cjk = _state("测试跑了 120 passed，未未复算。")
+        merged = _state("that was not, an inference")
+        detached = _state("Nothing here is unverified.")
+
+        assert attached == body_gate.ATTACHED, attached
+        assert attached_cjk == body_gate.ATTACHED, attached_cjk
+        assert merged == body_gate.DETACHED, merged
+        assert detached == body_gate.DETACHED, detached
+
+        for text in ("that was not an inference", "that was not, an inference", "x not, y inference"):
+            assert not body_gate.disclaims(text), text
 
     def test_a_negation_a_clause_away_still_disclaims(self):
         assert body_gate.disclaims("that was not round 1, so it was an inference")
