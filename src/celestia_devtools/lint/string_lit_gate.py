@@ -152,6 +152,24 @@ class literal:
     #: in it are not a line count (a raw string consumed wholesale lands on its
     #: closer and its "body" holds none); the lexer counts lines directly.
     close_line: int = 0
+    #: True when the opening quote is the file's FIRST byte, so the literal has
+    #: no preceding character. Recorded here rather than inferred from ``origin``:
+    #: at offset 0 the lexer can only slice the quote itself, so ``origin == '"'``
+    #: is ambiguous between "nothing came before it" and "the character before it
+    #: was a quote" (``""`` then a spanning literal gives the same slice).
+    at_file_start: bool = False
+
+    @property
+    def opens_without_a_preceding_char(self) -> bool:
+        """True when the literal's quote opens a line with nothing before it.
+
+        A ``origin`` whose first character is a newline means the preceding
+        character was the line break, which is the same situation as the file's
+        first byte: there is no character the quote's structure could have
+        copied. Only a REAL preceding character (a quote, apostrophe, ``=``,
+        ``(``) makes the first-line quote read as another document's text.
+        """
+        return self.at_file_start or self.origin.startswith("\n")
 
     @property
     def bare_newlines(self) -> int:
@@ -298,8 +316,11 @@ def _lane(lit: literal) -> str:
        (``{}``, ``(function() {``, ``[``): a template whose body occupies whole
        lines.
     5. :data:`LANE_EMBEDDED` again for a first line that OPENS another document
-       (a comment marker, a quote, SQL, another literal's delimiter, or a byte
-       string's own head line).
+       (a comment marker, a quote, SQL, another literal's delimiter). A byte
+       string's own head line does NOT land here: per the scan_literals
+       docblock, a byte string carrying a real newline is the same defect one
+       type over, and short multi-line byte strings are reported (long ones
+       still exempt through the document classifier).
 
     A rule that reports a legitimate shape is a rule the fleet turns off, which
     is why these lanes exist instead of a fail-closed newline ban.
@@ -331,7 +352,26 @@ def _lane(lit: literal) -> str:
     if (content in ("", "{}", "{{}}")) or content.endswith(("{", "{{")) or content.startswith(_BODY_OPENER):
         return LANE_BODY
 
-    if lit.origin.startswith(('b"', "b'")) or content.startswith(("//", '"', "'", "r#", 'r"', "br#", 'br"', "cr#", 'cr"', 'b"', "b'")):
+    if lit.origin.startswith(("'", '"')) and not lit.origin.startswith(("b'", 'b"')):
+        # A first line that opens with a bare quote or apostrophe: the literal
+        # is another document's text (a README block, a config file), whatever
+        # its later lines look like. The exemption needs a PRECEDING character
+        # to have established that structure: at the file's first byte (or at a
+        # line start) the quote is the literal's own delimiter and structurally
+        # indistinguishable from a one-line string, so the exemption would read
+        # every file whose text begins with ``"…`` as embedded. Measured on the
+        # waiver near-miss probe, whose whole finding vanished.
+        if not lit.opens_without_a_preceding_char:
+            return LANE_EMBEDDED
+
+    if content.startswith(("//", "r#", 'r"', "br#", 'br"', "cr#", 'cr"')) or lit.origin.startswith(("r#", 'r"', "br#", 'br"', "cr#", 'cr"')):
+        # A first line that opens ANOTHER literal's raw form, or a comment
+        # marker: the body is that document's text. The raw prefixes are tested
+        # BOTH ways because the two fields carry different slices: ``content`` is
+        # the literal's own first content line, while ``origin`` is the two
+        # source characters around the quote, so a ``r#"`` written right before
+        # the quote lands in ``origin`` and nowhere else. Testing one field alone
+        # left the other shape excused.
         return LANE_EMBEDDED
 
     if content.upper().startswith(_SQL_LEAD):
@@ -382,10 +422,15 @@ def scan_literals(text: str) -> Tuple[List[literal], List[int]]:
                 # Content starts after the whole opening delimiter (``r#"``), so
                 # the search for the closer must start past it.
                 content_at = index + len(raw.group(0))
-                close_at = text.find(quotes + hashes, content_at)
+                # Rust closes a raw string at ``"`` + EXACTLY the opener's
+                # hashes, not followed by another hash — ``r#"a "#b"#`` closes
+                # at the LAST ``"#``, because ``"#b`` is still inside. A bare
+                # ``text.find`` closes early on content like ``say "#hi`` and
+                # desyncs the whole file (review round 2's S0).
+                closer = re.compile(quotes + hashes + "(?!#)").search(text, content_at)
                 # ``end`` is one past the closing delimiter — the byte the scan
                 # resumes ON.
-                end = size if close_at < 0 else close_at + len(hashes) + len(quotes)
+                end = size if closer is None else closer.end()
                 chunk = text[index:end]
                 breaks = chunk.count("\n")
 
@@ -501,7 +546,7 @@ def scan_literals(text: str) -> Tuple[List[literal], List[int]]:
                 # character before it — the only place the difference between
                 # ``b"`` and ``"`` survives (``body`` starts at the quote).
                 origin = text[start[2] - 1:start[2] + 1] if start[2] else text[start[2]:start[2] + 1]
-                literals.append(literal(open_line = start[0], open_column = start[1], body = body, close_line = line, origin = origin))
+                literals.append(literal(open_line = start[0], open_column = start[1], body = body, close_line = line, origin = origin, at_file_start = start[2] == 0))
 
             index += 1
             column += 1
@@ -522,12 +567,21 @@ def scan_literals(text: str) -> Tuple[List[literal], List[int]]:
         # on those lines read as code — this file's own truncated fixtures
         # reported a literal at an EARLIER literal's column because the real
         # opener had been swallowed.
-        literals.append(literal(open_line = start[0], open_column = start[1], body = text[start[2]:], close_line = line))
+        literals.append(literal(open_line = start[0], open_column = start[1], body = text[start[2]:], close_line = line, at_file_start = start[2] == 0))
 
     return literals, spans
 
 def scan_text(text: str, path: str, *, newline: bool = True, trailing: bool = True) -> List[finding]:
-    """The findings for one file's text (the single entry point both lanes use)."""
+    """The findings for one file's text (the single entry point both lanes use).
+
+    CRLF files are normalized to LF first: the trailing-space walk and the
+    escaped-continuation check both key on ``\n``, and a ``\r`` left in place
+    hid line endings (class-B misses on every line of a CRLF file) and broke
+    the ``\\``-continuation read (class-A misfires). Line numbers are
+    unchanged — ``\r\n`` and ``\n`` occupy the same line. Column positions
+    past a ``\r`` on the same line shift by one; none of the findings rely on
+    intra-line columns beyond the finding's own line anchor."""
+    text = text.replace("\r\n", "\n")
     found: List[finding] = []
     lines = text.split("\n")
     waived = {number for number, content in enumerate(lines, 1) if _WAIVER.search(content)}
@@ -674,6 +728,8 @@ _POSITIVE_TEMPLATE = """fn messages() {
         with a second line";
     let three = "collapsed spaces keep a bare newline
         in the middle";
+    let bytes = b"byte string with a newline
+        in the middle";
     let tail = "line ends with a space<sp><sp><sp>
     next<sp><sp>";
     let tabbed = [
@@ -683,10 +739,12 @@ _POSITIVE_TEMPLATE = """fn messages() {
 }"""
 
 #: Negative control: legal multi-line Rust that must produce zero findings. The
-#: bare newlines live in a raw string, a hashed raw string, a byte string and a
-#: whole-line template body; the double spaces live on a trailing ``\\`` (Rust
-#: removes trailing whitespace before a line continuation, so these render as
-#: ordinary spaces), inside the raw strings, and in a comment.
+#: bare newlines live in a raw string, a hashed raw string and a whole-line
+#: template body; the double spaces live on a trailing ``\\`` (Rust removes
+#: trailing whitespace before a line continuation, so these render as ordinary
+#: spaces), inside the raw strings, and in a comment. A multi-line BYTE string
+#: is deliberately absent: it is the same defect one type over (the runtime
+#: bytes carry the newline), so it belongs to the positive control.
 _NEGATIVE_TEMPLATE = """fn legal() {
     let continued = "one   {bs}
         two   {bs}
@@ -695,8 +753,6 @@ _NEGATIVE_TEMPLATE = """fn legal() {
 b\tc<sp><sp>";
     let hashed = r#"a raw string with "quotes" and<sp><sp>
 b<sp><sp> lines"#; // trailing comment
-    let byte_string = b"a<sp><sp>
-b";
     let byte_char = b'x';
     let formatted = format!(
         "value: {{}}",
@@ -740,20 +796,23 @@ _WAIVED_TEMPLATE = """fn excused() {
 SELFTEST_WAIVED = _materialise(_WAIVED_TEMPLATE)
 
 #: ``(line, column, kind)`` for every finding the positive control must produce.
-SELFTEST_POSITIVE_WANTED = frozenset({(2, 15, NEWLINE), (7, 17, NEWLINE), (9, 16, NEWLINE), (12, 9, NEWLINE), (9, 39, TRAILING), (12, 30, TRAILING)})
+#: Line 9 is the BYTE string: it is a class A defect like a plain one (its
+#: runtime bytes carry the newline), which is why it sits in the positive
+#: control instead of the legal corpus.
+SELFTEST_POSITIVE_WANTED = frozenset({(2, 15, NEWLINE), (7, 17, NEWLINE), (9, 18, NEWLINE), (11, 16, NEWLINE), (14, 9, NEWLINE), (11, 39, TRAILING), (14, 30, TRAILING)})
 
 def selftest() -> int:
     """Run the checker against its own controls; ``0`` means every one held."""
     failures: List[str] = []
     positive = scan_text(SELFTEST_POSITIVE, "positive.rs")
 
-    if len(positive) != 6:
-        failures.append(f"positive control: expected 6 findings, got {len(positive)}: {[item.render() for item in positive]}")
+    if len(positive) != 7:
+        failures.append(f"positive control: expected 7 findings, got {len(positive)}: {[item.render() for item in positive]}")
 
     newline_hits = [item for item in positive if item.kind == NEWLINE]
 
-    if len(newline_hits) != 4:
-        failures.append(f"positive control: expected 4 class A findings, got {len(newline_hits)}")
+    if len(newline_hits) != 5:
+        failures.append(f"positive control: expected 5 class A findings, got {len(newline_hits)}")
 
     trailing_hits = [item for item in positive if item.kind == TRAILING]
 
