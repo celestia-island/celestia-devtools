@@ -617,7 +617,7 @@ class test_docstrings:
 
     def test_an_unclosed_docstring_refuses_instead_of_marking_code_as_prose(self):
         """A block that never closes is refused, not read as prose to EOF.
-        MUT: unclosed-docstring-refusal -- deleting the never-closed refusal in docstring_span reds this test, the block is then read as prose to EOF.
+        MUT: unclosed-docstring-refusal -- deleting the never-closed refusal in docstring_span reds this test, the never-closed note list comes back empty.
 
         An unterminated triple quote leaves the block open forever, so every
         line after it reads as prose - including ``x = "never"`` inside a
@@ -765,9 +765,9 @@ def test_a_claim_never_carries_the_walkers_own_markers():
     ``render()``, so a raw control character there is unreadable in a terminal
     and invisible in a log. Measured before the fix: ``tests/x.py:2: \x00...``.
     The line below is deliberately built to carry both markers, so deleting
+    MUT: claim-text-strips-sentinels -- deleting either removeprefix in _claim_text reds this test, the double-marked line keeps a control character.
     either strip reds this case (the round-2 mutation that stripped only the
     doc marker SURVIVED the whole file — this is what pins it).
-    MUT: claim-text-strips-sentinels -- deleting either removeprefix in _claim_text reds this test.
     """
     marked = comment_gate.CONTEXT_MARK + comment_gate.DOC_CONTINUATION + "Reverting the filter reds this test."
     diff = "diff --git a/tests/test_x.py b/tests/test_x.py\n--- a/tests/test_x.py\n+++ b/tests/test_x.py\n" "@@ -1,4 +1,4 @@\n" ' """Header.\n' " Reverting the filter reds this test.\n" ' """\n' " x = 1\n"
@@ -821,6 +821,7 @@ class test_docstring_state_reads_the_whole_file:
     #310's walker advanced the docstring state over HUNK lines only. A patch
     shows what it changed, so a ``\"\"\"`` that CLOSES a docstring in a line the
     patch never shows reads as one that OPENS it, and every following line is
+    MUT: whole-file-docstring-state -- with the hunk-only walk restored, the closing quote in an unshown line reads as an opener and the following prose lines are misjudged.
     judged as prose. hikari's artifact-retire branch is the standing corpus:
     the gate marked 8 more lines of ``packages/wasm/component_descriptor_test.py``
     as prose than the file has, and — because a code line read as prose can be
@@ -846,6 +847,7 @@ class test_docstring_state_reads_the_whole_file:
         prose, so it keeps claim candidacy, and it is reported (it names
         behaviour — ``reds`` — with no mutation anchor in reach). A walker that
         sees only the hunks never learns the docstring opened at line 1, so it
+        MUT: whole-file-docstring-state -- reverting to the hunk-only walk reads hunk 1 as code and scans NOTHING, so the edited sentence is never reported.
         reads hunk 1 as code and scans NOTHING — silently dropping the one
         comment the change adds.
 
