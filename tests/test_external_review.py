@@ -168,10 +168,14 @@ def fake_ws(workspace: Path, monkeypatch) -> Path:
     """A tiny fake workspace: one repo, one sampled file, HTTP calls stubbed."""
     repo = workspace / "entelecheia"
     (repo / ".git").mkdir(parents = True)
-    # use one of the real SAMPLE_FILES paths so pack() picks it up
     sample = repo / "packages" / "scepter" / "src" / "services" / "l2_plugin_agents.rs"
     sample.parent.mkdir(parents = True)
     sample.write_text("# example\n", encoding = "utf-8")
+    # The packer must see exactly the samples this fixture creates: declaring
+    # the real table here would rely on the missing-sample skip, which the
+    # existence guard refuses (shittim-chest#2514 dropped a sample that way
+    # and the manifest kept claiming coverage).
+    monkeypatch.setattr(external_review, "SAMPLE_FILES", ("entelecheia/packages/scepter/src/services/l2_plugin_agents.rs",))
 
     def fake_git(*args, repo = None):  # noqa: F811
         if ("--verify" in args) or ("rev-list" in args):
@@ -618,3 +622,26 @@ def test_verify_corrupt_seal_variants(fake_ws, monkeypatch, capsys):
         capsys.readouterr()
         assert run_main(["verify", "--pack", str(out)], fake_ws, monkeypatch) == 1, corrupt
         assert "封印" in capsys.readouterr().out
+
+def test_missing_sample_aborts_the_packet(tmp_path, monkeypatch):
+    """A declared sample that does not exist must abort the packet, not skip:
+    shittim-chest#2514 renamed a package and the sampler silently dropped that
+    sample for weeks while the manifest still claimed the repo was sampled."""
+    fake = tmp_path / "fake-repo" / "src" / "real.rs"
+    fake.parent.mkdir(parents = True)
+    fake.write_text("fn main() {}\n", encoding = "utf-8")
+    monkeypatch.setattr(external_review, "SAMPLE_FILES", ("fake-repo/src/real.rs", "fake-repo/src/gone.rs"))
+    monkeypatch.setattr(external_review, "LOG_REPOS", ())
+
+    with pytest.raises(RuntimeError, match = "gone.rs"):
+        external_review.write_code_sample(tmp_path, tmp_path / "pack")
+
+def test_all_samples_present_writes_them_all(tmp_path, monkeypatch):
+    fake = tmp_path / "fake-repo" / "src" / "real.rs"
+    fake.parent.mkdir(parents = True)
+    fake.write_text("fn main() {}\n", encoding = "utf-8")
+    monkeypatch.setattr(external_review, "SAMPLE_FILES", ("fake-repo/src/real.rs",))
+    monkeypatch.setattr(external_review, "LOG_REPOS", ())
+    monkeypatch.setattr(external_review, "origin_ref", lambda repo: ("origin/master", "0" * 40))
+    external_review.write_code_sample(tmp_path, tmp_path / "pack")
+    assert (tmp_path / "pack" / "code" / "fake-repo/src/real.rs").is_file()

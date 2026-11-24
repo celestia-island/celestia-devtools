@@ -21,7 +21,7 @@ from celestia_devtools.repo.register_patches import is_celestia_repo
 
 # ── Service definitions ──────────────────────────────────────────────────────
 
-# core has no "mock-mode" feature (only embedded-frontend) — the
+# chest-app has no "mock-mode" feature (only embedded-frontend) — the
 # flag below used to make `daemon build` fail outright. The listen
 # port must be pinned to run_port: chest defaults to :80.
 # scepter has no "embedded-db" feature either; default features
