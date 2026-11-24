@@ -1199,6 +1199,42 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         assert "no git checkout here" in joined, joined
         assert ("not-here" in joined) and ("tried" in joined), joined
 
+    def test_the_hint_wins_when_the_cwd_is_also_a_checkout(self, tmp_path, monkeypatch):
+        """The ORDER is a contract: the hint candidate is probed FIRST.
+
+        Both candidates are real checkouts here. The hint's checkout holds the
+        head; the cwd's does not — so the resolver's choice is observable: with
+        hint-first (the documented order) it resolves to the hint's checkout
+        and the gate judges; with cwd-first it would land on the cwd repo,
+        fail the head check, and refuse instead. Unwiring the order reds this.
+        """
+        hinted = tmp_path / "hinted"
+        hinted.mkdir()
+
+        for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+            subprocess.run(["git", "-C", str(hinted), *argv], check = True, capture_output = True)
+
+        (hinted / "f.py").write_text("x = 1\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(hinted), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(hinted), "commit", "-qm", "pr head"], check = True, capture_output = True)
+        head = subprocess.run(["git", "-C", str(hinted), "rev-parse", "HEAD"], check = True, capture_output = True, text = True).stdout.strip()
+
+        cwd_repo = tmp_path / "cwd-repo"
+        cwd_repo.mkdir()
+
+        for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+            subprocess.run(["git", "-C", str(cwd_repo), *argv], check = True, capture_output = True)
+
+        (cwd_repo / "f.txt").write_text("x\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(cwd_repo), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(cwd_repo), "commit", "-qm", "x"], check = True, capture_output = True)
+        monkeypatch.chdir(cwd_repo)
+        monkeypatch.setattr(pr_gate_module, "_WORKSPACE_ROOT", tmp_path)
+
+        root, problems = pr_gate_module._comment_gate_root(head, required = True, branch = "", repo_hint = "celestia-island/hinted")
+        assert problems == [], problems
+        assert root == str(hinted.resolve()), root
+
     def test_a_repo_hint_falls_back_to_the_cwd_when_the_hint_is_elsewhere(self, tmp_path, monkeypatch):
         # The hint names a directory that is not a checkout; the cwd IS one.
         # The resolver must land on the cwd, not refuse.

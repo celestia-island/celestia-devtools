@@ -1060,8 +1060,10 @@ def _git_toplevel(candidate: Path) -> str | None:
 
     try:
         probe = subprocess.run(["git", "-C", str(candidate), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
-    except FileNotFoundError as error:
-        raise EnvironmentError("git is not available on PATH") from error
+    except FileNotFoundError:
+        # git missing from PATH — raise the precise type so the resolver's
+        # environment-refusal keeps saying "not found on PATH" (round 8).
+        raise
 
     if probe.returncode != 0:
         return None
@@ -1123,12 +1125,19 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "", repo_hint
     for candidate in candidates:
         try:
             probe = _git_toplevel(candidate)
-        except EnvironmentError:
+        except EnvironmentError as error:
             # git missing from PATH is an environment problem, not a repository
             # that happens to lack a commit — the refusal names the environment
             # (round 8's S1: it must not blame the checkout or its refspec).
+            # EnvironmentError IS OSError's alias, so a PermissionError on the
+            # candidate lands here too; name the underlying error rather than
+            # claiming "not found on PATH" when that is not what happened.
+            # FileNotFoundError keeps the round-8 wording exactly; any other
+            # OSError (a PermissionError on the candidate, say) names itself.
+            detail = "not found on PATH" if isinstance(error, FileNotFoundError) else str(error)
+
             if required:
-                return None, [f"{COMMENT_GATE_CATEGORY}: git could not be run here (not found on PATH), so this diff's file text cannot be read — refusing rather than certifying a docstring state it never read"]
+                return None, [f"{COMMENT_GATE_CATEGORY}: git could not be run here ({detail}), so this diff's file text cannot be read — refusing rather than certifying a docstring state it never read"]
 
             return None, []
 
