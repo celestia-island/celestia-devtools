@@ -1123,7 +1123,6 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "", repo_hint
     for candidate in candidates:
         try:
             probe = _git_toplevel(candidate)
-
         except EnvironmentError:
             # git missing from PATH is an environment problem, not a repository
             # that happens to lack a commit — the refusal names the environment
@@ -1145,8 +1144,8 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "", repo_hint
         looked = f"(tried {repo_hint} under {_WORKSPACE_ROOT} and the cwd)" if name else "(cwd is not inside a repository)"
 
         if required:
-            return None, [f"{COMMENT_GATE_CATEGORY}: cannot read the file text — no git checkout here {looked}"
-                          " — the docstring state behind this diff is unknowable, refusing rather than guessing"]
+            message = f"{COMMENT_GATE_CATEGORY}: cannot read the file text — no git checkout here {looked} — the docstring state behind this diff is unknowable, refusing rather than guessing"
+            return None, [message]
 
         return None, []
 
