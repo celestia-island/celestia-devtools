@@ -44,11 +44,13 @@ public, that they did it deliberately.
 
 *A source* (:data:`ANCHORS`) is one of: ``MUT:<id>`` / ``mutate:<slug>`` (the
 comment gate's own pattern, imported), an ``evidence:`` marker, a ``#PR``
-reference, a URL, a commit hash (7+ hex with at least one digit) or the
-checksum words ``sha256`` / ``sha1`` / ``md5``, a ``file:line`` reference to a
-dotted filename, or an inline-code span shaped like a command / flag / call /
-identifier / multi-segment path. The source may sit on the statement's own
-line, the line above or the line below.
+reference (**on a line that states nothing** — on a statement line a ``#PR``
+proves only that the PR exists, and the line needs another source), a URL, a
+commit hash (7+ hex with at least one digit) or the checksum words ``sha256`` /
+``sha1`` / ``md5``, a ``file:line`` reference to a dotted filename, or an
+inline-code span shaped like a command / flag / call / identifier /
+multi-segment path. The source may sit on the statement's own line, the line
+above or the line below.
 
 *A disclaimer* (:data:`DISCLAIMERS`) says out loud that the figure was not
 recomputed (``未复算`` / ``unverified`` / ``not established`` / ``inference`` /
@@ -437,12 +439,12 @@ def has_quote(text: str) -> bool:
     """True when ``text`` carries an inline-code span at all."""
     return bool(_SPAN.search(text))
 
-def is_source(line: str) -> bool:
+def is_source(line: str, *, statement: bool = False) -> bool:
     """True when ``line`` carries one of :data:`ANCHORS`.
 
     Two kinds of source, and the difference is the whole rule:
 
-    * **line sources** — a ``#PR``, a ``file:line``, ``MUT:`` / ``mutate:``, an
+    * **line sources** — a ``file:line``, ``MUT:`` / ``mutate:``, an
       ``evidence:`` marker, a URL, a checksum word, or a commit hash with a
       digit. Each points at a thing a reader can open, so where it sits on the
       line does not matter.
@@ -454,6 +456,14 @@ def is_source(line: str) -> bool:
       quotation proves only that the call exists. So when the sentence carries
       an attribution word (``never`` / ``always`` / ``catches`` / …) and no line
       source, the spans do not count.
+
+    A ``#PR`` reference is a line source **only on a line that states
+    nothing** (``statement = False``): ``#2813`` proves the PR exists, not what
+    a sentence quantifies or claims about it, so on a statement line it
+    satisfies nothing and the line needs another source — a reading table, a
+    ``file:line``, a command result, a disclaimer or a directive. A pure
+    reference line (``Filed upstream: hikari #1498.``) still counts: it is not
+    judged, and it points the reader at where the claim's evidence lives.
     """
     text = line.lower()
 
@@ -466,9 +476,18 @@ def is_source(line: str) -> bool:
     if _TEST_REF.search(text):
         return True
 
-    for pattern in (_EVIDENCE, _PR_REF, _URL, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
+    for pattern in (_EVIDENCE, _URL, _FILE_LINE, comment_gate._EXPLICIT_ANCHOR):
         if pattern.search(text):
             return True
+
+    # A `#PR` reference sources a line that asserts nothing. On a STATEMENT
+    # line it is not a source: the reference proves the PR exists, while the
+    # line asserts a quantity or a behaviour the reader cannot recompute from
+    # that existence alone (the #315 review's live miss: `#2813` sourced the
+    # whole of "… 32 refusals"). `statement` is judged by the gate's own
+    # predicates in :func:`claim_kinds`, not by another word list.
+    if (not statement) and _PR_REF.search(text):
+        return True
 
     # A checksum WORD is a locator only when it is not itself negated, on
     # either side: "no sha256 anywhere" and "the sha256 is not shown" both name
@@ -769,7 +788,7 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
         if (position != index) and not part.text.strip():
             continue
 
-        if is_source(part.text) or disclaims(part.text):
+        if is_source(part.text, statement = bool(claim_kinds(part.text)[0])) or disclaims(part.text):
             return True
 
         reason = directive_reason(part.text)

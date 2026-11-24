@@ -397,6 +397,25 @@ class test_corpus:
         assert 73 in refused
         assert any(186 <= line <= 220 for line in refused)
 
+    def test_a_pr_reference_sources_only_a_line_that_states_nothing(self):
+        # MUT:pr-ref-statement-arm — reverting `is_source` to treat `#PR` as a
+        # line source on EVERY line makes the two negatives pass again. The
+        # live miss this pins (devtools #315, review round 3): a body wrote
+        # "#2813" and "32 refusals" on one line and the reference sourced the
+        # count, because a `#PR` proves the PR exists and nothing about what
+        # the line asserts.
+        result = body_gate.check_body(_fixture("pr-ref-on-a-statement-line.md"))
+        refused = _lines(result)
+
+        assert refused == [3, 5], refused
+
+        # The positive controls in the same file: a statement line still passes
+        # when its figure has a source of its own, and a pure reference line
+        # (`Filed upstream: hikari #1498.`) is not judged at all.
+        assert 9 not in refused, "a file:line beside the reference must still source it"
+        assert 11 not in refused, "a command with its result must still source it"
+        assert 13 not in refused, "a reference-only line states nothing, so it is not refused"
+
     def test_a_restatement_with_a_table_beside_it_passes(self):
         # `dom-arithmetic.md`: three sentences restating the telemetry table
         # above them, and the table is one line away — a restatement is sourced
