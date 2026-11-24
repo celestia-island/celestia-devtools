@@ -51,6 +51,10 @@ lint:
     @# fail-closed) over a throwaway workspace and a real git repository - no
     @# workspace needed.
     {{python_cmd}} -m celestia_devtools domain-leak --selftest
+    @# This repository holds no Rust of its own, so the literal gate runs through its
+    @# controls here: both defect classes, the legitimate multi-line shapes, the
+    @# waiver anchor and the empty-scan refusal.
+    {{python_cmd}} -m celestia_devtools string-lit-gate --selftest
 
 # Format Markdown + verify the bundled common.just is valid just syntax.
 fmt:
