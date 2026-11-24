@@ -1218,6 +1218,27 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         assert problems == [], problems
         assert root == str(cwd_repo.resolve()), root
 
+    def test_comment_gate_problems_hands_the_repo_hint_to_the_resolver(self, monkeypatch):
+        """The wiring pin for `repo_hint = repo` at the call site.
+
+        The resolver's own resolution behaviour is covered by the three
+        repo-hint tests above; THIS pin covers the one line that carries the
+        caller's `--repo` into it. Unwiring the call site makes the resolver
+        see an empty hint — i.e. exactly the cwd-only behaviour that refused
+        every workspace-root invocation before the fix — and this test reds.
+        """
+        seen: dict = {}
+
+        def spy(head, *, required, branch, repo_hint):
+            seen["repo_hint"] = repo_hint
+
+            return None, []
+
+        monkeypatch.setattr(pr_gate_module, "_comment_gate_root", spy)
+        pr, diff = _comment_pr(_FAR_HUNK_PY, filename = "tests/test_far.py")
+        pr_gate_module.comment_gate_problems("celestia-island/tairitsu", 1, "a" * 40, runner = diff_runner(pr, diff))
+        assert seen.get("repo_hint") == "celestia-island/tairitsu", seen
+
     def test_no_checkout_with_only_a_ts_diff_does_not_refuse(self, tmp_path, monkeypatch):
         """The other half of the scope: a TS-only diff needs no file text."""
         monkeypatch.chdir(tmp_path)
