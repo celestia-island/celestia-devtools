@@ -11,8 +11,13 @@ run_port, and generate-config emits Windows-correct binary paths.
 """
 
 from __future__ import annotations
+import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+import pytest
 from celestia_devtools.env import daemon
 
 # Each service's actual listen knob (verified against each repo's source):
@@ -37,6 +42,112 @@ class test_service_defs:
 
     def test_expected_services_present(self):
         assert set(daemon.SERVICE_DEFS) >= {"shittim-chest", "entelecheia", "arona"}
+
+    def test_build_cmd_names_a_package_and_a_bin(self):
+        """Every `build_cmd` is `cargo build -p <package> [--bin <bin>] --release`,
+        the `-p` value is not the pre-rename vocabulary, and `--bin` equals the
+        bin the daemon runs. The structural half; `test_build_cmd_packages_resolve`
+        asks cargo when a checkout is there."""
+
+        for repo, svc in daemon.SERVICE_DEFS.items():
+            cmd = svc["build_cmd"]
+            assert cmd[:3] == ["cargo", "build", "-p"], (repo, cmd)
+            pkg = cmd[3]
+            assert pkg and not pkg.startswith("-"), (repo, cmd)
+            assert pkg not in {"core", "shittim_chest"}, (repo, f"stale package name {pkg!r}")
+
+            if "--bin" in cmd:
+                assert cmd[cmd.index("--bin") + 1] == svc["bin"], (repo, "--bin must equal the bin the daemon runs")
+
+            assert "--release" in cmd, (repo, cmd)
+
+    def test_build_cmd_packages_resolve(self):
+        """Every `-p` package must resolve in its repo and own the bin the daemon
+        runs — asking cargo, not a string table. A rename that misses this file
+        (shittim-chest#2514 did) fails here with cargo's own message. The
+        checkout is found from this file's own path, so it runs in the
+        `_worktree/<repo>/<slug>` layout the workspace gates use; skips only
+        when no checkout exists (CI)."""
+
+        if shutil.which("cargo") is None:
+            pytest.skip("cargo not on PATH")
+
+        checked = 0
+
+        for repo, svc in daemon.SERVICE_DEFS.items():
+            d = _sibling_checkout(repo)
+
+            if d is None:
+                continue
+
+            pkg = svc["build_cmd"][3]
+            env = {**os.environ, "CARGO_TERM_COLOR": "never"}
+            r = subprocess.run(["cargo", "pkgid", "-p", pkg, "--offline"], cwd = d, capture_output = True, text = True, env = env, timeout = 120)
+            assert r.returncode == 0, f"{repo}: `cargo build -p {pkg}` would fail ({d}):\n{r.stderr.strip()}"
+
+            m = subprocess.run(["cargo", "metadata", "--no-deps", "--offline", "--format-version", "1"], cwd = d, capture_output = True, text = True, env = env, timeout = 120)
+            assert m.returncode == 0, f"{repo}: cargo metadata failed ({d}):\n{m.stderr.strip()}"
+
+            bins = {t["name"] for p in json.loads(m.stdout)["packages"] if p["name"] == pkg for t in p["targets"] if "bin" in t["kind"]}
+            assert svc["bin"] in bins, f"{repo}: package {pkg!r} has no bin target {svc['bin']!r} (has {sorted(bins)})"
+            checked += 1
+
+        if checked == 0:
+            # Under the workspace layout a missing sibling is a broken
+            # environment, not a skip: that is exactly the state the first cut
+            # of this test silently lived in. Only a checkout with no
+            # `_worktree` ancestor and no siblings (CI) may skip.
+            if any(anc.parent.name == "_worktree" for anc in Path(__file__).resolve().parents):
+                pytest.fail("under a _worktree/<repo>/<slug> checkout but no sibling resolved — the gates would run this pin as a skip")
+
+            pytest.skip("no sibling checkouts next to this repo")
+
+def _sibling_checkout(repo: str, here: Path | None = None) -> Path | None:
+    """The checkout of `repo` as a sibling, found from `here` (this file by
+    default) rather than the cwd: inside `_worktree/<this-repo>/<slug>` the
+    siblings live two levels up; otherwise the CLI's own rule
+    (`cwd.parent / repo`) applies."""
+
+    for anc in (here or Path(__file__)).resolve().parents:
+        if anc.parent.name == "_worktree":
+            d = anc.parent.parent / repo
+
+            if d.is_dir() and (d / "Cargo.toml").exists():
+                return d
+
+    return daemon._find_sibling_dir(repo)
+
+class test_sibling_checkout:
+    def test_resolves_from_worktree_layout_via_file_not_cwd(self, tmp_path, monkeypatch):
+        """Inside `_worktree/<this-repo>/<slug>` the siblings live two levels
+        up. Found from the anchor file, so an unrelated cwd cannot hide them."""
+        here = tmp_path / "_worktree" / "celestia-devtools" / "some-slug" / "tests" / "test_daemon.py"
+        here.parent.mkdir(parents = True)
+        here.write_text("", encoding = "utf-8")
+
+        for repo in ("shittim-chest", "entelecheia"):
+            (tmp_path / repo).mkdir()
+            (tmp_path / repo / "Cargo.toml").write_text("[package]\n", encoding = "utf-8")
+
+        elsewhere = tmp_path / "elsewhere" / "deeper"
+        elsewhere.mkdir(parents = True)
+        monkeypatch.chdir(elsewhere)
+        assert _sibling_checkout("shittim-chest", here) == (tmp_path / "shittim-chest").resolve()
+        assert _sibling_checkout("entelecheia", here) == (tmp_path / "entelecheia").resolve()
+        assert _sibling_checkout("no-such-repo", here) is None
+
+    def test_falls_back_to_cwd_rule_outside_worktree(self, tmp_path, monkeypatch):
+        """A plain checkout (main checkout, CI) has no `_worktree` ancestor:
+        the CLI's own `cwd.parent / repo` rule applies, and nothing resolves
+        when no sibling exists."""
+        here = tmp_path / "celestia-devtools" / "tests" / "test_daemon.py"
+        here.parent.mkdir(parents = True)
+        here.write_text("", encoding = "utf-8")
+        (tmp_path / "arona").mkdir()
+        (tmp_path / "arona" / "Cargo.toml").write_text("[package]\n", encoding = "utf-8")
+        monkeypatch.chdir(tmp_path / "celestia-devtools")
+        assert _sibling_checkout("arona", here) == (tmp_path / "arona").resolve()
+        assert _sibling_checkout("shittim-chest", here) is None
 
 class test_generate_config:
     def _fake_layout(self, tmp_path: Path) -> Path:

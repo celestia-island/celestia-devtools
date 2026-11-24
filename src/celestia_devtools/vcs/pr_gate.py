@@ -115,6 +115,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -917,7 +918,7 @@ def _failure_detail(status: int, body: dict, stderr: str) -> str:
 
     return f"transport failure (gh exit {status}) {stderr or 'no stderr'}"
 
-def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> list[str]:
+def comment_gate_problems(repo: str, pr: int, head: str, *, branch: str = "", runner = None) -> list[str]:
     """Behaviour claims in this PR's test comments that name no mutation.
 
     The check itself lives in :mod:`celestia_devtools.lint.comment_gate`; this
@@ -958,7 +959,35 @@ def comment_gate_problems(repo: str, pr: int, head: str, *, runner = None) -> li
         print(f"⏭️  {COMMENT_GATE_CATEGORY}: no test-file changes in #{pr} — nothing to judge")
         return []
 
-    report = comment_gate.check_diff(diff_text)
+    # `root`/`rev` are what let the scanner read the file behind a diff: its
+    # docstring state lives in the WHOLE file, and a hunk shows only what
+    # changed. Without them every diff whose first hunk starts past line 1 is
+    # refused with "line 1 is not shown by the patch" — that is the shape that
+    # would refuse almost every PR in the family, TS or Python alike. `head` is
+    # this function's own argument (the PR head SHA); the checkout is resolved
+    # the same way the other gates resolve theirs, and a tree that cannot name
+    # the commit leaves the pair empty so the scanner falls back to its honest
+    # hunk-only refusal instead of inventing a state.
+    # Only Python files need the file text (a JS/TS comment cannot span hunks),
+    # so a checkout that lacks this PR's head is a refusal only when such a file
+    # is actually in the diff — a TS-only PR must not be blocked by it.
+    needs_file_text = any(_needs_file_text(path) for path in _diff_paths(diff_text))
+    root, root_problems = _comment_gate_root(head, required = needs_file_text, branch = branch)
+
+    if root_problems:
+        # A resolver refusal is final.
+        return root_problems
+
+    if (root is None) and needs_file_text:
+        # There is no checkout to read and this diff needs one: "nothing to
+        # report" would be a silent pass, and skipping the call would also skip
+        # the scanner's own refusal. Say it here — a refusal, never an empty list.
+        return [f"{COMMENT_GATE_CATEGORY}: cannot read the file text this diff needs (no git checkout here, or the PR head {head!r} is empty/unusable) — refusing rather than certifying a docstring state it never read"]
+
+    # `root is None` WITHOUT `needs_file_text` (a JS/TS-only diff) still reaches
+    # the scanner: none of its lines need file text, so the hunk-only walk is the
+    # correct and complete judgement, not a degraded one.
+    report = comment_gate.check_diff(diff_text, root = root, rev = head)
     # BOTH halves of the verdict, not just the claims: the scanner also refuses
     # "zero scanned comment lines" and "zero vocabulary hits", and those are its
     # defence against a mis-typed pattern reading as green. Forwarding only
@@ -999,6 +1028,261 @@ def body_gate_problems(body: str, *, runner = None) -> list[str]:
         print(f"⏭️  {BODY_GATE_CATEGORY}: {result.skipped}")
 
     return [f"{BODY_GATE_CATEGORY}: {stmt.render()}" for stmt in result.findings] + [f"{BODY_GATE_CATEGORY}: {problem}" for problem in result.problems]
+
+def _needs_file_text(path: str) -> bool:
+    """True when judging ``path`` requires the file's text, not just the hunk.
+
+    Only PYTHON comments can span hunk boundaries (a docstring continuation has
+    no marker of its own), which is the one reason the scanner needs the whole
+    file. The test is case-insensitive and covers ``.pyi``: a Windows checkout
+    can spell ``.PY``, and a stub file is parsed by the same state machine, so a
+    case-sensitive ``.endswith('.py')`` would silently skip the head refusal for
+    exactly those inputs. A ``.py`` DIRECTORY in the path is not a module and is
+    excluded by looking at the final segment only.
+    """
+    suffix = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+    return suffix.endswith(".py") or suffix.endswith(".pyi")
+
+def _comment_gate_root(head: str, *, required: bool, branch: str = "") -> tuple[str | None, list[str]]:
+    """The checkout the comment gate reads file text from; ``(root, problems)``.
+
+    The scanner needs the NEW-side file text to compute a Python file's
+    docstring state (a hunk shows only the changed lines), and that text has to
+    be the one the PR's ``head`` names.
+
+    ``CELESTIA_ARTIFACT_ROOT`` is deliberately NOT consulted. It has one owner —
+    :func:`artifact_drift_problems` — and it names a *hikari-shaped tree*
+    (anything with ``packages/wasm``), which is not necessarily a git checkout:
+    its own tests point it at a plain directory. Reading it here made the two
+    gates disagree about the same variable, and an operator who set it for the
+    artifact gate would have been silently affecting this one.
+
+    The checkout is the repository this merge runs in, found by asking git from
+    the cwd (git walks up by itself, so a caller in a subdirectory resolves).
+    A repository that does not contain ``head`` CANNOT stand in: its file text
+    is another commit's, which would erase every "state unknowable" refusal and
+    leave the gate green on files it never read.
+
+    A checkout that simply has not fetched this PR is a NORMAL state, not an
+    operator error: the merge gate's own checkout is a CI clone, and several
+    repositories in this family narrow ``remote.origin.fetch`` to the trunk, so
+    a plain ``git fetch origin`` never brings a pull-request branch. The
+    resolver therefore FETCHES the head itself before refusing — by branch name
+    when the payload gave one (``refs/heads/<branch>`` is the refspec GitHub
+    always allows), by SHA otherwise. Only when that fails does it refuse, and
+    the message then states the refspec and the exact command to run.
+
+    ``required`` says whether the diff holds a file whose state needs the text
+    (only a Python TEST path can: a JS/TS comment cannot span hunk boundaries).
+    Without it a missing head is not an error for this gate.
+    """
+
+    try:
+        probe = subprocess.run(["git", "-C", str(Path.cwd()), "rev-parse", "--show-toplevel"], capture_output = True, check = False, text = True)
+    except FileNotFoundError:
+        # No checkout can exist without git, and the caller's refusal has to say
+        # which of the two it is: a machine without git is an environment problem,
+        # not a repository that happens to lack a commit.
+        if required:
+            return None, [f"{COMMENT_GATE_CATEGORY}: git could not be run here (not found on PATH), so this diff's file text cannot be read — refusing rather than certifying a docstring state it never read"]
+
+        return None, []
+    except (OSError, ValueError):
+        return None, []
+
+    if probe.returncode != 0:
+        return None, []
+
+    root = (probe.stdout or "").strip()
+
+    if not root:
+        return None, []
+
+    if not head:
+        return root, []
+
+    has_head, reason = _checkout_has(root, head)
+
+    if has_head:
+        return root, []
+
+    fetched, why = _fetch_head(root, head, branch)
+
+    if fetched:
+        return root, []
+
+    if not required:
+        return None, []
+
+    return None, [f"{COMMENT_GATE_CATEGORY}: cannot judge this diff's file text — {reason} and {why}. Refusing rather than judging another commit's. {_advice(root, head, branch)}"]
+
+def _advice(root: str, head: str, branch: str) -> str:
+    """What the reader can DO about a missing head.
+
+    Branches on what is actually true of this checkout: a repository with no
+    ``origin`` cannot be fetched at all, and a default (unset or wildcard)
+    refspec already brings every branch — telling that reader to run a fetch
+    would be advice that does nothing.
+    """
+
+    waiver = "or waive the gate explicitly with `comment-gate-waiver:` in the body"
+
+    if _has_remote(root):
+        refspec = _remote_refspec(root)
+
+        if _refspec_brings_branches(refspec):
+            return f"This checkout fetches all branches (`remote.origin.fetch={refspec}`), so `git fetch origin` should bring it — the fetch failed for another reason (network, credentials). Re-run it, {waiver}"
+
+        return f"This checkout's refspec is `{refspec}`, so a plain `git fetch origin` does not bring a PR branch; run `{_fetch_command(head, branch)}`, {waiver}"
+
+    return f"This checkout has no `origin` remote, so nothing can be fetched; add one and re-run, {waiver}"
+
+def _has_remote(root: str) -> bool:
+    """True when ``root`` has an ``origin`` remote."""
+
+    try:
+        probe = subprocess.run(["git", "-C", root, "remote"], capture_output = True, check = False, text = True)
+    except (OSError, ValueError):
+        return False
+
+    return "origin" in (probe.stdout or "").split()
+
+def _checkout_has(root: str, head: str) -> tuple[bool, str]:
+    """Whether ``root`` holds ``head``, and why not when it does not.
+
+    The second element is a REASON, not a boolean negation: "git could not be
+    run at all" and "this commit is not in the checkout" lead to completely
+    different advice, and folding them together produced a refusal that blamed
+    the repository, its refspec and a `git fetch` command for a machine where
+    git is not even installed.
+
+    ``ValueError`` is caught with ``OSError`` because ``subprocess`` raises it —
+    not ``OSError`` — for an argument carrying a NUL, and the head arrives from
+    an API payload. A resolver must not raise on a string it was handed.
+    """
+
+    try:
+        probe = subprocess.run(["git", "-C", root, "cat-file", "-e", f"{head}^{{commit}}"], capture_output = True, check = False)
+    except FileNotFoundError:
+        return False, "git could not be run here (not found on PATH)"
+    except OSError as exc:
+        return False, f"git could not be run here ({exc})"
+    except ValueError:
+        return False, "the PR head is not a name git can be asked about (it carries a NUL byte)"
+
+    if probe.returncode == 0:
+        return True, ""
+
+    return False, "this checkout does not contain that commit"
+
+def _fetch_head(root: str, head: str, branch: str) -> tuple[bool, str]:
+    """Try to MAKE the checkout contain ``head``; ``(got_it, why_not)``.
+
+    Branch first: ``git fetch origin refs/heads/<branch>`` is always allowed,
+    while fetching by SHA needs ``uploadpack.allowReachableSHA1InWant`` on the
+    server, which is not guaranteed. A fetch that fails for lack of network is
+    not an error to report as a bug — the caller's advice says what to run.
+    """
+
+    wants: list[list[str]] = []
+
+    if branch:
+        wants.append(["fetch", "--no-tags", "origin", f"refs/heads/{branch}"])
+
+    if re.fullmatch(r"[0-9a-fA-F]{7,40}", head):
+        wants.append(["fetch", "--no-tags", "origin", head])
+
+    if not wants:
+        return False, "the PR head is not a name a fetch could ask for"
+
+    if not _has_remote(root):
+        return False, "there is no `origin` remote to fetch from"
+
+    tried: list[str] = []
+
+    for argv in wants:
+        try:
+            probe = subprocess.run(["git", "-C", root, *argv], capture_output = True, check = False)
+        except (OSError, ValueError) as exc:
+            return False, f"git could not run the fetch ({exc})"
+
+        if probe.returncode != 0:
+            tried.append(f"`git {' '.join(argv)}` failed")
+
+            continue
+
+        if _checkout_has(root, head)[0]:
+            return True, ""
+
+        tried.append(f"`git {' '.join(argv)}` did not bring the commit")
+
+    return False, "fetching it did not work (" + "; ".join(tried) + ")"
+
+def _remote_refspec(root: str) -> str:
+    """EVERY ``remote.origin.fetch`` entry, newline-joined, as the message shows it.
+
+    ``--get-all``, not ``--get``: the setting is multi-valued (git accepts one
+    refspec per ``git config`` entry) and ``--get`` returns only the LAST one. A
+    checkout configured with two narrow refspecs would then be judged on
+    whichever happened to be written last — and a single narrow entry followed by
+    a wildcard one would read as "fetches everything" when it does not.
+    """
+
+    try:
+        probe = subprocess.run(["git", "-C", root, "config", "--get-all", "remote.origin.fetch"], capture_output = True, check = False, text = True)
+    except (OSError, ValueError):
+        return "unknown"
+
+    entries = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+
+    return "\n".join(entries) or "unset"
+
+def _refspec_brings_branches(refspec: str) -> bool:
+    """True when these refspecs together fetch EVERY branch.
+
+    ``remote.origin.fetch`` is a multi-valued setting: git accepts one refspec
+    per ``git config`` entry, so the caller reads them all (``--get-all``) and
+    joins them with newlines. Each line is ``[+]<src>[:<dst>]``.
+
+    The judgement is on the SOURCE side and by equality. A substring test for
+    ``refs/heads/*`` reads a legitimate narrow pattern such as
+    ``refs/heads/*-release:refs/remotes/origin/*-release`` as the full wildcard,
+    and the advice then says "this fetch brings every branch, the failure must
+    be something else" for a checkout that plainly does not — suppressing the one
+    command that would have fixed it.
+
+    A wildcard DESTINATION paired with a narrow source (``master:…/origin/*``)
+    needs no mention: **git rejects it outright** ("invalid refspec"), since a
+    wildcard refspec must carry the wildcard on both sides — required since
+    2008 (git ``b2a5627``), so no build in use can produce that config.
+
+    An unset entry, and "we could not read the config", both mean "no narrowing
+    evidence": git's default is the full wildcard, so the advice must not claim
+    a plain fetch is insufficient.
+    """
+
+    if (refspec or "").strip() in ("", "unset", "unknown"):
+        return True
+
+    entries = [entry.strip() for entry in refspec.splitlines() if entry.strip()]
+
+    if not entries:
+        return True
+
+    # ANY wildcard source is enough: multiple refspecs fetch independently, so
+    # one of them covering every branch means every branch comes down.
+    return any(entry.removeprefix("+").split(":", 1)[0] == "refs/heads/*" for entry in entries)
+
+def _fetch_command(head: str, branch: str) -> str:
+    """The command that would make this checkout able to judge the PR.
+
+    ``shlex.quote`` rather than ``repr``: this string is MEANT to be pasted into
+    a shell, and ``refs/heads/'feature/x'`` survives a shell but not a
+    ``git fetch`` argument.
+    """
+
+    return f"git fetch origin refs/heads/{shlex.quote(branch)}" if branch else f"git fetch origin {shlex.quote(head)}"
 
 def _diff_paths(diff_text: str) -> list[str]:
     """The new-side paths a unified diff touches."""
@@ -1153,7 +1437,10 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
 
     if comment_gate:
         payload_head = (data.get("head") or {}).get("sha") or ""
-        gated = comment_gate_problems(repo, pr, payload_head, runner = runner)
+        # `head.ref` is the branch name GitHub always sends; it is what makes
+        # `git fetch origin refs/heads/<ref>` legal on a narrow-refspec clone.
+        payload_branch = (data.get("head") or {}).get("ref") or ""
+        gated = comment_gate_problems(repo, pr, payload_head, branch = payload_branch, runner = runner)
 
         if gated and (comment_body_grant is not None):
             print(f"🔓 {COMMENT_GATE_CATEGORY}-waiver (PR body): {comment_body_grant.entry!r} — " f"reason: {comment_body_grant.reason}")
