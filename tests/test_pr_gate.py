@@ -1201,7 +1201,7 @@ class test_comment_gate_reads_the_file_behind_the_diff:
 
     def test_the_hint_wins_when_the_cwd_is_also_a_checkout(self, tmp_path, monkeypatch):
         """The ORDER is a contract: the hint candidate is probed FIRST.
-        MUT:hint-first-order -- swapping the candidates so cwd is probed first lands the resolver on the cwd repo, fails the head check, and refuses instead of judging.
+        MUT: hint-first-order -- swapping the candidates so cwd is probed first lands the resolver on the cwd repo, fails the head check, and refuses instead of judging.
 
         Both candidates are real checkouts here. The hint's checkout holds the
         head; the cwd's does not — so the resolver's choice is observable: with
@@ -1257,7 +1257,7 @@ class test_comment_gate_reads_the_file_behind_the_diff:
 
     def test_comment_gate_problems_hands_the_repo_hint_to_the_resolver(self, monkeypatch):
         """The wiring pin for `repo_hint = repo` at the call site.
-        MUT:repo-hint-wiring -- removing repo_hint from the comment_gate_problems call site makes the resolver see an empty hint and reds this test.
+        MUT: repo-hint-wiring -- removing repo_hint from the comment_gate_problems call site makes the resolver see an empty hint and reds this test.
 
         The resolver's own resolution behaviour is covered by the three
         repo-hint tests above; THIS pin covers the one line that carries the
