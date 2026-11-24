@@ -1093,9 +1093,20 @@ def _comment_gate_root(head: str, *, required: bool, branch: str = "", repo_hint
     Python-bearing PR with "no git checkout here"). When the hint names nothing,
     or names a path that is not a checkout, the caller's cwd is probed exactly as
     before (git walks up by itself, so a caller in a subdirectory still resolves).
-    A repository that does not contain ``head`` CANNOT stand in: its file text
-    is another commit's, which would erase every "state unknowable" refusal and
-    leave the gate green on files it never read.
+
+    The env override is a TRUSTED-OPERATOR channel, deliberately unlike
+    ``CELESTIA_ARTIFACT_ROOT`` (which this resolver refuses to consult — see
+    below): pointing ``CELESTIA_WORKSPACE_ROOT`` at a hostile tree does not let
+    an attacker forge a verdict, because the PR head is content-addressed — a
+    checkout either contains that exact commit (in which case every ``git show``
+    reads the true object, immune to a tampered working tree) or it does not
+    (in which case the resolver refuses). A hostile tree CAN however decide
+    whether the gate runs at all, and ``refs/replace/<head>`` in it would
+    substitute the reviewed content — both are operator-level powers, in the
+    same trust class as the credentials that clone the checkout in the first
+    place. A repository that does not contain ``head`` CANNOT stand in: its file
+    text is another commit's, which would erase every "state unknowable" refusal
+    and leave the gate green on files it never read.
 
     A checkout that simply has not fetched this PR is a NORMAL state, not an
     operator error: the merge gate's own checkout is a CI clone, and several
