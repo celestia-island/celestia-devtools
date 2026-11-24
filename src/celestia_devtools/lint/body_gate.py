@@ -425,14 +425,20 @@ def code_spans(text: str) -> tuple[str, ...]:
 #: assertion lives, so it evidences nothing.
 #:
 #: The pattern is not gated on the extension, so what it refuses is exactly the
-#: spellings below and not "every language's convention". Measured (debt ⑤), on
-#: the full trees of six workspace repos: every test filename family in use —
-#: `test_*.py` (106), `*.test.ts`/`*.test.tsx` (24), `*_test.rs` (4),
-#: `*_test.py` (4), plus the `spec` spellings — is refused as a bare name, and
-#: the number of files that match the pattern while NOT being tests is 0. So the
-#: fail-open direction is empty and the fail-closed direction is empty too; the
-#: `check_*.py` gates (11 files) are outside this family by design, because a
-#: gate is not a test and a bare gate name is the `#PR` case, not this one.
+#: spellings below and not "every language's convention". Measured (debt ⑤) with
+#: `git ls-files | grep -cE '(^|/)<shape>$'` over the four repos that hold the
+#: gate's consumers — celestia-devtools, tairitsu, hikari, shittim-chest:
+#: `test_*.py` 100 / 2 / 1 / 3, `*.test.ts`+`*.test.tsx` 4 / 0 / 558 / 694,
+#: `*_test.py` 0 / 0 / 4 / 0, `*_test.rs` 0 / 6 / 1 / 2, `check_*.py` 0 / 4 / 2 / 5,
+#: `*.spec.ts`/`*.spec.tsx` 0 in all four. Every one of those families is refused
+#: as a bare name, so the fail-open direction is empty for them.
+#:
+#: Two shapes match the pattern while not being test modules: `test.yml`, the
+#: workflow file `tairitsu` and `hikari` each keep at `.github/workflows/`. They
+#: are refused too — a bare workflow filename is no more a source than a bare
+#: test filename — so that is the fail-closed direction and it costs nothing
+#: real. The `check_*.py` gates are outside this family by design: a gate is not
+#: a test, and a bare gate name is the `#PR` case, not this one.
 _BARE_TEST_NAME = re.compile(r"(?:^|/)(?:test|spec)(?:[_-][\w-]+)?\.[A-Za-z0-9]+$|(?:^|/)(?:[\w-]+\.)*(?:test|spec)\.[A-Za-z0-9]+$|(?:^|/)[\w-]+_test\.[A-Za-z0-9]+$")
 
 def span_is_source(span: str) -> bool:
@@ -628,6 +634,14 @@ def _negation_state(text: str, at: int, term: str) -> str:
     # last-word check (its last word is `1`, not a negation), not any cap: a
     # run of any length that ends in a negation (`that was not`) is one
     # refutation just the same.
+    #
+    # The cap that used to sit here (four words) was unobservable ON THE CORPUS
+    # and is not unobservable in general: a long clause ending in a negation
+    # (`the run came from CI and I did not, an inference`) reads as DETACHED
+    # without the cap and as a disclaimer with it — review round 2 measured the
+    # difference. Removing it therefore narrows the escape hatch in one
+    # direction only (a line that used to pass is now refused), which is the
+    # direction this gate is allowed to err in.
     lone = bool(prior_words) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
 
     own = text[low: high]
@@ -718,6 +732,15 @@ def is_reading_row(line: str) -> bool:
     if len(cells) < 2:
         return False
 
+    # The LABEL is examined too, and this is what stops a table of claims from
+    # certifying itself: `| the armed path is now always exercised | 120 passed |`
+    # is a behaviour claim in the label column beside a reading, and treating the
+    # row as captured output made the whole table a source (review round 2). A
+    # label states nothing — `suite`, `before`, `delta` — so the gate's own
+    # predicates decide it, not a word list.
+    if claim_kinds(cells[0])[0]:
+        return False
+
     return all((not cell) or bool(_READING_CELL.fullmatch(cell)) for cell in cells[1:])
 
 #: A reading: a number with an optional unit, or a `#ref`, or an em dash.
@@ -806,7 +829,13 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
     inside it, any of these suffices:
 
     * a **source** (:func:`is_source`) — an anchor, a ``MUT:`` id, a command in
-      backticks, a ``file:line``, a ``#PR``, a URL, a commit hash;
+      backticks, a ``file:line``, a URL, a commit hash. A ``#PR`` qualifies only
+      on a line that states nothing *besides* naming a PR: the references are
+      erased before the line's statement verdict is taken (round 2, S1 — a PR
+      number followed by a word made its own line a quantity statement, so
+      `See #2813 for the reproduction.` could not source itself), and a line
+      that IS a claim cannot lend its reference to a neighbour either — a
+      reference to a PR proves the PR exists, not the neighbour's figures;
     * a **disclaimer** (:func:`disclaims`) — "not recomputed", said out loud;
     * the statement's own **directive** (``body-gate-ok: <reason>`` with a real
       reason) — the author's explicit, printed decision to make the claim
@@ -824,7 +853,14 @@ def sourced(lines: Sequence[_line], index: int, evidence: Sequence[_line] = ()) 
         if (position != index) and not part.text.strip():
             continue
 
-        if is_source(part.text, statement = bool(claim_kinds(part.text)[0])) or disclaims(part.text):
+        # The `#PR` verdict must not be decided BY the PR number itself: `PROSE_FIGURE`
+        # only skips a `#NNN` that punctuation follows, so `See #2813 for the
+        # reproduction.` read as a quantity statement and its own reference could
+        # not source it (review round 2: 4 merged bodies newly refused, and PR #315's
+        # own body flipped to refused). Erasing the references first makes the
+        # question what it was meant to be: does the line state anything BESIDES
+        # naming a PR?
+        if is_source(part.text, statement = bool(claim_kinds(_PR_REF.sub(" ", part.text))[0])) or disclaims(part.text):
             return True
 
         reason = directive_reason(part.text)
