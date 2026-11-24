@@ -633,7 +633,7 @@ def test_missing_sample_aborts_the_packet(tmp_path, monkeypatch):
     monkeypatch.setattr(external_review, "SAMPLE_FILES", ("fake-repo/src/real.rs", "fake-repo/src/gone.rs"))
     monkeypatch.setattr(external_review, "LOG_REPOS", ())
 
-    with pytest.raises(SystemExit, match = "gone.rs"):
+    with pytest.raises(RuntimeError, match = "gone.rs"):
         external_review.write_code_sample(tmp_path, tmp_path / "pack")
 
 def test_all_samples_present_writes_them_all(tmp_path, monkeypatch):

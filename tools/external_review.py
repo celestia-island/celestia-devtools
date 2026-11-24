@@ -459,7 +459,7 @@ def write_code_sample(ws: Path, out: Path) -> None:
     (out / "00-code-provenance.md").write_text("\n".join(provenance) + "\n", encoding = "utf-8")
 
     if missing:
-        raise SystemExit(f"external_review: {len(missing)} declared sample file(s) missing on disk: " f"{', '.join(missing)} — a rename or move outran this table (shittim-chest#2514 " "dropped the chest sample silently for weeks while the manifest still claimed " "the repo was sampled); fix SAMPLE_FILES before shipping an evidence packet " "that lies about its own coverage")
+        raise RuntimeError(f"external_review: {len(missing)} declared sample file(s) missing on disk: " f"{', '.join(missing)} — a rename or move outran this table (shittim-chest#2514 " "dropped the chest sample silently for weeks while the manifest still claimed " "the repo was sampled); fix SAMPLE_FILES before shipping an evidence packet " "that lies about its own coverage")
 
 def write_live_surface(out: Path) -> None:
     lines = [f"# 证据包：线上可观测面（生成于 {now_iso()}）\n"]
