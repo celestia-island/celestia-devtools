@@ -159,8 +159,14 @@ def _lint_commits(root: Path) -> Callable[[], str]:
 # ── Mode graph builders ───────────────────────────────────────────────────────
 
 def build_rust_graph(root: Path, coverage: bool = False) -> List[Step]:
-    """Canonical rust DAG: credential-scan → fmt → clippy → check → deny →
-    (coverage) → lint-commits."""
+    """Canonical rust DAG: credential-scan → fmt → string-lit → clippy →
+    check → deny → (coverage) → lint-commits.
+
+    ``string-lit`` is the literal-whitespace gate: ``cargo fmt`` normalises code
+    whitespace and never touches a literal's interior, and clippy has no lint
+    for it, so a string that carries a bare newline or a trailing space reaches
+    the runtime with every other gate green (2026-11-24).
+    """
     steps: List[Step] = [Step("credential-scan", _credential_scan(root), (), str(root))]
     prev = "credential-scan"
 
@@ -170,6 +176,12 @@ def build_rust_graph(root: Path, coverage: bool = False) -> List[Step]:
         prev = name
 
     add("fmt", ["cargo", "fmt", "--check"])
+    # The two things fmt and clippy are structurally blind to: whitespace INSIDE
+    # a string literal, and a literal whose open and close quotes sit on
+    # different lines without a ``\\`` continuation (2026-11-24: four user-facing
+    # RPC errors shipped with a bare newline plus indentation, and every other
+    # gate stayed green). stdlib-only, sub-second.
+    add("string-lit", [sys.executable, "-m", "celestia_devtools", "string-lit-gate", str(root)])
     add("clippy", ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"])
     add("check", ["cargo", "test"])
 
