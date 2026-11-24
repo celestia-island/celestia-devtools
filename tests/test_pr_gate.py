@@ -1144,12 +1144,79 @@ class test_comment_gate_reads_the_file_behind_the_diff:
         refusal.
         """
         monkeypatch.chdir(tmp_path)
-        assert pr_gate_module._comment_gate_root("a" * 40, required = True) == (None, [])
+        # The resolver now names the problem itself instead of returning an empty
+        # verdict for the scanner to phrase: a caller outside any repository gets
+        # a refusal that says WHERE the resolution looked.
+        root, resolver_problems = pr_gate_module._comment_gate_root("a" * 40, required = True)
+        assert (root is None) and (len(resolver_problems) > 0), "no checkout with required=True must refuse"
+        assert any("no git checkout here" in problem for problem in resolver_problems), resolver_problems
         patch = "@@ -200,0 +200,2 @@\n+# measured: this pin catches the reload\n+x = 1\n"
         pr, diff = _comment_pr(patch, filename = "tests/test_far.py")
         problems = pr_gate_module.comment_gate_problems("o/r", 1, "a" * 40, runner = diff_runner(pr, diff))
         assert problems, "a Python diff with no checkout to read must refuse, not pass"
         assert any("cannot read the file text" in problem for problem in problems), problems
+
+    def test_a_repo_hint_names_the_checkout_the_cwd_lacks(self, tmp_path, monkeypatch):
+        """The gate runs from the workspace root: `--repo` names the checkout.
+
+        The operator's historical trap: running the merge gate from the workspace
+        root (not a repository) refused every Python-bearing PR with "no git
+        checkout here", because the resolver only probed the cwd. The hint is
+        resolved FIRST — `celestia-island/tairitsu` names
+        `<workspace>/tairitsu` — and the cwd is only the fallback.
+        """
+        named = tmp_path / "tairitsu"
+        named.mkdir()
+
+        for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+            subprocess.run(["git", "-C", str(named), *argv], check = True, capture_output = True)
+
+        (named / "f.py").write_text("x = 1\n", encoding = "utf-8")
+        subprocess.run(["git", "-C", str(named), "add", "-A"], check = True, capture_output = True)
+        subprocess.run(["git", "-C", str(named), "commit", "-qm", "x"], check = True, capture_output = True)
+        head = subprocess.run(["git", "-C", str(named), "rev-parse", "HEAD"], check = True, capture_output = True, text = True).stdout.strip()
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        monkeypatch.setattr(pr_gate_module, "_WORKSPACE_ROOT", tmp_path)
+
+        root, problems = pr_gate_module._comment_gate_root(head, required = True, branch = "", repo_hint = "celestia-island/tairitsu")
+        assert problems == [], problems
+        assert root == str(named.resolve()), root
+
+    def test_a_repo_hint_that_names_nothing_refuses_and_names_what_it_tried(self, tmp_path, monkeypatch):
+        # MUT:repo-hint-refusal-names-tries -- removing the "(tried ...)" clause
+        # from the refusal, or dropping the hint term from it, reds this test.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        monkeypatch.setattr(pr_gate_module, "_WORKSPACE_ROOT", tmp_path)
+
+        root, problems = pr_gate_module._comment_gate_root("a" * 40, required = True, branch = "", repo_hint = "celestia-island/not-here")
+        assert (root is None) and (len(problems) > 0), problems
+        joined = "\n".join(problems)
+        assert "no git checkout here" in joined, joined
+        assert ("not-here" in joined) and ("tried" in joined), joined
+
+    def test_a_repo_hint_falls_back_to_the_cwd_when_the_hint_is_elsewhere(self, tmp_path, monkeypatch):
+        # The hint names a directory that is not a checkout; the cwd IS one.
+        # The resolver must land on the cwd, not refuse.
+        named = tmp_path / "empty-named"
+        named.mkdir()
+        cwd_repo = tmp_path / "cwd-repo"
+        cwd_repo.mkdir()
+
+        for argv in (("init", "-q"), ("config", "core.hooksPath", "/dev/null"), ("config", "user.email", "g@example.invalid"), ("config", "user.name", "g")):
+            subprocess.run(["git", "-C", str(cwd_repo), *argv], check = True, capture_output = True)
+
+        subprocess.run(["git", "-C", str(cwd_repo), "commit", "-qm", "x", "--allow-empty"], check = True, capture_output = True)
+        monkeypatch.chdir(cwd_repo)
+        monkeypatch.setattr(pr_gate_module, "_WORKSPACE_ROOT", tmp_path)
+
+        root, problems = pr_gate_module._comment_gate_root("HEAD", required = True, branch = "", repo_hint = "o/empty-named")
+        assert problems == [], problems
+        assert root == str(cwd_repo.resolve()), root
 
     def test_no_checkout_with_only_a_ts_diff_does_not_refuse(self, tmp_path, monkeypatch):
         """The other half of the scope: a TS-only diff needs no file text."""
