@@ -578,17 +578,12 @@ def _negation_state(text: str, at: int, term: str) -> str:
     # A lone negation one mark away (`..., not, inference`) belongs to the same
     # refutation; a whole clause does not (`but not round 1, so ...`).
     prior_words = prior.split()
-    # A negation one mark away belongs to the same refutation when it stands
-    # alone (`..., not, inference`) or closes a short run (`that was not, an
-    # inference`). What rejects `but not round 1` is NOT this cap — it is the
-    # tail-word check below (its last word is `1`, not a negation).
-    #
-    # The four-word cap is EMPIRICAL and unpinned: nothing proves four is right
-    # or five is wrong. It is not what rejects `but not round 1` — the tail-word
-    # check does (its last word is `1`, not a negation). Changing the number is
-    # invisible to the corpus and to the whole test file today; if a body
-    # arrives that needs a different cap, pin the boundary first, then change it.
-    lone = bool(prior_words) and (len(prior_words) <= 4) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
+    # The prior run merges into the refutation when its LAST word is a negation
+    # — there is no length cap. What rejects `but not round 1` is exactly that
+    # last-word check (its last word is `1`, not a negation), not any cap: a
+    # run of any length that ends in a negation (`that was not`) is one
+    # refutation just the same.
+    lone = bool(prior_words) and (_NEGATION_TAIL.fullmatch(prior_words[-1]) is not None)
 
     own = text[low: high]
     own_before = own[: own.rfind(term)] if term in own else own
