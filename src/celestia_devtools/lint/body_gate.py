@@ -501,10 +501,15 @@ def is_source(line: str) -> bool:
         if pattern.search(text):
             return True
 
-    # A checksum WORD is a locator only when it is not itself negated: "no
-    # sha256 anywhere" names the absence, not a checksum a reader can check.
+    # A checksum WORD is a locator only when it is not itself negated, on
+    # either side: "no sha256 anywhere" and "the sha256 is not shown" both name
+    # the absence. Only the leading side was checked before, so the second one
+    # sourced the line.
     for match in _CHECKSUM_WORD.finditer(text):
-        if _NEGATION.search(text[max(0, match.start() - 12): match.start()]) is None:
+        before = _negated(text, match.start(), match.group(0))
+        after = _NEGATION_TAIL.search(text[match.end(): match.end() + 16]) is not None
+
+        if (not before) and (not after):
             return True
 
     for match in _COMMIT.finditer(text):
@@ -532,18 +537,67 @@ def is_source(line: str) -> bool:
 
     return False
 
-#: A negation in front of a disclaimer word flips it: "Nothing here is
-#: unverified" and "未未复算" say the OPPOSITE of a disclaimer, and a substring
-#: test read both as one. The window is short because the negation has to attach
-#: to the word (`not` / `n't` / `no` / `never` / `不是` / `并非` / a doubled 未).
+#: A negation flips a disclaimer word only when it ATTACHES to it: `not an
+#: inference`, `并非 inference`, `未未复算`. A negation in a neighbouring clause
+#: does not travel — "but not round 1, so it was an inference" is a real
+#: disclaimer, and a 40-character lookbehind read it as the opposite.
+#:
+#: The rule, in three parts: the negation must be among the two words directly
+#: before the term, no sentence punctuation may sit between them, and English
+#: negations only attach to an English term (a CJK negation in front of an
+#: English word is a different clause).
 _NEGATION = re.compile(r"(?:\bnot\b|n't\b|\bno\b|\bnothing\b|\bnone\b|\bnever\b|不是|并非|未$|无从)")
+_NEGATION_TAIL = re.compile(r"\b(?:not|no|nothing|none|never)\b|n't\b|不是|并非|未$|无从")
+_SCOPE_BREAK = re.compile(r"[,.!?;:—，。；：、（)）\n]")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+def _negated(text: str, at: int, term: str) -> bool:
+    """True when a negation attaches to the disclaimer starting at ``at``.
+
+    Attachment, not proximity: the two words directly before the term (no
+    sentence punctuation between them and the term) may carry the negation.
+    "not an inference" negates; "but not round 1, so it was an inference" does
+    not, because a comma sits between the two clauses.
+    """
+    head = text[: at]
+
+    # `未未复算`: the doubled 未 touches the term.
+    if term.startswith("未") and head.rstrip().endswith("未"):
+        return True
+
+    # Walk back over at most two words; any punctuation ends the search.
+    words: list[str] = []
+    index = len(head) - 1
+
+    while (len(words) < 3) and (index >= 0):
+        if head[index].isspace():
+            index -= 1
+            continue
+
+        if _SCOPE_BREAK.match(head[index]):
+            break
+
+        end = index
+
+        while (index >= 0) and (not head[index].isspace()) and (not _SCOPE_BREAK.match(head[index])):
+            index -= 1
+
+        words.insert(0, head[index + 1: end + 1])
+
+        if (index >= 0) and head[index].isspace():
+            index -= 1
+
+    tail = " ".join(words)
+
+    return _NEGATION_TAIL.search(tail) is not None
 
 def disclaims(line: str) -> bool:
     """True when ``line`` says out loud that the figure was not recomputed.
 
-    Only in a NON-negated context: a disclaimer word inside "nothing here is
-    unverified" is its own refutation, and treating it as a disclaimer turns
-    the escape hatch into an endorse-anything button.
+    Only in a non-negated context, and only when the negation attaches to the
+    term itself: a disclaimer word inside "nothing here is unverified" is its
+    own refutation, while a "not" in the previous clause is not talking about
+    this word.
     """
     text = line.translate(_INVISIBLE).lower()
 
@@ -556,9 +610,7 @@ def disclaims(line: str) -> bool:
             if at < 0:
                 break
 
-            # 40 characters: "Nothing here is " sits 17 back from `unverified`,
-            # and a tighter window silently read a refutation as a disclaimer.
-            if _NEGATION.search(text[max(0, at - 40): at]) is None:
+            if not _negated(text, at, word):
                 return True
 
             start = at + len(word)

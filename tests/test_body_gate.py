@@ -225,6 +225,38 @@ class test_the_escape_hatches_are_not_buttons:
         assert body_gate.check_body("The suite printed 120 passed (unverified).\n").ok
         assert body_gate.check_body("测试跑了 120 passed，未复算。\n").ok
 
+    def test_a_negation_in_the_previous_clause_does_not_reach(self):
+        # MUT:negation-scope — a 40-character lookbehind turned the corpus row
+        # `but not round 1, so it was an inference` into "no disclaimer", and
+        # that false positive was pinned as a golden value (8 -> 9).
+        assert body_gate.disclaims("rule fits rounds 2-3 but not round 1, so it was an inference fitted to one")
+        assert body_gate.disclaims("rule fits rounds 2-3, so it was an inference fitted to one")
+
+    def test_a_negation_that_attaches_does_flip_the_term(self):
+        assert not body_gate.disclaims("Nothing here is unverified.")
+        assert not body_gate.disclaims("This was not an inference.")
+        assert not body_gate.disclaims("This is 并非 inference 结论。")
+        assert not body_gate.disclaims("测试跑了 120 passed，未未复算。")
+
+    def test_the_clause_break_is_what_scopes_the_negation(self):
+        # MUT:negation-scope — drop the clause break and both of these flip,
+        # because a negation two clauses away starts counting.
+        assert not body_gate.disclaims("that was not inference")
+        assert body_gate.disclaims("that was not round 1, so it was an inference")
+        assert body_gate.disclaims("neither was it round one; the label is an inference")
+        assert body_gate.disclaims("it was not round one, an inference was drawn")
+
+    def test_a_comma_between_the_negation_and_the_term_scopes_it(self):
+        # NOTE: this case does not distinguish the clause-break mutant — with or
+        # without the stop the three-word walk never reaches across the comma
+        # for these inputs. It pins the BEHAVIOUR (a comma scopes the negation)
+        # but not that one line of the implementation. MUT:negated-disclaimer
+        # above is the mutant that bites on this file; recorded, not dressed up.
+        assert not body_gate.disclaims("that was not an inference")
+        assert body_gate.disclaims("x not, y inference")
+        assert body_gate.disclaims("not, y inference")
+        assert body_gate.disclaims("that was not, an inference")
+
     def test_a_reason_without_substance_is_not_a_reason(self):
         # MUT:directive-substance — 20 dots printed a `🔓` and exempted.
         for filler in (".", "_"):
@@ -236,6 +268,7 @@ class test_the_escape_hatches_are_not_buttons:
 
     def test_a_negated_checksum_word_is_not_a_locator(self):
         assert not body_gate.check_body("We printed 120 passed and no sha256 is shown.\n").ok
+        assert not body_gate.check_body("The sha256 is not shown; we printed 120 passed.\n").ok
         assert body_gate.check_body("We printed 120 passed; sha256 is in the log.\n").ok
 
 class test_a_number_only_row:
@@ -325,7 +358,7 @@ class test_vocabulary:
 class test_corpus:
     """The published bodies, pinned: the gate's behaviour cannot drift silently."""
 
-    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 6), ("corpus-2813", 67, 32), ("corpus-2821", 20, 9)])
+    @pytest.mark.parametrize(("name", "sentences", "refused"), [("corpus-1474", 25, 6), ("corpus-2813", 67, 32), ("corpus-2821", 20, 8)])
     def test_the_corpus_rows(self, name, sentences, refused):
         result = body_gate.check_body(_fixture(name + ".md"))
         assert (len(result.statements), len(result.findings)) == (sentences, refused)
