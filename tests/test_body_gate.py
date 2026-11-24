@@ -238,24 +238,29 @@ class test_the_escape_hatches_are_not_buttons:
         assert not body_gate.disclaims("This is 并非 inference 结论。")
         assert not body_gate.disclaims("测试跑了 120 passed，未未复算。")
 
-    def test_the_clause_break_is_what_scopes_the_negation(self):
-        # MUT:negation-scope — drop the clause break and both of these flip,
-        # because a negation two clauses away starts counting.
-        assert not body_gate.disclaims("that was not inference")
+    def test_a_negation_a_clause_away_does_not_reach(self):
+        # MUT:negation-scope — the term stands in a clause of its own, the
+        # negation in an earlier one: the disclaimer holds.
         assert body_gate.disclaims("that was not round 1, so it was an inference")
         assert body_gate.disclaims("neither was it round one; the label is an inference")
         assert body_gate.disclaims("it was not round one, an inference was drawn")
 
-    def test_a_comma_between_the_negation_and_the_term_scopes_it(self):
-        # NOTE: this case does not distinguish the clause-break mutant — with or
-        # without the stop the three-word walk never reaches across the comma
-        # for these inputs. It pins the BEHAVIOUR (a comma scopes the negation)
-        # but not that one line of the implementation. MUT:negated-disclaimer
-        # above is the mutant that bites on this file; recorded, not dressed up.
+    def test_a_negation_in_another_writing_system_does_not_reach(self):
+        # MUT:cross-script — an English `not` cannot refute a Chinese
+        # disclaimer; without the script test it did (a false refusal).
+        assert body_gate.disclaims("This was not 未复算。")
+
+    def test_a_negation_split_off_by_punctuation_still_refutes(self):
+        # MUT:negation-detached — `not, inference` says the same thing as
+        # `not inference`; treating the split form as a disclaimer is a false
+        # pass (it let an unsourced figure through).
         assert not body_gate.disclaims("that was not an inference")
-        assert body_gate.disclaims("x not, y inference")
-        assert body_gate.disclaims("not, y inference")
-        assert body_gate.disclaims("that was not, an inference")
+        assert not body_gate.disclaims("that was not, an inference")
+        assert not body_gate.disclaims("x not, y inference")
+
+    def test_a_negation_a_clause_away_still_disclaims(self):
+        assert body_gate.disclaims("that was not round 1, so it was an inference")
+        assert body_gate.disclaims("neither was it round one; the label is an inference")
 
     def test_a_reason_without_substance_is_not_a_reason(self):
         # MUT:directive-substance — 20 dots printed a `🔓` and exempted.

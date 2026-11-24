@@ -506,7 +506,7 @@ def is_source(line: str) -> bool:
     # the absence. Only the leading side was checked before, so the second one
     # sourced the line.
     for match in _CHECKSUM_WORD.finditer(text):
-        before = _negated(text, match.start(), match.group(0))
+        before = _negation_state(text, match.start(), match.group(0)) != NONE
         after = _NEGATION_TAIL.search(text[match.end(): match.end() + 16]) is not None
 
         if (not before) and (not after):
@@ -551,53 +551,120 @@ _NEGATION_TAIL = re.compile(r"\b(?:not|no|nothing|none|never)\b|n't\b|不是|并
 _SCOPE_BREAK = re.compile(r"[,.!?;:—，。；：、（)）\n]")
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 
-def _negated(text: str, at: int, term: str) -> bool:
-    """True when a negation attaches to the disclaimer starting at ``at``.
+#: What a negation can do to a disclaimer term.
+ATTACHED = "attached"
+DETACHED = "detached"
+NONE = "none"
 
-    Attachment, not proximity: the two words directly before the term (no
-    sentence punctuation between them and the term) may carry the negation.
-    "not an inference" negates; "but not round 1, so it was an inference" does
-    not, because a comma sits between the two clauses.
+def _negation_state(text: str, at: int, term: str) -> str:
+    """How the clause around the disclaimer starting at ``at`` uses negation.
+
+    ``ATTACHED`` — the negation touches the term (`not an inference`,
+    `未未复算`): the term is refuted. ``DETACHED`` — a negation sits in the same
+    punctuation-delimited clause but does not touch the term (`not, inference`):
+    the author wrote the negation AND the term, and in natural language the only
+    reading is that the term is refuted, so it is not a disclaimer either.
+    ``NONE`` — no negation in the clause.
+
+    Cross-language is not a negation: an English `not` in front of a CJK term
+    (and the reverse) belongs to a different clause by construction, because the
+    writing system changed — `This was not 未复算` says the Chinese disclaimer
+    out loud.
     """
     head = text[: at]
 
-    # `未未复算`: the doubled 未 touches the term.
     if term.startswith("未") and head.rstrip().endswith("未"):
-        return True
+        return ATTACHED
 
-    # Walk back over at most two words; any punctuation ends the search.
+    # A term that carries its own negation (`not re-run`, `not established`,
+    # `not measured`, `not verified`) IS a disclaimer regardless of what else
+    # the clause says: "— not re-run." is the honest form of the escape hatch.
+    if _NEGATION_TAIL.search(term) is not None:
+        return NONE
+
+    # The punctuation-delimited stretch around the term: the reader's clause,
+    # which includes the term itself — otherwise the term's own clause is " "
+    # after the punctuation that precedes it.
+    whole = text
+    low = at
+    high = at + len(term)
+
+    while (low > 0) and (not _SCOPE_BREAK.match(whole[low - 1])):
+        low -= 1
+
+    while (high < len(whole)) and (not _SCOPE_BREAK.match(whole[high])):
+        high += 1
+
+    clause = whole[low: high]
+
+    # Walk back over the two words that touch the term.
+    before = clause[: clause.find(term)] if term in clause else clause
     words: list[str] = []
-    index = len(head) - 1
+    index = len(before) - 1
 
-    while (len(words) < 3) and (index >= 0):
-        if head[index].isspace():
+    while (len(words) < 2) and (index >= 0):
+        if before[index].isspace():
             index -= 1
             continue
 
-        if _SCOPE_BREAK.match(head[index]):
-            break
-
         end = index
 
-        while (index >= 0) and (not head[index].isspace()) and (not _SCOPE_BREAK.match(head[index])):
+        while (index >= 0) and (not before[index].isspace()):
             index -= 1
 
-        words.insert(0, head[index + 1: end + 1])
-
-        if (index >= 0) and head[index].isspace():
-            index -= 1
+        words.insert(0, before[index + 1: end + 1])
 
     tail = " ".join(words)
 
-    return _NEGATION_TAIL.search(tail) is not None
+    # The negation must sit in the same writing system as the term: an English
+    # `not` cannot refute a Chinese disclaimer, and vice versa.
+    negation = _NEGATION_TAIL.search(tail)
+    term_is_cjk = bool(_CJK.search(term))
+    negation_is_cjk = bool(_CJK.search(negation.group(0))) if negation else False
+    # A CJK negation can attach to an English term (`并非 inference`); an
+    # English negation cannot attach to a CJK term (`not 未复算` is a different
+    # clause by construction).
+    attached = bool(negation) and ((term_is_cjk == negation_is_cjk) or negation_is_cjk)
+
+    if attached:
+        return ATTACHED
+
+    # A negation in the clause, or in the clause immediately before it, still
+    # means the author wrote the negation next to this term and broke it with
+    # punctuation: `120 passed, not, inference` refutes the term.
+    for match in _NEGATION_TAIL.finditer(clause):
+        if bool(_CJK.search(term)) == bool(_CJK.search(match.group(0))):
+            return DETACHED
+
+    # A detached negation counts only when the two are ADJACENT modulo one
+    # punctuation mark: `..., not, inference` is the refutation; a negation a
+    # whole clause away (`but not round 1, so it was an inference`) is not.
+    before_term = whole[: low].rstrip()
+    marks = 0
+
+    while (before_term) and (before_term[-1] in ",.!?;:—，。；：、（)）"):
+        before_term = before_term[:-1].rstrip()
+        marks += 1
+
+    words_between = before_term.split()
+
+    if (marks > 0) and words_between:
+        last = words_between[-1]
+        negation = _NEGATION_TAIL.fullmatch(last)
+
+        same_script = bool(_CJK.search(term)) == bool(_CJK.search(last))
+
+        if (negation is not None) and same_script:
+            return DETACHED
+
+    return NONE
 
 def disclaims(line: str) -> bool:
     """True when ``line`` says out loud that the figure was not recomputed.
 
-    Only in a non-negated context, and only when the negation attaches to the
-    term itself: a disclaimer word inside "nothing here is unverified" is its
-    own refutation, while a "not" in the previous clause is not talking about
-    this word.
+    A disclaimer counts only where no negation shares its clause: attached
+    (`not an inference`) and detached (`not, inference`) both refute the term,
+    and refuting the disclaimer is not disclaiming.
     """
     text = line.translate(_INVISIBLE).lower()
 
@@ -610,7 +677,7 @@ def disclaims(line: str) -> bool:
             if at < 0:
                 break
 
-            if not _negated(text, at, word):
+            if _negation_state(text, at, word) == NONE:
                 return True
 
             start = at + len(word)
