@@ -258,7 +258,6 @@ class _line:
 
     number: int
     text: str
-    section: int = 0
 
 def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, ...]]:
     """The lines of ``body`` subject to the claim scan, plus notes + fence lines.
@@ -344,36 +343,6 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
 
     if fence is not None:
         notes.append("the body ends inside an unclosed code fence — everything after the opener was treated as code (the conservative reading of a truncated body)")
-
-    # Paragraph labelling: a blank line, a heading or a table block starts the
-    # next one. The table block is one unit so its rows are judged together.
-    section = 0
-    previous_blank = True
-    index = 0
-
-    while index < len(lines):
-        row = lines[index]
-        stripped = row.text.strip()
-
-        if _ROW.match(stripped):
-            while (index < len(lines)) and _ROW.match(lines[index].text.strip()):
-                index += 1
-
-            section += 1
-            previous_blank = False
-            continue
-
-        if not stripped:
-            section += 1
-            previous_blank = True
-            index += 1
-            continue
-
-        if previous_blank:
-            section += 1
-
-        previous_blank = False
-        index += 1
 
     hidden_note = (f"note: an inline HTML comment on line {hidden[0][0]} carries a body-gate-ok directive — it is reported here and does not exempt anything, because a hidden directive must not grant a hidden pass",) if hidden else ()
 
