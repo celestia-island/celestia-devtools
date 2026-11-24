@@ -11,10 +11,28 @@ def _checkout(root: Path, name: str) -> Path:
     return d
 
 class test_sibling_candidates:
+    def test_relative_repo_root_is_resolved_before_probing(self, tmp_path, monkeypatch):
+        """`repo_root='.'` (the CLI default is cwd-relative in spirit) must find
+        the sibling beside the real directory, not beside the literal `.`."""
+        me = _checkout(tmp_path, "shittim-chest")
+        arona = _checkout(tmp_path, "arona")
+        monkeypatch.chdir(me)
+        assert locate.find_patched_crate("arona", "ARONA_ROOT_TEST", "https://invalid.example/arona.git", MARKER, repo_root = Path(".")) == arona.resolve()
+
+    def test_nearest_worktree_ancestor_wins(self, tmp_path):
+        """A `_worktree` nested under another one (not a shape the workspace
+        builds, but the walk must not pick the outer one): the nearest
+        ancestor names the sibling root."""
+        inner_root = tmp_path / "outer" / "_worktree" / "a"
+        (inner_root / "_worktree" / "b" / "slug").mkdir(parents = True)
+        (inner_root / "_worktree" / "b" / "slug" / MARKER).write_text("[package]\n", encoding = "utf-8")
+        me = inner_root / "_worktree" / "b" / "slug"
+        assert locate.sibling_candidates(me, "x") == [me.parent / "x", inner_root / "x"]
+
     def test_plain_checkout_finds_the_sibling_next_door(self, tmp_path):
         me = _checkout(tmp_path, "shittim-chest")
         arona = _checkout(tmp_path, "arona")
-        assert locate._sibling_candidates(me, "arona") == [tmp_path / "arona"]
+        assert locate.sibling_candidates(me, "arona") == [tmp_path / "arona"]
         assert locate.find_patched_crate("arona", "ARONA_ROOT_TEST", "https://invalid.example/arona.git", MARKER, repo_root = me) == arona.resolve()
 
     def test_worktree_checkout_finds_the_sibling_three_levels_up(self, tmp_path):
@@ -24,7 +42,7 @@ class test_sibling_candidates:
         me = tmp_path / "_worktree" / "shittim-chest" / "some-slug"
         me.mkdir(parents = True)
         (me / MARKER).write_text("[package]\n", encoding = "utf-8")
-        assert locate._sibling_candidates(me, "arona") == [me.parent / "arona", tmp_path / "arona"]
+        assert locate.sibling_candidates(me, "arona") == [me.parent / "arona", tmp_path / "arona"]
         assert locate.find_patched_crate("arona", "ARONA_ROOT_TEST", "https://invalid.example/arona.git", MARKER, repo_root = me) == arona.resolve()
 
     def test_repo_dir_under_worktree_finds_siblings_two_levels_up(self, tmp_path):
