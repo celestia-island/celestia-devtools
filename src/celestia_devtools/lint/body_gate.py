@@ -143,6 +143,22 @@ DISCLAIMERS: tuple[str, ...] = (  # py-style-ok: single-line-statement: one data
     "未验证",
     "未测量",
     "未复现",
+    # The same four phrasings with the other two Chinese negators. Measured
+    # (debt ⑧): `没复算，输出 120 passed。` and `未经复算，输出 120 passed。` were
+    # REFUSED — the disclaimer exists, the matcher just did not know the word —
+    # while `尚未复算` already worked because it carries `未复算` as a substring.
+    # These are listed as DISCLAIMER phrases, not added to `_NEGATION_TAIL`: a
+    # negation entry would let `没` refute a disclaimer standing beside it
+    # (`没复算，unverified` says the same thing twice), and a bare `没` also
+    # matches inside `淹没` / `出没` / `吞没`.
+    "没复算",
+    "没验证",
+    "没测量",
+    "没复现",
+    "未经复算",
+    "未经验证",
+    "未经测量",
+    "未经复现",
     "原因未查明",
     "unverified",
     "not established",
@@ -407,6 +423,16 @@ def code_spans(text: str) -> tuple[str, ...]:
 #: A BARE test file name: a module called `x.test.ts` / `test.ts` / `y_test.rs`
 #: with no `::case` and no `:line`. Citing it names a file, not a place where an
 #: assertion lives, so it evidences nothing.
+#:
+#: The pattern is not gated on the extension, so what it refuses is exactly the
+#: spellings below and not "every language's convention". Measured (debt ⑤), on
+#: the full trees of six workspace repos: every test filename family in use —
+#: `test_*.py` (106), `*.test.ts`/`*.test.tsx` (24), `*_test.rs` (4),
+#: `*_test.py` (4), plus the `spec` spellings — is refused as a bare name, and
+#: the number of files that match the pattern while NOT being tests is 0. So the
+#: fail-open direction is empty and the fail-closed direction is empty too; the
+#: `check_*.py` gates (11 files) are outside this family by design, because a
+#: gate is not a test and a bare gate name is the `#PR` case, not this one.
 _BARE_TEST_NAME = re.compile(r"(?:^|/)(?:test|spec)(?:[_-][\w-]+)?\.[A-Za-z0-9]+$|(?:^|/)(?:[\w-]+\.)*(?:test|spec)\.[A-Za-z0-9]+$|(?:^|/)[\w-]+_test\.[A-Za-z0-9]+$")
 
 def span_is_source(span: str) -> bool:
@@ -695,7 +721,17 @@ def is_reading_row(line: str) -> bool:
     return all((not cell) or bool(_READING_CELL.fullmatch(cell)) for cell in cells[1:])
 
 #: A reading: a number with an optional unit, or a `#ref`, or an em dash.
-_READING_CELL = re.compile(r"-?\d+(?:[.,]\d+)*\s*(?:%|ms|s|MiB|GiB|KB|MB|GB|px|B)?|#\d+|—|-")
+_READING_NUMBER = r"-?\d+(?:[.,]\d+)*"
+_READING_UNIT = r"%|ms|s|MiB|GiB|KiB|KB|MB|GB|px|B"
+#: The count noun a runner prints after its number (`-3 passed`, `1,204 passed`).
+#: Deliberately the runners' own vocabulary, not English: a cell saying
+#: `3 passed and 5 failed` stays prose because the conjunction is left over.
+_READING_TAIL = r"passed|failed|skipped|xfailed|xpassed|tests?|errors?|warnings?"
+#: A reading: a number with an optional unit and optional count noun, an
+#: approximate one (`about 9 KB`), a `#ref`, or an em dash. The approximation
+#: prefix cannot stand alone — `about the build` is prose, so a number is
+#: required right after it.
+_READING_CELL = re.compile(rf"(?:(?:about|approximately|roughly|~|\u2248)\s*)?(?:{_READING_NUMBER}(?:\s*(?:{_READING_UNIT}))?(?:\s+(?:{_READING_TAIL}))?|#\d+)|\u2014|-")  # py-style-ok: single-line-statement: one alternation table
 
 def table_bounds(lines: Sequence[_line], index: int) -> tuple[int, int] | None:
     """The ``[first, last]`` envelope of the table block holding ``index``."""

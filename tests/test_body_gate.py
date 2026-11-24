@@ -63,6 +63,21 @@ class test_the_three_rules:
         assert body_gate.check_body("The count moved from 10 to 12 — not re-run.\n").ok
         assert body_gate.check_body("The count moved from 10 to 12（未复算）。\n").ok
 
+    def test_every_chinese_negator_spelling_of_a_disclaimer_satisfies(self):
+        # MUT:disclaimer-negator-forms — reverting the eight added phrases makes
+        # the two `没`/`未经` cases refused again. Measured (debt ⑧): those two
+        # were FALSE REJECTIONS — the author did disclaim, the matcher did not
+        # know the word. `尚未复算` worked all along because it carries `未复算`
+        # as a substring, so a four-phrase table looked complete when it was not.
+        for phrase in ("没复算", "没验证", "没测量", "没复现", "未经复算", "未经验证", "未经测量", "未经复现"):
+            assert body_gate.check_body(f"{phrase}，输出 120 passed。\n").ok, phrase
+
+        # The other direction: the same words are NOT substring-anywhere matches.
+        # A bare `没` inside an ordinary verb must not turn a claim into a
+        # disclaimer, and a line with no disclaimer is still refused.
+        for line in ("淹没在日志里，输出 120 passed。", "出没于日志，输出 120 passed。", "输出 120 passed。"):
+            assert not body_gate.check_body(line + "\n").ok, line
+
     def test_a_nearby_source_satisfies(self):
         # MUT:window-one-line — widening or shortening the window changes these.
         assert body_gate.check_body("`vite build` → rc=0\nIt printed 120 passed.\n").ok
@@ -179,6 +194,22 @@ class test_tables:
         # label column and no header is prose (MUT:reading-row-label).
         assert body_gate.is_reading_row("| before | 0 | 0 | 0 | 3 |")
         assert not body_gate.is_reading_row("| control | renders with 9041 bytes |")
+
+    def test_a_runner_s_own_count_is_a_reading(self):
+        # MUT:reading-count-noun — reverting the count-noun tail makes the four
+        # `passed`/`failed` cells prose again. Measured (debt ⑨): `120 passed`
+        # was refused as a reading, not only the signed `-3 passed` the debt
+        # entry named — the cell pattern required the number to be the whole
+        # cell, so every runner line in a PR body's tally table was prose.
+        for cell in ("-3 passed", "1,204 passed", "0 failed", "12 skipped", "2 errors", "~5 tests", "about 9 KB"):
+            assert body_gate.is_reading_row(f"| row | {cell} |"), cell
+
+        # The other direction, because widening a reading cell widens what the
+        # gate accepts as CAPTURED OUTPUT: an approximation prefix with no
+        # number, a conjunction of two counts, and an English sentence that
+        # starts with a count all stay prose.
+        for cell in ("about the build", "3 passed and 5 failed", "5 tests fail on master", "9 of 10 builds break"):
+            assert not body_gate.is_reading_row(f"| row | {cell} |"), cell
 
 class test_the_directive:
     """``body-gate-ok:`` is the printed, argument-bearing escape hatch."""
