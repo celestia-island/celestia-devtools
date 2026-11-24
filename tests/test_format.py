@@ -323,3 +323,28 @@ class test_link_target_branch_is_guarded:
     def test_nested_item_fence_stays_tight(self):
         result = postprocess_lines(["- outer", "  - inner", "  ```", "  code_x", "  ```"])
         assert result == ["- outer", "  - inner", "  ```", "  code_x", "  ```"]
+
+class test_fence_interior_is_never_heading_normalized:
+    def test_lean_print_command_preserved(self):
+        src = ["```lean", "#print axioms det3_example", "```"]
+        assert postprocess_lines(src) == src
+
+    def test_shebang_preserved(self):
+        src = ["```python", "#!/usr/bin/env python3", "```"]
+        assert postprocess_lines(src) == src
+
+    def test_include_preserved_without_inserting_space(self):
+        src = ["```c", "#include <stdio.h>", "```"]
+        assert postprocess_lines(src) == src
+
+    def test_headings_outside_fences_still_normalized(self):
+        # Top-level fences get blank lines around them (existing behavior); the point of
+        # this case is that `#NotAHeading` inside the fence gains no space.
+        src = ["#Real", "```text", "#NotAHeading", "```", "##Also"]
+        assert postprocess_lines(src) == ["# Real", "", "```text", "#NotAHeading", "```", "", "## Also"]
+
+    def test_format_markdown_end_to_end_preserves_lean_obligation(self):
+        # Exact-equality on purpose: a regression anywhere in the surrounding
+        # blank-line/heading handling for this fixture must fail, not just the target bug.
+        doc = "---\ntitle = t\n---\n\n# Doc\n\n```lean\n#print axioms det3_example\n```\n"
+        assert format_markdown(doc) == "---\ntitle = t\n---\n\n# Doc\n\n```lean\n#print axioms det3_example\n```\n"
