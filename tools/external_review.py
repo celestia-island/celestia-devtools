@@ -406,10 +406,13 @@ def write_code_sample(ws: Path, out: Path) -> None:
     code_dir.mkdir(parents = True, exist_ok = True)
     provenance: List[str] = [f"# 证据包：`code/` 每个文件的出处（生成于 {now_iso()}）\n", "", "抽样一律取自 `origin/<默认分支>` 的提交对象，而非工作树——工作树可能停在旧提交上。\n", "| 文件 | 仓库 | ref | commit |", "|---|---|---|---|"]
 
+    missing: List[str] = []
+
     for rel in SAMPLE_FILES:
         src = ws / rel
 
         if not src.is_file():
+            missing.append(rel)
             continue
 
         repo = ws / rel.split("/", 1)[0]
@@ -454,6 +457,9 @@ def write_code_sample(ws: Path, out: Path) -> None:
 
     provenance.append("```")
     (out / "00-code-provenance.md").write_text("\n".join(provenance) + "\n", encoding = "utf-8")
+
+    if missing:
+        raise SystemExit(f"external_review: {len(missing)} declared sample file(s) missing on disk: " f"{', '.join(missing)} — a rename or move outran this table (shittim-chest#2514 " "dropped the chest sample silently for weeks while the manifest still claimed " "the repo was sampled); fix SAMPLE_FILES before shipping an evidence packet " "that lies about its own coverage")
 
 def write_live_surface(out: Path) -> None:
     lines = [f"# 证据包：线上可观测面（生成于 {now_iso()}）\n"]

@@ -174,7 +174,7 @@ def build_env(ports: dict[str, tuple[str, int]]) -> dict[str, str]:
     # ── DEBUG_* contract — debug builds only, never read in release ──
     # ── existing per-repo variables, same addresses ──
     # shittim-chest desktop (packages/app/tauri/src/main.rs)
-    # shittim-chest core outbound (packages/core/src/config.rs)
+    # shittim-chest core outbound (packages/chest-kernel/src/config.rs)
     # arona outbound (.env.example: memory gateway = scepter WS)
     return {"DEBUG_CHEST_URL": u("chest", "http"), "DEBUG_SCEPTER_URL": u("scepter", "http"), "DEBUG_SCEPTER_WS_URL": u("scepter", "ws"), "DEBUG_ARONA_URL": u("arona", "http"), "DEBUG_EVERNIGHT_URL": u("evernight", "ws"), "SHITTIM_CHEST_URL": u("chest", "http"), "ENTELECHEIA_SCEPTER_URL": u("scepter", "http"), "ENTELECHEIA_SCEPTER_WS_URL": u("scepter", "ws"), "ARONA_MEMORY_URL": u("scepter", "ws", "/ws"), "ARONA_EVERNIGHT_URL": u("evernight", "ws")}
 
