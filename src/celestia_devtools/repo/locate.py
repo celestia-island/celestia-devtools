@@ -45,6 +45,21 @@ def _crate_info(crate: str, env_var: str | None, git_url: str | None):
     """Derive (env_var, git_url, marker) for *crate* by convention."""
     return (env_var or f"{crate.upper()}_ROOT", git_url or f"{ORG_GIT_BASE}/{crate}.git", Path(DEFAULT_MARKER))
 
+def _sibling_candidates(repo_root: Path, crate: str) -> list[Path]:
+    """Where a sibling checkout of `crate` may live relative to `repo_root`:
+    the plain sibling first, then the workspace layout for a worktree
+    (`<codespace>/_worktree/<repo>/<slug>` → siblings under `<codespace>`) and,
+    one level less, for a repo directory under `_worktree` itself."""
+    root = repo_root.resolve()
+    out = [root.parent / crate]
+
+    for anc in [root, *root.parents]:
+        if anc.parent.name == "_worktree":
+            out.append(anc.parent.parent / crate)
+            break
+
+    return out
+
 def find_patched_crate(crate: str, env_var: str, git_url: str, marker: Path, *, repo_root: Path | None = None, clone_subdir: str | None = None) -> Path | None:
     """Resolve the checkout of a cargo path/git-patched crate.
 
@@ -89,11 +104,13 @@ def find_patched_crate(crate: str, env_var: str, git_url: str, marker: Path, *, 
         if hit:
             return hit
 
-    # 3. sibling layout
-    sib = repo_root.parent / crate
-
-    if _ok(sib):
-        return sib.resolve()
+    # 3. sibling layout. The workspace keeps checkouts side by side under the
+    #    codespace root and works in `_worktree/<repo>/<slug>` trees, so the
+    #    siblings of a worktree live three levels up, not one. Both shapes are
+    #    probed; a plain checkout still finds them at `repo_root.parent`.
+    for sib in _sibling_candidates(repo_root, crate):
+        if _ok(sib):
+            return sib.resolve()
 
     # 4. fallback: scan nested Cargo.toml, pruning heavy dirs
     _SKIP_DIRS = {"target", "node_modules", ".git", ".next", "dist", "build"}
