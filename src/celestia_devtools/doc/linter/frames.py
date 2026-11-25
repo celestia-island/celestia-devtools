@@ -11,7 +11,6 @@ plain text.
 
 from __future__ import annotations
 import re
-from pathlib import Path
 from celestia_devtools.doc.linter._common import safe_read
 
 #: Corner/junction glyphs of box-drawing frames (single and double line, plain
