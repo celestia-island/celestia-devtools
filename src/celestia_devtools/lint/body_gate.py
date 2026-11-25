@@ -81,7 +81,6 @@ unreadable body.
 
 from __future__ import annotations
 import argparse
-import html
 import re
 import subprocess
 import sys
@@ -290,7 +289,6 @@ def prosaic(body: str) -> tuple[list[_line], list[str], list[_line], tuple[str, 
     evidence: list[_line] = []
     dropped: list[int] = []
     hidden: list[tuple[int, str]] = []
-    fences_notes: list[str] = []
     fence: str | None = None
     in_comment = False
 

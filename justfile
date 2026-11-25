@@ -11,9 +11,10 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[C
 set unstable
 set lists
 
-# Repo definitions override the shared template's (imported above).
+# Repo recipes may override the shared template's (imported above). The
+# variables directive itself lives in common.just since #304 - one home, no
+# re-set here: just rejects a directive set twice across the import.
 set allow-duplicate-recipes
-set allow-duplicate-variables
 
 import "./src/celestia_devtools/common.just"
 

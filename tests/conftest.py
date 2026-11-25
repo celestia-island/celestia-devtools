@@ -51,7 +51,8 @@ def _bind_to_checkout() -> None:
     os.environ["PYTHONPATH"] = (text + os.pathsep + existing) if existing else text
 
 _bind_to_checkout()
-import pytest
+# pytest imports AFTER _bind_to_checkout() so the checkout's src owns sys.path.
+import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _artifact_gate_root(tmp_path, monkeypatch):
