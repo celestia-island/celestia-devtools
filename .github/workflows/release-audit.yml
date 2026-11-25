@@ -1,0 +1,148 @@
+name: Release Audit
+
+# Reusable release-lane audit for repositories that publish to npm / crates.io.
+#
+# Why this exists: hikari's 0.55 line drifted away from its own history — 450
+# npm publishes in 70 days, 73 of them never tagged, 36 patch numbers burned by
+# dispatch typos, and seven breaking changes shipped inside patch releases.
+# Nothing compared the registry against the repository's tags, so from either
+# side every number looked intentional. `release-audit` makes that
+# disagreement fail a job: a published version without its tag (or a tag with
+# no published version) is drift, a burned patch number is only a warning (the
+# rule says never back-fill), and an unreadable registry fails closed.
+#
+# Usage (caller):
+#
+#   jobs:
+#     release-audit:
+#       uses: celestia-island/celestia-devtools/.github/workflows/release-audit.yml@<pin>
+#       with:
+#         npm-package: "@celestia-island/hikari"
+#         ignore-below: "0.30.0"   # pre-publish history below the line's real start
+#         # crates: "hikari-components"   # space- or comma-separated
+#
+# At least one of `npm-package` / `crates` is required: an audit with no lane
+# would print a clean tree without having looked at anything.
+
+on:
+  workflow_call:
+    inputs:
+      devtools-ref:
+        description: "celestia-devtools git ref to judge with: any ref other than the master default is honored by cloning that exact ref (H14 determinism; pinned callers pass their anchor — a full 40-hex SHA or a tag)."
+        required: false
+        type: string
+        default: "master"
+      npm-package:
+        description: "npm package to audit against the tags (scoped names allowed, e.g. @celestia-island/hikari). Empty disables the npm lane."
+        required: false
+        type: string
+        default: ""
+      crates:
+        description: "Crate name(s) to audit against the crate tags: space- or comma-separated (e.g. 'hikari-components'). Empty disables the crate lane."
+        required: false
+        type: string
+        default: ""
+      tag-prefix:
+        description: "Tag prefix that carries npm versions (the version follows the prefix, e.g. v0.55.12)."
+        required: false
+        type: string
+        default: "v"
+      crate-tag-prefix:
+        description: "Tag prefix that carries crate versions (e.g. cargo-v0.6.0)."
+        required: false
+        type: string
+        default: "cargo-v"
+      ignore-below:
+        description: "Optional X.Y.Z floor: versions and tags BELOW it are pre-publish history, not drift (e.g. hikari's v0.1-v0.4 tags predate its npm line — pass 0.30.0)."
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  audit:
+    name: Release audit
+    # Org convention: real work runs on the org self-hosted runners (hosted
+    # provisioning has been observed failing at the org billing tier; the
+    # shared node also preinstalls celestia-devtools for fast starts).
+    # A fork pull request is not served on the self-hosted fleet: a called
+    # workflow inherits its CALLER's github context, so a pull_request-triggered
+    # caller brings fork content here. The audit is read-only, but it spends
+    # shared runner time and reaches the registries through the org network.
+    if: ${{ github.event.pull_request == null || github.event.pull_request.head.repo.fork != true }}
+    runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+        # Tags ARE the repository-side input of this audit, so a shallow clone
+        # would report every published version as untagged. Defensive: the
+        # runner env rewrites github.com/celestia-island/* to local bare mirrors
+        # (per-repo exact-prefix rules). Mirrors may lack fresh refs, so bypass
+        # the rewriting and clone straight from github.com.
+        env:
+          GIT_CONFIG_COUNT: "0"
+
+      # No actions/setup-python: the python-versions manifest ships no Debian 12
+      # builds, so it fails deterministically on the org's self-hosted runners.
+      # Node-1 preinstalls python3; the fallback below avoids pip entirely and
+      # runs straight from a shallow devtools clone.
+
+      - name: Require a lane
+        # An empty invocation must not reach the CLI: "nothing to audit" would
+        # print a clean tree that never looked at a registry, which is exactly
+        # the false green this job exists to prevent.
+        env:
+          NPM_PACKAGE: ${{ inputs.npm-package }}
+          CRATES: ${{ inputs.crates }}
+        run: |
+          if [ -z "${NPM_PACKAGE:-}" ] && [ -z "${CRATES:-}" ]; then
+            echo "::error::release-audit: pass npm-package and/or crates — an audit with no lane would report a clean tree without looking at anything"
+            exit 2
+          fi
+
+      - name: Release audit
+        # Ref-determinism rule (H14, 2026-10): a caller that pins
+        # `devtools-ref` names the EXACT CLI whose rules judge this tree. Any
+        # ref other than the master default always runs from a fresh clone at
+        # that ref; the preinstalled fast path survives only for the master
+        # default, echoing which binary and version ran. Branch/tag refs clone
+        # with --branch; a 40-hex SHA pin cannot take that flag, so fetch the
+        # exact object instead (the same lane verify-versions.yml uses).
+        env:
+          DEVTOOLS_REF: ${{ inputs.devtools-ref }}
+          NPM_PACKAGE: ${{ inputs.npm-package }}
+          CRATES: ${{ inputs.crates }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          CRATE_TAG_PREFIX: ${{ inputs.crate-tag-prefix }}
+          IGNORE_BELOW: ${{ inputs.ignore-below }}
+        run: |
+          set -eu
+          args=(--repo "$GITHUB_WORKSPACE" --tag-prefix "$TAG_PREFIX" --crate-tag-prefix "$CRATE_TAG_PREFIX")
+          if [ -n "${IGNORE_BELOW:-}" ]; then args+=(--ignore-below "$IGNORE_BELOW"); fi
+          if [ -n "${NPM_PACKAGE:-}" ]; then args+=(--npm "$NPM_PACKAGE"); fi
+          if [ -n "${CRATES:-}" ]; then
+            # Space- or comma-separated; each name becomes its own --crates.
+            for crate in $(echo "$CRATES" | tr ',' ' '); do
+              args+=(--crates "$crate")
+            done
+          fi
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools release-audit --help >/dev/null 2>&1; then
+            echo "devtools-ref is the master default; using preinstalled celestia-devtools: $(command -v celestia-devtools) version $(celestia-devtools --version)"
+            celestia-devtools release-audit "${args[@]}"
+          else
+            echo "Honoring devtools-ref '${DEVTOOLS_REF:-master}'; running from a fresh devtools clone so the rules match the pin"
+            rm -rf /tmp/celestia-devtools
+            if [[ "${DEVTOOLS_REF:-master}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              git init -q /tmp/celestia-devtools
+              git -C /tmp/celestia-devtools remote add origin https://github.com/celestia-island/celestia-devtools.git
+              git -C /tmp/celestia-devtools fetch -q --depth 1 origin "${DEVTOOLS_REF}"
+              git -C /tmp/celestia-devtools checkout -q FETCH_HEAD
+            else
+              git clone --depth 1 --branch "${DEVTOOLS_REF:-master}" https://github.com/celestia-island/celestia-devtools.git /tmp/celestia-devtools
+            fi
+            cd /tmp/celestia-devtools && PYTHONPATH=src python3 -m celestia_devtools release-audit "${args[@]}"
+          fi
