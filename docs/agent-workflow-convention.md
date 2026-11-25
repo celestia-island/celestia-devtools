@@ -1,6 +1,6 @@
 # Agent Workflow Convention
 
-These three rules are the org-wide agent-workflow convention. They live here,
+These four rules are the org-wide agent-workflow convention. They live here,
 in the shared devtools repository, so every downstream repository's `AGENTS.md`
 can cite them instead of re-deriving them per repository: the wording, the
 rationale, and the failure each rule prevents stay in one place, and a
@@ -70,9 +70,55 @@ go out serially.
 Each brief names its own worktree path, and a follow-up wave gets a new
 worktree (rule 1) rather than the previous wave's directory.
 
+## 4. Release lanes own the version slot
+
+A version number is a release-lane property, not an edit riding a feature PR.
+The version slot — the manifest field a release publishes — changes only in a
+release pull request whose subject is `⬆️ Release <product> X.Y.Z.`, one
+release PR per version, merged before its tag is pushed. A bump inside a
+feature PR ships a number nobody decided on, on the merge that happened to
+carry it, whether or not anything was published.
+
+Semantics: a minor bump marks a wave or a breaking change; a patch bump is
+another release of the current line. Removing, renaming, or splitting a public
+export is breaking even on `0.x`, and it bumps the minor — never a patch. The
+semver signal is what a downstream pins and what an automated upgrade decides
+from, so a contract change smuggled into a patch breaks every consumer that
+accepted the previous patch on the promise that it could.
+
+Tags are part of the release. Every published version carries its pushed tag
+(`v*` for npm, `cargo-v*` for crates). A `workflow_dispatch` publish that skips
+the tag ships a version nobody can reproduce: publish only from a tag, or make
+the publish job create and push the tag it released. The tag is the coordinate
+that ties the registry's bytes to a commit; without it the only record of what
+shipped is the registry itself, which cannot be rebuilt, bisected, or patched.
+
+Lanes are append-only. Never re-number, re-publish, or reuse a version. Numbers
+already burned by a failed dispatch are gone; document the skip in the release
+notes instead of back-filling, and never let the tag and the published version
+disagree. A registry keeps one artifact per version string, so a back-fill does
+not repair the lane — it makes one number mean two trees forever.
+
+Release on demand, not per merge. A release exists so downstreams can pin it.
+Batch a release when a change is picked up (or a wave lands), not after every
+merge; a per-merge cadence turns the patch digit into a build counter and makes
+the semver signal unreadable — a consumer cannot tell a one-line fix from a
+breaking rewrite, and neither can an agent reading the registry.
+
+Observed failure (hikari, 2026-11): the 0.55 line ran 450 npm publishes in 70
+days (up to 21/day), 73 publishes never got a tag, 36 patch numbers were burned
+by dispatch typos. It also shipped seven public-surface removals and splits
+inside patch releases: `git log --diff-filter=D -- packages/vue/src/components`
+names seven commits in that window, five of them component modules
+(`HkSlideConfirm`, `HkSegmentedRadio`, the height-ride family, the chat kit, the
+token field). `celestia-devtools release-audit` reconciles a
+repository's tags against its registries and fails on exactly this drift.
+
 ## Adoption
 
 Downstream repositories cite this document from their `AGENTS.md` as the
 org-wide source of these rules, and add the concrete commands for their own
-stack. When a rule changes, it changes here first, and the citing files
-follow.
+stack. Rule 4's drift is machine-checkable: `celestia-devtools release-audit
+--repo . --npm <package>` reconciles the repository's tags with the registry,
+and `.github/workflows/release-audit.yml` is the reusable caller. When a rule
+changes, it changes here first, and the citing files follow.
