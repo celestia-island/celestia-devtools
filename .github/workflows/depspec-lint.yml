@@ -79,7 +79,11 @@ jobs:
         env:
           DEVTOOLS_REF: ${{ inputs.devtools-ref }}
         run: |
-          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1; then
+          # The preinstalled binary may predate a freshly added command (the H14
+          # stale-snapshot shape): probe it, and fall through to the master
+          # install when it cannot run this gate, so trunk never reads red
+          # "unknown command" as a tree problem.
+          if [ "${DEVTOOLS_REF:-master}" = "master" ] && command -v celestia-devtools >/dev/null 2>&1 && celestia-devtools depspec-lint --help >/dev/null 2>&1; then
             echo "devtools-ref is the master default; using preinstalled celestia-devtools"
             echo "DT_CMD=celestia-devtools" >> "$GITHUB_ENV"
             exit 0
