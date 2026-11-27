@@ -139,10 +139,12 @@ def body_path_problems(path: str, repo: str, pr: int) -> list[str]:
     unambiguously; a file naming a *different* repo and PR is refused too — it
     is the 11-15 content, not just a sloppy name.
     """
-    resolved = os.path.abspath(path)
+    missing = ["--body-file is mandatory"]
 
     if not path:
-        return ["--body-file is mandatory"]
+        return missing
+
+    resolved = os.path.abspath(path)
 
     if any(resolved.startswith(prefix) for prefix in _SHARED_PATH_PREFIXES):
         return [f"--body-file {path} is a shared device, not an owned file — write " f"<repo-name>-{pr}-pr-body.md to a private path first"]
@@ -213,6 +215,22 @@ def _preview(text: str | None) -> str:
 
 # ── the guarded edit ────────────────────────────────────────────────────────
 
+def body_inline_problems(body: str | None) -> list[str]:
+    """Why an INLINE body (``-b`` / ``--body``) cannot be written here (empty = it can).
+
+    An inline body is the same write as ``--body-file`` with one thing less: a
+    path this guard can check against the target.  Nothing proves whose bytes
+    they are and nothing can be re-read as "the file this lane wrote", so the
+    write is refused and the caller is pointed at the owned-file spelling.
+    """
+    refusal = "--body {preview!r} is an INLINE body — write it to an owned file named <repo>-<pr>-pr-body.md and pass --body-file, so the write has a path this guard can attribute to one PR"
+
+    if body is None:
+        return []
+
+    preview = body[:60] + ("…" if len(body) > 60 else "")
+    return [refusal.format(preview = preview)]
+
 def _refuse(kind: str, problems: Sequence[str], file = None) -> int:
     """Print one named refusal and return its exit code."""
     lines = [f"❌ {kind}: {problem}" for problem in problems]
@@ -222,15 +240,21 @@ def _refuse(kind: str, problems: Sequence[str], file = None) -> int:
 
     return EXIT_REFUSED
 
-def guarded_edit(repo: str, pr: int, body_path: str, expect_marker: str, *, expect_head: str | None = None, dry_run: bool = False, runner = None) -> int:
+def guarded_edit(repo: str, pr: int, body_path: str | None, expect_marker: str, *, expect_head: str | None = None, dry_run: bool = False, runner = None, body: str | None = None) -> int:
     """Snapshot → edit → read back → assert.  Returns the exit code.
 
     Every refusal names itself (:data:`REFUSAL_REPO`, :data:`REFUSAL_BODY_PATH`,
-    :data:`REFUSAL_HEAD_MOVED`, :data:`REFUSAL_MARKER`, :data:`REFUSAL_READBACK`)
-    so a caller can tell which guard fired without parsing prose.
+    :data:`REFUSAL_BODY_INLINE`, :data:`REFUSAL_HEAD_MOVED`,
+    :data:`REFUSAL_MARKER`, :data:`REFUSAL_READBACK`) so a caller can tell which
+    guard fired without parsing prose.
     """
     # The pre-checks are cheap and local: run them before any gh call so a
     # scripted caller gets its refusal without depending on network or auth.
+    inline = body_inline_problems(body)
+
+    if inline:
+        return _refuse(REFUSAL_BODY_INLINE, inline)
+
     problems = repo_problems(repo)
 
     if problems:
@@ -327,6 +351,7 @@ REFUSAL_MARKER = "PR-EDIT REFUSED (readback)"
 REFUSAL_HEAD_MOVED = "PR-EDIT REFUSED (head)"
 REFUSAL_READBACK = "PR-EDIT REFUSED (unreadable)"
 REFUSAL_EDIT_FAILED = "PR-EDIT REFUSED (gh edit)"
+REFUSAL_BODY_INLINE = "PR-EDIT REFUSED (inline body)"
 
 # ── --selftest ──────────────────────────────────────────────────────────────
 
@@ -437,6 +462,13 @@ def selftest() -> int:
             check(f"generic body path refused for {bad!r}", (rc == EXIT_REFUSED) and (REFUSAL_BODY_PATH in capture.stderr), f"rc={rc} stderr={capture.text()[:120]}")
             check(f"generic body path made no gh call for {bad!r}", runner.calls == [], f"calls={runner.calls}")
 
+        # ── refusal 2b: an INLINE body (-b / --body) has no owned path ─────
+        for inline in ("inline body", ""):
+            runner = _fake_gh(_BASE_STATE)
+            rc = _captured(lambda text = inline, gh = runner: guarded_edit("celestia-island/hikari", 1586, None, "verify: rounds=1", body = text, runner = gh), capture)
+            check(f"inline body refused for {inline!r}", (rc == EXIT_REFUSED) and (REFUSAL_BODY_INLINE in capture.stderr), f"rc={rc} stderr={capture.text()[:140]}")
+            check(f"inline body made no gh call for {inline!r}", runner.calls == [], f"calls={runner.calls}")
+
         # ── positive control: a real-shaped edit goes through ──────────────
         runner = _fake_gh(_BASE_STATE)
         path = body_file(root, "hikari-1586-pr-body.md")
@@ -529,6 +561,10 @@ def selftest() -> int:
     rc = _captured(lambda: main(["--repo", "celestia-island/hikari", "--body-file", "/tmp/hikari-1586-pr-body.md", "--expect-marker", "x"]), capture)
     check("cli refuses a missing --pr as usage", (rc == EXIT_USAGE) and ("--pr is required" in capture.stderr), f"rc={rc} stderr={capture.text()[:120]}")
 
+    for spelling in (["--body", "inline"], ["-b", "inline"], ["-binline"]):
+        rc = _captured(lambda form = spelling: main(["--repo", "celestia-island/hikari", "--pr", "1586", *form, "--expect-marker", "x"]), capture)
+        check(f"cli refuses the inline spelling {spelling}", (rc == EXIT_REFUSED) and (REFUSAL_BODY_INLINE in capture.stderr), f"rc={rc} stderr={capture.text()[:120]}")
+
     if failures:
         for failure in failures:
             print(f"❌ selftest: {failure}", file = sys.stderr)
@@ -571,6 +607,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", default = None, help = "OWNER/NAME the PR lives in (mandatory — there is no cwd/origin fallback)")
     parser.add_argument("--pr", type = int, default = None, help = "pull-request number")
     parser.add_argument("--body-file", default = None, metavar = "PATH", help = "body to write; the basename must name <repo>-<pr> (e.g. hikari-1586-pr-body.md)")
+    parser.add_argument("--body", "-b", default = None, metavar = "TEXT", help = "INLINE body (gh's -b/--body): always refused — write the text to an owned file and use --body-file")
     parser.add_argument("--expect-marker", default = None, metavar = "STR", help = "string the body must contain, before and after the edit")
     parser.add_argument("--expect-head", default = None, metavar = "SHA", help = "head SHA this edit was prepared against (prefix ok); the head must not move")
     parser.add_argument("--dry-run", action = "store_true", help = "run every guard and the snapshot, then stop without writing")
@@ -585,18 +622,36 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # argparse cannot express "required only without --selftest" without making
     # --selftest unusable, so the missing-argument cases are spelled out here.
-    # A missing --pr / --body-file / --expect-marker is USAGE (2): the guard
-    # never ran, so no guard refusal fired.  A missing --repo is NOT usage in
-    # the same sense — it is the 2026-11-15 incident shape and it is refused by
-    # the guard itself (exit 1, under its own identifier), so that a wrapper
-    # greps one string whether the caller went through the proxy or the CLI.
-    for name in ("pr", "body_file", "expect_marker"):
-        if getattr(args, name) in (None, ""):
-            print(f"❌ pr-edit: --{name.replace('_', '-')} is required", file = sys.stderr)
+    # A missing --pr / --body-file / --expect-marker is USAGE (exit 2): the
+    # guard never ran, so no guard refusal fired.  --repo is deliberately NOT
+    # in this list — the guard owns it (the 2026-11-15 incident shape) and it
+    # must come out as the guard's own refusal even when the proxy translated
+    # an unflagged `gh pr edit 123 -F /tmp/pr-body.md` (R2 rework).
+    required = ("pr", "expect_marker") if args.body is not None else ("pr", "body_file", "expect_marker")
+
+    # An unflagged `gh pr edit <N> -F <path>` carries no --expect-marker and no
+    # --repo.  The usage gate must not answer for it FIRST, or the incident
+    # refusals are hidden behind a message about a flag the caller never knew
+    # about.  So: a missing --repo defers to the guard entirely (the guard
+    # refuses on it before it can complain about the marker, so nothing slips
+    # through); with a repo present the usage gate needs a real marker.
+    if args.repo:
+        usage_lines: list[str] = []
+
+        for name in required:
+            value = getattr(args, name)
+
+            if value is None:
+                usage_lines.append(f"❌ pr-edit: --{name} is required")
+
+        if usage_lines:
+            for line in usage_lines:
+                print(line, file = sys.stderr)
+
             print("   usage: celestia-devtools pr-edit --repo OWNER/NAME --pr N --body-file PATH --expect-marker STR [--expect-head SHA]", file = sys.stderr)
             return EXIT_USAGE
 
-    return guarded_edit(args.repo, args.pr, args.body_file, args.expect_marker, expect_head = args.expect_head, dry_run = args.dry_run)
+    return guarded_edit(args.repo, args.pr, args.body_file, args.expect_marker, expect_head = args.expect_head, dry_run = args.dry_run, body = args.body)
 
 if __name__ == "__main__":
     raise SystemExit(main())

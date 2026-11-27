@@ -41,6 +41,18 @@ _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
 # brew on Linux
 _GUESSES = ["/usr/bin/gh", "/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"]
 
+#: Every spelling ``gh pr edit`` accepts for the body-writing flags
+#: (``gh pr edit --help``: ``-b, --body string`` / ``-F, --body-file file``).
+#: Enumerated rather than pattern-matched so a new alias must be added here on
+#: purpose: review R2 found the short ``-F`` form silently forwarded, and that
+#: is exactly the 2026-11-27 shape (a body written from a shared scratch path).
+BODY_FILE_FLAGS = ("--body-file", "-F")
+
+#: ``-b`` / ``--body`` takes the body INLINE. Intercepted as well: an inline
+#: body is the same write with no path to attribute to a target, so the guard
+#: refuses it and names ``--body-file`` instead of letting gh accept it.
+BODY_INLINE_FLAGS = ("--body", "-b")
+
 def _find_gh() -> str:
     if os.environ.get(_ENV_SKIP):
         return "gh"
@@ -68,8 +80,31 @@ def _real_gh() -> str:
 
     return _REAL_GH
 
+def _flag_value(item: str, names: tuple[str, ...]) -> str | None:
+    """The value when *item* carries one of *names*, else ``None``.
+
+    Three spellings, because each is reachable in a real script: ``-F path``
+    (documented), ``-F=path`` (a shell wrapper's habit) and ``-Fpath`` (POSIX
+    short-option gluing, which argparse accepts). An empty string means
+    "separate the value" — a bare ``-F`` / ``--body-file``.
+    """
+    glued = [name for name in names if item.startswith(name) and not item.startswith("--") and (len(item) > len(name)) and not item.startswith(name + "=")]
+    exact = [name for name in names if item == name]
+    joined = [name for name in names if item.startswith(name + "=")]
+    found = exact + joined + glued
+
+    if not found:
+        return None
+
+    name = found[0]
+
+    if name == item:
+        return ""
+
+    return item[len(name) + 1:] if item.startswith(name + "=") else item[len(name):]
+
 def _is_guarded_pr_edit(argv: list[str]) -> bool:
-    """True for ``pr edit <N> … --body-file …`` and nothing else.
+    """True for ``pr edit … <body flag> …`` in every spelling ``gh`` accepts.
 
     Only the body-writing shape is intercepted: a title / reviewer / label edit
     and a bare ``gh pr view`` / ``pr close`` keep forwarding untouched, because
@@ -78,24 +113,26 @@ def _is_guarded_pr_edit(argv: list[str]) -> bool:
     ``hikari#1586`` 2026-11-27) both moved a *body*.
     """
     is_edit = (len(argv) >= 3) and (argv[0] == "pr") and (argv[1] == "edit")
-    writes_body = is_edit and any((a == "--body-file") or a.startswith("--body-file=") for a in argv[2:])
-    return bool(writes_body)
+    writes_body = [item for item in argv[2:] if (_flag_value(item, BODY_FILE_FLAGS) is not None) or (_flag_value(item, BODY_INLINE_FLAGS) is not None)]
+    return bool(is_edit and writes_body)
 
 def _guard_argv(argv: list[str]) -> list[str]:
     """``[gh,] pr edit <N> …`` → the guarded subcommand's own argv.
 
     ``gh`` takes the PR number positionally and ``pr-edit`` takes ``--pr``, so
-    the number is the one argument that has to move; ``--repo`` and the
-    ``--body-file`` ferry over as-is.  ``--body-file=X`` becomes
-    ``--body-file X`` because a single-flag spelling is worth normalising where
-    the guard is about to read it.  ``--expect-marker`` / ``--expect-head``
-    simply pass through when a caller supplies them (a raw ``gh`` never does —
-    they reject unknown flags — so their presence is an explicit opt-in).
+    the number is the one argument that has to move; ``--repo`` ferries over
+    as-is. The body flags are normalised to what the guard reads: ``-F path``,
+    ``-F=path``, ``-Fpath`` and ``--body-file=path`` all become ``--body-file
+    path``, and ``-b`` / ``--body`` become ``--body`` (refused by the guard with
+    a reason instead of accepted silently by gh). ``--expect-marker`` /
+    ``--expect-head`` pass through when supplied — a raw ``gh`` rejects those,
+    so their presence is an explicit opt-in.
     """
     head = argv[1:] if (argv[:1] == ["gh"]) else list(argv)
     tail = head[2:]  # after "pr edit"
     number = None
     body_file: str | None = None
+    body_inline: str | None = None
     forwarded: list[str] = []
     skip = False
 
@@ -108,18 +145,39 @@ def _guard_argv(argv: list[str]) -> list[str]:
             number = item
             continue
 
-        if item == "--body-file":
+        value = _flag_value(item, BODY_FILE_FLAGS)
+
+        if value == "":
             body_file = tail[index + 1] if (index + 1) < len(tail) else ""
             skip = True
             continue
 
-        if item.startswith("--body-file="):
-            body_file = item.split("=", 1)[1]
+        if value is not None:
+            body_file = value
+            continue
+
+        inline = _flag_value(item, BODY_INLINE_FLAGS)
+
+        if inline == "":
+            body_inline = tail[index + 1] if (index + 1) < len(tail) else ""
+            skip = True
+            continue
+
+        if inline is not None:
+            body_inline = inline
             continue
 
         forwarded.append(item)
 
-    return (["--pr", number] if number else []) + forwarded + ((["--body-file", body_file]) if body_file is not None else [])
+    out = (["--pr", number] if number else []) + forwarded
+
+    if body_file is not None:
+        out.extend(["--body-file", body_file])
+
+    if body_inline is not None:
+        out.extend(["--body", body_inline])
+
+    return out
 
 def main() -> int:
     argv = sys.argv[1:]

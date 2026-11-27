@@ -216,11 +216,33 @@ def test_help_documents_the_bypass(capsys):
 
 # ── proxy interception ──────────────────────────────────────────────────────
 
-def test_body_file_edit_is_intercepted():
-    assert gh_proxy._is_guarded_pr_edit(["pr", "edit", "1586", "--body-file", "/tmp/x.md"])
-    assert gh_proxy._is_guarded_pr_edit(["pr", "edit", "1586", "--body-file=/tmp/x.md"])
+#: EVERY spelling `gh pr edit --help` documents for writing a body. This list
+#: IS the contract: review R2 found the short `-F` form silently forwarded, and
+#: `test_other_shapes_are_not_intercepted` could not catch it because it only
+#: asserted the long spelling. A new alias must be added here and to
+#: `gh_proxy.BODY_FILE_FLAGS` / `BODY_INLINE_FLAGS` together.
+BODY_WRITE_SPELLINGS = tuple((["--body-file", "/tmp/hikari-1586-pr-body.md"], ["--body-file=/tmp/hikari-1586-pr-body.md"], ["-F", "/tmp/hikari-1586-pr-body.md"], ["-F=/tmp/hikari-1586-pr-body.md"], ["-F/tmp/hikari-1586-pr-body.md"], ["-F", "-"], ["--body", "inline text"], ["--body=inline text"], ["-b", "inline text"], ["-binline text"]))
 
-@pytest.mark.parametrize("argv", [["pr", "edit", "1586", "--title", "x"], ["pr", "view", "1586", "--body-file", "/tmp/x.md"], ["pr", "close", "1586", "--body-file", "/tmp/x.md"], ["pr", "brief"], ["pr"], [], ["issue", "edit", "1", "--body-file", "/tmp/x.md"]])
+@pytest.mark.parametrize("spelling", BODY_WRITE_SPELLINGS)
+def test_every_body_write_spelling_is_intercepted(spelling):
+    assert gh_proxy._is_guarded_pr_edit(["pr", "edit", "1586", *spelling]), spelling
+
+@pytest.mark.parametrize("spelling", [["--body-file", "/tmp/x"], ["-F", "/tmp/x"], ["-F=/tmp/x"], ["-b", "x"], ["-bx"]])
+def test_every_body_write_spelling_reaches_the_guard(spelling):
+    # Not just "intercepted": the translated argv must carry the body to the
+    # guard, in the flag the guard reads (so it refuses `-F /tmp/pr-body.md`
+    # for the path, not for a missing flag).
+    translated = gh_proxy._guard_argv(["gh", "pr", "edit", "1586", *spelling])
+    assert ("--pr" in translated) and (translated[translated.index("--pr") + 1] == "1586")
+    path_like = spelling[0].startswith("-F") or spelling[0].startswith("--body-file")
+    assert (("--body-file" in translated) if path_like else ("--body" in translated))
+
+def test_the_short_body_flag_is_not_forwarded_raw():
+    # The R2 face verbatim: `gh pr edit 123 -F /tmp/pr-body.md` used to be
+    # forwarded untouched, which is the 2026-11-27 shared-path write.
+    assert gh_proxy._is_guarded_pr_edit(["pr", "edit", "123", "-F", "/tmp/pr-body.md"]) is True
+
+@pytest.mark.parametrize("argv", [["pr", "edit", "1586", "--title", "x"], ["pr", "edit", "1586", "-l", "bug"], ["pr", "edit", "1586", "--add-label", "x"], ["pr", "edit", "1586", "-t", "x"], ["pr", "view", "1586", "--body-file", "/tmp/x.md"], ["pr", "close", "1586", "--body-file", "/tmp/x.md"], ["pr", "brief"], ["pr"], [], ["issue", "edit", "1", "--body-file", "/tmp/x.md"]])
 def test_other_shapes_are_not_intercepted(argv):
     assert not gh_proxy._is_guarded_pr_edit(argv)
 
@@ -259,6 +281,52 @@ def test_proxy_with_repo_reaches_the_guard_not_gh(monkeypatch, tmp_path, capsys)
 @pytest.mark.parametrize("argv,expected", [(["gh", "pr", "edit", "1586", "--repo", "o/r", "--body-file", "p", "--expect-marker", "m"], ["--pr", "1586", "--repo", "o/r", "--expect-marker", "m", "--body-file", "p"]), (["gh", "pr", "edit", "1586", "--body-file=p"], ["--pr", "1586", "--body-file", "p"]), (["gh", "pr", "edit", "--repo", "o/r", "42", "--body-file", "p"], ["--pr", "42", "--repo", "o/r", "--body-file", "p"])])
 def test_argv_translation(argv, expected):
     assert gh_proxy._guard_argv(argv) == expected
+
+def test_proxy_refuses_the_short_flag_shared_path(monkeypatch, tmp_path, capsys):
+    # Pin the working directory too: `pr-edit` resolves --body-file relative to
+    # it, and a suite run that moved it would change which path the guard sees.
+    monkeypatch.chdir(tmp_path)
+    # `gh pr edit <N> -F /tmp/pr-body.md` — the 2026-11-27 shape through gh's
+    # documented short flag. The host gh must never be spawned.
+    calls: list = []
+    monkeypatch.setattr(gh_proxy, "_real_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(gh_proxy.subprocess, "run", lambda *a, **k: calls.append(a) or _probe())
+    # No --expect-marker here on purpose: a raw `gh` never passes one, and the
+    # guard's incident refusals must fire ahead of the usage gate.
+    monkeypatch.setattr(gh_proxy.sys, "argv", ["gh", "pr", "edit", "42", "-F", "/tmp/pr-body.md"])
+
+    # No --repo either — that is the 11-15 half of the shape. The guard names
+    # the missing repo before it can complain about the missing marker, so this
+    # stays a guard refusal (exit 1) rather than a usage error.
+    rc = gh_proxy.main()
+    err = capsys.readouterr().err
+    assert rc == EXIT_REFUSED, err
+    assert [c for c in calls if (c and (c[0] == "/usr/bin/gh"))] == []
+    assert "PR-EDIT REFUSED (repo)" in err
+
+def test_proxy_refuses_the_short_flag_shared_path_with_a_repo(monkeypatch, tmp_path, capsys):
+    # Same shape WITH --repo: the body-path guard is the one that fires, so the
+    # short flag cannot carry a shared scratch path past the ownership check.
+    calls: list = []
+    monkeypatch.setattr(gh_proxy, "_real_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(gh_proxy.subprocess, "run", lambda *a, **k: calls.append(a) or _probe())
+    monkeypatch.setattr(gh_proxy.sys, "argv", ["gh", "pr", "edit", "42", "-F", "/tmp/pr-body.md", "--repo", REPO, "--expect-marker", MARKER])
+
+    rc = gh_proxy.main()
+    err = capsys.readouterr().err
+    assert rc == EXIT_REFUSED, err
+    assert [c for c in calls if (c and (c[0] == "/usr/bin/gh"))] == []
+    assert "PR-EDIT REFUSED (body-file)" in err
+
+def test_proxy_refuses_an_inline_body(monkeypatch, capsys):
+    calls: list = []
+    monkeypatch.setattr(gh_proxy, "_real_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(gh_proxy.subprocess, "run", lambda *a, **k: calls.append(a) or _probe())
+    monkeypatch.setattr(gh_proxy.sys, "argv", ["gh", "pr", "edit", str(PR), "--repo", REPO, "-b", "inline body", "--expect-marker", MARKER])
+
+    assert gh_proxy.main() == EXIT_REFUSED
+    assert [c for c in calls if (c and (c[0] == "/usr/bin/gh"))] == []
+    assert "PR-EDIT REFUSED (inline body)" in capsys.readouterr().err
 
 def test_bypass_forwards_with_a_warning(monkeypatch, capsys):
     calls: list = []
