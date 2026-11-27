@@ -207,13 +207,32 @@ For PR merge protection, add a shell function to `~/.bashrc`:
 gh() { celestia-devtools gh "$@"; }
 ```
 
-After `source ~/.bashrc`, `gh pr merge` validates the subject before forwarding to the real `gh` binary. All other commands (`gh pr list`, `gh issue`, `gh repo`, etc.) pass through untouched. The real binary at `/usr/bin/gh` is never modified.
+After `source ~/.bashrc`, `gh pr merge` validates the subject before forwarding to the real `gh` binary, and `gh pr edit … --body-file` goes through the guarded editor below. All other commands (`gh pr list`, `gh issue`, `gh repo`, a title-only `gh pr edit`, etc.) pass through untouched. The real binary at `/usr/bin/gh` is never modified.
 
 For CI or non-interactive shells (where `.bashrc` is not sourced), use the proxy directly:
 
 ```bash
 celestia-devtools gh pr merge --squash --subject "🐛 Fix the bug." --repo owner/repo
 ```
+
+### Guarded PR body edits
+
+Two recorded incidents (2026-11-15 `cherino#42`, 2026-11-27 `hikari#1586`) overwrote a PR body with another lane's content, and in both the writing session believed it was following the convention — compliance was conventional, never mechanical. `pr-edit` makes the two incident shapes refusals, and the `gh` proxy routes `gh pr edit … --body-file` into it so an aliased `gh` cannot skip them:
+
+```bash
+celestia-devtools pr-edit --repo celestia-island/hikari --pr 1586 \
+    --body-file /tmp/hikari-1586-pr-body.md --expect-marker "verify:" --expect-head <sha>
+```
+
+1. `--repo OWNER/NAME` is mandatory — there is no cwd/`origin` fallback, so a bare PR number can never resolve against a different checkout (the 11-15 shape).
+2. The body file's basename must name `<repo>-<pr>` (e.g. `hikari-1586-pr-body.md`, `pr-1586-hikari.md`); a generic scratch name such as `/tmp/pr-body.md` is refused (the 11-27 shape).
+3. The edit is snapshotted, written, read back and asserted: the new body must carry `--expect-marker`, differ from the snapshot, and leave `title` + `headRefName` unchanged. `--expect-head` pins the reviewed head, and the head must not move across the edit. Any mismatch exits non-zero and prints both bodies' first lines for recovery.
+
+The target may be a PR number or a pull-request URL (`/pull/<n>` is reduced to its number); a **branch name** is refused, because gh resolves it against whatever repository the caller is in and that ambiguity is what `--repo` exists to remove. Two `--body-file` flags in one call: the last wins, as with gh itself.
+
+Every spelling `gh` accepts for a body write is intercepted, not just the long one: `--body-file <p>`, `--body-file=<p>`, `-F <p>`, `-F=<p>` and `-F<p>`. An inline body (`-b` / `--body`) is **refused** — it has no path to attribute to a PR, so write the text to an owned file and pass `--body-file` instead of letting gh take it silently.
+
+`--dry-run` runs every guard and the snapshot without writing; `--selftest` runs the refusal controls (red) and a fixture edit (green). Break-glass: `CELESTIA_PR_EDIT_BYPASS=1` forwards the edit unguarded with a loud warning — for an emergency, not for daily use.
 
 ### CI protection (optional, opt-in)
 
@@ -312,6 +331,7 @@ ops-controlled supply line advanced by the mirror sync) must never override it.
 | `celestia-devtools commit-msg-lint check --subject "..."` | Validate a message string |
 | `celestia-devtools pr-merge --subject "..." --squash` | Validate then merge (standalone) |
 | `celestia-devtools gh pr merge --subject "..."` | Transparent gh proxy |
+| `celestia-devtools pr-edit --repo O/N --pr N --body-file P --expect-marker S` | Guarded PR body edit with a readback assertion (see above) |
 | `celestia-devtools gate` | Run the local CI gate (see below) |
 | `celestia-devtools gate credential-scan` | Sweep `.git/config` + source trees for literal secrets |
 | `celestia-devtools p0-gate` | Fail a repo covered by an unresolved P0 (see below) |
