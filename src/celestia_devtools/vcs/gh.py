@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Transparent GitHub CLI proxy — validates commit subject on ``pr merge``, passes
+"""Transparent GitHub CLI proxy — validates commit subject on ``pr merge``,
+routes ``pr edit … --body-file`` through the guarded editor, and passes
 everything else through to the real ``gh`` binary.
 
 Usage (after adding to ~/.bashrc)::
@@ -9,18 +10,28 @@ Usage (after adding to ~/.bashrc)::
     # pr merge → subject validated before forwarding
     gh pr merge "🐛 Fix bug." --squash --repo owner/repo
 
+    # pr edit --body-file → guarded: mandatory --repo, an owned body path, a
+    # readback assertion (see `celestia-devtools pr-edit --help`)
+    gh pr edit 1586 --repo celestia-island/hikari --body-file /tmp/hikari-1586-pr-body.md
+
     # everything else → forwarded to real gh unchanged
     gh pr list
+    gh pr edit 1586 --repo owner/repo --add-reviewer someone
     gh issue create
     gh repo view
+
+Break-glass: ``CELESTIA_PR_EDIT_BYPASS=1`` forwards ``pr edit --body-file``
+unguarded (with a loud stderr warning) — for an emergency, not for daily use.
 """
 
 from __future__ import annotations
 import os
+import re
 import shutil
 import subprocess
 import sys
 from celestia_devtools.vcs.commit_msg import lint, repo_allows_cjk, repo_name_from_git_remote, repo_name_from_gh_flag
+from celestia_devtools.vcs.pr_edit import bypass_active, bypass_warning, main as guarded_edit_main
 
 _REAL_GH: str = ""
 _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
@@ -30,6 +41,35 @@ _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
 # macOS brew
 # brew on Linux
 _GUESSES = ["/usr/bin/gh", "/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"]
+
+#: The body-writing flags whose spelling the guard KNOWS how to handle
+#: (``gh pr edit --help``: ``-b, --body string`` / ``-F, --body-file file``).
+#: This table is the exact-match set, not the safety boundary: any other
+#: ``--body…`` spelling is treated as a body write too (see
+#: :data:`BODY_FLAG_PREFIX`) and refused by name, because review R6 showed an
+#: enumeration is only safe for the aliases someone remembered to list.
+BODY_FILE_FLAGS = ("--body-file", "-F")
+
+#: ``-b`` / ``--body`` takes the body INLINE. Intercepted as well: an inline
+#: body is the same write with no path to attribute to a target, so the guard
+#: refuses it and names ``--body-file`` instead of letting gh accept it.
+BODY_INLINE_FLAGS = ("--body", "-b")
+
+#: Prefix that makes a flag a BODY write even when it is not in the tables
+#: above (review R6: ``--body-limit`` was forwarded untouched). Fail-closed by
+#: construction — a spelling nobody enumerated is intercepted and refused, not
+#: forwarded.
+BODY_FLAG_PREFIX = "--body"
+
+#: A pull-request URL as `gh` accepts it in place of a number, ANCHORED so the
+#: whole token must be the URL: ``https://github.com/OWNER/REPO/pull/123`` or
+#: ``git@github.com:OWNER/REPO/pull/123`` (optional `/files`, trailing slash,
+#: query, fragment). ``search()`` was wrong here — it also matched a BARE
+#: BRANCH NAME like ``origin/pull/1586``, turning the branch-name policy into
+#: a silent translation (review R6). The number is the only part that maps
+#: onto ``--pr``; the repo inside the URL is deliberately NOT used to fill
+#: ``--repo``, because an unstated repo must stay a refusal.
+_PR_URL = re.compile(r"^(?:https?://[^/\s]+/|[\w.-]+@[\w.-]+:)[^\s]*/pull/(?P<number>\d+)(?:/\S*)?$")
 
 def _find_gh() -> str:
     if os.environ.get(_ENV_SKIP):
@@ -58,8 +98,172 @@ def _real_gh() -> str:
 
     return _REAL_GH
 
+def _pr_number(token: str) -> str | None:
+    """The PR number in *token* when it is ``123`` or a pull-request URL.
+
+    ``gh pr edit`` also accepts a URL and a branch name. A URL carries a number
+    this proxy can hand to the guard; a branch name does NOT — ``gh`` resolves
+    it against the remote, so the same branch name can mean different PRs in
+    different repositories, which is exactly the ambiguity the mandatory
+    ``--repo`` exists to remove. A branch name is therefore left untranslated
+    and the guard answers with a message that says what to pass instead.
+    """
+    match = _PR_URL.match(token)
+    digit = token if token.isdigit() else None
+    return digit or (match.group("number") if match else None)
+
+def _flag_value(item: str, names: tuple[str, ...]) -> str | None:
+    """The value when *item* carries one of *names*, else ``None``.
+
+    Three spellings, because each is reachable in a real script: ``-F path``
+    (documented), ``-F=path`` (a shell wrapper's habit) and ``-Fpath`` (POSIX
+    short-option gluing, which argparse accepts). An empty string means
+    "separate the value" — a bare ``-F`` / ``--body-file``.
+    """
+    glued = [name for name in names if item.startswith(name) and not item.startswith("--") and (len(item) > len(name)) and not item.startswith(name + "=")]
+    exact = [name for name in names if item == name]
+    joined = [name for name in names if item.startswith(name + "=")]
+    found = exact + joined + glued
+
+    if not found:
+        return None
+
+    name = found[0]
+
+    if name == item:
+        return ""
+
+    return item[len(name) + 1:] if item.startswith(name + "=") else item[len(name):]
+
+def _is_guarded_pr_edit(argv: list[str]) -> bool:
+    """True for ``pr edit … <body flag> …`` in every spelling ``gh`` accepts.
+
+    Only the body-writing shape is intercepted: a title / reviewer / label edit
+    and a bare ``gh pr view`` / ``pr close`` keep forwarding untouched, because
+    the guards (repo pin, owned body path, body readback) are about the body
+    write — the two recorded cross-writes (``cherino#42`` 2026-11-15,
+    ``hikari#1586`` 2026-11-27) both moved a *body*.
+    """
+    is_edit = (len(argv) >= 3) and (argv[0] == "pr") and (argv[1] == "edit")
+    writes_body = [item for item in argv[2:] if _touches_body(item)]
+    return bool(is_edit and writes_body)
+
+def _touches_body(item: str) -> bool:
+    """True for any argv token that could be a body write, known or not.
+
+    Exact matches on the two tables first, then the ``--body`` prefix: a
+    spelling nobody enumerated (``--body-limit`` in review R6) is still a
+    candidate body write and must be intercepted rather than forwarded. The
+    proxy cannot know what an unknown ``--body*`` flag does, and the cost of
+    guessing wrong in the permissive direction is the 2026-11-27 write.
+    """
+    known = (_flag_value(item, BODY_FILE_FLAGS) is not None) or (_flag_value(item, BODY_INLINE_FLAGS) is not None)
+    return known or (item.startswith(BODY_FLAG_PREFIX) and (item != BODY_FLAG_PREFIX))
+
+#: The ``gh pr edit`` flags that take a value (``gh pr edit --help``). Every
+#: one of them must have its VALUE consumed before positional arguments are
+#: scanned, or `--repo 1234 1586` reads `1234` as the PR number (review R6).
+#: Only used to skip values — an unknown flag still leaves its neighbour
+#: unscanned, which keeps the fail-closed behaviour.
+PR_EDIT_VALUE_FLAGS = ("--add-assignee", "--add-label", "--add-project", "--add-reviewer", "--body", "--body-file", "--base", "--milestone", "--project", "--remove-assignee", "--remove-label", "--remove-project", "--remove-reviewer", "--repo", "--template", "--title", "-A", "-B", "-F", "-R", "-T", "-a", "-b", "-l", "-m", "-p", "-r", "-t", "-j")
+
+def _takes_value(item: str) -> bool:
+    """True when *item* is a flag carrying a separate value (``--repo X``)."""
+    known = item in PR_EDIT_VALUE_FLAGS
+    short = (len(item) == 2) and item.startswith("-") and (not item.startswith("--"))
+    return known or short
+
+def _guard_argv(argv: list[str]) -> list[str]:
+    """``[gh,] pr edit <N> …`` → the guarded subcommand's own argv.
+
+    ``gh`` takes the PR number positionally (or a PR URL) and ``pr-edit`` takes
+    ``--pr``, so the number is the one argument that has to move — a URL is
+    reduced to its ``/pull/<n>`` number and a branch name is passed through
+    untranslated so the guard can report it; ``--repo`` ferries over as-is. The body flags are normalised to what the guard reads: ``-F path``,
+    ``-F=path``, ``-Fpath`` and ``--body-file=path`` all become ``--body-file
+    path``, and ``-b`` / ``--body`` become ``--body`` (refused by the guard with
+    a reason instead of accepted silently by gh). ``--expect-marker`` /
+    ``--expect-head`` pass through when supplied — a raw ``gh`` rejects those,
+    so their presence is an explicit opt-in.
+    """
+    head = argv[1:] if (argv[:1] == ["gh"]) else list(argv)
+    tail = head[2:]  # after "pr edit"
+    number = None
+    body_file: str | None = None
+    body_inline: str | None = None
+    forwarded: list[str] = []
+    index = 0
+
+    while index < len(tail):
+        item = tail[index]
+        index += 1
+
+        value = _flag_value(item, BODY_FILE_FLAGS)
+
+        if value == "":
+            # Two body-file flags in one invocation: the LAST wins, which is
+            # what gh itself does. Not a refusal, because a caller that repeats
+            # the flag is asking for that value.
+            body_file = tail[index] if index < len(tail) else ""
+            index += 1
+            continue
+
+        if value is not None:
+            body_file = value
+            continue
+
+        inline = _flag_value(item, BODY_INLINE_FLAGS)
+
+        if inline == "":
+            body_inline = tail[index] if index < len(tail) else ""
+            index += 1
+            continue
+
+        if inline is not None:
+            body_inline = inline
+            continue
+
+        # A flag's VALUE is never a positional: it is copied through with the
+        # flag and skipped, so `--repo 1234 1586` cannot read `1234` as the PR.
+        if _takes_value(item):
+            forwarded.append(item)
+
+            if index < len(tail):
+                forwarded.append(tail[index])
+                index += 1
+
+            continue
+
+        if number is None:
+            resolved = _pr_number(item)
+
+            if resolved is not None:
+                number = resolved
+                continue
+
+        forwarded.append(item)
+
+    out = (["--pr", number] if number else []) + forwarded
+
+    if body_file is not None:
+        out.extend(["--body-file", body_file])
+
+    if body_inline is not None:
+        out.extend(["--body", body_inline])
+
+    return out
+
 def main() -> int:
     argv = sys.argv[1:]
+
+    if _is_guarded_pr_edit(argv):
+        if bypass_active():
+            print(bypass_warning("`gh pr edit --body-file`"), file = sys.stderr)
+        else:
+            # Delegated to the guarded subcommand: it owns the refusals, so one
+            # implementation serves both the proxy and a direct invocation, and
+            # a refusal here is byte-identical to one there.
+            return guarded_edit_main(_guard_argv(argv))
 
     if not argv:
         subprocess.run([_real_gh()])
