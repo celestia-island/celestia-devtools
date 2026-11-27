@@ -19,7 +19,7 @@ import subprocess
 import pytest
 from celestia_devtools.vcs import gh as gh_proxy
 from celestia_devtools.vcs import pr_edit
-from celestia_devtools.vcs.pr_edit import BYPASS_ENV, EXIT_REFUSED, EXIT_USAGE, body_path_problems, bypass_active, guarded_edit, main, repo_problems
+from celestia_devtools.vcs.pr_edit import BYPASS_ENV, EXIT_REFUSED, EXIT_USAGE, body_path_problems, bypass_active, guarded_edit, main, read_pr_state, repo_problems
 
 REPO = "celestia-island/hikari"
 PR = 1586
@@ -118,6 +118,27 @@ def test_number_prefix_is_not_a_match():
 def test_other_numbers_and_repos_do_not_satisfy():
     assert body_path_problems("/tmp/hikari-42-pr-body.md", REPO, PR)
     assert body_path_problems("/tmp/chest-1586-pr-body.md", REPO, PR)
+
+def test_transport_resolves_the_real_binary(body, monkeypatch):
+    # Under the documented `gh() { celestia-devtools gh "$@"; }` alias a bare
+    # "gh" would re-enter the proxy; the transport must ask the proxy module
+    # for the real path instead. MUT:transport-bare-gh (a bare ["gh", ...]
+    # argv) reds this.
+    seen: list[list[str]] = []
+
+    def recorder(argv, **_kwargs):
+        seen.append(list(argv))
+
+        class _p:
+            returncode = 0
+            stdout = json.dumps(BASE)
+            stderr = ""
+
+        return _p()
+
+    monkeypatch.setattr(gh_proxy, "_real_gh", lambda: "/opt/fake/gh-binary")
+    read_pr_state(REPO, PR, runner = recorder)
+    assert seen and (seen[0][0] == "/opt/fake/gh-binary"), seen
 
 def test_positive_edit_verified(body):
     runner = fake_gh()
@@ -222,64 +243,95 @@ def test_help_documents_the_bypass(capsys):
 #: EVERY spelling `gh pr edit --help` documents for writing a body. This list
 #: IS the contract: review R2 found the short `-F` form silently forwarded, and
 #: `test_other_shapes_are_not_intercepted` could not catch it because it only
-#: asserted the long spelling (MUT:narrow-proxy-to-long-flag turns that test and
-#: eleven others red). A new alias must be added here and to
+#: asserted the long spelling (MUT:narrow-proxy-to-long-flag reds the eight
+#: parametrized spelling cases and the four short-flag proxy controls, twelve
+#: in all; `test_other_shapes_are_not_intercepted` itself stays green, because
+#: it asserts the shapes that only carry the long flag). A new alias must be
+#: added here and to
 #: `gh_proxy.BODY_FILE_FLAGS` / `BODY_INLINE_FLAGS` together; the
 #: `gh pr edit --help` comparison below pins this list against the real binary.
 BODY_WRITE_SPELLINGS = tuple((["--body-file", "/tmp/hikari-1586-pr-body.md"], ["--body-file=/tmp/hikari-1586-pr-body.md"], ["-F", "/tmp/hikari-1586-pr-body.md"], ["-F=/tmp/hikari-1586-pr-body.md"], ["-F/tmp/hikari-1586-pr-body.md"], ["-F", "-"], ["--body", "inline text"], ["--body=inline text"], ["-b", "inline text"], ["-binline text"]))
 
 #: ``gh pr edit --help`` lists one flag per line as ``  -x, --long TYPE  text``.
+#: Both halves are captured: a flag's SHORT alias is what a script actually
+#: types, so a table that only machine-checks long names can be bypassed by a
+#: future `-W, --body-file` (review R4's reproduction).
 _GH_HELP_FLAG = re.compile(r"^\s+-(?P<short>[A-Za-z]),\s--(?P<long>[a-z-]+)(?:=|\s)", re.MULTILINE)
 
 def _gh_pr_edit_body_flags(help_text: str) -> set[str]:
-    """Long names of the flags that write the PR body, read off ``gh pr edit --help``.
+    """Both spellings (``-b`` and ``--body``) of every flag that writes the body.
 
-    The body flags are the ones whose help text says "body": ``-b, --body
-    string Set the new body.`` and ``-F, --body-file file Read body text from
-    file …``. Derived rather than listed so an alias gh adds later cannot slip
-    past the interception quietly.
+    The body flags are the ones whose help text after the flag name says
+    "body": ``-b, --body string Set the new body.`` and ``-F, --body-file file
+    Read body text from file …``. Long AND short names are returned, because
+    the short alias is the bypass surface review R4 demonstrated.
     """
     found: set[str] = set()
 
     for line in help_text.splitlines():
         match = _GH_HELP_FLAG.match(line)
 
-        if match and ("body" in line.lower().split(match.group("long").lower(), 1)[-1]):
+        if not match:
+            continue
+
+        # Split on the FLAG TOKEN, not on the long name: a line whose
+        # description merely says "alias" must still be recognised as a body
+        # flag, and one that only names a different flag in its prose must not.
+        description = line.split(match.group("long"), 1)[-1].lower()
+
+        if "body" in description:
+            found.add("-" + match.group("short"))
             found.add("--" + match.group("long"))
 
     return found
 
+def _declared_body_flags() -> set[str]:
+    """Every flag spelling the test table and the proxy's tables declare."""
+    declared = set(gh_proxy.BODY_FILE_FLAGS) | set(gh_proxy.BODY_INLINE_FLAGS)
+
+    for spelling in BODY_WRITE_SPELLINGS:
+        token = spelling[0]
+
+        if token.startswith("--"):
+            declared.add(token.split("=", 1)[0])
+        elif token.startswith("-") and (len(token) > 2) and not token.startswith("--"):
+            declared.add(token[:2])
+        elif token.startswith("-") and (len(token) == 2):
+            declared.add(token)
+
+    return declared
+
 @pytest.mark.skipif(shutil.which("gh") is None, reason = "gh not installed — the --help comparison needs the real binary (skipped, not failed: a checkout without gh is still a valid dev environment)")
 def test_the_spelling_table_matches_gh_pr_edit_help():
-    """The hand-written union must equal what `gh pr edit --help` documents.
+    """The declared spellings must equal what `gh pr edit --help` documents.
 
-    Guard the guard: the table is a literal, so a gh release adding a body
-    alias would leave it stale and the suite green. Parsing the real help
-    output closes that gap; the parser itself is proven against both documented
-    lines below before it is trusted.
+    Guard the guard: the table is a literal and the proxy tables are literals,
+    so a gh release adding a body alias — long OR short — would leave them
+    stale while the suite stayed green (review R4's `-W, --body-file`
+    reproduction). Parsing the real help closes it; the parser is proven on a
+    known-positive sample first, including a foreign short alias, so a broken
+    capture cannot pass vacuously.
     """
-    sample = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file (use \"-\" to read from standard input)\n  -t, --title string            Set the new title.\n"
-    assert _gh_pr_edit_body_flags(sample) == {"--body", "--body-file"}
+    sample = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file (use \"-\" to read from standard input)\n  -W, --body-file file          Also reads body text from a file.\n  -t, --title string            Set the new title.\n"
+    assert _gh_pr_edit_body_flags(sample) == {"-b", "--body", "-F", "--body-file", "-W"}
 
     help_text = subprocess.run(["gh", "pr", "edit", "--help"], capture_output = True, text = True, check = False).stdout
     assert help_text, "gh pr edit --help produced no output"
 
     documented = _gh_pr_edit_body_flags(help_text)
-    assert documented == {"--body", "--body-file"}, f"gh now documents other body flags: {sorted(documented)}"
+    assert documented == {"-b", "--body", "-F", "--body-file"}, f"gh now documents other body flags: {sorted(documented)}"
+    assert _declared_body_flags() == documented, f"declared body flags {sorted(_declared_body_flags())} != gh's {sorted(documented)} — a spelling the proxy does not intercept"
 
-    declared = {flag for spelling in BODY_WRITE_SPELLINGS for flag in spelling if flag.startswith("--")}
+def test_the_flag_parser_sees_a_new_short_alias():
+    """The R4 reproduction: a future short alias must change the parsed set.
 
-    for long_name in documented:
-        assert long_name in declared, f"BODY_WRITE_SPELLINGS is missing {long_name}"
-        assert long_name in (gh_proxy.BODY_FILE_FLAGS + gh_proxy.BODY_INLINE_FLAGS), f"the proxy does not enumerate {long_name}"
-
-    for short_flag in wrote_body_short_flags():
-        assert any(spelling and spelling[0].startswith(short_flag) for spelling in BODY_WRITE_SPELLINGS), f"BODY_WRITE_SPELLINGS is missing the short form {short_flag}"
-
-def wrote_body_short_flags() -> set[str]:
-    """The short forms of the two body flags, from the proxy's own tables."""
-    table = gh_proxy.BODY_FILE_FLAGS + gh_proxy.BODY_INLINE_FLAGS
-    return {flag for flag in table if not flag.startswith("--")}
+    A help text where `--body-file` also answers to `-W` must come back with
+    `-W` in the set; that is the signal `_declared_body_flags()` is compared
+    against, so a new alias reds the comparison above instead of slipping past.
+    """
+    fake = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file\n  -W, --body-file file          Also reads body text from a file\n"
+    assert "-W" in _gh_pr_edit_body_flags(fake)
+    assert "-W" not in _declared_body_flags(), "the proxy must not claim an alias it does not intercept"
 
 @pytest.mark.parametrize("spelling", BODY_WRITE_SPELLINGS)
 def test_every_body_write_spelling_is_intercepted(spelling):

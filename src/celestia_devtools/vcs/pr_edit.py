@@ -166,15 +166,35 @@ def body_path_problems(path: str, repo: str, pr: int) -> list[str]:
 # ── gh plumbing (subprocess — gh carries its own auth) ───────────────────────
 
 def _gh(argv: list[str], runner = None) -> tuple[int, str, str]:
-    """Run ``gh <argv>``; returns ``(rc, stdout, stderr)`` and never raises."""
+    """Run the REAL ``gh`` with *argv*; returns ``(rc, stdout, stderr)``, never raises.
+
+    The binary is resolved through :func:`celestia_devtools.vcs.gh._real_gh`,
+    not the bare word ``gh``: under the documented ``gh() { celestia-devtools
+    gh "$@"; }`` alias a bare name would re-enter this proxy (harmless for
+    ``pr view`` / ``pr edit``, but a pointless round trip that also hides which
+    binary ran). Resolution is lazy and falls back to ``gh`` when the proxy
+    module cannot supply one, so a standalone import keeps working.
+    """
     call = runner or subprocess.run
+    binary = _real_gh_binary()
 
     try:
-        probe = call(["gh", *argv], capture_output = True, text = True, encoding = "utf-8", errors = "replace", check = False)
+        probe = call([binary, *argv], capture_output = True, text = True, encoding = "utf-8", errors = "replace", check = False)
     except OSError as exc:
         return 127, "", str(exc)
 
     return int(probe.returncode), probe.stdout or "", probe.stderr or ""
+
+def _real_gh_binary() -> str:
+    """The non-proxy ``gh`` path, or ``gh`` when the proxy module has none.
+
+    Imported here rather than at module scope: :mod:`celestia_devtools.vcs.gh`
+    imports THIS module at module scope (it delegates `pr edit --body-file`
+    to :func:`main`), so a top-level import back would be a cycle. The lookup
+    is one attribute read on an already-imported module after the first call.
+    """
+    from celestia_devtools.vcs.gh import _real_gh  # py-style-ok: no-block-imports: the lazy lookup that breaks the gh<->pr_edit module cycle (see the docstring)
+    return _real_gh() or "gh"
 
 def read_pr_state(repo: str, pr: int, runner = None) -> tuple[dict | None, list[str]]:
     """``title`` / ``body`` / ``headRefName`` / ``headRefOid`` of one PR.
@@ -383,9 +403,12 @@ class _fake_gh:
             stderr = ""
 
         probe = _probe()
+        # argv[0] is whichever gh binary the transport resolved; only the
+        # subcommand words decide what this stub answers.
         action = argv[2] if len(argv) > 2 else ""
+        is_pr = (len(argv) > 1) and (argv[1] == "pr")
 
-        if (argv[:2] == ["gh", "pr"]) and (action == "view"):
+        if is_pr and (action == "view"):
             self.views += 1
 
             if self.view_rc:
@@ -396,7 +419,7 @@ class _fake_gh:
             probe.stdout = json.dumps(self.state if self.views == 1 else (self.after if self.after is not None else self.state))
             return probe
 
-        if (argv[:2] == ["gh", "pr"]) and (action == "edit"):
+        if is_pr and (action == "edit"):
             probe.returncode = self.edit_rc
 
             if self.edit_rc:
