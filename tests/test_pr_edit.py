@@ -327,7 +327,9 @@ def test_the_flag_parser_sees_a_new_short_alias():
 
     A help text where `--body-file` also answers to `-W` must come back with
     `-W` in the set; that is the signal `_declared_body_flags()` is compared
-    against, so a new alias reds the comparison above instead of slipping past.
+    against, so a new alias reds the comparison above instead of slipping past
+    (MUT:fake-gh-adds-short-alias: a fake gh on PATH printing `-W, --body-file`
+    reds it with "gh now documents other body flags").
     """
     fake = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file\n  -W, --body-file file          Also reads body text from a file\n"
     assert "-W" in _gh_pr_edit_body_flags(fake)
