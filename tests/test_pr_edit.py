@@ -256,14 +256,16 @@ BODY_WRITE_SPELLINGS = tuple((["--body-file", "/tmp/hikari-1586-pr-body.md"], ["
 #: ``gh pr edit --help`` lists a flag line as ``  -x, --long TYPE  text`` when
 #: it has a short alias and as ``      --long TYPE  text`` when it does not.
 #: Both shapes must be parsed: a long-only body flag is just as reachable as
-#: `--body-file` and would otherwise slip past (review R5's `--body-stdin`).
+#: `--body-file` and would otherwise slip past (review R5's `--body-stdin`;
+#: MUT:fake-gh-adds-long-only-body-flag reds the comparison below).
 _GH_HELP_FLAG = re.compile(r"^\s+(?:-(?P<short>[A-Za-z]),\s+)?--(?P<long>[a-z-]+)(?:=|\s)", re.MULTILINE)
 
 #: The words that make a flag a BODY WRITE. Matched on the description (the
 #: text after the flag token), never on the flag name alone: `--title`,
 #: `--attach` and `--base` mention a pull request but not a body, so a long-flag
 #: sweep that ignored the description would drag them in and the comparison
-#: would then demand interception for flags that write no body.
+#: would then demand interception for flags that write no body
+#: (test_the_body_words_do_not_drag_in_a_pull_request_flag reds if it does).
 BODY_WRITE_WORDS = ("body", "bodies")
 
 def _gh_pr_edit_body_flags(help_text: str) -> set[str]:
