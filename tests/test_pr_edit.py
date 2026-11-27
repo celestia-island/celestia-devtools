@@ -243,12 +243,16 @@ def test_help_documents_the_bypass(capsys):
 #: EVERY spelling `gh pr edit --help` documents for writing a body. This list
 #: IS the contract: review R2 found the short `-F` form silently forwarded, and
 #: `test_other_shapes_are_not_intercepted` could not catch it because it only
-#: asserted the long spelling (MUT:narrow-proxy-to-long-flag reds fourteen:
-#: six `test_every_body_write_spelling_is_intercepted` cases, four
-#: `test_every_body_write_spelling_reaches_the_guard` cases, and the four
-#: short-flag proxy controls — `test_other_shapes_are_not_intercepted` itself
-#: stays green, because it asserts the shapes that carry only the long flag).
-#: A new alias must be added here and to
+#: asserted the long spelling (MUT:narrow-proxy-to-long-flag reds sixteen, as
+#: measured: eight `test_every_body_write_spelling_is_intercepted` cases, three
+#: `test_an_unknown_body_flag_is_refused_not_forwarded` cases, and five proxy
+#: controls — `test_the_short_body_flag_is_not_forwarded_raw`,
+#: `test_proxy_refuses_the_short_flag_shared_path`,
+#: `test_proxy_refuses_the_short_flag_shared_path_with_a_repo`,
+#: `test_proxy_refuses_an_inline_body` and `test_proxy_accepts_a_pr_url_target`.
+#: `test_other_shapes_are_not_intercepted` itself stays green, because it
+#: asserts the shapes that carry only the long flag). A new alias must be
+#: added here and to
 #: `gh_proxy.BODY_FILE_FLAGS` / `BODY_INLINE_FLAGS` together; the
 #: `gh pr edit --help` comparison below pins this list against the real binary.
 BODY_WRITE_SPELLINGS = tuple((["--body-file", "/tmp/hikari-1586-pr-body.md"], ["--body-file=/tmp/hikari-1586-pr-body.md"], ["-F", "/tmp/hikari-1586-pr-body.md"], ["-F=/tmp/hikari-1586-pr-body.md"], ["-F/tmp/hikari-1586-pr-body.md"], ["-F", "-"], ["--body", "inline text"], ["--body=inline text"], ["-b", "inline text"], ["-binline text"]))
@@ -270,6 +274,11 @@ BODY_WRITE_WORDS = ("body", "bodies")
 
 def _gh_pr_edit_body_flags(help_text: str) -> set[str]:
     """Both spellings of every flag that writes the body, including long-only ones.
+
+    NOTE (review R6 finding 5): the description text only NOMINATES candidates.
+    Whether a flag is a body write is decided by the prefix rule in the proxy
+    (`--body*`) plus its known tables — a description is English, and "the body
+    of the request" would make any flag look like a body write.
 
     Long and short names are returned because the short alias is a bypass
     surface in its own right (review R4's `-W`), and the long-only shape is
@@ -332,7 +341,13 @@ def test_the_spelling_table_matches_gh_pr_edit_help():
     assert help_text, "gh pr edit --help produced no output"
 
     documented = _gh_pr_edit_body_flags(help_text)
-    assert documented == {"-b", "--body", "-F", "--body-file"}, f"gh now documents other body flags: {sorted(documented)}"
+    # Every flag gh NAMES as a body write must be covered by the proxy, whose
+    # safety boundary is the `--body` prefix (so an unenumerated spelling is
+    # still intercepted, review R6 finding 3). A candidate outside that prefix
+    # would need a real decision; today gh documents none.
+    outside = {flag for flag in documented if not flag.startswith("--") and (flag not in gh_proxy.BODY_FILE_FLAGS) and (flag not in gh_proxy.BODY_INLINE_FLAGS)}
+    assert outside == set(), f"gh documents a body flag outside the --body prefix: {sorted(outside)}"
+    assert {"--body", "--body-file"} <= documented, f"gh no longer documents a known body flag: {sorted(documented)}"
     assert _declared_body_flags() == documented, f"declared body flags {sorted(_declared_body_flags())} != gh's {sorted(documented)} — a spelling the proxy does not intercept"
 
 def test_the_flag_parser_sees_a_long_only_body_flag():
@@ -387,6 +402,37 @@ def test_a_branch_name_is_forwarded_untranslated_and_refused_by_name(capsys):
     err = capsys.readouterr().err
     assert rc == EXIT_REFUSED, err
     assert ("PR-EDIT REFUSED (target)" in err) and ("branch name" in err)
+
+def test_a_branch_name_shaped_like_a_url_path_is_not_a_url(capsys):
+    # R6 finding 2: an unanchored search reduced `origin/pull/1586` to --pr 1586,
+    # which is exactly the branch-name translation the policy forbids.
+    translated = gh_proxy._guard_argv(["gh", "pr", "edit", "origin/pull/1586", "--body-file", "p"])
+    assert translated == ["origin/pull/1586", "--body-file", "p"]
+    rc = main(["origin/pull/1586", "--repo", REPO, "--body-file", "/tmp/hikari-1586-pr-body.md", "--expect-marker", MARKER])
+    err = capsys.readouterr().err
+    assert (rc == EXIT_REFUSED) and ("'origin/pull/1586'" in err), err
+
+@pytest.mark.parametrize("flag", ["--body-limit", "--body-stdin", "--body=inline"])
+def test_an_unknown_body_flag_is_refused_not_forwarded(flag, capsys):
+    # R6 finding 3: `--body-limit` was forwarded untouched (False from
+    # _is_guarded_pr_edit). The prefix rule closes the family, not one name.
+    argv = ["pr", "edit", "1586", flag, "5"]
+
+    if flag.startswith("--body="):
+        argv = ["pr", "edit", "1586", "--body", "inline"]
+
+    assert gh_proxy._is_guarded_pr_edit(argv), argv
+
+    rc = main(["--repo", REPO, "--pr", "1586", flag, "5", "--expect-marker", MARKER])
+    err = capsys.readouterr().err
+    assert rc == EXIT_REFUSED, err
+    assert ("REFUSED" in err), err
+
+@pytest.mark.parametrize("argv,expected", [(["gh", "pr", "edit", "--repo", "1234", "1586", "--body-file", "f"], ["--pr", "1586", "--repo", "1234", "--body-file", "f"]), (["gh", "pr", "edit", "--title", "7", "1586", "--body-file", "f"], ["--pr", "1586", "--title", "7", "--body-file", "f"]), (["gh", "pr", "edit", "--repo", "o/r", "--title", "9", "1586", "-F", "f"], ["--pr", "1586", "--repo", "o/r", "--title", "9", "--body-file", "f"])])
+def test_a_flag_value_is_never_read_as_the_pr_number(argv, expected):
+    # R6 finding 1: scanning positionals before consuming flag values read
+    # `--repo 1234` as the PR number.
+    assert gh_proxy._guard_argv(argv) == expected
 
 @pytest.mark.parametrize("argv", [["pr", "edit", "1586", "--title", "x"], ["pr", "edit", "1586", "-l", "bug"], ["pr", "edit", "1586", "--add-label", "x"], ["pr", "edit", "1586", "-t", "x"], ["pr", "view", "1586", "--body-file", "/tmp/x.md"], ["pr", "close", "1586", "--body-file", "/tmp/x.md"], ["pr", "brief"], ["pr"], [], ["issue", "edit", "1", "--body-file", "/tmp/x.md"]])
 def test_other_shapes_are_not_intercepted(argv):

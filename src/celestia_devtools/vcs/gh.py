@@ -42,11 +42,12 @@ _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
 # brew on Linux
 _GUESSES = ["/usr/bin/gh", "/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/home/linuxbrew/.linuxbrew/bin/gh"]
 
-#: Every spelling ``gh pr edit`` accepts for the body-writing flags
+#: The body-writing flags whose spelling the guard KNOWS how to handle
 #: (``gh pr edit --help``: ``-b, --body string`` / ``-F, --body-file file``).
-#: Enumerated rather than pattern-matched so a new alias must be added here on
-#: purpose: review R2 found the short ``-F`` form silently forwarded, and that
-#: is exactly the 2026-11-27 shape (a body written from a shared scratch path).
+#: This table is the exact-match set, not the safety boundary: any other
+#: ``--body…`` spelling is treated as a body write too (see
+#: :data:`BODY_FLAG_PREFIX`) and refused by name, because review R6 showed an
+#: enumeration is only safe for the aliases someone remembered to list.
 BODY_FILE_FLAGS = ("--body-file", "-F")
 
 #: ``-b`` / ``--body`` takes the body INLINE. Intercepted as well: an inline
@@ -54,12 +55,21 @@ BODY_FILE_FLAGS = ("--body-file", "-F")
 #: refuses it and names ``--body-file`` instead of letting gh accept it.
 BODY_INLINE_FLAGS = ("--body", "-b")
 
-#: A pull-request URL as `gh` accepts it in place of a number:
-#: ``https://github.com/OWNER/REPO/pull/123`` (optionally `/files`, trailing
-#: slash, query). The number is the only part that maps onto ``--pr``; the
-#: repo in the URL is NOT used to fill ``--repo`` — an unstated ``--repo`` must
-#: stay a refusal, so a URL call still has to name its repo.
-_PR_URL = re.compile(r"/pull/(?P<number>\d+)(?:/|$|[?#])")
+#: Prefix that makes a flag a BODY write even when it is not in the tables
+#: above (review R6: ``--body-limit`` was forwarded untouched). Fail-closed by
+#: construction — a spelling nobody enumerated is intercepted and refused, not
+#: forwarded.
+BODY_FLAG_PREFIX = "--body"
+
+#: A pull-request URL as `gh` accepts it in place of a number, ANCHORED so the
+#: whole token must be the URL: ``https://github.com/OWNER/REPO/pull/123`` or
+#: ``git@github.com:OWNER/REPO/pull/123`` (optional `/files`, trailing slash,
+#: query, fragment). ``search()`` was wrong here — it also matched a BARE
+#: BRANCH NAME like ``origin/pull/1586``, turning the branch-name policy into
+#: a silent translation (review R6). The number is the only part that maps
+#: onto ``--pr``; the repo inside the URL is deliberately NOT used to fill
+#: ``--repo``, because an unstated repo must stay a refusal.
+_PR_URL = re.compile(r"^(?:https?://[^/\s]+/|[\w.-]+@[\w.-]+:)[^\s]*/pull/(?P<number>\d+)(?:/\S*)?$")
 
 def _find_gh() -> str:
     if os.environ.get(_ENV_SKIP):
@@ -98,9 +108,9 @@ def _pr_number(token: str) -> str | None:
     ``--repo`` exists to remove. A branch name is therefore left untranslated
     and the guard answers with a message that says what to pass instead.
     """
-    match = _PR_URL.search(token)
-    direct = token if token.isdigit() else None
-    return direct or (match.group("number") if match else None)
+    match = _PR_URL.match(token)
+    digit = token if token.isdigit() else None
+    return digit or (match.group("number") if match else None)
 
 def _flag_value(item: str, names: tuple[str, ...]) -> str | None:
     """The value when *item* carries one of *names*, else ``None``.
@@ -135,8 +145,33 @@ def _is_guarded_pr_edit(argv: list[str]) -> bool:
     ``hikari#1586`` 2026-11-27) both moved a *body*.
     """
     is_edit = (len(argv) >= 3) and (argv[0] == "pr") and (argv[1] == "edit")
-    writes_body = [item for item in argv[2:] if (_flag_value(item, BODY_FILE_FLAGS) is not None) or (_flag_value(item, BODY_INLINE_FLAGS) is not None)]
+    writes_body = [item for item in argv[2:] if _touches_body(item)]
     return bool(is_edit and writes_body)
+
+def _touches_body(item: str) -> bool:
+    """True for any argv token that could be a body write, known or not.
+
+    Exact matches on the two tables first, then the ``--body`` prefix: a
+    spelling nobody enumerated (``--body-limit`` in review R6) is still a
+    candidate body write and must be intercepted rather than forwarded. The
+    proxy cannot know what an unknown ``--body*`` flag does, and the cost of
+    guessing wrong in the permissive direction is the 2026-11-27 write.
+    """
+    known = (_flag_value(item, BODY_FILE_FLAGS) is not None) or (_flag_value(item, BODY_INLINE_FLAGS) is not None)
+    return known or (item.startswith(BODY_FLAG_PREFIX) and (item != BODY_FLAG_PREFIX))
+
+#: The ``gh pr edit`` flags that take a value (``gh pr edit --help``). Every
+#: one of them must have its VALUE consumed before positional arguments are
+#: scanned, or `--repo 1234 1586` reads `1234` as the PR number (review R6).
+#: Only used to skip values — an unknown flag still leaves its neighbour
+#: unscanned, which keeps the fail-closed behaviour.
+PR_EDIT_VALUE_FLAGS = ("--add-assignee", "--add-label", "--add-project", "--add-reviewer", "--body", "--body-file", "--base", "--milestone", "--project", "--remove-assignee", "--remove-label", "--remove-project", "--remove-reviewer", "--repo", "--template", "--title", "-A", "-B", "-F", "-R", "-T", "-a", "-b", "-l", "-m", "-p", "-r", "-t", "-j")
+
+def _takes_value(item: str) -> bool:
+    """True when *item* is a flag carrying a separate value (``--repo X``)."""
+    known = item in PR_EDIT_VALUE_FLAGS
+    short = (len(item) == 2) and item.startswith("-") and (not item.startswith("--"))
+    return known or short
 
 def _guard_argv(argv: list[str]) -> list[str]:
     """``[gh,] pr edit <N> …`` → the guarded subcommand's own argv.
@@ -157,19 +192,11 @@ def _guard_argv(argv: list[str]) -> list[str]:
     body_file: str | None = None
     body_inline: str | None = None
     forwarded: list[str] = []
-    skip = False
+    index = 0
 
-    for index, item in enumerate(tail):
-        if skip:
-            skip = False
-            continue
-
-        if number is None:
-            resolved = _pr_number(item)
-
-            if resolved is not None:
-                number = resolved
-                continue
+    while index < len(tail):
+        item = tail[index]
+        index += 1
 
         value = _flag_value(item, BODY_FILE_FLAGS)
 
@@ -177,8 +204,8 @@ def _guard_argv(argv: list[str]) -> list[str]:
             # Two body-file flags in one invocation: the LAST wins, which is
             # what gh itself does. Not a refusal, because a caller that repeats
             # the flag is asking for that value.
-            body_file = tail[index + 1] if (index + 1) < len(tail) else ""
-            skip = True
+            body_file = tail[index] if index < len(tail) else ""
+            index += 1
             continue
 
         if value is not None:
@@ -188,13 +215,31 @@ def _guard_argv(argv: list[str]) -> list[str]:
         inline = _flag_value(item, BODY_INLINE_FLAGS)
 
         if inline == "":
-            body_inline = tail[index + 1] if (index + 1) < len(tail) else ""
-            skip = True
+            body_inline = tail[index] if index < len(tail) else ""
+            index += 1
             continue
 
         if inline is not None:
             body_inline = inline
             continue
+
+        # A flag's VALUE is never a positional: it is copied through with the
+        # flag and skipped, so `--repo 1234 1586` cannot read `1234` as the PR.
+        if _takes_value(item):
+            forwarded.append(item)
+
+            if index < len(tail):
+                forwarded.append(tail[index])
+                index += 1
+
+            continue
+
+        if number is None:
+            resolved = _pr_number(item)
+
+            if resolved is not None:
+                number = resolved
+                continue
 
         forwarded.append(item)
 

@@ -251,6 +251,33 @@ def body_inline_problems(body: str | None) -> list[str]:
     preview = body[:60] + ("…" if len(body) > 60 else "")
     return [refusal.format(preview = preview)]
 
+def _body_flag_tables() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The proxy's two body-flag tables (imported late: `gh` imports THIS module)."""
+    from celestia_devtools.vcs.gh import BODY_FILE_FLAGS, BODY_INLINE_FLAGS  # py-style-ok: no-block-imports: the gh <-> pr_edit module cycle (gh delegates pr edit here at module scope)
+    return BODY_FILE_FLAGS, BODY_INLINE_FLAGS
+
+def unknown_body_flag_problems(extras: Sequence[str]) -> list[str]:
+    """``--body…`` spellings this guard does not know how to check (empty = none).
+
+    The proxy intercepts every ``--body*`` token, including spellings gh may add
+    later. Reaching this function with one means the guard has no rule for it —
+    it does not know whether it reads a file, takes stdin or writes inline — so
+    the honest answer is a refusal that names the flag, not a forward.
+    """
+    return _unknown_body_flags(extras or ())
+
+def _unknown_body_flags(extras: Sequence[str]) -> list[str]:
+    """The refusal messages for the ``--body…`` spellings *extras* carries."""
+    tables = _body_flag_tables()
+    known = set(tables[0]) | set(tables[1])
+    unknown = [extra for extra in (extras or ()) if extra.startswith("--body") and (extra not in known)]
+
+    if not unknown:
+        return []
+
+    shapes = ", ".join(f"{extra[:60]!r}" for extra in unknown)
+    return [f"{shapes} is a body flag this guard has no rule for (known: --body-file / -F, --body / -b) — write the body to an owned file and pass --body-file"]
+
 def target_problems(extras: Sequence[str]) -> list[str]:
     """Why the positional target this call carried cannot be used (empty = it can).
 
@@ -387,6 +414,7 @@ REFUSAL_READBACK = "PR-EDIT REFUSED (unreadable)"
 REFUSAL_EDIT_FAILED = "PR-EDIT REFUSED (gh edit)"
 REFUSAL_BODY_INLINE = "PR-EDIT REFUSED (inline body)"
 REFUSAL_TARGET = "PR-EDIT REFUSED (target)"
+REFUSAL_BODY_FLAG = "PR-EDIT REFUSED (unknown body flag)"
 
 # ── --selftest ──────────────────────────────────────────────────────────────
 
@@ -653,14 +681,57 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("extras", nargs = "*", metavar = "TARGET", help = "a positional target the `gh` proxy could not reduce to a number (a branch name) — refused by name, because a branch name is not a PR identity")
     return parser
 
+def _split_unknown_body_flags(argv: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """Split argv into (known argv, unknown ``--body*`` flags, their values).
+
+    argparse would reject an unknown ``--body…`` with a generic usage error and
+    a value left dangling; separating them first lets the refusal name the flag
+    and what to use instead.
+    """
+    known = {"--body-file", "--body", "-F", "-b"}
+    kept: list[str] = []
+    flags: list[str] = []
+    values: list[str] = []
+    index = 0
+
+    while index < len(argv):
+        item = argv[index]
+        index += 1
+        name = item.split("=", 1)[0]
+
+        if name.startswith("--body") and (name not in known):
+            flags.append(item)
+
+            if ("=" not in item) and (index < len(argv)):
+                values.append(argv[index])
+                index += 1
+
+            continue
+
+        kept.append(item)
+
+    return kept, flags, values
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(list(argv if argv is not None else sys.argv[1:]))
+    raw = list(argv if argv is not None else sys.argv[1:])
+    kept, unknown_flags, _values = _split_unknown_body_flags(raw)
+    early = unknown_body_flag_problems(unknown_flags)
+
+    if early:
+        return _refuse(REFUSAL_BODY_FLAG, early)
+
+    args = _parser().parse_args(kept)
 
     if args.selftest:
         return selftest()
 
-    # A positional target reaches here only when the proxy could not reduce it
-    # to a PR number (a URL becomes --pr; a branch name does not).
+    # A positional reaches here for one of two reasons: the proxy could not
+    # reduce it to a PR number (a branch name — a URL becomes --pr), or it is a
+    # body flag nobody enumerated (`--body-limit`), which must be refused by
+    # name rather than forwarded.
+    if unknown := unknown_body_flag_problems(args.extras):
+        return _refuse(REFUSAL_BODY_FLAG, unknown)
+
     if goals := target_problems(args.extras):
         return _refuse(REFUSAL_TARGET, goals)
 
