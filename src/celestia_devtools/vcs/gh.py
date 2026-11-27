@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Transparent GitHub CLI proxy — validates commit subject on ``pr merge``, passes
+"""Transparent GitHub CLI proxy — validates commit subject on ``pr merge``,
+routes ``pr edit … --body-file`` through the guarded editor, and passes
 everything else through to the real ``gh`` binary.
 
 Usage (after adding to ~/.bashrc)::
@@ -9,10 +10,18 @@ Usage (after adding to ~/.bashrc)::
     # pr merge → subject validated before forwarding
     gh pr merge "🐛 Fix bug." --squash --repo owner/repo
 
+    # pr edit --body-file → guarded: mandatory --repo, an owned body path, a
+    # readback assertion (see `celestia-devtools pr-edit --help`)
+    gh pr edit 1586 --repo celestia-island/hikari --body-file /tmp/hikari-1586-pr-body.md
+
     # everything else → forwarded to real gh unchanged
     gh pr list
+    gh pr edit 1586 --repo owner/repo --add-reviewer someone
     gh issue create
     gh repo view
+
+Break-glass: ``CELESTIA_PR_EDIT_BYPASS=1`` forwards ``pr edit --body-file``
+unguarded (with a loud stderr warning) — for an emergency, not for daily use.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ import shutil
 import subprocess
 import sys
 from celestia_devtools.vcs.commit_msg import lint, repo_allows_cjk, repo_name_from_git_remote, repo_name_from_gh_flag
+from celestia_devtools.vcs.pr_edit import bypass_active, bypass_warning, main as guarded_edit_main
 
 _REAL_GH: str = ""
 _ENV_SKIP = "CELESTIA_DEVTOOLS_GH_SKIP"
@@ -58,8 +68,70 @@ def _real_gh() -> str:
 
     return _REAL_GH
 
+def _is_guarded_pr_edit(argv: list[str]) -> bool:
+    """True for ``pr edit <N> … --body-file …`` and nothing else.
+
+    Only the body-writing shape is intercepted: a title / reviewer / label edit
+    and a bare ``gh pr view`` / ``pr close`` keep forwarding untouched, because
+    the guards (repo pin, owned body path, body readback) are about the body
+    write — the two recorded cross-writes (``cherino#42`` 2026-11-15,
+    ``hikari#1586`` 2026-11-27) both moved a *body*.
+    """
+    is_edit = (len(argv) >= 3) and (argv[0] == "pr") and (argv[1] == "edit")
+    writes_body = is_edit and any((a == "--body-file") or a.startswith("--body-file=") for a in argv[2:])
+    return bool(writes_body)
+
+def _guard_argv(argv: list[str]) -> list[str]:
+    """``[gh,] pr edit <N> …`` → the guarded subcommand's own argv.
+
+    ``gh`` takes the PR number positionally and ``pr-edit`` takes ``--pr``, so
+    the number is the one argument that has to move; ``--repo`` and the
+    ``--body-file`` ferry over as-is.  ``--body-file=X`` becomes
+    ``--body-file X`` because a single-flag spelling is worth normalising where
+    the guard is about to read it.  ``--expect-marker`` / ``--expect-head``
+    simply pass through when a caller supplies them (a raw ``gh`` never does —
+    they reject unknown flags — so their presence is an explicit opt-in).
+    """
+    head = argv[1:] if (argv[:1] == ["gh"]) else list(argv)
+    tail = head[2:]  # after "pr edit"
+    number = None
+    body_file: str | None = None
+    forwarded: list[str] = []
+    skip = False
+
+    for index, item in enumerate(tail):
+        if skip:
+            skip = False
+            continue
+
+        if (number is None) and item.isdigit():
+            number = item
+            continue
+
+        if item == "--body-file":
+            body_file = tail[index + 1] if (index + 1) < len(tail) else ""
+            skip = True
+            continue
+
+        if item.startswith("--body-file="):
+            body_file = item.split("=", 1)[1]
+            continue
+
+        forwarded.append(item)
+
+    return (["--pr", number] if number else []) + forwarded + ((["--body-file", body_file]) if body_file is not None else [])
+
 def main() -> int:
     argv = sys.argv[1:]
+
+    if _is_guarded_pr_edit(argv):
+        if bypass_active():
+            print(bypass_warning("`gh pr edit --body-file`"), file = sys.stderr)
+        else:
+            # Delegated to the guarded subcommand: it owns the refusals, so one
+            # implementation serves both the proxy and a direct invocation, and
+            # a refusal here is byte-identical to one there.
+            return guarded_edit_main(_guard_argv(argv))
 
     if not argv:
         subprocess.run([_real_gh()])
