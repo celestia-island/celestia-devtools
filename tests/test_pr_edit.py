@@ -243,28 +243,36 @@ def test_help_documents_the_bypass(capsys):
 #: EVERY spelling `gh pr edit --help` documents for writing a body. This list
 #: IS the contract: review R2 found the short `-F` form silently forwarded, and
 #: `test_other_shapes_are_not_intercepted` could not catch it because it only
-#: asserted the long spelling (MUT:narrow-proxy-to-long-flag reds the eight
-#: parametrized spelling cases and the four short-flag proxy controls, twelve
-#: in all; `test_other_shapes_are_not_intercepted` itself stays green, because
-#: it asserts the shapes that only carry the long flag). A new alias must be
-#: added here and to
+#: asserted the long spelling (MUT:narrow-proxy-to-long-flag reds fourteen:
+#: six `test_every_body_write_spelling_is_intercepted` cases, four
+#: `test_every_body_write_spelling_reaches_the_guard` cases, and the four
+#: short-flag proxy controls — `test_other_shapes_are_not_intercepted` itself
+#: stays green, because it asserts the shapes that carry only the long flag).
+#: A new alias must be added here and to
 #: `gh_proxy.BODY_FILE_FLAGS` / `BODY_INLINE_FLAGS` together; the
 #: `gh pr edit --help` comparison below pins this list against the real binary.
 BODY_WRITE_SPELLINGS = tuple((["--body-file", "/tmp/hikari-1586-pr-body.md"], ["--body-file=/tmp/hikari-1586-pr-body.md"], ["-F", "/tmp/hikari-1586-pr-body.md"], ["-F=/tmp/hikari-1586-pr-body.md"], ["-F/tmp/hikari-1586-pr-body.md"], ["-F", "-"], ["--body", "inline text"], ["--body=inline text"], ["-b", "inline text"], ["-binline text"]))
 
-#: ``gh pr edit --help`` lists one flag per line as ``  -x, --long TYPE  text``.
-#: Both halves are captured: a flag's SHORT alias is what a script actually
-#: types, so a table that only machine-checks long names can be bypassed by a
-#: future `-W, --body-file` (review R4's reproduction).
-_GH_HELP_FLAG = re.compile(r"^\s+-(?P<short>[A-Za-z]),\s--(?P<long>[a-z-]+)(?:=|\s)", re.MULTILINE)
+#: ``gh pr edit --help`` lists a flag line as ``  -x, --long TYPE  text`` when
+#: it has a short alias and as ``      --long TYPE  text`` when it does not.
+#: Both shapes must be parsed: a long-only body flag is just as reachable as
+#: `--body-file` and would otherwise slip past (review R5's `--body-stdin`).
+_GH_HELP_FLAG = re.compile(r"^\s+(?:-(?P<short>[A-Za-z]),\s+)?--(?P<long>[a-z-]+)(?:=|\s)", re.MULTILINE)
+
+#: The words that make a flag a BODY WRITE. Matched on the description (the
+#: text after the flag token), never on the flag name alone: `--title`,
+#: `--attach` and `--base` mention a pull request but not a body, so a long-flag
+#: sweep that ignored the description would drag them in and the comparison
+#: would then demand interception for flags that write no body.
+BODY_WRITE_WORDS = ("body", "bodies")
 
 def _gh_pr_edit_body_flags(help_text: str) -> set[str]:
-    """Both spellings (``-b`` and ``--body``) of every flag that writes the body.
+    """Both spellings of every flag that writes the body, including long-only ones.
 
-    The body flags are the ones whose help text after the flag name says
-    "body": ``-b, --body string Set the new body.`` and ``-F, --body-file file
-    Read body text from file …``. Long AND short names are returned, because
-    the short alias is the bypass surface review R4 demonstrated.
+    Long and short names are returned because the short alias is a bypass
+    surface in its own right (review R4's `-W`), and the long-only shape is
+    returned because a body flag need not have a short alias at all (review
+    R5's `--body-stdin`).
     """
     found: set[str] = set()
 
@@ -274,14 +282,17 @@ def _gh_pr_edit_body_flags(help_text: str) -> set[str]:
         if not match:
             continue
 
-        # Split on the FLAG TOKEN, not on the long name: a line whose
-        # description merely says "alias" must still be recognised as a body
-        # flag, and one that only names a different flag in its prose must not.
+        # The description starts right after the flag token; splitting on the
+        # long name keeps a prose mention of another flag out of the decision.
         description = line.split(match.group("long"), 1)[-1].lower()
 
-        if "body" in description:
+        if not any(word in description for word in BODY_WRITE_WORDS):
+            continue
+
+        found.add("--" + match.group("long"))
+
+        if match.group("short"):
             found.add("-" + match.group("short"))
-            found.add("--" + match.group("long"))
 
     return found
 
@@ -306,14 +317,14 @@ def test_the_spelling_table_matches_gh_pr_edit_help():
     """The declared spellings must equal what `gh pr edit --help` documents.
 
     Guard the guard: the table is a literal and the proxy tables are literals,
-    so a gh release adding a body alias — long OR short — would leave them
-    stale while the suite stayed green (review R4's `-W, --body-file`
-    reproduction). Parsing the real help closes it; the parser is proven on a
-    known-positive sample first, including a foreign short alias, so a broken
-    capture cannot pass vacuously.
+    so a gh release adding a body alias — long, short or long-only — would
+    leave them stale while the suite stayed green. Parsing the real help closes
+    it; the parser is proven on a known-positive sample first, including a
+    foreign short alias and a long-only flag, so a broken capture cannot pass
+    vacuously.
     """
-    sample = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file (use \"-\" to read from standard input)\n  -W, --body-file file          Also reads body text from a file.\n  -t, --title string            Set the new title.\n"
-    assert _gh_pr_edit_body_flags(sample) == {"-b", "--body", "-F", "--body-file", "-W"}
+    sample = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file (use \"-\" to read from standard input)\n  -W, --body-file file          Also reads body text from a file.\n      --body-stdin string       Read the new body from standard input.\n  -t, --title string            Set the new title.\n"
+    assert _gh_pr_edit_body_flags(sample) == {"-b", "--body", "-F", "--body-file", "-W", "--body-stdin"}
 
     help_text = subprocess.run(["gh", "pr", "edit", "--help"], capture_output = True, text = True, check = False).stdout
     assert help_text, "gh pr edit --help produced no output"
@@ -322,18 +333,21 @@ def test_the_spelling_table_matches_gh_pr_edit_help():
     assert documented == {"-b", "--body", "-F", "--body-file"}, f"gh now documents other body flags: {sorted(documented)}"
     assert _declared_body_flags() == documented, f"declared body flags {sorted(_declared_body_flags())} != gh's {sorted(documented)} — a spelling the proxy does not intercept"
 
-def test_the_flag_parser_sees_a_new_short_alias():
-    """The R4 reproduction: a future short alias must change the parsed set.
+def test_the_flag_parser_sees_a_long_only_body_flag():
+    """The R5 reproduction: a body flag with NO short alias must be captured.
 
-    A help text where `--body-file` also answers to `-W` must come back with
-    `-W` in the set; that is the signal `_declared_body_flags()` is compared
-    against, so a new alias reds the comparison above instead of slipping past
-    (MUT:fake-gh-adds-short-alias: a fake gh on PATH printing `-W, --body-file`
-    reds it with "gh now documents other body flags").
+    `      --body-stdin string  Read the new body …` has no `-x,` prefix; a
+    parser that required one returned an empty hit and left the suite green
+    while the proxy forwarded the flag. MUT:fake-gh-adds-long-only-body-flag
+    (a fake gh printing `--body-stdin`) reds the comparison above.
     """
-    fake = "  -b, --body string             Set the new body.\n  -F, --body-file file          Read body text from file\n  -W, --body-file file          Also reads body text from a file\n"
-    assert "-W" in _gh_pr_edit_body_flags(fake)
-    assert "-W" not in _declared_body_flags(), "the proxy must not claim an alias it does not intercept"
+    fake = "      --body-stdin string       Read the new body from standard input.\n  -t, --title string            Set the new title.\n"
+    assert _gh_pr_edit_body_flags(fake) == {"--body-stdin"}, "a long-only body flag must be parsed, and a non-body flag must not"
+
+def test_the_body_words_do_not_drag_in_a_pull_request_flag():
+    """`--attach` / `--base` talk about a PR, not a body — they must stay out."""
+    fake = "      --attach file             Attach a file to the pull request.\n  -B, --base branch             Change the base branch for this pull request\n  -b, --body string             Set the new body.\n"
+    assert _gh_pr_edit_body_flags(fake) == {"-b", "--body"}
 
 @pytest.mark.parametrize("spelling", BODY_WRITE_SPELLINGS)
 def test_every_body_write_spelling_is_intercepted(spelling):
@@ -353,6 +367,24 @@ def test_the_short_body_flag_is_not_forwarded_raw():
     # The R2 face verbatim: `gh pr edit 123 -F /tmp/pr-body.md` used to be
     # forwarded untouched, which is the 2026-11-27 shared-path write.
     assert gh_proxy._is_guarded_pr_edit(["pr", "edit", "123", "-F", "/tmp/pr-body.md"]) is True
+
+@pytest.mark.parametrize("argv,expected", [(["gh", "pr", "edit", "https://github.com/celestia-island/hikari/pull/1586", "--body-file", "p"], ["--pr", "1586", "--body-file", "p"]), (["gh", "pr", "edit", "https://github.com/celestia-island/hikari/pull/1586/files", "-F", "p"], ["--pr", "1586", "--body-file", "p"]), (["gh", "pr", "edit", "1586", "--body-file", "p"], ["--pr", "1586", "--body-file", "p"])])
+def test_a_pr_url_reduces_to_its_number(argv, expected):
+    # `gh pr edit <url> --body-file …` used to die in argparse (exit 2, no
+    # write but no explanation); the URL now maps onto --pr like a number does.
+    assert gh_proxy._guard_argv(argv) == expected
+
+def test_a_branch_name_is_forwarded_untranslated_and_refused_by_name(capsys):
+    # A branch name is not a PR identity: gh resolves it against the remote, so
+    # the same name can mean different PRs in different repositories. It stays
+    # positional and the guard says what to pass instead of a bare usage error.
+    translated = gh_proxy._guard_argv(["gh", "pr", "edit", "feat-branch", "--body-file", "p"])
+    assert translated == ["feat-branch", "--body-file", "p"]
+
+    rc = main(["feat-branch", "--repo", REPO, "--body-file", "/tmp/hikari-1586-pr-body.md", "--expect-marker", MARKER])
+    err = capsys.readouterr().err
+    assert rc == EXIT_REFUSED, err
+    assert ("PR-EDIT REFUSED (target)" in err) and ("branch name" in err)
 
 @pytest.mark.parametrize("argv", [["pr", "edit", "1586", "--title", "x"], ["pr", "edit", "1586", "-l", "bug"], ["pr", "edit", "1586", "--add-label", "x"], ["pr", "edit", "1586", "-t", "x"], ["pr", "view", "1586", "--body-file", "/tmp/x.md"], ["pr", "close", "1586", "--body-file", "/tmp/x.md"], ["pr", "brief"], ["pr"], [], ["issue", "edit", "1", "--body-file", "/tmp/x.md"]])
 def test_other_shapes_are_not_intercepted(argv):
@@ -431,6 +463,21 @@ def test_proxy_refuses_the_short_flag_shared_path_with_a_repo(monkeypatch, tmp_p
     assert rc == EXIT_REFUSED, err
     assert [c for c in calls if (c and (c[0] == "/usr/bin/gh"))] == []
     assert "PR-EDIT REFUSED (body-file)" in err
+
+def test_proxy_accepts_a_pr_url_target(monkeypatch, tmp_path, capsys):
+    # The URL form now reaches the guard with --pr instead of dying in
+    # argparse; it still refuses, but for the owned-path reason, which proves
+    # the number was carried across.
+    calls: list = []
+    monkeypatch.setattr(gh_proxy, "_real_gh", lambda: "/usr/bin/gh")
+    monkeypatch.setattr(gh_proxy.subprocess, "run", lambda *a, **k: calls.append(a) or _probe())
+    monkeypatch.setattr(gh_proxy.sys, "argv", ["gh", "pr", "edit", "https://github.com/celestia-island/hikari/pull/42", "-F", "/tmp/pr-body.md", "--repo", REPO, "--expect-marker", MARKER])
+
+    rc = gh_proxy.main()
+    err = capsys.readouterr().err
+    assert rc == EXIT_REFUSED, err
+    assert [c for c in calls if (c and (c[0] == "/usr/bin/gh"))] == []
+    assert "PR-EDIT REFUSED (body-file)" in err, err
 
 def test_proxy_refuses_an_inline_body(monkeypatch, capsys):
     calls: list = []

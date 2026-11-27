@@ -251,6 +251,20 @@ def body_inline_problems(body: str | None) -> list[str]:
     preview = body[:60] + ("…" if len(body) > 60 else "")
     return [refusal.format(preview = preview)]
 
+def target_problems(extras: Sequence[str]) -> list[str]:
+    """Why the positional target this call carried cannot be used (empty = it can).
+
+    ``gh pr edit`` accepts a URL and a branch name positionally. The proxy
+    reduces a URL to its ``/pull/<n>`` number before calling here, so an extra
+    positional that reaches this function is a branch name — and a branch name
+    is not a PR identity: gh resolves it against the remote, so the same name
+    can mean different pull requests in different repositories. Refusing it by
+    NAME is the difference between "usage: --pr is required" and a message that
+    tells the caller what to pass instead.
+    """
+    shapes = ", ".join(f"{extra[:60]!r}" for extra in (extras or ()))
+    return [] if not extras else [f"{shapes} was passed as the pull-request target — pass --pr <number> or a pull-request URL instead of a branch name, because a branch name resolves against whatever repository the caller happens to be in"]
+
 def _refuse(kind: str, problems: Sequence[str], file = None) -> int:
     """Print one named refusal and return its exit code."""
     lines = [f"❌ {kind}: {problem}" for problem in problems]
@@ -372,6 +386,7 @@ REFUSAL_HEAD_MOVED = "PR-EDIT REFUSED (head)"
 REFUSAL_READBACK = "PR-EDIT REFUSED (unreadable)"
 REFUSAL_EDIT_FAILED = "PR-EDIT REFUSED (gh edit)"
 REFUSAL_BODY_INLINE = "PR-EDIT REFUSED (inline body)"
+REFUSAL_TARGET = "PR-EDIT REFUSED (target)"
 
 # ── --selftest ──────────────────────────────────────────────────────────────
 
@@ -629,12 +644,13 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog = "celestia-devtools pr-edit", description = description, epilog = epilog, formatter_class = argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", default = None, help = "OWNER/NAME the PR lives in (mandatory — there is no cwd/origin fallback)")
     parser.add_argument("--pr", type = int, default = None, help = "pull-request number")
-    parser.add_argument("--body-file", default = None, metavar = "PATH", help = "body to write; the basename must name <repo>-<pr> (e.g. hikari-1586-pr-body.md)")
+    parser.add_argument("--body-file", default = None, metavar = "PATH", help = "body to write; the basename must name <repo>-<pr> (e.g. hikari-1586-pr-body.md). Two --body-file flags in one call: the LAST wins, matching gh itself")
     parser.add_argument("--body", "-b", default = None, metavar = "TEXT", help = "INLINE body (gh's -b/--body): always refused — write the text to an owned file and use --body-file")
     parser.add_argument("--expect-marker", default = None, metavar = "STR", help = "string the body must contain, before and after the edit")
     parser.add_argument("--expect-head", default = None, metavar = "SHA", help = "head SHA this edit was prepared against (prefix ok); the head must not move")
     parser.add_argument("--dry-run", action = "store_true", help = "run every guard and the snapshot, then stop without writing")
     parser.add_argument("--selftest", action = "store_true", help = "run the refusal controls (red) and the fixture edit (green)")
+    parser.add_argument("extras", nargs = "*", metavar = "TARGET", help = "a positional target the `gh` proxy could not reduce to a number (a branch name) — refused by name, because a branch name is not a PR identity")
     return parser
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -642,6 +658,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.selftest:
         return selftest()
+
+    # A positional target reaches here only when the proxy could not reduce it
+    # to a PR number (a URL becomes --pr; a branch name does not).
+    if goals := target_problems(args.extras):
+        return _refuse(REFUSAL_TARGET, goals)
 
     # argparse cannot express "required only without --selftest" without making
     # --selftest unusable, so the missing-argument cases are spelled out here.

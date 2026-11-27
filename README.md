@@ -228,6 +228,8 @@ celestia-devtools pr-edit --repo celestia-island/hikari --pr 1586 \
 2. The body file's basename must name `<repo>-<pr>` (e.g. `hikari-1586-pr-body.md`, `pr-1586-hikari.md`); a generic scratch name such as `/tmp/pr-body.md` is refused (the 11-27 shape).
 3. The edit is snapshotted, written, read back and asserted: the new body must carry `--expect-marker`, differ from the snapshot, and leave `title` + `headRefName` unchanged. `--expect-head` pins the reviewed head, and the head must not move across the edit. Any mismatch exits non-zero and prints both bodies' first lines for recovery.
 
+The target may be a PR number or a pull-request URL (`/pull/<n>` is reduced to its number); a **branch name** is refused, because gh resolves it against whatever repository the caller is in and that ambiguity is what `--repo` exists to remove. Two `--body-file` flags in one call: the last wins, as with gh itself.
+
 Every spelling `gh` accepts for a body write is intercepted, not just the long one: `--body-file <p>`, `--body-file=<p>`, `-F <p>`, `-F=<p>` and `-F<p>`. An inline body (`-b` / `--body`) is **refused** — it has no path to attribute to a PR, so write the text to an owned file and pass `--body-file` instead of letting gh take it silently.
 
 `--dry-run` runs every guard and the snapshot without writing; `--selftest` runs the refusal controls (red) and a fixture edit (green). Break-glass: `CELESTIA_PR_EDIT_BYPASS=1` forwards the edit unguarded with a loud warning — for an emergency, not for daily use.

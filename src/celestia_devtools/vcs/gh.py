@@ -26,6 +26,7 @@ unguarded (with a loud stderr warning) — for an emergency, not for daily use.
 
 from __future__ import annotations
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,6 +54,13 @@ BODY_FILE_FLAGS = ("--body-file", "-F")
 #: refuses it and names ``--body-file`` instead of letting gh accept it.
 BODY_INLINE_FLAGS = ("--body", "-b")
 
+#: A pull-request URL as `gh` accepts it in place of a number:
+#: ``https://github.com/OWNER/REPO/pull/123`` (optionally `/files`, trailing
+#: slash, query). The number is the only part that maps onto ``--pr``; the
+#: repo in the URL is NOT used to fill ``--repo`` — an unstated ``--repo`` must
+#: stay a refusal, so a URL call still has to name its repo.
+_PR_URL = re.compile(r"/pull/(?P<number>\d+)(?:/|$|[?#])")
+
 def _find_gh() -> str:
     if os.environ.get(_ENV_SKIP):
         return "gh"
@@ -79,6 +87,20 @@ def _real_gh() -> str:
         _REAL_GH = _find_gh()
 
     return _REAL_GH
+
+def _pr_number(token: str) -> str | None:
+    """The PR number in *token* when it is ``123`` or a pull-request URL.
+
+    ``gh pr edit`` also accepts a URL and a branch name. A URL carries a number
+    this proxy can hand to the guard; a branch name does NOT — ``gh`` resolves
+    it against the remote, so the same branch name can mean different PRs in
+    different repositories, which is exactly the ambiguity the mandatory
+    ``--repo`` exists to remove. A branch name is therefore left untranslated
+    and the guard answers with a message that says what to pass instead.
+    """
+    match = _PR_URL.search(token)
+    direct = token if token.isdigit() else None
+    return direct or (match.group("number") if match else None)
 
 def _flag_value(item: str, names: tuple[str, ...]) -> str | None:
     """The value when *item* carries one of *names*, else ``None``.
@@ -119,9 +141,10 @@ def _is_guarded_pr_edit(argv: list[str]) -> bool:
 def _guard_argv(argv: list[str]) -> list[str]:
     """``[gh,] pr edit <N> …`` → the guarded subcommand's own argv.
 
-    ``gh`` takes the PR number positionally and ``pr-edit`` takes ``--pr``, so
-    the number is the one argument that has to move; ``--repo`` ferries over
-    as-is. The body flags are normalised to what the guard reads: ``-F path``,
+    ``gh`` takes the PR number positionally (or a PR URL) and ``pr-edit`` takes
+    ``--pr``, so the number is the one argument that has to move — a URL is
+    reduced to its ``/pull/<n>`` number and a branch name is passed through
+    untranslated so the guard can report it; ``--repo`` ferries over as-is. The body flags are normalised to what the guard reads: ``-F path``,
     ``-F=path``, ``-Fpath`` and ``--body-file=path`` all become ``--body-file
     path``, and ``-b`` / ``--body`` become ``--body`` (refused by the guard with
     a reason instead of accepted silently by gh). ``--expect-marker`` /
@@ -141,13 +164,19 @@ def _guard_argv(argv: list[str]) -> list[str]:
             skip = False
             continue
 
-        if (number is None) and item.isdigit():
-            number = item
-            continue
+        if number is None:
+            resolved = _pr_number(item)
+
+            if resolved is not None:
+                number = resolved
+                continue
 
         value = _flag_value(item, BODY_FILE_FLAGS)
 
         if value == "":
+            # Two body-file flags in one invocation: the LAST wins, which is
+            # what gh itself does. Not a refusal, because a caller that repeats
+            # the flag is asking for that value.
             body_file = tail[index + 1] if (index + 1) < len(tail) else ""
             skip = True
             continue
