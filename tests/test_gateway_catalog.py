@@ -2,9 +2,11 @@
 
 Only the pure parts are covered here: row assembly from a checksums manifest,
 tag derivation, argument validation, the dry-run document and credential
-masking. The WebSocket path is deliberately outside this suite:
-comment-gate-ok: it writes the live fleet catalog, so its coverage lives in
-the gateway's own wire tests plus the release pipeline's registration run.
+masking. The WebSocket path is deliberately not exercised here: it writes
+the catalog the whole fleet downloads from, and a test must never be able
+to do that.
+comment-gate-ok: the live path is covered by the gateway's own wire tests
+and by the release pipeline's registration run, both outside this file.
 Every digest and token below is an obvious fixture value.
 """
 
@@ -50,7 +52,9 @@ def run_main(capsys, arguments: list[str], monkeypatch, token: str | None = None
     return code, captured.out, captured.err
 
 class test_row_building:
-    """sha256/size come from the manifest, not from a frozen copy (comment-gate-ok: test_manifest_fills_sha256_and_size compares the row to the manifest values verbatim)."""
+    # comment-gate-ok: the two tests below compare the built row against the
+# manifest's own values verbatim, which is the pin.
+"""sha256/size come from the manifest, never from a frozen copy."""
 
     def test_manifest_fills_sha256_and_size(self):
         row = gateway_catalog.build_row(artifact = "chest-desktop", channel = "stable", tag = "0.1.0-c2c42787e384", direct_url = DIRECT_URL, checksums = manifest(), asset = ASSET)
