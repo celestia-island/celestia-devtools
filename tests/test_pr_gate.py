@@ -488,7 +488,11 @@ class test_merge_write_shape:
             {"commit": {"message": "🐛 Fix it.\n\nLonger body.\n\nCo-authored-by: demiurge <d@x>\nAI-generated with x.\n\nSigned-off-by: 伊欧 <l@x>"}},
             {"commit": {"message": "📝 Typo.\n\nCo-authored-by: demiurge <d@x>"}},
             {"commit": {"message": "plain commit, no trailer"}},
-            {"commit": {"message": "prose quotes Co-authored-by: in the middle\n\nbut the last paragraph is clean"}},
+            # A trailer quoted mid-line is prose: it never begins the line, so
+            # the any-paragraph scan never collects it. mutate: midline-quoted
+            # (a scan that searches instead of prefixes also lifts this one, and
+            # the equality below fails on the extra entry).
+            {"commit": {"message": "prose that quotes a trailer mid-line:\n\nsee Co-authored-by: someone, in the body"}},
         ]
         runner = _RecordingRunner([(200, self._pr()), (200, {"merged": True, "sha": "c" * 40}), (200, {"commit": {"message": f"{GOOD_TITLE} (#7)"}})], commits = commits)
         assert _gate("o/r", 7, "a" * 40, allow_cjk = False, do_merge = True, runner = runner) == 0
