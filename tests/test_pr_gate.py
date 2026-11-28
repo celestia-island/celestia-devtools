@@ -485,7 +485,7 @@ class test_merge_write_shape:
         the PUT, so a merge that refuses on a 500 fails that one).
         """
         commits = [
-            {"commit": {"message": "🐛 Fix it.\n\nLonger body.\n\nCo-authored-by: demiurge <d@x>\nSigned-off-by: 伊欧 <l@x>"}},
+            {"commit": {"message": "🐛 Fix it.\n\nLonger body.\n\nCo-authored-by: demiurge <d@x>\nAI-generated with x.\n\nSigned-off-by: 伊欧 <l@x>"}},
             {"commit": {"message": "📝 Typo.\n\nCo-authored-by: demiurge <d@x>"}},
             {"commit": {"message": "plain commit, no trailer"}},
             {"commit": {"message": "prose quotes Co-authored-by: in the middle\n\nbut the last paragraph is clean"}},
@@ -496,8 +496,12 @@ class test_merge_write_shape:
         assert payload["sha"] == "a" * 40
         # Deduplicated, in first-seen order, and only from the last paragraph:
         # the prose quote is not a trailer.
+        # Body only — GitHub always adds the title itself; a title inside the
+        # body came out twice on #332, and this equality never passes with one.
+        # mutate: title-in-body (a commit_message that starts with the title
+        # fails this equality on its first line).
         assert payload["commit_message"] == (
-            f"{GOOD_TITLE} (#7)\n\nCo-authored-by: demiurge <d@x>\nSigned-off-by: 伊欧 <l@x>"
+            "Co-authored-by: demiurge <d@x>\nSigned-off-by: 伊欧 <l@x>"
         ), payload["commit_message"]
 
     def test_no_trailers_leaves_the_body_to_github(self):
