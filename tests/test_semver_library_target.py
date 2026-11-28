@@ -21,12 +21,11 @@ that drops ``rlib`` alone — fails here.
 """
 
 from __future__ import annotations
-
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
-
 import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
@@ -36,12 +35,11 @@ CALLEE = WORKFLOWS / "semver-checks.yml"
 # `[lib] crate-type` values a publishable crate can declare, plus the
 # non-library kinds that must keep a crate out of the diff.
 LIBRARY_KINDS = ["lib", "rlib", "dylib", "cdylib", "staticlib"]
-NON_LIBRARY_KINDS = ["proc-macro", "bin", "test", "bench", "example"]
-
+NON_LIBRARY_KINDS = ["proc-macro", "bin", "test", "bench", "example", "custom-build"]
 
 def _detector_source() -> str:
     """The python the workflow pipes `cargo metadata` into, verbatim."""
-    doc = yaml.safe_load(CALLEE.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(CALLEE.read_text(encoding = "utf-8"))
     steps = doc["jobs"]["semver"]["steps"]
     run = next(s["run"] for s in steps if "HAS_LIB" in s.get("run", ""))
     # The detector is the `python3 -c '…'` the HAS_LIB process substitution
@@ -53,30 +51,20 @@ def _detector_source() -> str:
     assert match, "the HAS_LIB detector's python -c block was not found"
     return match.group(1)
 
-
 def _classify(source: str, targets: list[dict]) -> dict[str, bool]:
     """Run the real detector over a fake `cargo metadata` payload."""
     payload = {"packages": [{"name": "pkg0", "targets": targets}]}
-    import json
-
-    out = subprocess.run(
-        [sys.executable, "-c", source],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout
+    out = subprocess.run([sys.executable, "-c", source], input = json.dumps(payload), text = True, capture_output = True, check = True).stdout
     pairs = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
     return {k: v == "true" for k, v in pairs.items()}
-
 
 def test_every_library_kind_counts_as_a_library_target():
     """`lib`, `rlib`, `dylib`, `cdylib`, `staticlib` all keep a crate in the diff."""
     source = _detector_source()
+
     for kind in LIBRARY_KINDS:
         got = _classify(source, [{"kind": [kind]}])["pkg0"]
         assert got is True, f"a crate whose lib target is {kind!r} must be diffed"
-
 
 def test_rlib_alone_is_a_library_target():
     """The kirino shape: one target, kind `["rlib"]`, nothing else.
@@ -88,6 +76,17 @@ def test_rlib_alone_is_a_library_target():
     got = _classify(source, [{"kind": ["rlib"], "name": "kirino", "src_path": "src/lib.rs"}])
     assert got["pkg0"] is True
 
+def test_one_target_with_several_library_kinds_is_a_library_target():
+    """`[lib] crate-type = ["lib", "dylib"]`: one target, several kinds.
+
+    A detector that insists on exactly one kind per target would skip this
+    real library, so the mixed shape is pinned on its own.
+    """
+    source = _detector_source()
+
+    for kinds in (["lib", "dylib"], ["rlib", "cdylib"], ["rlib", "staticlib"]):
+        got = _classify(source, [{"kind": kinds}])
+        assert got["pkg0"] is True, f"a target of kinds {kinds} must be diffed"
 
 def test_proc_macro_only_is_still_skipped():
     """A proc-macro crate has no API surface to diff; the skip stays."""
@@ -95,14 +94,13 @@ def test_proc_macro_only_is_still_skipped():
     got = _classify(source, [{"kind": ["proc-macro"]}])
     assert got["pkg0"] is False
 
-
 def test_non_library_targets_do_not_count():
     """Bins, tests, benches and examples are not library targets."""
     source = _detector_source()
+
     for kind in NON_LIBRARY_KINDS:
         got = _classify(source, [{"kind": [kind]}])
         assert got["pkg0"] is False, f"{kind!r} must not be taken for a library"
-
 
 def test_a_crate_with_a_lib_and_a_bin_is_a_library_target():
     """Mixed targets: one library among them is enough (the common bin+lib crate)."""
@@ -110,13 +108,11 @@ def test_a_crate_with_a_lib_and_a_bin_is_a_library_target():
     got = _classify(source, [{"kind": ["bin"]}, {"kind": ["lib"]}])
     assert got["pkg0"] is True
 
-
 def test_a_crate_with_no_targets_is_not_a_library_target():
     """Defensive: an empty target list classifies as skipped, never crashes."""
     source = _detector_source()
     got = _classify(source, [])
     assert got["pkg0"] is False
-
 
 def test_the_detector_does_not_test_for_the_literal_string_lib():
     """The shape of the bug, refused directly.
@@ -128,6 +124,4 @@ def test_the_detector_does_not_test_for_the_literal_string_lib():
     """
     source = _detector_source()
     assert "rlib" in source, "the library-kind set must name rlib explicitly"
-    assert not re.search(r'"\s*lib\s*"\s+in\s+t', source), (
-        "the detector is back to testing for the literal string 'lib'"
-    )
+    assert not re.search(r'"\s*lib\s*"\s+in\s+t', source), ("the detector is back to testing for the literal string 'lib'")
