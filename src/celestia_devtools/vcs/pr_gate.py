@@ -1594,7 +1594,9 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
     trailers = _pull_trailers(repo, pr, runner)
     payload = {"merge_method": "squash", "sha": head}
     if trailers:
-        payload["commit_message"] = f"{title} (#{pr})\n\n" + "\n".join(trailers)
+        # Body only: GitHub always prefixes the title ("<title> (#N)") itself,
+        # and a title inside commit_message came out twice on #332.
+        payload["commit_message"] = "\n".join(trailers)
 
     status, merged, stderr = gh_api(
         f"repos/{repo}/pulls/{pr}/merge",
@@ -1684,13 +1686,24 @@ def _pull_trailers(repo: str, pr: int, runner) -> list[str]:
         message = ((entry.get("commit") or {}).get("message") or "").strip()
         if not message:
             continue
-        last_paragraph = message.rsplit("\n\n", 1)[-1]
-        for line in last_paragraph.splitlines():
+        # Walk up from the end: a trailer block is every line, from the last
+        # line upward, that is a trailer or blank, stopping at the first line
+        # that is neither. That is git's own rule, and it is what lets a commit
+        # whose last paragraph is `Signed-off-by` but whose `Co-authored-by`
+        # sits one paragraph up — separated by an `AI-generated` note, say —
+        # keep both. The first version of this fix read only the last paragraph
+        # and dropped exactly that commit's Co-authored-by, on its own PR.
+        for line in reversed(message.splitlines()):
             stripped = line.strip()
-            if stripped.startswith(_TRAILER_PREFIXES) and stripped not in seen:
+            if not stripped:
+                continue
+            if not stripped.startswith(_TRAILER_PREFIXES):
+                break
+            if stripped not in seen:
                 seen.add(stripped)
                 trailers.append(stripped)
-    return trailers
+    # Collected bottom-up per commit; a trailer block reads top-down.
+    return list(reversed(trailers))
 
 
 def main(argv: list[str] | None = None) -> int:
