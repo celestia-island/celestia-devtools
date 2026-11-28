@@ -465,5 +465,5 @@ def test_a_json_token_request_is_refused_with_the_oauth_shape(op: fixture_op) ->
     # The exact error is the pin: the endpoint reads form encoding only, so a
     # JSON body has no readable grant and must answer unsupported_grant_type —
     # not invalid_grant, which a JSON-honouring parser would produce (review
-    # round 4 verified the distinction with a read_form mutant).
+    # round 4 pinned the distinction with a read_form mutant).
     assert json.loads(body)["error"] == "unsupported_grant_type"
