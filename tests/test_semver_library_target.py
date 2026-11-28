@@ -122,9 +122,10 @@ def test_a_target_without_a_kind_is_not_a_library_target():
 
     `cargo metadata` always fills `kind` for real targets, so this is the
     guard against a malformed payload rather than a live shape — which is
-    exactly why it needs its own test: dropping the `or []` leaves every
-    other test green (measured, devtools R4) and the detector then dies on
-    `intersection(None)` instead of classifying.
+    exactly why it needs its own test: when it was written, dropping the
+    `or []` left every other test green (devtools R4), because no other
+    fixture reached `intersection(None)`. Now two tests do (this one and the
+    malformed-sibling one), and the mutant fails both.
     """
     source = _detector_source()
 
@@ -147,6 +148,24 @@ def test_a_malformed_kind_alongside_a_library_still_counts_the_library():
     for sibling in ({"name": "odd"}, {"kind": None}, {}):
         got = _classify(source, [sibling, {"kind": ["rlib"]}])
         assert got["pkg0"] is True, f"a malformed sibling {sibling} must not sink the library target"
+
+def test_each_package_is_classified_on_its_own_targets():
+    """Two packages in one payload: a library and a proc-macro side by side.
+
+    The detector is handed the whole workspace at once. A per-package loop
+    that leaked one package's verdict into the next, or stopped at the first
+    package, would send the proc-macro crate to a diff it cannot serve — a
+    loud failure rather than the silent skip this gate is about, but still a
+    wrong verdict. Both orders, so neither "first wins" nor "last wins" passes.
+    """
+    source = _detector_source()
+
+    for packages in ([{"name": "lib_crate", "targets": [{"kind": ["rlib"]}]}, {"name": "macro_crate", "targets": [{"kind": ["proc-macro"]}]}], [{"name": "macro_crate", "targets": [{"kind": ["proc-macro"]}]}, {"name": "lib_crate", "targets": [{"kind": ["rlib"]}]}]):
+        payload = {"packages": packages}
+        proc = subprocess.run([sys.executable, "-c", source], input = json.dumps(payload), text = True, capture_output = True)
+        assert proc.returncode == 0, proc.stderr
+        got = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+        assert got == {"lib_crate": "true", "macro_crate": "false"}, f"verdicts leaked across packages: {got}"
 
 def test_the_detector_does_not_test_for_the_literal_string_lib():
     """The shape of the bug, refused directly.
