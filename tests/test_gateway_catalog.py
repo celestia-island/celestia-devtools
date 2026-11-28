@@ -96,7 +96,7 @@ class test_validation:
             gateway_catalog.validate_row(explicit_row(**overrides))
 
 class test_masking:
-    """The credential is identified, never disclosed."""
+    """The credential is identified by a mask alone."""
 
     def test_mask_is_length_plus_digest_prefix(self):
         token = FIXTURE_CREDENTIAL
