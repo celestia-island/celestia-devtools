@@ -257,8 +257,9 @@ class _FakeRunner:
     their response lists unchanged.
     """
 
-    def __init__(self, responses):
+    def __init__(self, responses, commits = None):
         self.responses = list(responses)
+        self.commits = commits
         self.calls: list[tuple] = []
 
     def __call__(self, cmd, **kwargs):
@@ -290,6 +291,18 @@ class _FakeRunner:
                 stderr = ""
 
             return _files_response()
+        # The trailer read before a squash asks `/pulls/<n>/commits`; it must not
+        # consume a queued payload either, or every merge-path list shifts by one.
+        # `commits` is the stand-in's commit list (None = no commits, no trailers).
+        if "/commits" in " ".join(argv) and "/pulls/" in " ".join(argv):
+            self.calls.append(tuple(argv))
+
+            class _commits_response:
+                returncode = 0
+                stdout = "HTTP/2.0 200 OK\n\n" + json.dumps(self.commits or [])
+                stderr = ""
+
+            return _commits_response()
 
         self.calls.append(tuple(cmd))
 
@@ -429,8 +442,8 @@ class _RecordingRunner(_FakeRunner):
     assertions use.
     """
 
-    def __init__(self, responses):
-        super().__init__(responses)
+    def __init__(self, responses, commits = None):
+        super().__init__(responses, commits)
         self.inputs: list[str | None] = []
 
     def __call__(self, cmd, **kwargs):
@@ -457,6 +470,72 @@ class test_merge_write_shape:
         # `sha` pins the validated head server-side: a push between the GET and
         # the PUT must answer 409 instead of merging an unreviewed commit.
         assert payload == {"merge_method": "squash", "sha": "a" * 40}, payload
+
+    def test_trailers_reach_the_squash_body(self):
+        """GitHub's default squash body is a list of commit titles and drops every
+        trailer; the gate reads them off the PR's commits and passes them as the
+        body.  Thirty kotama merges lost their Co-authored-by before this.
+
+        mutate: trailers-dropped (a merge that ignores `_pull_trailers` lands the
+        PUT without commit_message; the equality on the body fails on its first
+        line, and the shape it would leave is the one kotama lived with).
+
+        mutate: trailers-always-added (a merge that never omits commit_message
+        fails the no-trailers case below; the unreadable-list case never blocks
+        the PUT, so a merge that refuses on a 500 fails that one).
+        """
+        commits = [
+            {"commit": {"message": "🐛 Fix it.\n\nLonger body.\n\nCo-authored-by: demiurge <d@x>\nAI-generated with x.\n\nSigned-off-by: 伊欧 <l@x>"}},
+            {"commit": {"message": "📝 Typo.\n\nCo-authored-by: demiurge <d@x>"}},
+            {"commit": {"message": "plain commit, no trailer"}},
+            {"commit": {"message": "prose quotes Co-authored-by: in the middle\n\nbut the last paragraph is clean"}},
+        ]
+        runner = _RecordingRunner([(200, self._pr()), (200, {"merged": True, "sha": "c" * 40}), (200, {"commit": {"message": f"{GOOD_TITLE} (#7)"}})], commits = commits)
+        assert _gate("o/r", 7, "a" * 40, allow_cjk = False, do_merge = True, runner = runner) == 0
+        payload = json.loads(runner.inputs[0] or "{}")
+        assert payload["sha"] == "a" * 40
+        # Deduplicated, in first-seen order, and only from the last paragraph:
+        # the prose quote is not a trailer.
+        # Body only — GitHub always adds the title itself; a title inside the
+        # body came out twice on #332, and this equality never passes with one.
+        # mutate: title-in-body (a commit_message that starts with the title
+        # fails this equality on its first line).
+        assert payload["commit_message"] == (
+            "Co-authored-by: demiurge <d@x>\nSigned-off-by: 伊欧 <l@x>"
+        ), payload["commit_message"]
+
+    def test_no_trailers_leaves_the_body_to_github(self):
+        """A PR whose commits carry no trailer is merged exactly as before: no
+        commit_message key, so GitHub's default body applies.  The fix must not
+        change the shape of every other merge — which is also why the commits
+        read is bypassed in the fake runner rather than queued: the eight
+        existing merge-path tests keep their response lists untouched."""
+        runner = _RecordingRunner([(200, self._pr()), (200, {"merged": True, "sha": "c" * 40}), (200, {"commit": {"message": f"{GOOD_TITLE} (#7)"}})])
+        assert _gate("o/r", 7, "a" * 40, allow_cjk = False, do_merge = True, runner = runner) == 0
+        payload = json.loads(runner.inputs[0] or "{}")
+        assert payload == {"merge_method": "squash", "sha": "a" * 40}, payload
+
+    def test_an_unreadable_commit_list_does_not_block_the_merge(self):
+        """The trailer read is best-effort: a transport failure on the commits
+        GET merges with GitHub's default body rather than refusing — attribution
+        is worth having, not worth a blocked merge for."""
+        class _BoomOnce:
+            def __init__(self, inner):
+                self.inner = inner
+                self.failed = False
+
+            def __call__(self, cmd, **kwargs):
+                argv = " ".join(str(p) for p in cmd)
+                if "/commits" in argv and "/pulls/" in argv and not self.failed:
+                    self.failed = True
+                    raise OSError("transport")
+                return self.inner(cmd, **kwargs)
+
+        inner = _RecordingRunner([(200, self._pr()), (200, {"merged": True, "sha": "c" * 40}), (200, {"commit": {"message": f"{GOOD_TITLE} (#7)"}})])
+        runner = _BoomOnce(inner)
+        assert _gate("o/r", 7, "a" * 40, allow_cjk = False, do_merge = True, runner = runner) == 0
+        payload = json.loads(inner.inputs[0] or "{}")
+        assert "commit_message" not in payload, payload
 
     def test_draft_pr_refused(self):
         problems = check_pr({"state": "open", "mergeable": True, "draft": True, "title": GOOD_TITLE, "body": GOOD_BODY + GOOD_RECORD, "head": {"sha": "a" * 40}, "base": {"ref": "master"}}, expect_head = "a" * 40)
@@ -509,7 +588,9 @@ class test_round4_regressions:
             (500, {})
         ])
         assert _gate("o/r", 1, "b" * 40, allow_cjk = False, do_merge = True, runner = runner) == 2
-        commit_calls = [c for c in runner.calls if "commits" in " ".join(c)]
+        # The readback is the commits GET that names the squash SHA; the trailer
+        # read before the PUT names the PR instead and is not a readback.
+        commit_calls = [c for c in runner.calls if "/commits/c" in " ".join(c)]
         assert len(commit_calls) == 2, commit_calls
         assert "(2 attempt(s))" in capsys.readouterr().out
 
