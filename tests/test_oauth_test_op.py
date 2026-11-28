@@ -451,23 +451,19 @@ def test_userinfo_answers_html_to_a_browser(op: fixture_op) -> None:
     assert answer["status"] == 401, answer
     assert answer["json"] is None, answer["text"]
 
-
 def test_a_json_token_request_is_refused_with_the_oauth_shape(op: fixture_op) -> None:
     """The token endpoint reads form encoding; JSON is an invalid request."""
-    request = urllib.request.Request(
-        op.base_url + "/token",
-        data = json.dumps({"grant_type": "authorization_code", "code": "x"}).encode(),
-        headers = {"Content-Type": "application/json"},
-        method = "POST",
-    )
+    request = urllib.request.Request(op.base_url + "/token", data = json.dumps({"grant_type": "authorization_code", "code": "x"}).encode(), headers = {"Content-Type": "application/json"}, method = "POST")
+
     try:
         with urllib.request.urlopen(request, timeout = 30) as answer:
             status, body = answer.status, answer.read().decode()
     except urllib.error.HTTPError as error:
         status, body = error.code, error.read().decode()
+
     assert status == 400, (status, body[:200])
-    # The exact error depends on how far parsing gets (a JSON body has no
-    # readable form fields, so the grant check answers unsupported_grant_type);
-    # what matters is that the OAuth error shape is answered and nothing is
-    # issued.
-    assert json.loads(body)["error"] in ("invalid_request", "unsupported_grant_type")
+    # The exact error is the pin: the endpoint reads form encoding only, so a
+    # JSON body has no readable grant and must answer unsupported_grant_type —
+    # not invalid_grant, which a JSON-honouring parser would produce (review
+    # round 4 verified the distinction with a read_form mutant).
+    assert json.loads(body)["error"] == "unsupported_grant_type"
