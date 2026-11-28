@@ -129,6 +129,11 @@ docstrings = "allow"
 # unittest-style callback names inherited from the framework (lowercase "do_HEAD"
 # is the contract, not a local naming choice).
 framework_callbacks = ["do_HEAD"]
+# The two public identifiers of the OAuth fixture (identity/oauth_test_op.py):
+# `TestOp` is the library API every consumer's integration test spells, and
+# `TestOp.verbose` is its documented CLI switch, so both are part of the
+# published contract rather than local naming choices.
+naming_allow = ["TestOp", "TestOp.verbose"]
 slice_colons = "pep8"
 final_newline = "one"
 blank_line_scope = "all"
