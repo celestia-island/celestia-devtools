@@ -54,8 +54,11 @@ def _detector_source() -> str:
 def _classify(source: str, targets: list[dict]) -> dict[str, bool]:
     """Run the real detector over a fake `cargo metadata` payload."""
     payload = {"packages": [{"name": "pkg0", "targets": targets}]}
-    out = subprocess.run([sys.executable, "-c", source], input = json.dumps(payload), text = True, capture_output = True, check = True).stdout
-    pairs = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    proc = subprocess.run([sys.executable, "-c", source], input = json.dumps(payload), text = True, capture_output = True)
+    # Not `check=True`: a detector that dies on a payload should fail the test
+    # with its traceback in the failure message, not a bare CalledProcessError.
+    assert proc.returncode == 0, f"the detector exited {proc.returncode}:\n{proc.stderr}"
+    pairs = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
     return {k: v == "true" for k, v in pairs.items()}
 
 def test_every_library_kind_counts_as_a_library_target():
@@ -130,10 +133,20 @@ def test_a_target_without_a_kind_is_not_a_library_target():
         assert got["pkg0"] is False, f"a target of {target} must classify as skipped"
 
 def test_a_malformed_kind_alongside_a_library_still_counts_the_library():
-    """One well-formed library target is enough even when a sibling lacks a kind."""
+    """One well-formed library target is enough even when a sibling lacks a kind.
+
+    The malformed sibling comes first on purpose: `any` short-circuits, so a
+    sibling placed after the library would never be looked at and the test
+    would pass against a detector that dies on it. Three shapes — no `kind`
+    key, a null `kind`, an empty target — because a detector may tolerate one
+    and not another (the R5 mutant that broke on the missing key passed the
+    null case).
+    """
     source = _detector_source()
-    got = _classify(source, [{"kind": None}, {"kind": ["rlib"]}])
-    assert got["pkg0"] is True
+
+    for sibling in ({"name": "odd"}, {"kind": None}, {}):
+        got = _classify(source, [sibling, {"kind": ["rlib"]}])
+        assert got["pkg0"] is True, f"a malformed sibling {sibling} must not sink the library target"
 
 def test_the_detector_does_not_test_for_the_literal_string_lib():
     """The shape of the bug, refused directly.
