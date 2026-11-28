@@ -93,6 +93,19 @@ def b64url(data: bytes) -> str:
     """base64url without padding, the encoding PKCE S256 mandates (RFC 7636 §4.2)."""
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
+def code_challenge_is_well_formed(challenge: str) -> bool:
+    """True when `challenge` is the canonical unpadded base64url SHA-256 digest.
+
+    Shape only: 43 characters from the base64url alphabet, no `=` padding (the
+    padded 44-character form is a different string and would never compare equal
+    to a verifier digest).
+    """
+
+    if len(challenge) != 43:
+        return False
+
+    return all((character.isascii() and (character.isalnum() or (character in "-_"))) for character in challenge)
+
 def s256_challenge(verifier: str) -> str:
     """The S256 challenge for a verifier: base64url(sha256(ASCII(verifier)))."""
     return b64url(hashlib.sha256(verifier.encode("ascii")).digest())
@@ -435,6 +448,14 @@ class TestOp:
         if method != "S256":
             raise test_op_error("invalid_request", "code_challenge_method must be S256")
 
+        # A challenge that is not the canonical unpadded base64url of a SHA-256
+        # digest can never match a verifier, so accepting it would move the
+        # client's bug from here (where it is attributable) to /token, where it
+        # surfaces as `invalid_grant` and reads like a wrong verifier. The
+        # family client sends 43 characters with no padding.
+        if not code_challenge_is_well_formed(challenge):
+            raise test_op_error("invalid_request", "code_challenge must be 43 characters of unpadded base64url (base64url(sha256(verifier)))")
+
         scope = single.get("scope") or ADVERTISED_SCOPES
         return {"response_type": response_type, "client_id": client_id, "redirect_uri": redirect_uri, "state": state, "code_challenge": challenge, "code_challenge_method": method, "scope": scope}
 
@@ -557,7 +578,12 @@ class op_handler(BaseHTTPRequestHandler):
 
     def send_oauth_error(self, error: test_op_error) -> None:
         """Render a refusal for whoever is reading: a browser or a client library."""
-        is_browser = (self.command == "GET") and (urllib.parse.urlsplit(self.path).path in ("/authorize", "/userinfo"))
+        path = urllib.parse.urlsplit(self.path).path
+        wants_json = "application/json" in (self.headers.get("Accept") or "")
+        # `/authorize` is always a browser surface; `/userinfo` is a client API
+        # that RFC 6750 §3.1 answers with a JSON body, so ONLY the browser form
+        # of its refusal may be HTML.
+        is_browser = (self.command == "GET") and ((path == "/authorize") or ((path == "/userinfo") and (not wants_json)))
 
         if is_browser:
             self.send_html(error.status, error_page(error.error, error.description))

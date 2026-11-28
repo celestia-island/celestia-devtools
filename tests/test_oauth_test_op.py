@@ -413,3 +413,39 @@ class test_library_api:
     def test_port_zero_picks_an_ephemeral_port(self):
         with fixture_op.start(users_config()) as started:
             assert started.port > 0
+
+def test_a_padded_challenge_is_refused_at_authorize_not_at_token(op: fixture_op) -> None:
+    """A 44-char padded challenge can never match a verifier, so refusing it at
+    /authorize keeps the client's bug attributable instead of letting it surface
+    at /token as `invalid_grant` (which reads like a wrong verifier)."""
+    padded = base64.urlsafe_b64encode(hashlib.sha256(b"a-verifier").digest()).decode()
+    assert padded.endswith("=")
+    answer = login(op, authorize_params(code_challenge = padded))
+    assert answer["status"] == 400, answer
+    assert answer["location"] is None, answer
+    assert "base64url" in answer["text"], answer["text"]
+
+def test_a_challenge_that_is_not_canonical_base64url_is_refused(op: fixture_op) -> None:
+    for bad in ("a" * 42, "a" * 44, (("a" * 43) + "="), (" " + ("a" * 42)), "!" * 43):
+        answer = login(op, authorize_params(code_challenge = bad))
+        assert answer["status"] == 400, (bad, answer)
+        assert answer["location"] is None, (bad, answer)
+
+def test_the_canonical_unpadded_challenge_still_completes_the_flow(op: fixture_op) -> None:
+    verifier = "v" * 43
+    answer = login(op, authorize_params(code_challenge = challenge_for(verifier)))
+    assert answer["status"] == 302, answer
+    token = redeem(op, code_from(answer), code_verifier = verifier)
+    assert token["status"] == 200, token
+
+def test_userinfo_refusals_answer_json_when_the_caller_asks_for_it(op: fixture_op) -> None:
+    """RFC 6750 §3.1: a bearer refusal is a JSON body; only a browser gets HTML."""
+    answer = get(op, "/userinfo", headers = {"Accept": "application/json"}, follow = False)
+    assert answer["status"] == 401, answer
+    assert answer["json"] is not None, answer["text"]
+    assert answer["json"].get("error") == "invalid_token", answer
+
+def test_userinfo_answers_html_to_a_browser(op: fixture_op) -> None:
+    answer = get(op, "/userinfo", headers = {"Accept": "text/html"}, follow = False)
+    assert answer["status"] == 401, answer
+    assert answer["json"] is None, answer["text"]
