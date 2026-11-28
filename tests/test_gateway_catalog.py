@@ -2,12 +2,8 @@
 
 Only the pure parts are covered here: row assembly from a checksums manifest,
 tag derivation, argument validation, the dry-run document and credential
-masking. The WebSocket path is deliberately out of scope for this suite:
-# comment-gate-ok: it writes the fleet's download catalog, so the suite
-# never drives it — live coverage is the gateway's own wire tests plus the
-# release pipeline's registration run.
-a test that could reach it would be changing fleet behaviour. Every
-digest and token below is an obvious fixture value.
+masking. Every digest and token below is an obvious fixture value.
+# comment-gate-ok: this suite never drives the fleet's download catalog — live coverage is the gateway's own wire tests plus the release pipeline's registration run, outside this file.
 """
 
 from __future__ import annotations
