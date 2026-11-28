@@ -151,10 +151,24 @@ jobs:
           # nothing to semver-check") and exits non-zero, which the loop below
           # would misread as "requires a bigger version bump". Map crate ->
           # has-library-target once; the loop skips those members with a notice.
+          #
+          # A library target is any kind Cargo treats as a library: `lib`,
+          # `rlib`, `dylib`, `cdylib`, `staticlib`. Testing for the literal
+          # string "lib" alone missed `rlib` — and kirino declares
+          # `[lib] crate-type = ["rlib"]`, so every kirino release logged "no
+          # library target … skipping" and its API was never diffed. A public
+          # field added in 0.9.7 (#205) shipped as a patch and broke every
+          # external struct literal; this gate never saw it (2026-11-28).
           declare -A HAS_LIB=()
           while IFS='=' read -r pkg haslib; do
             HAS_LIB[$pkg]="$haslib"
-          done < <(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); [print(p["name"], str(any("lib" in t.get("kind", []) for t in p["targets"])).lower(), sep="=") for p in d["packages"]]')
+          done < <(cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, sys
+          LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib"}
+          for p in json.load(sys.stdin)["packages"]:
+              has = any(LIBRARY_KINDS.intersection(t.get("kind") or []) for t in p["targets"])
+              print(p["name"], str(has).lower(), sep="=")
+          ')
 
           internal_skipped=()
           checked=0
