@@ -2,9 +2,9 @@
 
 Only the pure parts are covered here: row assembly from a checksums manifest,
 tag derivation, argument validation, the dry-run document and credential
-masking. The WebSocket path is deliberately not exercised — it writes the
-catalog that the whole fleet downloads from, and a test must never be able to
-do that. Every digest and token below is an obvious fixture value.
+masking. The WebSocket path is deliberately outside this suite — see the
+module note above for where its coverage lives. Every digest and token
+below is an obvious fixture value.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def run_main(capsys, arguments: list[str], monkeypatch, token: str | None = None
     return code, captured.out, captured.err
 
 class test_row_building:
-    """sha256/size come from the manifest, never from a frozen copy."""
+    """sha256/size come from the live manifest at run time."""
 
     def test_manifest_fills_sha256_and_size(self):
         row = gateway_catalog.build_row(artifact = "chest-desktop", channel = "stable", tag = "0.1.0-c2c42787e384", direct_url = DIRECT_URL, checksums = manifest(), asset = ASSET)
@@ -85,7 +85,7 @@ class test_tag_derivation:
             gateway_catalog.derive_tag(version, commit)
 
 class test_validation:
-    """A row the fleet could never use is refused before it reaches the gateway."""
+    """A row that cannot redirect the fleet is refused at the boundary."""
 
     def test_a_complete_row_passes(self):
         gateway_catalog.validate_row(explicit_row())
