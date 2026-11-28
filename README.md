@@ -345,6 +345,9 @@ ops-controlled supply line advanced by the mirror sync) must never override it.
 | `celestia-devtools py-style fix .` | Apply the safe auto-fixes in place (`--dry-run` previews) |
 | `celestia-devtools cpp-style check .` | Check C and C++ sources against the custom style rules (see below) |
 | `celestia-devtools release-notes` | Generate categorized GitHub release notes for a tag (see below) |
+| `celestia-devtools oauth-test-op --test-op --users-file U` | Run a TEST OAuth 2.0 provider fixture (PKCE S256) for integration tests |
+| `celestia-devtools gateway-catalog register` | Register a release in the gateway artifact catalog, then verify it |
+| `celestia-devtools gateway-catalog list` | Print the gateway artifact catalog as JSON |
 
 ## Style Checkers
 
