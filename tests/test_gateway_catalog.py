@@ -138,7 +138,7 @@ class test_dry_run:
         assert json.loads(out.split("\n", 1)[1]) == explicit_row(tag = "0.1.0", size = 42)
 
 class test_usage_errors:
-    """Usage mistakes exit 2 and never reach the network."""
+    """Usage mistakes exit 2 before any network activity."""
 
     def test_missing_token_exits_2(self, capsys, monkeypatch):
         code, _, err = run_main(capsys, ["register", "--artifact", "chest-desktop", "--channel", "stable", "--tag", "0.1.0", "--direct-url", DIRECT_URL, "--sha256", SHA256, "--size", "42"], monkeypatch)

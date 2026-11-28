@@ -95,7 +95,7 @@ def get(op: fixture_op, path: str, headers: dict | None = None, follow: bool = T
         return as_answer(error.code, error.headers.get("Location"), error.read().decode())
 
 def login(op: fixture_op, fields: dict) -> dict:
-    """POST the login form; the 302 is returned, never followed.
+    """POST the login form; the 302 is returned rather than followed.
 
     The credentials default to the fixture user; a test proves a rejection by
     overriding one of them.
