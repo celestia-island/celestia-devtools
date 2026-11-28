@@ -10,9 +10,10 @@ The detector used to test for the literal target kind ``"lib"``. Cargo
 reports a crate that declares ``[lib] crate-type = ["rlib"]`` as
 ``kind: ["rlib"]``, not ``["lib"]`` — so kirino, an ordinary library, was
 classified as proc-macro-only. Every kirino release logged ``no library
-target … skipping`` and its public API was never diffed. A public field
-added in 0.9.7 shipped as a patch and broke every external struct literal;
-the gate that exists to refuse exactly that never ran (2026-11-28).
+target … skipping``; by those logs its public API went undiffed. A public
+field added in 0.9.7 shipped as a patch and broke every external struct
+literal, and the gate that exists to refuse exactly that had skipped the
+crate it happened in (2026-11-28).
 
 This test extracts the real detector out of the YAML, runs it against the
 target kinds Cargo actually emits, and asserts the classification the loop
@@ -112,20 +113,20 @@ def test_a_crate_with_a_lib_and_a_bin_is_a_library_target():
     assert got["pkg0"] is True
 
 def test_a_crate_with_no_targets_is_not_a_library_target():
-    """Defensive: an empty target list classifies as skipped, never crashes."""
+    """Defensive: an empty target list classifies as skipped — MUT:drop-null-guard (drop ``or []``) is the crash this would catch."""
     source = _detector_source()
     got = _classify(source, [])
     assert got["pkg0"] is False
 
 def test_a_target_without_a_kind_is_not_a_library_target():
-    """A target whose `kind` is absent or null: skipped, never a crash.
+    """A target whose `kind` is absent or null: skipped, not a crash — MUT:drop-null-guard.
 
     `cargo metadata` always fills `kind` for real targets, so this is the
     guard against a malformed payload rather than a live shape — which is
-    exactly why it needs its own test: when it was written, dropping the
-    `or []` left every other test green (devtools R4), because no other
-    fixture reached `intersection(None)`. Now two tests do (this one and the
-    malformed-sibling one), and the mutant fails both.
+    exactly why it needs its own test. Measured (devtools R4, at ``cd338a8``):
+    MUT:drop-null-guard left every other test green there, because no other
+    fixture reached ``intersection(None)``; at this head two tests do (this
+    one and the malformed-sibling one) and the mutant fails both.
     """
     source = _detector_source()
 
@@ -137,11 +138,12 @@ def test_a_malformed_kind_alongside_a_library_still_counts_the_library():
     """One well-formed library target is enough even when a sibling lacks a kind.
 
     The malformed sibling comes first on purpose: `any` short-circuits, so a
-    sibling placed after the library would never be looked at and the test
-    would pass against a detector that dies on it. Three shapes — no `kind`
-    key, a null `kind`, an empty target — because a detector may tolerate one
-    and not another (the R5 mutant that broke on the missing key passed the
-    null case).
+    sibling placed after the library is not looked at and the test would pass
+    against a detector that dies on it (MUT:swap-sibling-order — devtools R6
+    swapped the order and the R5 leak/crash mutants survived again). Three
+    shapes — no `kind` key, a null `kind`, an empty target — because a
+    detector may tolerate one and not another (MUT:sink-missing-key passed the
+    null case, devtools R5).
     """
     source = _detector_source()
 
