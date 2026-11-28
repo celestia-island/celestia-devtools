@@ -114,6 +114,27 @@ def test_a_crate_with_no_targets_is_not_a_library_target():
     got = _classify(source, [])
     assert got["pkg0"] is False
 
+def test_a_target_without_a_kind_is_not_a_library_target():
+    """A target whose `kind` is absent or null: skipped, never a crash.
+
+    `cargo metadata` always fills `kind` for real targets, so this is the
+    guard against a malformed payload rather than a live shape — which is
+    exactly why it needs its own test: dropping the `or []` leaves every
+    other test green (measured, devtools R4) and the detector then dies on
+    `intersection(None)` instead of classifying.
+    """
+    source = _detector_source()
+
+    for target in ({"name": "odd"}, {"kind": None}, {}):
+        got = _classify(source, [target])
+        assert got["pkg0"] is False, f"a target of {target} must classify as skipped"
+
+def test_a_malformed_kind_alongside_a_library_still_counts_the_library():
+    """One well-formed library target is enough even when a sibling lacks a kind."""
+    source = _detector_source()
+    got = _classify(source, [{"kind": None}, {"kind": ["rlib"]}])
+    assert got["pkg0"] is True
+
 def test_the_detector_does_not_test_for_the_literal_string_lib():
     """The shape of the bug, refused directly.
 
