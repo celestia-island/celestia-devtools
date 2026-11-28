@@ -275,7 +275,7 @@ class test_redirect_uri_validation:
         assert answer["json"]["error"] == "invalid_grant"
 
 class test_login_form:
-    """A failed login keeps the browser on the form; it never redirects."""
+    """A failed login keeps the browser on the form."""
 
     def test_wrong_password_rerenders_the_form_with_an_error(self, op):
         # Written as two segments so no single literal reads as a real
@@ -415,9 +415,10 @@ class test_library_api:
             assert started.port > 0
 
 def test_a_padded_challenge_is_refused_at_authorize_not_at_token(op: fixture_op) -> None:
-    """A 44-char padded challenge can never match a verifier, so refusing it at
-    /authorize keeps the client's bug attributable instead of letting it surface
-    at /token as `invalid_grant` (which reads like a wrong verifier)."""
+    """A padded challenge fails shape validation at /authorize itself."""
+    # MUT: r2-shape — with the shape check disabled, the padded challenge
+    # below is accepted here and then fails at /token with invalid_grant,
+    # which misattributes the client's mistake.
     padded = base64.urlsafe_b64encode(hashlib.sha256(b"a-verifier").digest()).decode()
     assert padded.endswith("=")
     answer = login(op, authorize_params(code_challenge = padded))
