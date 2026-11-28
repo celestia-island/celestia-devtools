@@ -1583,6 +1583,19 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
         print("(check mode only; re-run with `merge` to squash from this state)")
         return 0
 
+    # GitHub's default squash body is a list of the PR's commit titles, and
+    # that list drops every trailer line -- Co-authored-by, Signed-off-by --
+    # on the floor.  Thirty kotama merges lost their attribution that way
+    # (#161..#191) before anyone read the resulting commit.  So the trailers
+    # are read off the PR's commits and passed explicitly as the squash body.
+    # The subject is never set here: GitHub makes it "<title> (#N)" and the
+    # readback below asserts exactly that, so the title gate stays the only
+    # authority on what the squash is called.
+    trailers = _pull_trailers(repo, pr, runner)
+    payload = {"merge_method": "squash", "sha": head}
+    if trailers:
+        payload["commit_message"] = f"{title} (#{pr})\n\n" + "\n".join(trailers)
+
     status, merged, stderr = gh_api(
         f"repos/{repo}/pulls/{pr}/merge",
         method = "PUT",
@@ -1590,7 +1603,7 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
         # the head has moved, so a push landing between the GET above and this
         # PUT can no longer be merged unvalidated.  (Without it the same-process
         # design merely removes the human step, not the race.)
-        payload = {"merge_method": "squash", "sha": head},
+        payload = payload,
         runner = runner
     )
 
@@ -1646,6 +1659,39 @@ def _gate(repo: str, pr: int, expect_head: str | None, *, allow_cjk: bool, do_me
 
     print(f"✅ merged subject verified: {subject}")
     return 0
+
+_TRAILER_PREFIXES = ("Co-authored-by:", "Signed-off-by:", "Acked-by:", "Reviewed-by:", "Tested-by:")
+
+
+def _pull_trailers(repo: str, pr: int, runner) -> list[str]:
+    """Trailer lines from every commit on the PR, deduplicated, in order.
+
+    Only the last paragraph of each commit message is scanned: that is where
+    git trailers live by convention, and a "Co-authored-by:" quoted in the
+    middle of a body is prose, not attribution.  A commit list that cannot be
+    read yields no trailers -- the merge goes ahead as it did before, with
+    GitHub's default body, rather than being blocked on a read.
+    """
+    status, response, _stderr = gh_api(f"repos/{repo}/pulls/{pr}/commits?per_page=100", runner = runner)
+    # `gh_api` wraps a non-object JSON body as {"_raw": <value>}; a commit list
+    # is an array, so that is where it is.
+    commits = response.get("_raw") if isinstance(response, dict) else None
+    if status != 200 or not isinstance(commits, list):
+        return []
+    seen: set[str] = set()
+    trailers: list[str] = []
+    for entry in commits:
+        message = ((entry.get("commit") or {}).get("message") or "").strip()
+        if not message:
+            continue
+        last_paragraph = message.rsplit("\n\n", 1)[-1]
+        for line in last_paragraph.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(_TRAILER_PREFIXES) and stripped not in seen:
+                seen.add(stripped)
+                trailers.append(stripped)
+    return trailers
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog = "celestia-devtools pr-merge-gate", description = "Pre-squash-merge gate: title / head / verify-record checks + guarded squash.")
